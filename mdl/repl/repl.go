@@ -13,7 +13,10 @@ import (
 	"slices"
 	"strings"
 
+	"regexp"
+
 	"github.com/chzyer/readline"
+	"github.com/mendixlabs/mxcli/mdl/ast"
 	"github.com/mendixlabs/mxcli/mdl/backend"
 	mprbackend "github.com/mendixlabs/mxcli/mdl/backend/mpr"
 	"github.com/mendixlabs/mxcli/mdl/diaglog"
@@ -212,10 +215,36 @@ func (r *REPL) Close() error {
 	return r.executor.Close()
 }
 
+// helpRe matches: help <topic> (optional trailing semicolon, any case)
+var helpRe = regexp.MustCompile(`(?i)^\s*help\s+(.+?)[\s;]*$`)
+
+// helpTopicWords extracts a slice of lowercase topic words from the matched
+// topic string, treating spaces, dots, and hyphens as separators.
+func helpTopicWords(topic string) []string {
+	// Normalize: replace dots and hyphens with spaces, then split
+	topic = strings.NewReplacer(".", " ", "-", " ").Replace(topic)
+	var words []string
+	for _, w := range strings.Fields(topic) {
+		if w != "" {
+			words = append(words, strings.ToLower(w))
+		}
+	}
+	return words
+}
+
 func (r *REPL) execute(input string) error {
 	// Strip trailing slash terminator if present (SQL*Plus style)
 	// The "/" allows multi-statement blocks when statements contain ";" internally
 	input = stripSlashTerminator(input)
+
+	// Intercept HELP commands before grammar parsing: dots, hyphens, and spaces
+	// are all accepted as topic separators (the grammar only supports plain words).
+	if m := helpRe.FindStringSubmatch(strings.TrimSpace(input)); m != nil {
+		prog := &ast.Program{Statements: []ast.Statement{
+			&ast.HelpStmt{Topic: helpTopicWords(m[1])},
+		}}
+		return r.executor.ExecuteProgram(prog)
+	}
 
 	// Parse the input
 	prog, errs := visitor.Build(input)
@@ -269,8 +298,9 @@ func isCompleteStatement(input string) bool {
 		return true
 	}
 
-	// SHOW and DESCRIBE commands
-	if strings.HasPrefix(lower, "show ") || strings.HasPrefix(lower, "describe ") {
+	// SHOW, DESCRIBE, and HELP commands are complete on a single line
+	if strings.HasPrefix(lower, "show ") || strings.HasPrefix(lower, "describe ") ||
+		strings.HasPrefix(lower, "help ") {
 		return true
 	}
 
