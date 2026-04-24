@@ -210,10 +210,16 @@ func ToRestClientModel(spec *Spec, serviceName string, baseUrlOverride string) (
 	}
 	var warnings []string
 
-	// BaseUrl
+	// BaseUrl — only use absolute URLs from the spec; relative ones (e.g. "/api/v3")
+	// are rejected by Studio Pro CE7247 and must be overridden by the caller.
 	baseURL := baseUrlOverride
 	if baseURL == "" && len(spec.Servers) > 0 {
-		baseURL = spec.Servers[0].URL
+		u := spec.Servers[0].URL
+		if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
+			baseURL = u
+		} else {
+			warnings = append(warnings, fmt.Sprintf("server URL %q is relative and cannot be used as BaseUrl; set BaseUrl explicitly in CREATE REST CLIENT", u))
+		}
 	}
 	svc.BaseUrl = baseURL
 
