@@ -332,11 +332,19 @@ from odata client OdTest.SalesforceAPI
  * Level 8.6c: Create external entity with AllowCreateChangeLocally flag
  * Enables local creation/changes for the entity, mirroring Studio Pro's
  * "Allow creating and changing locally" checkbox on external entities.
+ *
+ * RemoteName must be repeated here because `create or modify external entity`
+ * currently overwrites omitted properties with empty strings rather than
+ * preserving the existing value. Without `RemoteName: 'Account'`, the BSON
+ * ends up with `"RemoteName": ""`, which Studio Pro's Integration Pane
+ * visualiser cannot render (NRE in ODataRemoteEntitySource.RemoteId,
+ * mxcli#594).
  */
 create or modify external entity OdTest.RemoteAccount
 from odata client OdTest.SalesforceAPI
 (
   EntitySet: 'Accounts',
+  RemoteName: 'Account',
   Countable: Yes,
   Creatable: Yes,
   Deletable: No,
