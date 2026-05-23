@@ -1,0 +1,38 @@
+-- Bug test: published OData service EntitySet must carry EntityTypePointer.
+-- Issue #595: serializePublishedODataService keyed its entityTypeIDMap by
+-- ExposedName but looked it up by qualified entity name, so the resolved
+-- ID was always empty and ODataPublish$EntitySet.EntityTypePointer was
+-- never written. Studio Pro's EntitySet.Check then dereferenced null and
+-- aborted the entire project checker with a NullReferenceException.
+--
+-- The Go unit test in sdk/mpr/writer_odata_test.go (TestSerializePublishedODataService)
+-- asserts EntityTypePointer matches the EntityType's $ID. This MDL script
+-- is the end-to-end fixture: applying it to a project must yield a project
+-- that opens in Studio Pro without the EntitySet.Check NRE.
+--
+-- Run with:
+--   mxcli exec mdl-examples/bug-tests/595-published-odata-entitytypepointer.mdl -p <project>.mpr
+--   then open <project>.mpr in Studio Pro and confirm no NRE in the project checker.
+create module bug595;
+
+create persistent entity bug595.Customer (
+  Name: string(200),
+  Email: string(200)
+);
+
+create odata service bug595.CustomerAPI (
+  path: '/odata/customers',
+  version: '1.0.0',
+  ODataVersion: OData4,
+  namespace: 'bug595.Customers'
+)
+authentication basic
+{
+  publish entity bug595.Customer as 'Customers' (
+    ReadMode: source,
+    InsertMode: source,
+    UpdateMode: source,
+    DeleteMode: not_supported
+  )
+  expose (*);
+};

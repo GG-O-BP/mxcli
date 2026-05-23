@@ -7,6 +7,7 @@ import (
 
 	"github.com/mendixlabs/mxcli/model"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 func TestSerializeConsumedODataService(t *testing.T) {
@@ -158,7 +159,7 @@ func TestSerializePublishedODataService(t *testing.T) {
 		AuthenticationTypes: []string{"Basic", "Session"},
 		EntityTypes: []*model.PublishedEntityType{
 			{
-				BaseElement: model.BaseElement{ID: "et-1"},
+				BaseElement: model.BaseElement{ID: "11111111-1111-1111-1111-111111111111"},
 				Entity:      "MyModule.Customer",
 				ExposedName: "Customers",
 				Members: []*model.PublishedMember{
@@ -281,6 +282,20 @@ func TestSerializePublishedODataService(t *testing.T) {
 	}
 	assertField(t, esMap, "$Type", "ODataPublish$EntitySet")
 	assertField(t, esMap, "ExposedName", "Customers")
+
+	// Issue #595: EntityTypePointer must reference the owning EntityType.
+	// Without it, Studio Pro's EntitySet.Check NREs (it can't navigate from
+	// the set to its type). The map lookup in serializePublishedODataService
+	// was previously keyed by ExposedName instead of the qualified entity
+	// name, so the resolved ID was always empty and the pointer was omitted.
+	etID := etMap["$ID"].(primitive.Binary)
+	esPointer, ok := esMap["EntityTypePointer"].(primitive.Binary)
+	if !ok {
+		t.Fatalf("EntityTypePointer: expected primitive.Binary, got %T (%v)", esMap["EntityTypePointer"], esMap["EntityTypePointer"])
+	}
+	if string(esPointer.Data) != string(etID.Data) {
+		t.Errorf("EntityTypePointer = %x, want %x (entity type $ID)", esPointer.Data, etID.Data)
+	}
 
 	if v, ok := esMap["UsePaging"].(bool); !ok || !v {
 		t.Errorf("UsePaging: expected true, got %v", esMap["UsePaging"])

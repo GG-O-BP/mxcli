@@ -209,8 +209,13 @@ func (w *Writer) serializePublishedODataService(svc *model.PublishedODataService
 		authTypes = append(authTypes, at)
 	}
 
-	// Serialize entity types and build ID map for entity set pointers
-	entityTypeIDMap := make(map[string]string) // ExposedName -> entity type ID
+	// Serialize entity types and build ID map for entity set pointers.
+	// Issue #595: key by qualified entity name (et.Entity), not ExposedName.
+	// PublishedEntitySet.EntityTypeName holds the qualified name, so keying
+	// by ExposedName made the lookup return "" and EntityTypePointer was
+	// never written. Studio Pro's EntitySet.Check then NREs dereferencing
+	// the missing pointer and aborts the whole project checker.
+	entityTypeIDMap := make(map[string]string) // qualified entity name -> entity type ID
 	entityTypes := bson.A{}
 	for _, et := range svc.EntityTypes {
 		etID := string(et.ID)
@@ -218,7 +223,7 @@ func (w *Writer) serializePublishedODataService(svc *model.PublishedODataService
 			etID = generateUUID()
 			et.ID = model.ID(etID)
 		}
-		entityTypeIDMap[et.ExposedName] = etID
+		entityTypeIDMap[et.Entity] = etID
 		entityTypes = append(entityTypes, serializePublishedEntityType(et))
 	}
 
