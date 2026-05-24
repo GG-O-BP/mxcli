@@ -121,16 +121,21 @@ type DropODataServiceStmt struct {
 func (s *DropODataServiceStmt) isStatement() {}
 
 // CreateExternalEntityStmt represents: CREATE [OR MODIFY] EXTERNAL ENTITY Module.Name FROM ODATA CLIENT Module.Service (...) (attrs);
+//
+// Scalar property fields are pointers so the executor can distinguish
+// "omitted by user" (nil → preserve existing value on CREATE OR MODIFY)
+// from "explicitly set to zero" (e.g. Countable: false). Treating omitted
+// fields as zero on modify silently corrupted entities — see issue #594.
 type CreateExternalEntityStmt struct {
 	Name                     QualifiedName
 	ServiceRef               QualifiedName // FROM ODATA CLIENT ...
-	EntitySet                string
-	RemoteName               string
-	Countable                bool
-	Creatable                bool
-	Deletable                bool
-	Updatable                bool
-	AllowCreateChangeLocally bool        // "Allow creating and changing locally" flag
+	EntitySet                *string
+	RemoteName               *string
+	Countable                *bool
+	Creatable                *bool
+	Deletable                *bool
+	Updatable                *bool
+	AllowCreateChangeLocally *bool       // "Allow creating and changing locally" flag
 	Attributes               []Attribute // reuse from ast_entity.go
 	Documentation            string
 	CreateOrModify           bool

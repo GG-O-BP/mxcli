@@ -806,16 +806,34 @@ func execCreateExternalEntity(ctx *ExecContext, s *ast.CreateExternalEntityStmt)
 	serviceRef := s.ServiceRef.String()
 
 	if existingEntity != nil {
-		// Update existing entity
+		// Update existing entity. Issue #594: only assign fields that the
+		// MDL statement explicitly set. Omitted (nil) fields preserve the
+		// prior value — previously the executor unconditionally wrote zero
+		// values, wiping fields like RemoteName and triggering Studio Pro
+		// NREs (e.g. ODataRemoteEntitySource.RemoteId on empty RemoteName).
 		existingEntity.Source = "Rest$ODataRemoteEntitySource"
 		existingEntity.RemoteServiceName = serviceRef
-		existingEntity.RemoteEntitySet = s.EntitySet
-		existingEntity.RemoteEntityName = s.RemoteName
-		existingEntity.Countable = s.Countable
-		existingEntity.Creatable = s.Creatable
-		existingEntity.Deletable = s.Deletable
-		existingEntity.Updatable = s.Updatable
-		existingEntity.CreateChangeLocally = s.AllowCreateChangeLocally
+		if s.EntitySet != nil {
+			existingEntity.RemoteEntitySet = *s.EntitySet
+		}
+		if s.RemoteName != nil {
+			existingEntity.RemoteEntityName = *s.RemoteName
+		}
+		if s.Countable != nil {
+			existingEntity.Countable = *s.Countable
+		}
+		if s.Creatable != nil {
+			existingEntity.Creatable = *s.Creatable
+		}
+		if s.Deletable != nil {
+			existingEntity.Deletable = *s.Deletable
+		}
+		if s.Updatable != nil {
+			existingEntity.Updatable = *s.Updatable
+		}
+		if s.AllowCreateChangeLocally != nil {
+			existingEntity.CreateChangeLocally = *s.AllowCreateChangeLocally
+		}
 		if len(attrs) > 0 {
 			existingEntity.Attributes = attrs
 		}
@@ -829,6 +847,11 @@ func execCreateExternalEntity(ctx *ExecContext, s *ast.CreateExternalEntityStmt)
 		return nil
 	}
 
+	// Initial create: EntitySet is required (no prior value to preserve).
+	if s.EntitySet == nil || *s.EntitySet == "" {
+		return mdlerrors.NewValidation("EntitySet property is required when creating an external entity")
+	}
+
 	// Auto-position based on existing entities
 	location := model.Point{X: 100 + len(dm.Entities)*150, Y: 100}
 
@@ -840,13 +863,13 @@ func execCreateExternalEntity(ctx *ExecContext, s *ast.CreateExternalEntityStmt)
 		Attributes:          attrs,
 		Source:              "Rest$ODataRemoteEntitySource",
 		RemoteServiceName:   serviceRef,
-		RemoteEntitySet:     s.EntitySet,
-		RemoteEntityName:    s.RemoteName,
-		Countable:           s.Countable,
-		Creatable:           s.Creatable,
-		Deletable:           s.Deletable,
-		Updatable:           s.Updatable,
-		CreateChangeLocally: s.AllowCreateChangeLocally,
+		RemoteEntitySet:     *s.EntitySet,
+		RemoteEntityName:    derefString(s.RemoteName),
+		Countable:           derefBool(s.Countable),
+		Creatable:           derefBool(s.Creatable),
+		Deletable:           derefBool(s.Deletable),
+		Updatable:           derefBool(s.Updatable),
+		CreateChangeLocally: derefBool(s.AllowCreateChangeLocally),
 	}
 	newEntity.ID = model.ID(types.GenerateID())
 
@@ -855,6 +878,20 @@ func execCreateExternalEntity(ctx *ExecContext, s *ast.CreateExternalEntityStmt)
 	}
 	fmt.Fprintf(ctx.Output, "Created external entity: %s.%s\n", s.Name.Module, s.Name.Name)
 	return nil
+}
+
+func derefString(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+func derefBool(p *bool) bool {
+	if p == nil {
+		return false
+	}
+	return *p
 }
 
 // ============================================================================

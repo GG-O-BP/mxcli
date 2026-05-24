@@ -96,11 +96,14 @@ func TestCreateExternalEntity(t *testing.T) {
 	if stmt.ServiceRef.Name != "PetStore" {
 		t.Errorf("Got ServiceRef %s", stmt.ServiceRef.Name)
 	}
-	if stmt.EntitySet != "Products" {
-		t.Errorf("Got EntitySet %q", stmt.EntitySet)
+	if stmt.EntitySet == nil || *stmt.EntitySet != "Products" {
+		t.Errorf("Got EntitySet %v", stmt.EntitySet)
 	}
-	if !stmt.Countable {
-		t.Error("Expected Countable true")
+	if stmt.RemoteName == nil || *stmt.RemoteName != "Product" {
+		t.Errorf("Got RemoteName %v", stmt.RemoteName)
+	}
+	if stmt.Countable == nil || !*stmt.Countable {
+		t.Errorf("Expected Countable true, got %v", stmt.Countable)
 	}
 	if len(stmt.Attributes) != 2 {
 		t.Errorf("Expected 2 attributes, got %d", len(stmt.Attributes))

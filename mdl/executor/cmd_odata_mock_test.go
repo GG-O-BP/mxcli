@@ -12,6 +12,9 @@ import (
 	"github.com/mendixlabs/mxcli/sdk/domainmodel"
 )
 
+func strPtr(s string) *string { return &s }
+func boolPtr(b bool) *bool    { return &b }
+
 func TestShowODataClients_Mock(t *testing.T) {
 	mod := mkModule("MyModule")
 	svc := &model.ConsumedODataService{
@@ -227,7 +230,7 @@ func TestCreateExternalEntity_RejectsNonExistentClient(t *testing.T) {
 	stmt := &ast.CreateExternalEntityStmt{
 		Name:       ast.QualifiedName{Module: "MyModule", Name: "FakeEntity"},
 		ServiceRef: ast.QualifiedName{Module: "MyModule", Name: "NonExistentClient"},
-		EntitySet:  "Products",
+		EntitySet:  strPtr("Products"),
 	}
 	err := execCreateExternalEntity(ctx, stmt)
 	assertError(t, err)
@@ -267,7 +270,7 @@ func TestCreateExternalEntity_AcceptsExistingClient(t *testing.T) {
 	stmt := &ast.CreateExternalEntityStmt{
 		Name:       ast.QualifiedName{Module: "MyModule", Name: "Product"},
 		ServiceRef: ast.QualifiedName{Module: "MyModule", Name: "ProductsClient"},
-		EntitySet:  "Products",
+		EntitySet:  strPtr("Products"),
 	}
 	assertNoError(t, execCreateExternalEntity(ctx, stmt))
 	if created == nil {
@@ -310,8 +313,8 @@ func TestCreateExternalEntity_AllowCreateChangeLocally_Issue534(t *testing.T) {
 	stmt := &ast.CreateExternalEntityStmt{
 		Name:                     ast.QualifiedName{Module: "TripPin", Name: "People"},
 		ServiceRef:               ast.QualifiedName{Module: "TripPin", Name: "TripPinClient"},
-		EntitySet:                "People",
-		AllowCreateChangeLocally: true,
+		EntitySet:                strPtr("People"),
+		AllowCreateChangeLocally: boolPtr(true),
 	}
 	assertNoError(t, execCreateExternalEntity(ctx, stmt))
 	if created == nil {
@@ -319,6 +322,98 @@ func TestCreateExternalEntity_AllowCreateChangeLocally_Issue534(t *testing.T) {
 	}
 	if !created.CreateChangeLocally {
 		t.Errorf("expected CreateChangeLocally = true, got false")
+	}
+}
+
+// TestCreateOrModifyExternalEntity_PreservesOmittedFields_Issue594 verifies that
+// CREATE OR MODIFY EXTERNAL ENTITY preserves the existing value of any field
+// that is omitted from the MDL statement, rather than overwriting it with the
+// zero value. Previously the executor unconditionally wrote `existingEntity.X = s.X`
+// for every field, so omitting `RemoteName` on `or modify` wiped the BSON
+// `RemoteName` to "" and triggered Studio Pro's
+// ODataRemoteEntitySource.get_RemoteId() NRE in the Integration pane.
+func TestCreateOrModifyExternalEntity_PreservesOmittedFields_Issue594(t *testing.T) {
+	mod := mkModule("OdTest")
+	h := mkHierarchy(mod)
+	svc := &model.ConsumedODataService{
+		BaseElement: model.BaseElement{ID: nextID("cos")},
+		ContainerID: mod.ID,
+		Name:        "SalesforceAPI",
+	}
+	withContainer(h, svc.ContainerID, mod.ID)
+
+	// Pre-existing external entity with non-default values for every field
+	// that the bug could clobber.
+	existing := &domainmodel.Entity{
+		BaseElement:         model.BaseElement{ID: nextID("ent")},
+		Name:                "RemoteAccount",
+		Source:              "Rest$ODataRemoteEntitySource",
+		RemoteServiceName:   "OdTest.SalesforceAPI",
+		RemoteEntitySet:     "Accounts",
+		RemoteEntityName:    "Account", // <-- the field that #594 wiped
+		Countable:           true,
+		Creatable:           true,
+		Deletable:           true,
+		Updatable:           true,
+		CreateChangeLocally: false,
+	}
+	dm := &domainmodel.DomainModel{
+		BaseElement: model.BaseElement{ID: nextID("dm")},
+		ContainerID: mod.ID,
+		Entities:    []*domainmodel.Entity{existing},
+	}
+
+	var updated *domainmodel.Entity
+	mb := &mock.MockBackend{
+		IsConnectedFunc: func() bool { return true },
+		ListModulesFunc: func() ([]*model.Module, error) {
+			return []*model.Module{mod}, nil
+		},
+		GetDomainModelFunc: func(id model.ID) (*domainmodel.DomainModel, error) {
+			return dm, nil
+		},
+		ListConsumedODataServicesFunc: func() ([]*model.ConsumedODataService, error) {
+			return []*model.ConsumedODataService{svc}, nil
+		},
+		UpdateEntityFunc: func(dmID model.ID, entity *domainmodel.Entity) error {
+			updated = entity
+			return nil
+		},
+	}
+
+	ctx, _ := newMockCtx(t, withBackend(mb), withHierarchy(h))
+
+	// Only mention EntitySet + AllowCreateChangeLocally — every other
+	// scalar should be preserved from the existing entity, not zeroed.
+	stmt := &ast.CreateExternalEntityStmt{
+		Name:                     ast.QualifiedName{Module: "OdTest", Name: "RemoteAccount"},
+		ServiceRef:               ast.QualifiedName{Module: "OdTest", Name: "SalesforceAPI"},
+		EntitySet:                strPtr("Accounts"),
+		AllowCreateChangeLocally: boolPtr(true),
+		CreateOrModify:           true,
+	}
+	assertNoError(t, execCreateExternalEntity(ctx, stmt))
+
+	if updated == nil {
+		t.Fatal("expected UpdateEntity to be called")
+	}
+	if updated.RemoteEntityName != "Account" {
+		t.Errorf("RemoteEntityName = %q, want \"Account\" (omitted RemoteName must preserve existing value)", updated.RemoteEntityName)
+	}
+	if !updated.Countable {
+		t.Errorf("Countable = false, want true (omitted Countable must preserve existing value)")
+	}
+	if !updated.Creatable {
+		t.Errorf("Creatable = false, want true (omitted Creatable must preserve existing value)")
+	}
+	if !updated.Deletable {
+		t.Errorf("Deletable = false, want true (omitted Deletable must preserve existing value)")
+	}
+	if !updated.Updatable {
+		t.Errorf("Updatable = false, want true (omitted Updatable must preserve existing value)")
+	}
+	if !updated.CreateChangeLocally {
+		t.Errorf("CreateChangeLocally = false, want true (explicitly set value)")
 	}
 }
 

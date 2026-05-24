@@ -1,0 +1,61 @@
+-- Bug test: `create or modify external entity` must preserve fields the
+-- statement omits rather than overwriting them with zero values.
+--
+-- Issue #594: the executor (mdl/executor/cmd_odata.go) unconditionally wrote
+-- `existingEntity.X = s.X` for every property. When the MDL statement omitted
+-- `RemoteName`, `s.RemoteName` was the empty string and the existing value
+-- was wiped. The resulting `Rest$ODataRemoteEntitySource` BSON had
+-- `RemoteName: ""`, which Studio Pro's Integration Pane visualiser then
+-- dereferences in `ODataRemoteEntitySource.get_RemoteId()` and NREs with
+-- ArgumentNullException("EntityTypeName") — Studio Pro aliases the BSON
+-- `RemoteName` field as the C# property `EntityTypeName`.
+--
+-- The Go unit test in mdl/executor/cmd_odata_mock_test.go
+-- (TestCreateOrModifyExternalEntity_PreservesOmittedFields_Issue594) covers
+-- the executor logic with a mock backend. This MDL script is the end-to-end
+-- regression test: applying it to a real project must leave a
+-- bug594.RemoteAccount with RemoteName = "Account" after the modify, and
+-- the project must open in Studio Pro without the Integration Pane NRE.
+--
+-- Run with:
+--   mxcli exec mdl-examples/bug-tests/594-or-modify-external-entity-preserve-omitted.mdl -p <project>.mpr
+--   mxcli describe entity bug594.RemoteAccount -p <project>.mpr   # RemoteName must still be 'Account'
+--   then open <project>.mpr in Studio Pro and confirm the Integration Pane renders.
+create module bug594;
+
+create odata client bug594.SalesforceAPI (
+  ODataVersion: OData4,
+  MetadataUrl: 'https://api.salesforce.com/odata/v4/$metadata',
+  timeout: 300
+);
+
+create external entity bug594.RemoteAccount
+from odata client bug594.SalesforceAPI
+(
+  EntitySet: 'Accounts',
+  RemoteName: 'Account',
+  Countable: Yes,
+  Creatable: Yes,
+  Deletable: No,
+  Updatable: No
+)
+(
+  AccountId: string(200),
+  AccountName: string(255)
+);
+
+-- Modify without restating RemoteName / Countable / Creatable. Before the
+-- fix, every omitted property was overwritten with its zero value and the
+-- entity ended up unusable. After the fix, all of them are preserved.
+create or modify external entity bug594.RemoteAccount
+from odata client bug594.SalesforceAPI
+(
+  EntitySet: 'Accounts',
+  AllowCreateChangeLocally: Yes
+)
+(
+  AccountId: string(200),
+  AccountName: string(255)
+);
+
+describe entity bug594.RemoteAccount;
