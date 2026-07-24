@@ -841,8 +841,14 @@ Notes:
   restore the v2 files around the normalization, so they are safe; raw
   `mx update-widgets` is only safe on a v1 project (or on a throwaway copy used purely
   for diagnosis).
-- LineChart/BubbleChart/HeatMap (the `line`/`scalecolor` object-lists) are not yet
-  authorable via MDL — use Studio Pro for those.
+- LineChart/BubbleChart/HeatMap/TimeSeries are **also MDL-authorable** (via the
+  `line`/`scalecolor` object-lists) — see
+  `mdl-examples/doctype-tests/34-chart-widget-examples.mdl` for working examples.
+  (They author on the modelsdk engine.)
+- **Slider / RangeSlider**: set `showTooltip: false`. The tooltip calls React's
+  removed `findDOMNode` on Mendix 11, throwing "Could not render widget" on drag — a
+  runtime crash `mx check` cannot catch (only a running build does). See
+  `atlas-design.md` for the full runtime-verification rule.
 
 ## Complete Examples
 
