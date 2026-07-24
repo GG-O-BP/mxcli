@@ -29,11 +29,12 @@ for display in this README):
 ## Active Proposals (84)
 
 
-### In Progress (partial) (9)
+### In Progress (partial) (10)
 
 | Proposal | Status | Summary |
 |----------|--------|---------|
 | [Add Styling Support to MDL Pages](page-styling-support.md) | Partial | Mendix has four styling mechanisms on every widget, all stored in a BSON Forms$Appearance object: |
+| [Atlas Design System — a skill for visually appealing Mendix apps](PROPOSAL_atlas_design_system.md) | Partial | mxcli can generate a fully-functional Mendix app, but the default output looks bland — it leans |
 | [Eval Framework for mxcli + Claude Code](proposal-eval-framework.md) | Partial | An evaluation framework that systematically tests how well Claude Code + mxcli handles real-world Mendix app generation tasks. |
 | [Implement `mxcli structure` Command](mxcli-structure-proposal.md) | Partial | mxcli is a Go CLI tool for working with Mendix projects. |
 | [Multi-Version Support: Consolidated Architecture & Status](MULTI_VERSION_SUPPORT.md) | Partial | Mendix projects vary along three versioning axes, and mxcli must handle all of them correctly: |
@@ -43,11 +44,10 @@ for display in this README):
 | [Podman Support as Docker Alternative](PROPOSAL_podman_support.md) | Partial | Docker Desktop requires a paid subscription for larger organizations. |
 | [SHOW/DESCRIBE/USE Building Blocks](show-describe-building-blocks.md) | Partial | Document type: Pages$BuildingBlock (NOT Forms$BuildingBlock — the reader now |
 
-### Proposed (35)
+### Proposed (34)
 
 | Proposal | Status | Summary |
 |----------|--------|---------|
-| [Atlas Design System — a skill for visually appealing Mendix apps](PROPOSAL_atlas_design_system.md) | Proposed | mxcli can generate a fully-functional Mendix app, but the default output looks bland — it leans |
 | [Comprehensive MDL Syntax and Grammar Improvements (v2)](PROPOSAL_mdl_syntax_improvements_v2.md) | Proposed | This document consolidates and expands upon previous proposals, offering a unified set of syntax and grammar improvements for all major Mend |
 | [Concurrent Access Safety for mxcli](PROPOSAL_concurrent_access.md) | Proposed | When Claude Code spawns multiple subagents, each may execute mxcli commands against the same Mendix project simultaneously. |
 | [Consumed REST Services (SHOW / DESCRIBE / CREATE)](show-describe-consumed-rest-services.md) | Proposed | Document type: rest$ConsumedRestService |

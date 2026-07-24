@@ -1,8 +1,13 @@
 ---
 title: Atlas Design System — a skill for visually appealing Mendix apps
-status: proposed
+status: partial
 date: 2026-07-24
 related:
+  - PR #13 (P0 warm-loop fixes)
+  - PR #15 (P1 CE0148 grant guard)
+  - PR #16, #17 (Building Blocks READ)
+  - PR #18 (atlas-design skill)
+  - PR #19 (USE BUILDING BLOCK v1)
   - page-styling-support.md
   - show-describe-building-blocks.md
   - PROPOSAL_mxcli_dev_warm_loop.md
@@ -416,20 +421,22 @@ workflow. **P0 = fix before the loop is reliable; P1 = enables the workflow; P2 
 |---|---|---|---|
 | ~~**P0**~~ ✅ | **Watch-mode re-serves `/dist/*` on *structural* model changes** — readiness probe verifies `/dist/index.js` is `200` before reporting "build applied", recovering via a one-shot re-bundle | Every structural change this session left the app blank/unbootable (gen-2 404) until a manual clean restart | **Fixed — PR #13** |
 | ~~**P0**~~ ✅ | **`run` teardown kills its child `mxbuild --serve` / runtime** on stop | A stray serve held the port (`port 6543 in use`), so the next run refused to start | **Fixed — PR #13** (process-group reap) |
-| **P1** | **`grant view on page` to a cross-module role must not emit a build-blocking CE0148** | Granting a page a role from another module set the allowed-roles list correctly yet still raised CE0148 "reselect roles", which **fails the deploy** — confusing and costly; the own-module role works, so the serialization is wrong for cross-module grants | New (bug) |
-| **P1** | **Building Blocks — READ**: extend the page/snippet widget-tree reader to `Forms$BuildingBlock`; expose `SHOW BUILDING BLOCKS` + `DESCRIBE BUILDING BLOCK` | Prerequisite for *any* Building-Block reuse — today content is unreadable (name-only), so you can't discover-then-reuse what a project ships | `show-describe-building-blocks.md` |
-| **P1** | **Building Blocks — INSTANTIATE**: `USE BUILDING BLOCK Mod.Name [prefix]` (deep-copy; reuse fragment-expansion) | The "compose a page from pre-built sections" capability — the native home for the recipe library | `show-describe-building-blocks.md` |
+| ~~**P1**~~ ✅ | **`grant view on page` to a cross-module role must not emit a build-blocking CE0148** | Granting a page a role from another module set the allowed-roles list correctly yet still raised CE0148 "reselect roles", which **fails the deploy** — confusing and costly; the own-module role works, so the serialization is wrong for cross-module grants | **Fixed — PR #15** (same-module guard) |
+| ~~**P1**~~ ✅ | **Building Blocks — READ**: `SHOW BUILDING BLOCKS` + `DESCRIBE BUILDING BLOCK` + `CATALOG.building_blocks` (widget tree via `GetRawUnit`; `$Type` is `Pages$BuildingBlock`) | Prerequisite for *any* Building-Block reuse — content was unreadable (name-only) before | **Done — PR #16/#17**; validated live against a real Atlas app (40 blocks) |
+| ~~**P1**~~ ✅ | **Building Blocks — INSTANTIATE**: `use building block Mod.Name [as prefix_]` (deep-copy; reuses fragment-expansion) | The "compose a page from pre-built sections" capability — the native home for the recipe library | **Done (v1) — PR #19**; configure the copy afterwards with `alter page` |
 | **P1** | **Parameterized fragments** | Lets content-varying recipes (a card wrapping arbitrary content) ship without `.mdl` fill-in; materially simplifies the recipe library | `proposal_page_composition.md` |
 | **P2** | **Chart theme colourway** — let a chart read a CSS var / named theme colourway | Charts are the *only* thing that doesn't re-skin via CSS (colour lives in the model's `customSeriesOptions`); today a re-brand needs an MDL edit + restart | New |
 | **P2** | **Building Blocks — AUTHOR**: `CREATE BUILDING BLOCK` | Generated apps contribute reusable blocks back to the Studio-Pro toolbox | `show-describe-building-blocks.md` |
 | **P2** | **Typed `designproperties`** (later phase) | Studio-Pro Appearance-tab round-trip; recipes could use Atlas tokens idiomatically vs. raw `class:` strings (not a blocker — `class:` renders everything today) | `page-styling-support.md` |
 | **P2** | **Lint rules**: hardcoded hex over token; data widget shipped without a recorded runtime verification | Enforces the token discipline and the "verify at runtime" rule the standard depends on | New (skill Phase 5) |
-| **P2** | **Widget-skill note**: Slider/RangeSlider `showTooltip:false` default (React `findDOMNode` removed in MX 11) | Prevents a "Could not render widget" crash that `mx check` can't catch | New (docs) |
-| **P2** | **Correct the stale `create-page.md` chart note** — all chart types (incl. Line/Bubble/Heatmap/TimeSeries) are MDL-authorable today | The note says only Column/Bar/Area/Pie are authorable; the grammar + check-suite examples prove otherwise | New (docs) |
+| ~~**P2**~~ ✅ | **Widget-skill note**: Slider/RangeSlider `showTooltip:false` default (React `findDOMNode` removed in MX 11) | Prevents a "Could not render widget" crash that `mx check` can't catch | **Done — added to `create-page.md`** |
+| ~~**P2**~~ ✅ | **Correct the stale `create-page.md` chart note** — all chart types (incl. Line/Bubble/Heatmap/TimeSeries) are MDL-authorable today | The note said only Column/Bar/Area/Pie are authorable; the grammar + check-suite examples prove otherwise | **Done — fixed in `create-page.md`** |
 
 The P1 Building-Block trio (read → instantiate → author) is the single biggest lever: it turns the
-recipe library from a `.mdl`/fragment workaround into native, Studio-Pro-visible components. The two
-P0 items (now fixed in PR #13) were small but blocked the tight verify loop the standard is built on.
+recipe library from a `.mdl`/fragment workaround into native, Studio-Pro-visible components.
+**Read (PR #16/#17) and instantiate (PR #19) have shipped**; author (`CREATE BUILDING BLOCK`)
+remains. The two P0 items (fixed in PR #13) were small but blocked the tight verify loop the
+standard is built on. The `atlas-design` skill itself shipped in PR #18.
 
 ## Rollout
 
