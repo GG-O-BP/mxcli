@@ -441,6 +441,18 @@ func serializeDesignProperties(props []pages.DesignPropertyValue) bson.A {
 				{Key: "$Type", Value: "Forms$CustomDesignPropertyValue"},
 				{Key: "Value", Value: p.Option},
 			}
+		case "compound":
+			// A property whose value is itself a set of sub-properties (e.g. Atlas
+			// "Spacing" → margin-top/-bottom/…). Forms$CompoundDesignPropertyValue holds
+			// the sub-entries in a Properties list with the SAME marker-prefixed
+			// Forms$DesignPropertyValue shape as the outer array, so recurse. Without
+			// this case a compound design property was silently dropped on write (the
+			// old `default: continue`), while toggle/option survived.
+			valueBson = bson.D{
+				{Key: "$ID", Value: idToBsonBinary(generateUUID())},
+				{Key: "$Type", Value: "Forms$CompoundDesignPropertyValue"},
+				{Key: "Properties", Value: serializeDesignProperties(p.Compound)},
+			}
 		default:
 			continue
 		}

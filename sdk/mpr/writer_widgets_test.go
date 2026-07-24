@@ -314,3 +314,68 @@ func TestSerializeRadioButtons(t *testing.T) {
 		t.Errorf("Expected $Type 'Forms$RadioButtonGroup', got '%s'", foundType)
 	}
 }
+
+// dgetForTest returns the value of the first field in d with the given key.
+func dgetForTest(d bson.D, key string) any {
+	for _, e := range d {
+		if e.Key == key {
+			return e.Value
+		}
+	}
+	return nil
+}
+
+// TestSerializeDesignProperties_Compound guards the WRITE side of compound
+// (nested) design properties. Before the fix, serializeDesignProperties handled
+// only toggle/option/custom and dropped a "compound" value via `default: continue`,
+// so authoring e.g. Atlas `Spacing: [margin-top: Large]` (or `use building block`
+// on a block that uses it) silently lost the nested property. Verified valid by
+// `mx check` (0 errors) on a real 11.12.1 project.
+func TestSerializeDesignProperties_Compound(t *testing.T) {
+	props := []pages.DesignPropertyValue{
+		{Key: "Card style", ValueType: "toggle"},
+		{Key: "Spacing", ValueType: "compound", Compound: []pages.DesignPropertyValue{
+			{Key: "margin-top", ValueType: "option", Option: "Large"},
+			{Key: "margin-bottom", ValueType: "option", Option: "Medium"},
+		}},
+	}
+
+	arr := serializeDesignProperties(props)
+	// marker + toggle + compound
+	if len(arr) != 3 {
+		t.Fatalf("expected 3 elements (marker + 2 props), got %d", len(arr))
+	}
+
+	var compound bson.D
+	for _, e := range arr[1:] {
+		d, ok := e.(bson.D)
+		if !ok {
+			continue
+		}
+		if dgetForTest(d, "Key") == "Spacing" {
+			compound, _ = dgetForTest(d, "Value").(bson.D)
+		}
+	}
+	if compound == nil {
+		t.Fatal("Spacing compound entry was dropped, not serialized")
+	}
+	if got := dgetForTest(compound, "$Type"); got != "Forms$CompoundDesignPropertyValue" {
+		t.Fatalf("compound $Type = %v, want Forms$CompoundDesignPropertyValue", got)
+	}
+	sub, ok := dgetForTest(compound, "Properties").(bson.A)
+	if !ok {
+		t.Fatalf("Properties is not a bson.A: %T", dgetForTest(compound, "Properties"))
+	}
+	if len(sub) != 3 { // marker + 2 sub-entries
+		t.Fatalf("expected 3 sub-elements (marker + 2), got %d", len(sub))
+	}
+	subKeys := map[string]bool{}
+	for _, s := range sub[1:] {
+		if d, ok := s.(bson.D); ok {
+			subKeys[dgetForTest(d, "Key").(string)] = true
+		}
+	}
+	if !subKeys["margin-top"] || !subKeys["margin-bottom"] {
+		t.Errorf("sub-properties missing, got keys %v", subKeys)
+	}
+}
