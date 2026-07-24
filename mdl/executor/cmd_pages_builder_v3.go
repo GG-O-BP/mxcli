@@ -1724,8 +1724,11 @@ func (pb *pageBuilder) isNonStringAttribute(attrPath string) bool {
 // Fragment Expansion
 // ============================================================================
 
-// expandFragments processes a widget list, expanding any USE_FRAGMENT sentinels
-// into their referenced fragment widgets. Non-fragment widgets pass through unchanged.
+// expandFragments processes a widget list, expanding any USE_FRAGMENT /
+// USE_BUILDING_BLOCK sentinels into their referenced widgets. It recurses into
+// every widget's children, so a fragment or building block nested inside a
+// container/layout/dataview (not just at the page-body top level) is expanded
+// too. Non-sentinel widgets pass through with their (expanded) children.
 func (pb *pageBuilder) expandFragments(widgets []*ast.WidgetV3) ([]*ast.WidgetV3, error) {
 	var result []*ast.WidgetV3
 	for _, w := range widgets {
@@ -1733,7 +1736,16 @@ func (pb *pageBuilder) expandFragments(widgets []*ast.WidgetV3) ([]*ast.WidgetV3
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, expanded...)
+		for _, e := range expanded {
+			if len(e.Children) > 0 {
+				kids, err := pb.expandFragments(e.Children)
+				if err != nil {
+					return nil, err
+				}
+				e.Children = kids
+			}
+			result = append(result, e)
+		}
 	}
 	return result, nil
 }

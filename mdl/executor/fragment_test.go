@@ -589,6 +589,33 @@ func TestSubstituteFragmentParams_ArgsToNoParamFragment(t *testing.T) {
 	}
 }
 
+func TestExpandFragments_NestedInsideContainer(t *testing.T) {
+	// A USE_FRAGMENT nested inside a container (not at the top level) must still
+	// expand — expandFragments recurses into children.
+	frag := &ast.DefineFragmentStmt{
+		Name:    "Btns",
+		Widgets: []*ast.WidgetV3{{Type: "actionbutton", Name: "a", Properties: map[string]interface{}{}}},
+	}
+	pb := &pageBuilder{fragments: map[string]*ast.DefineFragmentStmt{"Btns": frag}}
+
+	tree := []*ast.WidgetV3{
+		{Type: "container", Name: "box", Properties: map[string]interface{}{}, Children: []*ast.WidgetV3{
+			{Type: "USE_FRAGMENT", Name: "Btns", Properties: map[string]interface{}{"Prefix": "p_"}},
+		}},
+	}
+	out, err := pb.expandFragments(tree)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	box := out[0]
+	if len(box.Children) != 1 || box.Children[0].Type != "actionbutton" {
+		t.Fatalf("nested fragment not expanded: %+v", box.Children)
+	}
+	if box.Children[0].Name != "p_a" {
+		t.Errorf("prefix not applied to nested expansion: %q", box.Children[0].Name)
+	}
+}
+
 func TestRebindFirst_ButtonAndDatasource(t *testing.T) {
 	tree := []*ast.WidgetV3{
 		{Type: "container", Name: "c", Properties: map[string]interface{}{}, Children: []*ast.WidgetV3{
@@ -599,7 +626,9 @@ func TestRebindFirst_ButtonAndDatasource(t *testing.T) {
 	}
 	// datasource target = first widget carrying a datasource
 	if !rebindFirst(tree, func(w *ast.WidgetV3) bool { _, ok := w.Properties["DataSource"]; return ok },
-		func(w *ast.WidgetV3) { w.Properties["DataSource"] = &ast.DataSourceV3{Type: "database", Reference: "New"} }) {
+		func(w *ast.WidgetV3) {
+			w.Properties["DataSource"] = &ast.DataSourceV3{Type: "database", Reference: "New"}
+		}) {
 		t.Fatal("datasource rebind found no target")
 	}
 	if tree[0].Children[0].Properties["DataSource"].(*ast.DataSourceV3).Reference != "New" {
