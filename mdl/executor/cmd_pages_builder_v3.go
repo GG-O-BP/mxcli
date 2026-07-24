@@ -11,6 +11,7 @@ import (
 	"github.com/mendixlabs/mxcli/mdl/ast"
 	mdlerrors "github.com/mendixlabs/mxcli/mdl/errors"
 	"github.com/mendixlabs/mxcli/mdl/types"
+	"github.com/mendixlabs/mxcli/mdl/visitor"
 	"github.com/mendixlabs/mxcli/model"
 	"github.com/mendixlabs/mxcli/sdk/domainmodel"
 	"github.com/mendixlabs/mxcli/sdk/microflows"
@@ -1732,13 +1733,23 @@ func (pb *pageBuilder) expandFragments(widgets []*ast.WidgetV3) ([]*ast.WidgetV3
 	return result, nil
 }
 
-// expandIfFragment returns the widget as-is if it's not a USE_FRAGMENT sentinel,
-// or expands it into cloned fragment widgets with optional prefix.
+// expandIfFragment returns the widget as-is if it's not a USE_FRAGMENT or
+// USE_BUILDING_BLOCK sentinel, or expands it into cloned/copied widgets with an
+// optional prefix.
 func (pb *pageBuilder) expandIfFragment(w *ast.WidgetV3) ([]*ast.WidgetV3, error) {
-	if w.Type != "USE_FRAGMENT" {
+	switch w.Type {
+	case "USE_FRAGMENT":
+		return pb.expandFragmentRef(w)
+	case "USE_BUILDING_BLOCK":
+		return pb.expandBuildingBlockRef(w)
+	default:
 		return []*ast.WidgetV3{w}, nil
 	}
+}
 
+// expandFragmentRef expands a USE_FRAGMENT sentinel into cloned fragment widgets
+// with an optional prefix rename.
+func (pb *pageBuilder) expandFragmentRef(w *ast.WidgetV3) ([]*ast.WidgetV3, error) {
 	if pb.fragments == nil {
 		return nil, mdlerrors.NewNotFound("fragment", w.Name)
 	}
@@ -1748,6 +1759,78 @@ func (pb *pageBuilder) expandIfFragment(w *ast.WidgetV3) ([]*ast.WidgetV3, error
 	}
 
 	widgets := cloneWidgets(frag.Widgets)
+	if prefix, ok := w.Properties["Prefix"].(string); ok && prefix != "" {
+		prefixWidgetNames(widgets, prefix)
+	}
+	return widgets, nil
+}
+
+// expandBuildingBlockRef deep-copies a building block's widget tree into the
+// page/container. The DESCRIBE renderer already emits faithful, re-parseable MDL
+// for a block's widgets, so expansion = render the block's widgets to MDL text →
+// re-parse them via a `define fragment` wrapper → apply the optional prefix. This
+// reuses the whole existing widget parser instead of a hand-written BSON→AST
+// converter.
+func (pb *pageBuilder) expandBuildingBlockRef(w *ast.WidgetV3) ([]*ast.WidgetV3, error) {
+	if pb.ctx == nil {
+		return nil, mdlerrors.NewNotFound("building block", w.Name)
+	}
+	ctx := pb.ctx
+
+	// Resolve the block by module + name.
+	qn := parseQualifiedNameStr(w.Name)
+	h, err := getHierarchy(ctx)
+	if err != nil {
+		return nil, mdlerrors.NewBackend("build hierarchy", err)
+	}
+	blocks, err := ctx.Backend.ListBuildingBlocks()
+	if err != nil {
+		return nil, mdlerrors.NewBackend("list building blocks", err)
+	}
+	var found *pages.BuildingBlock
+	for _, bb := range blocks {
+		modID := h.FindModuleID(bb.ContainerID)
+		modName := h.GetModuleName(modID)
+		if bb.Name == qn.Name && (qn.Module == "" || modName == qn.Module) {
+			found = bb
+			break
+		}
+	}
+	if found == nil {
+		return nil, mdlerrors.NewNotFound("building block", w.Name)
+	}
+
+	// Read the block's widgets as raw BSON.
+	rawWidgets := getBuildingBlockWidgetsFromRaw(ctx, found.ID)
+	if len(rawWidgets) == 0 {
+		return nil, nil
+	}
+
+	// Render to MDL text. outputWidgetMDLV3 writes to ctx.Output; redirect it to a
+	// buffer via a shallow ExecContext copy so we can capture the rendered MDL.
+	var sb strings.Builder
+	renderCtx := *ctx
+	renderCtx.Output = &sb
+	for _, rw := range rawWidgets {
+		outputWidgetMDLV3(&renderCtx, rw, 1)
+	}
+
+	// Re-parse via a `define fragment` wrapper to obtain []*ast.WidgetV3.
+	src := "define fragment __bbtmp as {\n" + sb.String() + "\n};"
+	prog, errs := visitor.Build(src)
+	if len(errs) > 0 {
+		return nil, fmt.Errorf("use building block %s: could not expand widget tree: %v", w.Name, errs)
+	}
+	if len(prog.Statements) == 0 {
+		return nil, fmt.Errorf("use building block %s: could not expand widget tree", w.Name)
+	}
+	def, ok := prog.Statements[0].(*ast.DefineFragmentStmt)
+	if !ok {
+		return nil, fmt.Errorf("use building block %s: could not expand widget tree", w.Name)
+	}
+	widgets := def.Widgets
+
+	// Apply the optional prefix rename.
 	if prefix, ok := w.Properties["Prefix"].(string); ok && prefix != "" {
 		prefixWidgetNames(widgets, prefix)
 	}

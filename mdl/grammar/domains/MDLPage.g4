@@ -190,18 +190,24 @@ snippetHeaderPropertyV3
 // `placeholder <Name> { … }` block binds its widgets to that named layout
 // placeholder (issue #532 — pages over a layout with >1 placeholder).
 pageBodyV3
-    : (widgetV3 | useFragmentRef | placeholderBlockV3)*
+    : (widgetV3 | useFragmentRef | useBuildingBlockRef | placeholderBlockV3)*
     ;
 
 // PLACEHOLDER <Name> { widgets } — assign widgets to a named layout placeholder.
 // The name accepts keywords so placeholders like Right / Left / Content parse.
 placeholderBlockV3
-    : PLACEHOLDER identifierOrKeyword LBRACE (widgetV3 | useFragmentRef)* RBRACE
+    : PLACEHOLDER identifierOrKeyword LBRACE (widgetV3 | useFragmentRef | useBuildingBlockRef)* RBRACE
     ;
 
 // USE FRAGMENT Name [AS prefix_]
 useFragmentRef
     : USE FRAGMENT identifierOrKeyword (AS identifierOrKeyword)?
+    ;
+
+// USE BUILDING BLOCK Module.Name [AS prefix_]
+// Deep-copies the building block's widget tree into the page/container.
+useBuildingBlockRef
+    : USE BUILDING BLOCK qualifiedName (AS identifierOrKeyword)?
     ;
 
 // V3 Widget: WIDGET name (Props) { children }
