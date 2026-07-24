@@ -283,6 +283,7 @@ func buildColumnSpecsFromAST(ctx *ExecContext, widgets []*ast.WidgetV3, moduleNa
 	}
 
 	pb := &pageBuilder{
+		ctx:              ctx,
 		backend:          ctx.Backend,
 		moduleID:         moduleID,
 		moduleName:       moduleName,
@@ -323,6 +324,7 @@ func buildWidgetsFromAST(ctx *ExecContext, widgets []*ast.WidgetV3, moduleName s
 	}
 
 	pb := &pageBuilder{
+		ctx:              ctx,
 		backend:          ctx.Backend,
 		moduleID:         moduleID,
 		moduleName:       moduleName,

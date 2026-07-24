@@ -24,6 +24,7 @@ import (
 
 // pageBuilder constructs pages from AST.
 type pageBuilder struct {
+	ctx              *ExecContext // execution context (for building-block expansion, etc.)
 	backend          backend.FullBackend
 	moduleID         model.ID
 	moduleName       string

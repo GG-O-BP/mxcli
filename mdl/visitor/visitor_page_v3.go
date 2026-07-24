@@ -350,6 +350,10 @@ func buildPageBodyV3(ctx parser.IPageBodyV3Context, b *Builder) []*ast.WidgetV3 
 			if ref := buildUseFragmentRef(c); ref != nil {
 				widgets = append(widgets, ref)
 			}
+		case *parser.UseBuildingBlockRefContext:
+			if ref := buildUseBuildingBlockRef(c); ref != nil {
+				widgets = append(widgets, ref)
+			}
 		}
 	}
 
@@ -380,6 +384,10 @@ func buildPagePlaceholdersV3(ctx parser.IPageBodyV3Context, b *Builder) []*ast.P
 				}
 			case *parser.UseFragmentRefContext:
 				if ref := buildUseFragmentRef(c); ref != nil {
+					ph.Widgets = append(ph.Widgets, ref)
+				}
+			case *parser.UseBuildingBlockRefContext:
+				if ref := buildUseBuildingBlockRef(c); ref != nil {
 					ph.Widgets = append(ph.Widgets, ref)
 				}
 			}
@@ -413,6 +421,28 @@ func buildUseFragmentRef(ctx *parser.UseFragmentRefContext) *ast.WidgetV3 {
 	}
 	if len(ids) > 1 {
 		w.Properties["Prefix"] = identifierOrKeywordText(ids[1]) // Optional prefix
+	}
+	return w
+}
+
+// buildUseBuildingBlockRef creates a WidgetV3 with sentinel type USE_BUILDING_BLOCK.
+// The Name holds the block's qualified name (e.g. "Atlas_Web_Content.Card"); the
+// executor resolves the block, renders its widget tree to MDL, re-parses it, and
+// deep-copies the widgets into the page/container with an optional prefix rename.
+func buildUseBuildingBlockRef(ctx *parser.UseBuildingBlockRefContext) *ast.WidgetV3 {
+	if ctx == nil {
+		return nil
+	}
+	w := &ast.WidgetV3{
+		Type:       "USE_BUILDING_BLOCK",
+		Properties: make(map[string]interface{}),
+	}
+	if qn := ctx.QualifiedName(); qn != nil {
+		w.Name = buildQualifiedName(qn).String() // "Module.BlockName"
+	}
+	w.Properties["Prefix"] = ""
+	if idk := ctx.IdentifierOrKeyword(); idk != nil {
+		w.Properties["Prefix"] = identifierOrKeywordText(idk) // Optional prefix
 	}
 	return w
 }
