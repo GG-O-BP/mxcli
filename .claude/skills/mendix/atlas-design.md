@@ -13,14 +13,14 @@ This is the **taste + workflow** layer. It sits on top of the styling mechanics
 primitives (`fragments.md`), and the design-handoff pipeline
 (`migrate-design-prototype.md`). It does **not** re-teach SCSS compilation or
 `Class:`/`DesignProperties:` syntax — those skills own that. It adds **which**
-tokens/classes to use, **when**, and the **discover → inspect → mirror** method
+tokens/classes to use, **when**, and the **discover → inspect → use** method
 built on the Atlas building blocks every Mendix project already ships.
 
 ## Contents
 
 1. [The thesis: be Atlas-first](#the-thesis-be-atlas-first)
 2. [The 4-layer architecture](#the-4-layer-architecture)
-3. [The workflow: discover → inspect → mirror](#the-workflow-discover--inspect--mirror)
+3. [The workflow: discover → inspect → use](#the-workflow-discover--inspect--use)
 4. [Atlas building blocks — the out-of-the-box inventory](#atlas-building-blocks--the-out-of-the-box-inventory)
 5. [Atlas appearance vocabulary — classes & design properties](#atlas-appearance-vocabulary--classes--design-properties)
 6. [Brand re-tune (Layer 1) — where most of the win is](#brand-re-tune-layer-1--where-most-of-the-win-is)
@@ -86,10 +86,10 @@ page/MDL edits, and it hot-applies under `--watch`.
 
 ---
 
-## The workflow: discover → inspect → mirror
+## The workflow: discover → inspect → use
 
-Building blocks are the Mendix-native recipe library. mxcli can **read** them today,
-so the workflow is:
+Building blocks are the Mendix-native recipe library. mxcli can **read and
+instantiate** them, so the workflow is:
 
 **1. Discover what your project ships.**
 ```bash
@@ -114,23 +114,39 @@ mxcli -p app.mpr -c "describe building block Atlas_Web_Content.Card"
 Note the **two styling channels** Atlas uses side by side: the `Class:` vocabulary
 (`card-title`) *and* typed `DesignProperties:` (`'Card style': on`, `Spacing`).
 
-**3. Mirror it onto your page.** Reproduce the block's shape with `create page` /
-`alter page`, using the same classes and design properties, and wrap repeated
-shapes in a `fragment` (see `fragments.md`) so they stay DRY:
+**3. Use it — one line.** `use building block` deep-copies the block's widget tree
+onto your page, exactly like dragging it in from the Studio Pro toolbox. Add
+`as <prefix>` to rename the copied widgets (so you can drop the same block in twice):
+
 ```mdl
-container myCard (designproperties: ['Card style': on]) {
-  dynamictext cardTitle (content: 'Customers', rendermode: H4, class: 'card-title',
-    designproperties: ['Spacing': ['margin-bottom': 'L']])
-}
+use building block Atlas_Web_Content.Card as cust_
 ```
 
-> **Capability reality — be honest with the user.** Discovery (`SHOW` / `DESCRIBE
-> BUILDING BLOCK`, `CATALOG.building_blocks`) works **now**. **Instantiation does
-> not yet** — there is no `USE BUILDING BLOCK` to deep-copy a block onto a page via
-> MDL (it is a proposed follow-up). So **today** you *mirror* the block with
-> classes + design properties + fragments, treating the Atlas block as the canonical
-> reference. When `USE BUILDING BLOCK` lands, these mirror recipes migrate to native
-> block instantiation — same shapes, less typing.
+That expands to the exact tree `DESCRIBE` showed — here `cust_container2` +
+`cust_text22`, carrying the `card-title` class and the `Card style` design property.
+It's a page-body element: put it inside a `create page` / `alter page` container,
+anywhere a widget or `use fragment` can go.
+
+**4. Configure the copy afterwards.** A building block has no parameters — it's a raw
+widget-tree template — so you bind data / set text by editing the *copied* widgets
+with `alter page` (their names are deterministic thanks to the prefix):
+
+```mdl
+alter page Sales.CustomerOverview set cust_text22 (content: 'Customers');
+```
+
+> **Capability reality.** Discovery (`SHOW`/`DESCRIBE BUILDING BLOCK`,
+> `CATALOG.building_blocks`) **and** instantiation (`USE BUILDING BLOCK`) both work
+> today. `use building block` v1 is **deep-copy + optional `as <prefix>`**; configure
+> the copy afterwards with `alter page` (an inline override block is a proposed v1.1).
+> It runs on `MXCLI_ENGINE=legacy` today; modelsdk-engine support lands with that
+> engine's `ListBuildingBlocks`.
+
+**When to *mirror* instead.** *Mirroring* — reproducing a block's tree by hand with
+`create page`/`alter page` + the same classes and design properties (see below) — is
+the fallback: reach for it only to hand-tune a shape Atlas doesn't quite give you, or
+on the modelsdk engine before its building-block support lands. Otherwise prefer the
+one-line `use building block`.
 
 ---
 
@@ -161,19 +177,18 @@ All are `Platform: Web`, all live in module `Atlas_Web_Content`, referenced as
 > Always `show building blocks` on the actual project rather than trusting this list —
 > it is the standard Atlas baseline, not an exhaustive per-project inventory.
 
-### Capability reality: read now, instantiate later
+### Capability reality: discover, inspect, and instantiate
 
 | Capability | State |
 |---|---|
 | **Discover** — `SHOW BUILDING BLOCKS`, `CATALOG.building_blocks` | ✅ shipped |
 | **Inspect** — `DESCRIBE BUILDING BLOCK Mod.Name` (full widget tree) | ✅ shipped |
-| **Instantiate** — `USE BUILDING BLOCK Mod.Name` onto a page | ❌ not yet (proposed) |
+| **Instantiate** — `use building block Mod.Name [as prefix_]` onto a page | ✅ v1 (deep-copy; configure afterwards with `alter page`; legacy engine today) |
 | **Author** — `CREATE BUILDING BLOCK` | ❌ not yet (proposed) |
 
-Building blocks are **read-only** via MDL today — you cannot copy one onto a page
-with a single command. Until `USE BUILDING BLOCK` lands, **mirror** the block:
-reproduce its widget tree with `create page` / `alter page`, reusing the same classes
-and design properties DESCRIBE showed you, wrapping repeated shapes in a `fragment`.
+The one-line `use building block` (above) is the normal path — deep-copy the block,
+then configure the copy. **Mirroring** — reproducing a block's widget tree by hand —
+is the fallback for hand-tuning or the modelsdk engine; the how-to is below.
 
 ### How to mirror a block
 
@@ -706,9 +721,10 @@ row before opening files.
 - [ ] **Atlas-first** — reached for `class:`/design properties (Layer 0) and brand
       tokens (Layer 1) before any custom CSS
 - [ ] **Discovered** the project's building blocks (`show building blocks`) and
-      **inspected** the target block (`describe building block …`) before mirroring
-- [ ] **Mirrored** blocks with classes + design properties + fragments — did not
-      claim `use building block` exists (it doesn't yet)
+      **inspected** the target block (`describe building block …`) before using it
+- [ ] **Instantiated** with `use building block Mod.Name [as prefix_]` (the one-liner),
+      then configured the copied widgets with `alter page` — mirrored by hand only as a
+      deliberate fallback
 - [ ] **Brand tokens retuned** in `theme/web/custom-variables.scss` so Atlas
       components inherit the palette; custom SCSS reserved for identity only
 - [ ] **Committed to a theme count** up front (light-only or dark-only beats half-dark)
