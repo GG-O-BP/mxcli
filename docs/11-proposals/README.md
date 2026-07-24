@@ -29,7 +29,7 @@ for display in this README):
 ## Active Proposals (84)
 
 
-### In Progress (partial) (8)
+### In Progress (partial) (9)
 
 | Proposal | Status | Summary |
 |----------|--------|---------|
@@ -41,8 +41,9 @@ for display in this README):
 | [mxcli marketplace — Download & Manage Marketplace Modules](PROPOSAL_marketplace_modules.md) | Partial | Unblocking path #1 below has happened: the content API now returns a |
 | [Navigation Support in MDL](navigation-support.md) | Partial | Every Mendix project has exactly one navigation$NavigationDocument — a project-level singleton containing navigation profiles (Responsive, P |
 | [Podman Support as Docker Alternative](PROPOSAL_podman_support.md) | Partial | Docker Desktop requires a paid subscription for larger organizations. |
+| [SHOW/DESCRIBE/USE Building Blocks](show-describe-building-blocks.md) | Partial | Document type: Pages$BuildingBlock (NOT Forms$BuildingBlock — the reader now |
 
-### Proposed (36)
+### Proposed (35)
 
 | Proposal | Status | Summary |
 |----------|--------|---------|
@@ -60,7 +61,6 @@ for display in this README):
 | [Page Composition and Partial Updates](proposal_page_composition.md) | Proposed | Large MDL page scripts become unwieldy to write, read, and maintain. |
 | [Prompt: Journey Architecture Diagram Generator for Mendix Projects](journey-architecture-viz.md) | Proposed | I'm building a CLI tool (part of mxcli) that generates a "Customer Journey Architecture" diagram from a Mendix project. |
 | [Session Logging & Diagnostics for mxcli](PROPOSAL_session_logging.md) | Proposed | mxcli is being distributed to users for testing. |
-| [SHOW/DESCRIBE Building Blocks](show-describe-building-blocks.md) | Proposed | Document type: Forms$BuildingBlock |
 | [SHOW/DESCRIBE Custom Icon Collections](show-describe-custom-icon-collections.md) | Proposed | Document type: CustomIcons$CustomIconCollection |
 | [SHOW/DESCRIBE Export Mappings](show-describe-export-mappings.md) | Proposed | Document type: ExportMappings$ExportMapping |
 | [SHOW/DESCRIBE Image Collections](show-describe-image-collections.md) | Proposed | Document type: Images$ImageCollection |
