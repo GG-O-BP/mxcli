@@ -12,6 +12,8 @@
 --   USE FRAGMENT Name                       - Insert widgets inline
 --   USE FRAGMENT Name AS prefix_            - Insert with name prefix
 --   USE FRAGMENT Name { widgets }           - Fill the fragment's content slot
+--   DEFINE FRAGMENT Name($d: datasource, $a: action) - Typed parameters (experimental)
+--   USE FRAGMENT Name ($d: database E, $a: microflow M) - Supply parameter values
 --   SHOW FRAGMENTS                          - List defined fragments
 --   DESCRIBE FRAGMENT Name                  - Show fragment definition
 --
@@ -246,6 +248,57 @@ create page FragTest.P005c_Empty_Card
 {
   use fragment Card
 };
+
+-- MARK: Parameter Bindings
+
+-- ============================================================================
+-- LEVEL 5c: Parameter Bindings (experimental) — datasource & action handlers
+-- ============================================================================
+
+/**
+ * The content slot varies STRUCTURE (which widgets). Typed parameters vary
+ * DATA and BEHAVIOR: a fragment can declare a `datasource` and/or an `action`
+ * parameter, referenced with `$name` in a datasource/action position, and
+ * supplied at the use site.
+ *
+ * This turns a shell into a real reusable component — one panel bound to a
+ * different entity and a different microflow per use.
+ */
+define fragment DataPanel($data: datasource, $onEdit: action) as {
+  container panelWrap (class: 'card') {
+    listview lvItems (datasource: $data) {
+      slot content
+      actionbutton btnEdit (caption: 'Edit', action: $onEdit, buttonstyle: primary)
+    }
+  }
+};
+
+create page FragTest.P005d_Bound_Panel
+(
+  title: 'Bound Panel',
+  layout: Atlas_Core.Atlas_Default,
+  url: 'frag_005d_bound_panel'
+)
+{
+  use fragment DataPanel ($data: database FragTest.Order, $onEdit: save_changes) {
+    dynamictext panelTitle (content: 'Orders', rendermode: H4)
+  }
+};
+
+-- ============================================================================
+-- LEVEL 5d: Building-Block Rebind Overrides (experimental)
+-- ============================================================================
+
+-- A building block is copied whole; the optional override list rebinds the
+-- block's OUTERMOST datasource and/or its PRIMARY (first) button to caller
+-- values — the one-line form of copy-in-then-alter-page.
+--   use building block Atlas_Web_Content.List_Cards (
+--     datasource: database FragTest.Order,
+--     action: microflow FragTest.OpenOrder
+--   ) as orders_;
+--
+-- (Commented out: requires the Atlas_Web_Content module. Binding-point rule:
+--  datasource → first widget with a datasource; action → first button widget.)
 
 -- MARK: Multiple Pages
 
