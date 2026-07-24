@@ -189,117 +189,15 @@ create page FragTest.P003_Order_Form
   }
 };
 
--- MARK: Content Slots
+-- MARK: Content Slots & Bindings
 
 -- ============================================================================
--- LEVEL 5b: Content Slots — Fragments That Wrap Arbitrary Content
+-- Content slots, parameter bindings, and building-block rebind overrides now
+-- live in focused, CI-checked standalone examples:
+--   * 15b-fragment-slots-examples.mdl     — DEFINE FRAGMENT … SLOT, USE FRAGMENT { … }
+--   * 15c-fragment-bindings-examples.mdl   — ($data: datasource, $onEdit: action) params
+--                                            and USE BUILDING BLOCK (datasource:/action:)
 -- ============================================================================
-
-/**
- * A plain fragment substitutes a FIXED widget group. A content slot lets a
- * fragment WRAP arbitrary caller-supplied content: declare a `slot` where the
- * caller's widgets should land, then fill it with `use fragment X { … }`.
- *
- * This is the Atlas card idiom — one reusable "card" shell reused around any
- * body, without copy-pasting the wrapper markup on every page.
- *
- * The slot name is optional and defaults to "content"; a fragment supports a
- * single slot.
- */
-define fragment Card as {
-  container cardWrap (class: 'card', designproperties: ['Card style': on]) {
-    container cardBody (class: 'card-body') {
-      slot content
-    }
-  }
-};
-
-/**
- * Fill the Card slot with page-specific content. The two dynamictext widgets
- * are spliced in where the slot marker sits (inside cardBody).
- */
-create page FragTest.P005b_Slot_Card
-(
-  title: 'Slot Card',
-  layout: Atlas_Core.Atlas_Default,
-  url: 'frag_005b_slot_card'
-)
-{
-  use fragment Card {
-    dynamictext cardTitle (content: 'Welcome', rendermode: H2)
-    dynamictext cardText (content: 'Any widgets can go inside the reusable Card shell.')
-  }
-};
-
--- The slot marker is gone after expansion; the page shows cardWrap > cardBody
--- > cardTitle, cardText.
-describe page FragTest.P005b_Slot_Card;
-
-/**
- * A slotted fragment may also be used with NO payload — the slot simply expands
- * to nothing, giving an empty card shell.
- */
-create page FragTest.P005c_Empty_Card
-(
-  title: 'Empty Card',
-  layout: Atlas_Core.Atlas_Default,
-  url: 'frag_005c_empty_card'
-)
-{
-  use fragment Card
-};
-
--- MARK: Parameter Bindings
-
--- ============================================================================
--- LEVEL 5c: Parameter Bindings (experimental) — datasource & action handlers
--- ============================================================================
-
-/**
- * The content slot varies STRUCTURE (which widgets). Typed parameters vary
- * DATA and BEHAVIOR: a fragment can declare a `datasource` and/or an `action`
- * parameter, referenced with `$name` in a datasource/action position, and
- * supplied at the use site.
- *
- * This turns a shell into a real reusable component — one panel bound to a
- * different entity and a different microflow per use.
- */
-define fragment DataPanel($data: datasource, $onEdit: action) as {
-  container panelWrap (class: 'card') {
-    listview lvItems (datasource: $data) {
-      slot content
-      actionbutton btnEdit (caption: 'Edit', action: $onEdit, buttonstyle: primary)
-    }
-  }
-};
-
-create page FragTest.P005d_Bound_Panel
-(
-  title: 'Bound Panel',
-  layout: Atlas_Core.Atlas_Default,
-  url: 'frag_005d_bound_panel'
-)
-{
-  use fragment DataPanel ($data: database FragTest.Order, $onEdit: save_changes) {
-    dynamictext panelTitle (content: 'Orders', rendermode: H4)
-  }
-};
-
--- ============================================================================
--- LEVEL 5d: Building-Block Rebind Overrides (experimental)
--- ============================================================================
-
--- A building block is copied whole; the optional override list rebinds the
--- block's OUTERMOST datasource and/or its PRIMARY (first) button to caller
--- values — the one-line form of copy-in-then-alter-page.
---   use building block Atlas_Web_Content.List_Cards (
---     datasource: database FragTest.Order,
---     action: microflow FragTest.OpenOrder
---   ) as orders_;
---
--- (Commented out: requires the Atlas_Web_Content module. Binding-point rule:
---  datasource → first widget with a datasource; action → first button widget.)
-
 -- MARK: Multiple Pages
 
 -- ============================================================================
@@ -312,12 +210,16 @@ create page FragTest.P005d_Bound_Panel
  */
 create page FragTest.P004_Customer_New
 (
+  params: { $Customer: FragTest.Customer },
   title: 'New Customer',
   layout: Atlas_Core.Atlas_Default,
   url: 'frag_004_customer_new'
 )
 {
-  dataview dvCustomer (datasource: database FragTest.Customer) {
+  -- A data view shows ONE object, so it binds a page parameter (or a microflow
+  -- source), never a raw database query. The new Customer is passed in by the
+  -- microflow that opens this page.
+  dataview dvCustomer (datasource: $Customer) {
     use fragment CustomerFields
     use fragment SaveCancelFooter
   }
