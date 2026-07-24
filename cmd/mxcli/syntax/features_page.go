@@ -191,9 +191,9 @@ func init() {
 			"fragment", "fragments", "reusable widgets", "define fragment",
 			"use fragment", "template", "script scope",
 		},
-		Syntax:  "DEFINE FRAGMENT Name AS { <widgets> };\nUSE FRAGMENT Name [AS prefix_];\nSHOW FRAGMENTS;\nDESCRIBE FRAGMENT Name;\nDESCRIBE FRAGMENT FROM PAGE Module.Page WIDGET widgetName;",
+		Syntax:  "DEFINE FRAGMENT Name AS { <widgets> };\nDEFINE FRAGMENT Name AS { <widgets> SLOT [name] <widgets> };\nUSE FRAGMENT Name [AS prefix_];\nUSE FRAGMENT Name [AS prefix_] { <payload widgets> };\nSHOW FRAGMENTS;\nDESCRIBE FRAGMENT Name;\nDESCRIBE FRAGMENT FROM PAGE Module.Page WIDGET widgetName;",
 		Example: "DEFINE FRAGMENT SaveCancelFooter AS {\n  FOOTER footer1 {\n    ACTIONBUTTON btnSave (Caption: 'Save', Action: SAVE_CHANGES, ButtonStyle: Primary)\n    ACTIONBUTTON btnCancel (Caption: 'Cancel', Action: CANCEL_CHANGES)\n  }\n};\n\nCREATE PAGE Module.EditPage (...) {\n  DATAVIEW dv (DataSource: $Param) {\n    TEXTBOX txtName (Label: 'Name', Binds: Name)\n    USE FRAGMENT SaveCancelFooter\n  }\n};",
-		SeeAlso: []string{"fragment.define", "fragment.use", "snippet"},
+		SeeAlso: []string{"fragment.define", "fragment.use", "fragment.slot", "snippet"},
 	})
 
 	Register(SyntaxFeature{
@@ -214,9 +214,21 @@ func init() {
 			"use fragment", "insert fragment", "expand fragment",
 			"prefix", "name conflict",
 		},
-		Syntax:  "USE FRAGMENT Name\nUSE FRAGMENT Name AS prefix_",
-		Example: "-- Basic usage\nCREATE PAGE Module.Page (...) {\n  DATAVIEW dv (DataSource: $Param) {\n    USE FRAGMENT FormFields\n    USE FRAGMENT SaveCancelFooter\n  }\n};\n\n-- With prefix to avoid name conflicts\nUSE FRAGMENT SaveCancelFooter AS order_\n-- Creates: order_footer1, order_btnSave, order_btnCancel",
-		SeeAlso: []string{"fragment", "fragment.define"},
+		Syntax:  "USE FRAGMENT Name\nUSE FRAGMENT Name AS prefix_\nUSE FRAGMENT Name [AS prefix_] { <payload widgets> }",
+		Example: "-- Basic usage\nCREATE PAGE Module.Page (...) {\n  DATAVIEW dv (DataSource: $Param) {\n    USE FRAGMENT FormFields\n    USE FRAGMENT SaveCancelFooter\n  }\n};\n\n-- With prefix to avoid name conflicts\nUSE FRAGMENT SaveCancelFooter AS order_\n-- Creates: order_footer1, order_btnSave, order_btnCancel\n\n-- Fill a fragment's content slot (see fragment.slot)\nUSE FRAGMENT Card {\n  DYNAMICTEXT cardHeading (Content: 'Welcome', RenderMode: H2)\n  DYNAMICTEXT cardText (Content: 'Wrapped content')\n}",
+		SeeAlso: []string{"fragment", "fragment.define", "fragment.slot"},
+	})
+
+	Register(SyntaxFeature{
+		Path:    "fragment.slot",
+		Summary: "SLOT — a content placeholder that lets a fragment wrap arbitrary caller content",
+		Keywords: []string{
+			"slot", "content slot", "fragment slot", "wrap content",
+			"card wrapper", "reusable shell", "use fragment payload",
+		},
+		Syntax:  "-- In the definition, mark where caller content lands:\nDEFINE FRAGMENT Name AS { <wrapper> SLOT [name] <wrapper> };\n-- At the use site, supply the payload in a brace block:\nUSE FRAGMENT Name [AS prefix_] { <payload widgets> }",
+		Example: "DEFINE FRAGMENT Card AS {\n  CONTAINER cardWrap (Class: 'card', DesignProperties: ['Card style': on]) {\n    CONTAINER cardBody (Class: 'card-body') {\n      SLOT content\n    }\n  }\n};\n\nCREATE PAGE Module.Dashboard (Title: 'Dashboard', Layout: Atlas_Core.Atlas_Default) {\n  USE FRAGMENT Card {\n    DYNAMICTEXT cardHeading (Content: 'Welcome', RenderMode: H2)\n    DYNAMICTEXT cardText (Content: 'Any widgets can go inside the reusable Card shell')\n  }\n};\n\n-- Notes:\n--   * Slot name is optional (defaults to 'content'); one slot per fragment.\n--   * USE FRAGMENT with no payload leaves the slot empty (valid).\n--   * Supplying a payload to a slotless fragment is an error.",
+		SeeAlso: []string{"fragment", "fragment.define", "fragment.use"},
 	})
 
 	Register(SyntaxFeature{

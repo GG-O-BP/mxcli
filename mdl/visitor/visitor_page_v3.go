@@ -347,11 +347,15 @@ func buildPageBodyV3(ctx parser.IPageBodyV3Context, b *Builder) []*ast.WidgetV3 
 				widgets = append(widgets, widget)
 			}
 		case *parser.UseFragmentRefContext:
-			if ref := buildUseFragmentRef(c); ref != nil {
+			if ref := buildUseFragmentRef(c, b); ref != nil {
 				widgets = append(widgets, ref)
 			}
 		case *parser.UseBuildingBlockRefContext:
 			if ref := buildUseBuildingBlockRef(c); ref != nil {
+				widgets = append(widgets, ref)
+			}
+		case *parser.SlotMarkerV3Context:
+			if ref := buildSlotMarkerV3(c); ref != nil {
 				widgets = append(widgets, ref)
 			}
 		}
@@ -383,11 +387,15 @@ func buildPagePlaceholdersV3(ctx parser.IPageBodyV3Context, b *Builder) []*ast.P
 					ph.Widgets = append(ph.Widgets, w)
 				}
 			case *parser.UseFragmentRefContext:
-				if ref := buildUseFragmentRef(c); ref != nil {
+				if ref := buildUseFragmentRef(c, b); ref != nil {
 					ph.Widgets = append(ph.Widgets, ref)
 				}
 			case *parser.UseBuildingBlockRefContext:
 				if ref := buildUseBuildingBlockRef(c); ref != nil {
+					ph.Widgets = append(ph.Widgets, ref)
+				}
+			case *parser.SlotMarkerV3Context:
+				if ref := buildSlotMarkerV3(c); ref != nil {
 					ph.Widgets = append(ph.Widgets, ref)
 				}
 			}
@@ -406,8 +414,11 @@ func placeholderBlockName(pc *parser.PlaceholderBlockV3Context) string {
 	return ""
 }
 
-// buildUseFragmentRef creates a WidgetV3 with sentinel type USE_FRAGMENT.
-func buildUseFragmentRef(ctx *parser.UseFragmentRefContext) *ast.WidgetV3 {
+// buildUseFragmentRef creates a WidgetV3 with sentinel type USE_FRAGMENT. When the
+// `use fragment X { … }` form supplies a payload block, its widgets are built and
+// stored in the sentinel's Children — the executor splices them into the
+// fragment's content slot at expansion time.
+func buildUseFragmentRef(ctx *parser.UseFragmentRefContext, b *Builder) *ast.WidgetV3 {
 	if ctx == nil {
 		return nil
 	}
@@ -422,7 +433,29 @@ func buildUseFragmentRef(ctx *parser.UseFragmentRefContext) *ast.WidgetV3 {
 	if len(ids) > 1 {
 		w.Properties["Prefix"] = identifierOrKeywordText(ids[1]) // Optional prefix
 	}
+	if payload := ctx.UseFragmentPayload(); payload != nil {
+		if pc, ok := payload.(*parser.UseFragmentPayloadContext); ok {
+			w.Children = buildPageBodyV3(pc.PageBodyV3(), b)
+		}
+	}
 	return w
+}
+
+// buildSlotMarkerV3 creates a WidgetV3 with sentinel type SLOT. The optional name
+// defaults to "content"; it is cosmetic in v1 (a fragment supports one slot).
+func buildSlotMarkerV3(ctx *parser.SlotMarkerV3Context) *ast.WidgetV3 {
+	if ctx == nil {
+		return nil
+	}
+	name := "content"
+	if idk := ctx.IdentifierOrKeyword(); idk != nil {
+		name = identifierOrKeywordText(idk)
+	}
+	return &ast.WidgetV3{
+		Type:       "SLOT",
+		Name:       name,
+		Properties: make(map[string]interface{}),
+	}
 }
 
 // buildUseBuildingBlockRef creates a WidgetV3 with sentinel type USE_BUILDING_BLOCK.

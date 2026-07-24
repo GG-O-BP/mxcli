@@ -318,24 +318,27 @@ designed to migrate to the roadmap.
 | Mechanism | Persisted | Reuse | Params / slots | Support | Use for |
 |---|---|---|---|---|---|
 | `.mdl` recipe (text) | — | copy | full fill-in | today | content-varying blocks now |
-| **Fragment** (`define/use`) | No (script-scoped) | copy, DRY-in-script | `prefix_` only (params future) | **impl'd** | fixed repeated groups (header, footer, pill) |
+| **Fragment** (`define/use`) | No (script-scoped) | copy, DRY-in-script | `prefix_` + **content slot** (scalar params future) | **impl'd** | fixed repeated groups (header, footer, pill) **and content-wrapping shells (cards, panels)** |
 | Mendix **Snippet** | Yes | reference (live) | context entity only, no content slot | create/describe | genuinely-shared runtime components |
 | **Building Block** | Yes (template) | copy (deep-copied in, no live link) | template + preview | name-list only (read/`use`/`create` all proposed) | **eventual native home** for recipes |
 | **Page Template** | Yes | copy (new-page) | layout + tree | list-only | screen scaffolds |
 
 **Decision:**
-1. **Now** — ship recipes as **fragments** (a `define fragment` prelude scripts include) for fixed
-   groups, plus **`.mdl` fill-in recipes** for content-varying blocks (a card wrapping arbitrary
-   content — fragments can't parameterize content yet). Reserve **Mendix Snippets** for truly-shared
-   runtime components.
-2. **Design for the roadmap** — author recipes so they migrate cleanly to **parameterized fragments**
-   (`proposal_page_composition.md`, future) and ultimately **`use building block`**
-   (`show-describe-building-blocks.md`), which would also surface them in Studio Pro's toolbox.
+1. **Now** — ship recipes as **fragments** (a `define fragment` prelude scripts include). Fixed
+   groups use plain fragments; **content-wrapping shells** (cards, panels, sections) use a
+   **content slot** (`define fragment Card as { … slot … }` + `use fragment Card { … }`), so a card
+   can wrap arbitrary caller content without `.mdl` copy-and-fill. Reserve **Mendix Snippets** for
+   truly-shared runtime components.
+2. **Design for the roadmap** — author recipes so they migrate cleanly to **scalar parameterized
+   fragments** (`proposal_page_composition.md`, v1.1 — value/attribute substitution) and ultimately
+   **`use building block`** (`show-describe-building-blocks.md`), which would also surface them in
+   Studio Pro's toolbox.
 
-Rationale: a design-recipe library is mostly *shapes whose content varies per use* (a status pill
-binds `Trip.Status` in one place and `Activity.Category` in another). Mendix Snippets can't do that
-(context-entity only, no content slot); fragments can't yet (no params); so today it's fragments +
-fill-in. Parameterized fragments / Building Blocks close the gap.
+Rationale: a design-recipe library is mostly *shapes whose content varies per use*. The dominant case
+is a shell wrapping arbitrary content (a card around any body) — now covered by the **content slot**;
+Mendix Snippets can't do that (context-entity only, no content slot). The remaining case is varying a
+leaf *value* (a status pill binds `Trip.Status` in one place and `Activity.Category` in another),
+which scalar params (v1.1) will close; until then it's a slot + a one-line `.mdl` fill of the value.
 
 ---
 
@@ -424,7 +427,7 @@ workflow. **P0 = fix before the loop is reliable; P1 = enables the workflow; P2 
 | ~~**P1**~~ ✅ | **`grant view on page` to a cross-module role must not emit a build-blocking CE0148** | Granting a page a role from another module set the allowed-roles list correctly yet still raised CE0148 "reselect roles", which **fails the deploy** — confusing and costly; the own-module role works, so the serialization is wrong for cross-module grants | **Fixed — PR #15** (same-module guard) |
 | ~~**P1**~~ ✅ | **Building Blocks — READ**: `SHOW BUILDING BLOCKS` + `DESCRIBE BUILDING BLOCK` + `CATALOG.building_blocks` (widget tree via `GetRawUnit`; `$Type` is `Pages$BuildingBlock`) | Prerequisite for *any* Building-Block reuse — content was unreadable (name-only) before | **Done — PR #16/#17**; validated live against a real Atlas app (40 blocks) |
 | ~~**P1**~~ ✅ | **Building Blocks — INSTANTIATE**: `use building block Mod.Name [as prefix_]` (deep-copy; reuses fragment-expansion) | The "compose a page from pre-built sections" capability — the native home for the recipe library | **Done (v1) — PR #19**; configure the copy afterwards with `alter page` |
-| **P1** | **Parameterized fragments** | Lets content-varying recipes (a card wrapping arbitrary content) ship without `.mdl` fill-in; materially simplifies the recipe library | `proposal_page_composition.md` |
+| ~~**P1**~~ ✅ | **Content-slot fragments** (`define fragment … slot …` + `use fragment X { … }`) | Lets content-varying recipes (a card wrapping arbitrary content) ship without `.mdl` fill-in; materially simplifies the recipe library | **Done (v1) — content slot**; scalar `$param` substitution deferred to v1.1 (`proposal_page_composition.md`) |
 | **P2** | **Chart theme colourway** — let a chart read a CSS var / named theme colourway | Charts are the *only* thing that doesn't re-skin via CSS (colour lives in the model's `customSeriesOptions`); today a re-brand needs an MDL edit + restart | New |
 | **P2** | **Building Blocks — AUTHOR**: `CREATE BUILDING BLOCK` | Generated apps contribute reusable blocks back to the Studio-Pro toolbox | `show-describe-building-blocks.md` |
 | **P2** | **Typed `designproperties`** (later phase) | Studio-Pro Appearance-tab round-trip; recipes could use Atlas tokens idiomatically vs. raw `class:` strings (not a blocker — `class:` renders everything today) | `page-styling-support.md` |

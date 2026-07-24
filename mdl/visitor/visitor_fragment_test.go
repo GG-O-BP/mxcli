@@ -250,6 +250,125 @@ func TestUseFragmentInNestedBody(t *testing.T) {
 	}
 }
 
+func TestDefineFragmentWithSlot(t *testing.T) {
+	input := `DEFINE FRAGMENT Card AS {
+		CONTAINER cardWrap (Class: 'card') {
+			CONTAINER cardBody (Class: 'card-body') {
+				SLOT content
+			}
+		}
+	};`
+
+	prog, errs := Build(input)
+	if len(errs) > 0 {
+		for _, err := range errs {
+			t.Errorf("Parse error: %v", err)
+		}
+		return
+	}
+
+	stmt := prog.Statements[0].(*ast.DefineFragmentStmt)
+	if len(stmt.Widgets) != 1 {
+		t.Fatalf("Expected 1 top-level widget, got %d", len(stmt.Widgets))
+	}
+	body := stmt.Widgets[0].Children[0] // cardBody
+	if len(body.Children) != 1 {
+		t.Fatalf("Expected 1 child (slot) in cardBody, got %d", len(body.Children))
+	}
+	slot := body.Children[0]
+	if slot.Type != "SLOT" {
+		t.Errorf("Expected SLOT sentinel, got %s", slot.Type)
+	}
+	if slot.Name != "content" {
+		t.Errorf("Expected slot name 'content', got %q", slot.Name)
+	}
+}
+
+func TestSlotDefaultsToContentWhenUnnamed(t *testing.T) {
+	input := `DEFINE FRAGMENT Panel AS {
+		CONTAINER p (Class: 'panel') { SLOT }
+	};`
+
+	prog, errs := Build(input)
+	if len(errs) > 0 {
+		for _, err := range errs {
+			t.Errorf("Parse error: %v", err)
+		}
+		return
+	}
+	stmt := prog.Statements[0].(*ast.DefineFragmentStmt)
+	slot := stmt.Widgets[0].Children[0]
+	if slot.Type != "SLOT" {
+		t.Fatalf("Expected SLOT sentinel, got %s", slot.Type)
+	}
+	if slot.Name != "content" {
+		t.Errorf("Expected unnamed slot to default to 'content', got %q", slot.Name)
+	}
+}
+
+func TestUseFragmentWithPayload(t *testing.T) {
+	input := `CREATE PAGE MyModule.TestPage
+	(Title: 'Test', Layout: Atlas_Core.Atlas_Default)
+	{
+		USE FRAGMENT Card {
+			DYNAMICTEXT hello (Content: 'Hi', RenderMode: H2)
+			DYNAMICTEXT sub (Content: 'wrapped')
+		}
+	};`
+
+	prog, errs := Build(input)
+	if len(errs) > 0 {
+		for _, err := range errs {
+			t.Errorf("Parse error: %v", err)
+		}
+		return
+	}
+
+	stmt := prog.Statements[0].(*ast.CreatePageStmtV3)
+	if len(stmt.Widgets) != 1 {
+		t.Fatalf("Expected 1 widget, got %d", len(stmt.Widgets))
+	}
+	w := stmt.Widgets[0]
+	if w.Type != "USE_FRAGMENT" {
+		t.Fatalf("Expected USE_FRAGMENT, got %s", w.Type)
+	}
+	if w.Name != "Card" {
+		t.Errorf("Expected fragment name 'Card', got %q", w.Name)
+	}
+	// The payload widgets ride on the sentinel's Children.
+	if len(w.Children) != 2 {
+		t.Fatalf("Expected 2 payload widgets on the USE_FRAGMENT sentinel, got %d", len(w.Children))
+	}
+	if w.Children[0].Name != "hello" || w.Children[1].Name != "sub" {
+		t.Errorf("Unexpected payload widget names: %q, %q", w.Children[0].Name, w.Children[1].Name)
+	}
+}
+
+func TestUseFragmentWithPrefixAndPayload(t *testing.T) {
+	input := `CREATE PAGE MyModule.TestPage
+	(Title: 'Test', Layout: Atlas_Core.Atlas_Default)
+	{
+		USE FRAGMENT Card AS pfx_ {
+			DYNAMICTEXT hello (Content: 'Hi')
+		}
+	};`
+
+	prog, errs := Build(input)
+	if len(errs) > 0 {
+		for _, err := range errs {
+			t.Errorf("Parse error: %v", err)
+		}
+		return
+	}
+	w := prog.Statements[0].(*ast.CreatePageStmtV3).Widgets[0]
+	if prefix, _ := w.Properties["Prefix"].(string); prefix != "pfx_" {
+		t.Errorf("Expected Prefix 'pfx_', got %v", w.Properties["Prefix"])
+	}
+	if len(w.Children) != 1 || w.Children[0].Name != "hello" {
+		t.Errorf("Expected 1 payload widget 'hello', got %+v", w.Children)
+	}
+}
+
 func TestDescribeFragmentFromPage(t *testing.T) {
 	input := `DESCRIBE FRAGMENT FROM PAGE MyModule.CustomerEdit WIDGET footer1;`
 

@@ -129,9 +129,49 @@ create page Module.CustomerEdit
 }
 ```
 
-### Parameterized Fragments (Future)
+### Content Slots (Implemented)
 
-Future enhancement - fragments that accept parameters:
+The most valuable form of fragment parameterization is a **content slot**: a
+fragment that **wraps arbitrary caller-supplied content**. This is what a
+design-recipe library mostly needs — a reusable shell (a card, a panel, a
+section) whose *body varies per use*. Neither a plain fragment (fixed widgets)
+nor a Mendix Snippet (context-entity only, no content slot) can express it.
+
+Declare a `slot` where the caller's widgets should land, then fill it with the
+`use fragment X { … }` payload form:
+
+```sql
+define fragment Card as {
+  container cardWrap (class: 'card', designproperties: ['Card style': on]) {
+    container cardBody (class: 'card-body') {
+      slot content            -- caller's widgets are spliced in here
+    }
+  }
+}
+
+-- Fill the slot with page-specific content
+use fragment Card {
+  dynamictext cardHeading (content: 'Welcome', rendermode: H2)
+  dynamictext cardText (content: 'Any widgets can go inside the reusable Card shell')
+}
+```
+
+Semantics (v1):
+- The slot name is optional and defaults to `content`; a fragment supports a
+  single slot.
+- Using a slotted fragment with **no** payload expands the slot to nothing (an
+  empty shell) — valid.
+- Supplying a payload to a fragment that declares **no** slot is an error.
+- The payload is deep-cloned into the slot; the `as prefix_` rename still applies
+  to the fragment's own widgets (not the caller's payload).
+- Slots resolve entirely at fragment-expansion time — no BSON changes, and
+  `describe page` shows the fully-expanded tree (the slot marker is gone).
+
+### Parameterized Fragments — Scalar Params (Future, v1.1)
+
+A secondary enhancement is **scalar** value substitution — passing a label or
+attribute name into a fragment. Unlike a content slot, this varies leaf *values*
+rather than wrapping a subtree, so it's the lower-priority half:
 
 ```sql
 define fragment FormField($label, $attr) as {
@@ -499,7 +539,8 @@ alter page Module.CustomerEdit {
 - `drop widget if exists`
 
 ### Phase 5: Future Enhancements
-- Parameterized fragments: `define fragment Name($param) as { ... }`
+- **Content slots** (`define fragment Name as { … slot … }` + `use fragment Name { … }`) — **implemented**; wraps arbitrary caller content
+- Scalar parameterized fragments: `define fragment Name($param) as { ... }` (v1.1)
 - `use script 'file.mdl'` for file includes
 - Fragment libraries
 - Conditional fragments (`use fragment X if condition`)

@@ -66,6 +66,44 @@ use fragment SaveCancelFooter as order_
 -- Creates: order_footer1, order_btnSave, order_btnCancel
 ```
 
+### Content Slots — wrap arbitrary content
+
+A plain fragment substitutes a **fixed** widget group. A **content slot** lets a
+fragment **wrap arbitrary caller-supplied content** — a reusable shell (a card,
+panel, or section) whose body varies per use. Declare a `slot` where the caller's
+widgets should land, then fill it with the `use fragment X { … }` payload form:
+
+```mdl
+define fragment Card as {
+  container cardWrap (class: 'card', designproperties: ['Card style': on]) {
+    container cardBody (class: 'card-body') {
+      slot content            -- caller's widgets are spliced in here
+    }
+  }
+};
+
+create page Module.Dashboard (title: 'Dashboard', layout: Atlas_Core.Atlas_Default) {
+  use fragment Card {
+    dynamictext cardHeading (content: 'Welcome', rendermode: H2)
+    dynamictext cardText (content: 'Any widgets can go inside the reusable Card shell')
+  }
+};
+```
+
+Rules (v1):
+- The slot name is optional and defaults to `content`; a fragment supports one slot.
+- Using a slotted fragment with **no** payload (`use fragment Card`) expands the
+  slot to nothing — a valid empty shell.
+- Supplying a payload to a fragment that declares **no** slot is an error.
+- The payload is deep-cloned; `as prefix_` still renames the fragment's own
+  widgets (not the caller's payload).
+- The slot resolves at expansion — `describe page` shows the fully-expanded tree
+  (no slot marker), and there are no BSON/round-trip surprises.
+
+> For varying a leaf **value** (a label or attribute name) rather than wrapping a
+> subtree, scalar params (`define fragment F($label, $attr) as …`) are a planned
+> v1.1 follow-up; today use a slot plus a one-line value fill.
+
 ### SHOW FRAGMENTS
 
 ```mdl
@@ -204,6 +242,8 @@ create page Module.MyPage (...) {
 - [ ] Prefix used when the same fragment appears multiple times on one page
 - [ ] Fragment widget names don't conflict with other widgets on the page
 - [ ] All widgets inside fragments use valid syntax (same as page bodies)
+- [ ] A `use fragment X { … }` payload is only supplied when fragment `X` declares a `slot`
+- [ ] A slotted fragment has exactly one `slot` (v1 supports a single slot)
 
 ## Related Documentation
 

@@ -223,18 +223,16 @@ create page MyModule.CardDemo
 };
 ```
 
-Reusable version — put the card shape in a fragment so every card is one line:
+Reusable version — put the card **shell** in a fragment with a `slot`, then fill
+the slot with each card's own content. This is the key idiom: one card wrapper,
+arbitrary bodies, no copy-paste of the wrapper markup.
 
 ```mdl
 define fragment SectionCard as {
-  container card1 (designproperties: ['Card style': on]) {
-    dynamictext cardTitle
-    (
-      content: 'Section title',
-      rendermode: H4,
-      class: 'card-title',
-      designproperties: ['Spacing': ['margin-bottom': 'L']]
-    )
+  container card1 (designproperties: ['Card style': on, 'Spacing': ['margin-bottom': 'Large']]) {
+    container cardBody (class: 'card-body') {
+      slot content            -- each page's widgets land here
+    }
   }
 };
 
@@ -245,11 +243,24 @@ create page MyModule.Dashboard
 )
 {
   container page1 (class: 'flex-column') {
-    use fragment SectionCard as customers_
-    use fragment SectionCard as orders_
+    use fragment SectionCard {
+      dynamictext custTitle (content: 'Customers', rendermode: H4, class: 'card-title')
+      dynamictext custBody (content: 'Recent customer activity')
+    }
+    use fragment SectionCard {
+      dynamictext ordTitle (content: 'Orders', rendermode: H4, class: 'card-title')
+      datagrid ordGrid (datasource: database MyModule.Order) { }
+    }
   }
 };
 ```
+
+The `slot` marker is resolved at expansion — `describe page` shows the fully
+wrapped tree (`card1 > cardBody > custTitle, custBody`), and `mx check` is clean.
+The slot name is optional (defaults to `content`); a fragment supports one slot.
+Use `as prefix_` when the wrapper's *own* widget names would collide across uses
+(the payload keeps the names you give it). For a fixed, content-invariant group
+(a footer, a button pair) a plain slotless fragment is still the right tool.
 
 ### Worked example — `Pageheader`
 

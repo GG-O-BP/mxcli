@@ -614,7 +614,7 @@ keyword
     | ANCHOR | TOP | BOTTOM
 
     // Fragment / ALTER PAGE
-    | AFTER | BEFORE | DEFINE | FRAGMENT | FRAGMENTS
+    | AFTER | BEFORE | DEFINE | FRAGMENT | FRAGMENTS | SLOT
 
     // General-purpose words (only tokens not already listed above)
     | ACTION | BOTH | CONTEXT | DATA | FORMAT | ITEM | LIST
