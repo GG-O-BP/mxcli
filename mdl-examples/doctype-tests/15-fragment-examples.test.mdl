@@ -8,8 +8,10 @@
 --
 -- Key concepts:
 --   DEFINE FRAGMENT Name AS { widgets }     - Define a reusable group
+--   DEFINE FRAGMENT Name AS { … slot … }    - Declare a content slot
 --   USE FRAGMENT Name                       - Insert widgets inline
 --   USE FRAGMENT Name AS prefix_            - Insert with name prefix
+--   USE FRAGMENT Name { widgets }           - Fill the fragment's content slot
 --   SHOW FRAGMENTS                          - List defined fragments
 --   DESCRIBE FRAGMENT Name                  - Show fragment definition
 --
@@ -183,6 +185,66 @@ create page FragTest.P003_Order_Form
     }
     use fragment SaveCancelFooter
   }
+};
+
+-- MARK: Content Slots
+
+-- ============================================================================
+-- LEVEL 5b: Content Slots — Fragments That Wrap Arbitrary Content
+-- ============================================================================
+
+/**
+ * A plain fragment substitutes a FIXED widget group. A content slot lets a
+ * fragment WRAP arbitrary caller-supplied content: declare a `slot` where the
+ * caller's widgets should land, then fill it with `use fragment X { … }`.
+ *
+ * This is the Atlas card idiom — one reusable "card" shell reused around any
+ * body, without copy-pasting the wrapper markup on every page.
+ *
+ * The slot name is optional and defaults to "content"; a fragment supports a
+ * single slot.
+ */
+define fragment Card as {
+  container cardWrap (class: 'card', designproperties: ['Card style': on]) {
+    container cardBody (class: 'card-body') {
+      slot content
+    }
+  }
+};
+
+/**
+ * Fill the Card slot with page-specific content. The two dynamictext widgets
+ * are spliced in where the slot marker sits (inside cardBody).
+ */
+create page FragTest.P005b_Slot_Card
+(
+  title: 'Slot Card',
+  layout: Atlas_Core.Atlas_Default,
+  url: 'frag_005b_slot_card'
+)
+{
+  use fragment Card {
+    dynamictext cardTitle (content: 'Welcome', rendermode: H2)
+    dynamictext cardText (content: 'Any widgets can go inside the reusable Card shell.')
+  }
+};
+
+-- The slot marker is gone after expansion; the page shows cardWrap > cardBody
+-- > cardTitle, cardText.
+describe page FragTest.P005b_Slot_Card;
+
+/**
+ * A slotted fragment may also be used with NO payload — the slot simply expands
+ * to nothing, giving an empty card shell.
+ */
+create page FragTest.P005c_Empty_Card
+(
+  title: 'Empty Card',
+  layout: Atlas_Core.Atlas_Default,
+  url: 'frag_005c_empty_card'
+)
+{
+  use fragment Card
 };
 
 -- MARK: Multiple Pages
@@ -365,8 +427,10 @@ create snippet FragTest.CustomerCard
 -- Fragments provide script-scoped widget reuse:
 --
 --   DEFINE FRAGMENT Name AS { widgets };   -- Define
+--   DEFINE FRAGMENT Name AS { … slot … };  -- Define with a content slot
 --   USE FRAGMENT Name                      -- Use (clone & insert)
 --   USE FRAGMENT Name AS prefix_           -- Use with unique names
+--   USE FRAGMENT Name { widgets }          -- Fill the content slot
 --   SHOW FRAGMENTS;                        -- List all
 --   DESCRIBE FRAGMENT Name;                -- Show definition
 --   DESCRIBE FRAGMENT FROM PAGE Mod.Page WIDGET name;   -- Extract from page

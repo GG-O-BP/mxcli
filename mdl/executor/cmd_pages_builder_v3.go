@@ -335,6 +335,11 @@ func (pb *pageBuilder) buildWidgetV3(w *ast.WidgetV3) (pages.Widget, error) {
 		widget, err = pb.buildContainerWithColumnV3(w)
 	case "container", "customcontainer":
 		widget, err = pb.buildContainerV3(w)
+	case "slot":
+		// A slot that reaches the builder was written somewhere the fragment
+		// expander doesn't reach (e.g. nested in a page container rather than a
+		// `define fragment` body). Slots are resolved during fragment expansion.
+		return nil, mdlerrors.NewValidation("`slot` is only valid inside a `define fragment` body")
 	case "textbox":
 		widget, err = pb.buildTextBoxV3(w)
 	case "textarea":
@@ -1742,6 +1747,11 @@ func (pb *pageBuilder) expandIfFragment(w *ast.WidgetV3) ([]*ast.WidgetV3, error
 		return pb.expandFragmentRef(w)
 	case "USE_BUILDING_BLOCK":
 		return pb.expandBuildingBlockRef(w)
+	case "SLOT":
+		// A slot marker is only meaningful inside a `define fragment` body, where
+		// it is resolved during expandFragmentRef. Reaching here means a bare
+		// `slot` was written directly in a page/snippet body.
+		return nil, mdlerrors.NewValidation("`slot` is only valid inside a `define fragment` body")
 	default:
 		return []*ast.WidgetV3{w}, nil
 	}
@@ -1762,7 +1772,59 @@ func (pb *pageBuilder) expandFragmentRef(w *ast.WidgetV3) ([]*ast.WidgetV3, erro
 	if prefix, ok := w.Properties["Prefix"].(string); ok && prefix != "" {
 		prefixWidgetNames(widgets, prefix)
 	}
+
+	// Splice any content-slot payload into the fragment's slot marker. The payload
+	// (`use fragment X { … }`) rides on the USE_FRAGMENT sentinel's Children.
+	payload := w.Children
+	slotCount := countSlots(widgets)
+	switch {
+	case slotCount == 0 && len(payload) > 0:
+		return nil, mdlerrors.NewValidation(fmt.Sprintf(
+			"fragment %q does not declare a `slot`, but content was supplied via `use fragment %s { … }`",
+			w.Name, w.Name))
+	case slotCount == 0:
+		return widgets, nil
+	case slotCount > 1:
+		return nil, mdlerrors.NewValidation(fmt.Sprintf(
+			"fragment %q declares %d slots; a content-slot fragment supports a single slot",
+			w.Name, slotCount))
+	}
+	// Expand nested fragment / building-block refs in the payload before splicing,
+	// so a payload can itself compose other fragments.
+	expandedPayload, err := pb.expandFragments(payload)
+	if err != nil {
+		return nil, err
+	}
+	widgets = replaceSlots(widgets, expandedPayload)
 	return widgets, nil
+}
+
+// countSlots returns the number of SLOT sentinels anywhere in the tree.
+func countSlots(widgets []*ast.WidgetV3) int {
+	n := 0
+	for _, w := range widgets {
+		if w.Type == "SLOT" {
+			n++
+		}
+		n += countSlots(w.Children)
+	}
+	return n
+}
+
+// replaceSlots returns a new widget list with each SLOT sentinel replaced by a
+// fresh clone of the payload, recursing into children. Callers guarantee a single
+// slot (v1), so the per-slot clone never duplicates caller-named widgets.
+func replaceSlots(widgets []*ast.WidgetV3, payload []*ast.WidgetV3) []*ast.WidgetV3 {
+	var out []*ast.WidgetV3
+	for _, w := range widgets {
+		if w.Type == "SLOT" {
+			out = append(out, cloneWidgets(payload)...)
+			continue
+		}
+		w.Children = replaceSlots(w.Children, payload)
+		out = append(out, w)
+	}
+	return out
 }
 
 // expandBuildingBlockRef deep-copies a building block's widget tree into the

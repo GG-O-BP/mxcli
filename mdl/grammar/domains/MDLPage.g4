@@ -190,7 +190,16 @@ snippetHeaderPropertyV3
 // `placeholder <Name> { … }` block binds its widgets to that named layout
 // placeholder (issue #532 — pages over a layout with >1 placeholder).
 pageBodyV3
-    : (widgetV3 | useFragmentRef | useBuildingBlockRef | placeholderBlockV3)*
+    : (widgetV3 | useFragmentRef | useBuildingBlockRef | placeholderBlockV3 | slotMarkerV3)*
+    ;
+
+// SLOT [name] — a content placeholder inside a `define fragment` body. When the
+// fragment is used with a payload (`use fragment X { … }`), the caller's widgets
+// are spliced in at this position. The name is optional (defaults to "content")
+// and, for v1, cosmetic — a fragment supports a single slot. Outside a fragment
+// definition a slot marker is rejected at expansion time.
+slotMarkerV3
+    : SLOT identifierOrKeyword?
     ;
 
 // PLACEHOLDER <Name> { widgets } — assign widgets to a named layout placeholder.
@@ -199,9 +208,16 @@ placeholderBlockV3
     : PLACEHOLDER identifierOrKeyword LBRACE (widgetV3 | useFragmentRef | useBuildingBlockRef)* RBRACE
     ;
 
-// USE FRAGMENT Name [AS prefix_]
+// USE FRAGMENT Name [AS prefix_] [ { payload widgets } ]
+// The optional brace block supplies the widgets that fill the fragment's content
+// slot (see slotMarkerV3). Without it, a slotted fragment expands with an empty
+// slot.
 useFragmentRef
-    : USE FRAGMENT identifierOrKeyword (AS identifierOrKeyword)?
+    : USE FRAGMENT identifierOrKeyword (AS identifierOrKeyword)? useFragmentPayload?
+    ;
+
+useFragmentPayload
+    : LBRACE pageBodyV3 RBRACE
     ;
 
 // USE BUILDING BLOCK Module.Name [AS prefix_]

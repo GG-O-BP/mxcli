@@ -385,6 +385,115 @@ func TestExpandIfFragmentWithPrefix(t *testing.T) {
 	}
 }
 
+func slotFrag(name string, slots int) *ast.DefineFragmentStmt {
+	body := &ast.WidgetV3{Type: "container", Name: "wrap", Properties: map[string]interface{}{}}
+	for i := 0; i < slots; i++ {
+		body.Children = append(body.Children, &ast.WidgetV3{Type: "SLOT", Name: "content", Properties: map[string]interface{}{}})
+	}
+	return &ast.DefineFragmentStmt{Name: name, Widgets: []*ast.WidgetV3{body}}
+}
+
+func TestExpandFragmentSplicesPayloadIntoSlot(t *testing.T) {
+	frag := slotFrag("Card", 1)
+	pb := &pageBuilder{fragments: map[string]*ast.DefineFragmentStmt{"Card": frag}}
+
+	w := &ast.WidgetV3{
+		Type:       "USE_FRAGMENT",
+		Name:       "Card",
+		Properties: map[string]interface{}{},
+		Children: []*ast.WidgetV3{
+			{Type: "dynamictext", Name: "hello", Properties: map[string]interface{}{"Content": "Hi"}},
+			{Type: "dynamictext", Name: "sub", Properties: map[string]interface{}{"Content": "wrapped"}},
+		},
+	}
+	result, err := pb.expandIfFragment(w)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("Expected 1 top-level widget (wrap), got %d", len(result))
+	}
+	wrap := result[0]
+	if len(wrap.Children) != 2 {
+		t.Fatalf("Expected 2 spliced payload widgets, got %d", len(wrap.Children))
+	}
+	if wrap.Children[0].Name != "hello" || wrap.Children[1].Name != "sub" {
+		t.Errorf("Payload not spliced in order: %q, %q", wrap.Children[0].Name, wrap.Children[1].Name)
+	}
+	// The slot sentinel must be gone.
+	if countSlots(result) != 0 {
+		t.Error("Expected no SLOT sentinels after expansion")
+	}
+	// Payload must be a clone, not the caller's pointer.
+	if wrap.Children[0] == w.Children[0] {
+		t.Error("Spliced payload should be a clone, not the original pointer")
+	}
+	// The fragment definition must be untouched (still holds a slot).
+	if countSlots(frag.Widgets) != 1 {
+		t.Error("Fragment definition should still hold its slot after expansion")
+	}
+}
+
+func TestExpandFragmentEmptySlotWhenNoPayload(t *testing.T) {
+	frag := slotFrag("Card", 1)
+	pb := &pageBuilder{fragments: map[string]*ast.DefineFragmentStmt{"Card": frag}}
+
+	w := &ast.WidgetV3{Type: "USE_FRAGMENT", Name: "Card", Properties: map[string]interface{}{}}
+	result, err := pb.expandIfFragment(w)
+	if err != nil {
+		t.Fatalf("Unexpected error for empty slot: %v", err)
+	}
+	if len(result) != 1 || len(result[0].Children) != 0 {
+		t.Errorf("Expected an empty wrap, got %+v", result)
+	}
+}
+
+func TestExpandFragmentPayloadWithoutSlotErrors(t *testing.T) {
+	frag := slotFrag("NoSlot", 0)
+	pb := &pageBuilder{fragments: map[string]*ast.DefineFragmentStmt{"NoSlot": frag}}
+
+	w := &ast.WidgetV3{
+		Type: "USE_FRAGMENT", Name: "NoSlot", Properties: map[string]interface{}{},
+		Children: []*ast.WidgetV3{{Type: "dynamictext", Name: "extra", Properties: map[string]interface{}{}}},
+	}
+	_, err := pb.expandIfFragment(w)
+	if err == nil {
+		t.Fatal("Expected error when payload supplied to a slotless fragment")
+	}
+	if !strings.Contains(err.Error(), "does not declare a `slot`") {
+		t.Errorf("Unexpected error: %v", err)
+	}
+}
+
+func TestExpandFragmentMultipleSlotsErrors(t *testing.T) {
+	frag := slotFrag("TwoSlots", 2)
+	pb := &pageBuilder{fragments: map[string]*ast.DefineFragmentStmt{"TwoSlots": frag}}
+
+	w := &ast.WidgetV3{
+		Type: "USE_FRAGMENT", Name: "TwoSlots", Properties: map[string]interface{}{},
+		Children: []*ast.WidgetV3{{Type: "dynamictext", Name: "x", Properties: map[string]interface{}{}}},
+	}
+	_, err := pb.expandIfFragment(w)
+	if err == nil {
+		t.Fatal("Expected error for a fragment declaring multiple slots")
+	}
+	if !strings.Contains(err.Error(), "single slot") {
+		t.Errorf("Unexpected error: %v", err)
+	}
+}
+
+func TestExpandBareSlotErrors(t *testing.T) {
+	pb := &pageBuilder{fragments: map[string]*ast.DefineFragmentStmt{}}
+	w := &ast.WidgetV3{Type: "SLOT", Name: "content", Properties: map[string]interface{}{}}
+	_, err := pb.expandIfFragment(w)
+	if err == nil {
+		t.Fatal("Expected error for a bare slot outside a fragment")
+	}
+	if !strings.Contains(err.Error(), "only valid inside a `define fragment`") {
+		t.Errorf("Unexpected error: %v", err)
+	}
+}
+
 func TestRoundtripDefineAndDescribe(t *testing.T) {
 	input := `define fragment Footer as {
 		footer f1 {
