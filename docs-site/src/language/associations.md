@@ -66,7 +66,7 @@ Controls what happens when an associated object is deleted.
 | Behavior | MDL Keyword | Description |
 |----------|-------------|-------------|
 | Keep references | `DELETE_BUT_KEEP_REFERENCES` | Delete the object, set references to null |
-| Cascade | `DELETE_CASCADE` | Delete associated objects as well |
+| Cascade | `DELETE_AND_REFERENCES` | Delete associated objects as well |
 
 ```sql
 /** Invoice must be deleted with Order */
@@ -74,7 +74,7 @@ CREATE ASSOCIATION Sales.Order_Invoice
   FROM Sales.Order
   TO Sales.Invoice
   TYPE Reference
-  DELETE_BEHAVIOR DELETE_CASCADE;
+  DELETE_BEHAVIOR DELETE_AND_REFERENCES;
 ```
 
 ## Naming Convention
