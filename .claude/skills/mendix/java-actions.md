@@ -649,7 +649,7 @@ begin
         EmailAddress = $customer/Email
     );
 
-    if not $isValid then
+    if not($isValid) then
         validation feedback $customer/Email
             message 'Please enter a valid email address';
     end if;

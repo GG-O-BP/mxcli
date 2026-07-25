@@ -766,6 +766,26 @@ container card1 (OnClick: microflow MyModule.ACT_OpenDetails, class: 'clickable-
 This maps to the Mendix Container's **On click** event (`Forms$DivContainer.OnClickAction`).
 A container with no `OnClick:`/`Action:` is non-clickable (a no-op action), exactly as in Studio Pro.
 
+**Prefer a clickable container over an `actionbutton` when the trigger needs child
+widgets or a context argument.** An `actionbutton` can't contain child widgets and
+maps only page-context object parameters — so a tile showing a digit over a label,
+or a card that opens a specific object, is best built as a `container` with
+`OnClick:`. The container's `OnClick:` takes the same `(Param: …)` argument syntax
+as an `actionbutton`'s `action:`:
+
+```sql
+-- Rich, parameterised trigger: a card that opens the object it represents
+container tileCard (OnClick: microflow MyModule.ACT_Open(Item: $currentObject), class: 'tile') {
+  dynamictext tileValue (content: '4')
+  dynamictext tileLabel (content: '4 LEFT', class: 'tile-label')
+}
+```
+
+Note the Mendix limit this works around: a button (or `OnClick`) can map **object**
+parameters from the page context but **cannot pass a literal argument**. To vary a
+literal per trigger (e.g. a 1–9 number pad), make one real microflow and a thin
+wrapper per value (`ACT_Set1`…`ACT_Set9`), each calling the shared implementation.
+
 ### FOOTER Widget
 
 Container for form action buttons:
