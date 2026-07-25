@@ -226,7 +226,7 @@ Mendix supports four built-in auditing properties on persistent entities. Declar
  * Order with full audit trail
  */
 create persistent entity Sales.Order (
-  OrderNumber: autonumber,
+  OrderNumber: autonumber default 1,
   TotalAmount: decimal not null,
   status: enumeration(Sales.OrderStatus) not null,
   owner: autoowner,
