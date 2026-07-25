@@ -218,11 +218,23 @@ func looksLikeQuotedGrantAttribute(msg string) bool {
 	return false
 }
 
+// contractionSuffixes are the token fragments ANTLR is left holding after an
+// unescaped apostrophe splits an English contraction: 'don't' → string 'don' +
+// leftover t; 'it's' → s; 'you'll' → ll; 'you're' → re; 'we've' → ve; 'he'd' →
+// d; 'I'm' → m. Matching this fixed set (rather than "any short lowercase word")
+// is what keeps the apostrophe hint from firing on real MDL keywords/identifiers
+// that happen to be short and lowercase — e.g. a misplaced `on`, `in`, `as`,
+// `to`, `by` produced the wrong "unescaped apostrophe" advice before (findings #4).
+var contractionSuffixes = map[string]bool{
+	"s": true, "t": true, "d": true, "m": true,
+	"re": true, "ve": true, "ll": true,
+}
+
 // looksLikeUnescapedApostrophe detects ANTLR errors that are likely caused by
 // unescaped apostrophes in string literals. When 'don't' is parsed, ANTLR sees
 // 'don' as a complete string, then 't' as an unexpected token, producing errors
 // like: missing END at 's', mismatched input 't', or token recognition error at: ”;
-// We detect short (1-4 char) lowercase word fragments and unbalanced quote errors.
+// We detect the specific contraction-suffix fragments and unbalanced quote errors.
 func looksLikeUnescapedApostrophe(msg string) bool {
 	// Pattern 1: "token recognition error at: ''" — unbalanced trailing quote
 	if strings.Contains(msg, "token recognition error at: ''") {
@@ -265,24 +277,14 @@ func looksLikeUnescapedApostrophe(msg string) bool {
 			token = msg[searchFrom : searchFrom+tokenEnd]
 		}
 
-		// Short lowercase word fragments are likely apostrophe artifacts
-		// e.g., "s" from "it's", "ll" from "you'll", "t" from "don't",
-		// "re" from "you're", "ve" from "we've", "d" from "he'd"
-		if len(token) >= 1 && len(token) <= 4 && isLowerAlpha(token) {
+		// Only the specific contraction-suffix fragments are apostrophe artifacts.
+		// A real MDL keyword/identifier (on, in, as, to, by, …) is short and
+		// lowercase too, but is NOT a contraction leftover, so it must not match.
+		if contractionSuffixes[token] {
 			return true
 		}
 	}
 	return false
-}
-
-// isLowerAlpha returns true if s consists entirely of lowercase ASCII letters.
-func isLowerAlpha(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] < 'a' || s[i] > 'z' {
-			return false
-		}
-	}
-	return true
 }
 
 // Builder walks the ANTLR parse tree and builds AST nodes.
