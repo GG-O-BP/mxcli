@@ -5,6 +5,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -362,6 +363,46 @@ func (e *Executor) ExecuteProgram(prog *ast.Program) error {
 		created.collectSingle(stmt)
 	}
 	return e.finalizeProgramExecution()
+}
+
+// ExecuteProgramResult reports the outcome of a continue-on-error run.
+type ExecuteProgramResult struct {
+	Total     int // statements attempted
+	Succeeded int
+	Failed    int
+}
+
+// ExecuteProgramContinueOnError runs every statement in the program, reporting
+// each failure to w instead of halting on the first one, and returns a summary.
+// This makes a partially-applied domain script re-runnable: the already-applied
+// statements error individually (e.g. "attribute already exists") while the not-
+// yet-applied ones still run. Unlike the default ExecuteProgram, a failure never
+// masks later work — but each error is surfaced, so a real mistake is still
+// visible (the caller is expected to exit non-zero when Failed > 0). ErrExit is
+// honoured (stops the run) and returned, so `exit`/`quit` still work.
+func (e *Executor) ExecuteProgramContinueOnError(prog *ast.Program, w io.Writer) (ExecuteProgramResult, error) {
+	allDefined := newScriptContext()
+	allDefined.collectDefinitions(prog)
+	created := newScriptContext()
+
+	var res ExecuteProgramResult
+	for i, stmt := range prog.Statements {
+		res.Total++
+		if err := e.Execute(stmt); err != nil {
+			if errors.Is(err, ErrExit) {
+				return res, err
+			}
+			res.Failed++
+			fmt.Fprintf(w, "statement %d: %v\n", i+1, annotateForwardRef(err, stmt, created, allDefined))
+			continue
+		}
+		res.Succeeded++
+		created.collectSingle(stmt)
+	}
+	if err := e.finalizeProgramExecution(); err != nil {
+		return res, err
+	}
+	return res, nil
 }
 
 // finalizeProgramExecution runs post-execution reconciliation on modified domain models.
