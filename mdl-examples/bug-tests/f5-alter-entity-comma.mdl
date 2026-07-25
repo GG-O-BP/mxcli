@@ -1,0 +1,9 @@
+-- Findings #5: multiple `add attribute` clauses in one `alter entity`, separated
+-- by commas, with a default on each. Previously only the first add could carry a
+-- default (misdiagnosed) — the real cause was no comma separator in the grammar
+-- (ALTER ENTITY ... alterEntityAction+). Now `alterEntityAction (COMMA? ...)*`.
+create persistent entity Bug5.Game ( Name: string(10) );
+alter entity Bug5.Game
+  add attribute A: integer default 9,
+  add attribute B: integer default 9,
+  add attribute C: integer default 9;

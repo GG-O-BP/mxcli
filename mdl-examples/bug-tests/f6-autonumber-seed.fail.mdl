@@ -1,0 +1,4 @@
+-- Findings #6: an autonumber attribute with no seed passes parse but fails the
+-- build with CE7247 "Value cannot be empty". mxcli check now flags it (MDL023).
+-- Negative test: `mxcli check` MUST fail here.
+create persistent entity Bug6.Game ( PuzzleNo: autonumber );

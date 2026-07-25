@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/mendixlabs/mxcli/mdl/ast"
+	"github.com/mendixlabs/mxcli/mdl/linter"
 	"github.com/mendixlabs/mxcli/mdl/visitor"
 )
 
@@ -129,6 +130,62 @@ func TestValidateEntityReservedAttributeName(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("Expected reserved attribute error for CreatedDate, got: %v", violations)
+	}
+}
+
+// TestValidateEntityAutonumberNeedsSeed verifies MDL023: an autonumber attribute
+// without a seed fails the build (CE7247), so mxcli check flags it. Findings #6.
+func TestValidateEntityAutonumberNeedsSeed(t *testing.T) {
+	build := func(src string) []linter.Violation {
+		prog, errs := visitor.Build(src)
+		if len(errs) > 0 {
+			t.Fatalf("parse error: %v", errs[0])
+		}
+		return ValidateEntity(prog.Statements[0].(*ast.CreateEntityStmt))
+	}
+	hasMDL := func(vs []linter.Violation, id string) bool {
+		for _, v := range vs {
+			if v.RuleID == id {
+				return true
+			}
+		}
+		return false
+	}
+
+	if !hasMDL(build(`create persistent entity M.G ( PuzzleNo: autonumber );`), "MDL023") {
+		t.Error("expected MDL023 for a seedless autonumber")
+	}
+	if hasMDL(build(`create persistent entity M.G ( PuzzleNo: autonumber default 1 );`), "MDL023") {
+		t.Error("did not expect MDL023 when autonumber has a seed")
+	}
+}
+
+// TestValidateEntityAutoMemberRename verifies MDL022: an AutoX pseudo-type
+// declared under a name other than its fixed system member warns that the name
+// is discarded on write. Findings #7.
+func TestValidateEntityAutoMemberRename(t *testing.T) {
+	build := func(src string) []linter.Violation {
+		prog, errs := visitor.Build(src)
+		if len(errs) > 0 {
+			t.Fatalf("parse error: %v", errs[0])
+		}
+		return ValidateEntity(prog.Statements[0].(*ast.CreateEntityStmt))
+	}
+	hasMDL := func(vs []linter.Violation, id string) bool {
+		for _, v := range vs {
+			if v.RuleID == id {
+				return true
+			}
+		}
+		return false
+	}
+
+	if !hasMDL(build(`create persistent entity M.G ( StartedAt: autocreateddate );`), "MDL022") {
+		t.Error("expected MDL022 for a renamed autocreateddate")
+	}
+	// Canonical name (case-insensitive) does not warn.
+	if hasMDL(build(`create persistent entity M.G ( CreatedDate: autocreateddate );`), "MDL022") {
+		t.Error("did not expect MDL022 when the name matches the system member")
 	}
 }
 

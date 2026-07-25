@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/mendixlabs/mxcli/cmd/mxcli/docker"
 	"github.com/spf13/cobra"
@@ -66,6 +67,12 @@ Examples:
 		if projectPath == "" {
 			fmt.Fprintln(os.Stderr, "Error: --project (-p) is required")
 			os.Exit(1)
+		}
+		// MxBuild requires an absolute project path; resolve a relative -p here
+		// rather than surfacing MxBuild's raw "path should be an absolute path"
+		// error (findings #17).
+		if abs, err := filepath.Abs(projectPath); err == nil {
+			projectPath = abs
 		}
 
 		watch, _ := cmd.Flags().GetBool("watch")
