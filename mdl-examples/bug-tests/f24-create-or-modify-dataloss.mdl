@@ -1,0 +1,18 @@
+-- Findings #24: `create or modify entity` rebuilds the entity from the statement
+-- alone and REPLACES the stored one, so any existing attribute the statement
+-- omits is silently dropped (later surfacing as CE1613 on widgets still bound to
+-- it). This is now non-blocking but WARNED: running the second statement against
+-- a project where Sudoku.Game already has Solution/Difficulty prints a data-loss
+-- warning listing the dropped members, and points at ALTER ENTITY for safe,
+-- incremental edits.
+--
+-- Syntactically valid (this file is a syntax example, not a negative test); the
+-- warning only appears when executed against a project that has the fuller entity.
+
+-- Safe incremental change — edits only the named member, leaves the rest intact:
+alter entity Sudoku.Game add attribute Score: integer;
+
+-- Destructive replace — keep ONLY if you intend to drop everything not listed:
+create or modify entity Sudoku.Game (
+  Puzzle: string
+);

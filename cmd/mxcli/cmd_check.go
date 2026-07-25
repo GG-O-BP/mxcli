@@ -113,6 +113,10 @@ Examples:
 			if entityStmt, ok := stmt.(*ast.CreateEntityStmt); ok {
 				violations = append(violations, executor.ValidateEntity(entityStmt)...)
 			}
+			// Apply the same per-attribute checks to ALTER ENTITY ADD ATTRIBUTE
+			if alterStmt, ok := stmt.(*ast.AlterEntityStmt); ok {
+				violations = append(violations, executor.ValidateAlterEntity(alterStmt)...)
+			}
 			// Check microflow body for common issues
 			if mfStmt, ok := stmt.(*ast.CreateMicroflowStmt); ok {
 				violations = append(violations, executor.ValidateMicroflow(mfStmt)...)
