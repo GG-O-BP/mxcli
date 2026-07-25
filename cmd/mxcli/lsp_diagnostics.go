@@ -272,6 +272,9 @@ func (s *mdlServer) runSemanticValidation(text string) []protocol.Diagnostic {
 		if entityStmt, ok := stmt.(*ast.CreateEntityStmt); ok {
 			violations = append(violations, executor.ValidateEntity(entityStmt)...)
 		}
+		if alterStmt, ok := stmt.(*ast.AlterEntityStmt); ok {
+			violations = append(violations, executor.ValidateAlterEntity(alterStmt)...)
+		}
 		if mfStmt, ok := stmt.(*ast.CreateMicroflowStmt); ok {
 			violations = append(violations, executor.ValidateMicroflow(mfStmt)...)
 		}
