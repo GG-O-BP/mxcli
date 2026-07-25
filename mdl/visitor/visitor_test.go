@@ -1224,6 +1224,33 @@ func TestEnhanceErrorMessage_Apostrophe(t *testing.T) {
 			msg:      "no viable alternative at input 'CREATE PERSISTENT'",
 			wantHint: false,
 		},
+		// findings #4: real short lowercase MDL keywords/identifiers are NOT
+		// contraction leftovers and must not draw the apostrophe hint.
+		{
+			name:     "keyword on is not apostrophe",
+			msg:      "mismatched input 'on' expecting {';', ','}",
+			wantHint: false,
+		},
+		{
+			name:     "keyword in is not apostrophe",
+			msg:      "extraneous input 'in' expecting {';', ','}",
+			wantHint: false,
+		},
+		{
+			name:     "keyword as is not apostrophe",
+			msg:      "mismatched input 'as' expecting {';', ','}",
+			wantHint: false,
+		},
+		{
+			name:     "keyword to is not apostrophe",
+			msg:      "missing ';' at 'to'",
+			wantHint: false,
+		},
+		{
+			name:     "keyword by is not apostrophe",
+			msg:      "mismatched input 'by' expecting {';', ','}",
+			wantHint: false,
+		},
 	}
 
 	for _, tt := range tests {
