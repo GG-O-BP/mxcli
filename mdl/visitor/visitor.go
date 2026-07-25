@@ -5,6 +5,7 @@ package visitor
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/antlr4-go/antlr/v4"
@@ -16,6 +17,7 @@ import (
 type errorListener struct {
 	*antlr.DefaultErrorListener
 	errors []error
+	source []string // input split into lines, for source-aware hints
 }
 
 func newErrorListener() *errorListener {
@@ -27,14 +29,67 @@ func newErrorListener() *errorListener {
 
 // SyntaxError is called by ANTLR when a syntax error is encountered.
 func (l *errorListener) SyntaxError(_ antlr.Recognizer, _ any, line, column int, msg string, _ antlr.RecognitionException) {
-	// Check if the error is about a reserved keyword being used as an identifier
-	enhancedMsg := enhanceErrorMessage(msg)
+	offending := ""
+	if line >= 1 && line <= len(l.source) {
+		offending = l.source[line-1]
+	}
+	enhancedMsg := enhanceErrorMessage(msg, offending)
 	l.errors = append(l.errors, fmt.Errorf("line %d:%d %s", line, column, enhancedMsg))
 }
 
-// enhanceErrorMessage checks if an error message indicates a reserved keyword
-// was used as an identifier and provides a more helpful message.
-func enhanceErrorMessage(msg string) string {
+// simplifyExpecting collapses ANTLR's raw `expecting {A, B, …}` token-set dumps,
+// which are precise but noisy: a failed statement start lists ~30 internal token
+// names (`{<EOF>, DOC_COMMENT, CREATE, ALTER, …}`), drowning the actual signal.
+// The all-statement-keywords set is rewritten to a human phrase; any other
+// oversized set is truncated. A small set (the useful case, e.g. `expecting ':'`)
+// is left untouched.
+func simplifyExpecting(msg string) string {
+	const marker = "expecting {"
+	i := strings.Index(msg, marker)
+	if i < 0 {
+		return msg
+	}
+	rel := strings.Index(msg[i:], "}")
+	if rel < 0 {
+		return msg
+	}
+	inner := msg[i+len(marker) : i+rel]
+	toks := strings.Split(inner, ", ")
+	set := make(map[string]bool, len(toks))
+	for _, t := range toks {
+		set[t] = true
+	}
+	rest := msg[i+rel+1:]
+	// The top-level statement-start set — the "this isn't a valid statement"
+	// case, usually a misspelled verb or an unterminated previous statement.
+	if set["CREATE"] && set["ALTER"] && set["DROP"] {
+		return msg[:i] + "expecting the start of a statement (create, alter, drop, show, describe, …)" + rest
+	}
+	if len(toks) > 6 {
+		return msg[:i] + "expecting one of {" + strings.Join(toks[:6], ", ") + ", …}" + rest
+	}
+	return msg
+}
+
+// enhanceErrorMessage turns a raw ANTLR syntax error into something that points
+// at the fix: it collapses noisy token-set dumps, recognises a handful of common
+// mistakes (adding a correct-vs-wrong example), and otherwise appends a pointer
+// to `mxcli syntax`. offendingLine is the source line the error occurred on (""
+// when unavailable), used for source-aware hints.
+func enhanceErrorMessage(msg, offendingLine string) string {
+	// Collapse ANTLR's oversized `expecting {…}` token dumps first, so every
+	// branch below (and the fall-through) shows the tamer form.
+	msg = simplifyExpecting(msg)
+
+	// A bare `not $x` — Mendix requires `not(expr)`. The parse error surfaces
+	// downstream (e.g. "missing THEN at '$x'"), so key off the source line, which
+	// is unambiguous for `not $…`. (sudoku findings #3)
+	if bareNotRe.MatchString(offendingLine) {
+		return fmt.Sprintf("%s\n\n  Mendix requires parentheses around a negated expression — a bare\n"+
+			"  'not <expr>' does not parse:\n"+
+			"    if not($Cell/IsInvalid) then …   (correct)\n"+
+			"    if not $Cell/IsInvalid then …    (wrong — causes parse error)", msg)
+	}
 	// Check for quoted attribute names after READ/WRITE in a GRANT clause.
 	// Users often write `READ "Attr1", "Attr2"` instead of the correct
 	// `READ (Attr1, Attr2)` — the grammar expects unquoted identifiers in parens.
@@ -116,8 +171,16 @@ func enhanceErrorMessage(msg string) string {
 		}
 	}
 
-	return msg
+	// Nothing matched a specific pattern — the location is precise but the fix
+	// isn't spelled out. Point at the syntax reference so the correct form is one
+	// command away. (Kept to one line since it can repeat across cascading errors.)
+	return msg + "  [see: mxcli syntax <topic>, e.g. entity | microflow | page]"
 }
+
+// bareNotRe matches a bare `not $…` (not followed by `(`) on a source line — the
+// exact shape of the unparenthesized-negation mistake. Scoped to `not $var` to
+// stay false-positive-free (it won't fire on `not(...)`, `is not null`, etc.).
+var bareNotRe = regexp.MustCompile(`(?i)\bnot\s+\$`)
 
 // looksLikeMisplacedExtends detects ANTLR errors caused by an EXTENDS /
 // GENERALIZATION clause placed after the entity's attribute parentheses instead
@@ -264,6 +327,7 @@ func collectLeafTokens(tree antlr.Tree, tokens *[]string) {
 func Build(input string) (*ast.Program, []error) {
 	// Create custom error listener to capture syntax errors
 	errListener := newErrorListener()
+	errListener.source = strings.Split(input, "\n")
 
 	// Create lexer with custom error listener
 	is := antlr.NewInputStream(input)

@@ -1228,8 +1228,8 @@ func TestEnhanceErrorMessage_Apostrophe(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := enhanceErrorMessage(tt.msg)
-			hasHint := result != tt.msg
+			result := enhanceErrorMessage(tt.msg, "")
+			hasHint := strings.Contains(result, "apostrophe")
 			if hasHint != tt.wantHint {
 				if tt.wantHint {
 					t.Errorf("expected apostrophe hint but got none.\n  input:  %s\n  output: %s", tt.msg, result)
@@ -1306,7 +1306,7 @@ func TestEnhanceErrorMessage_QuotedGrantAttribute(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := enhanceErrorMessage(tt.msg)
+			result := enhanceErrorMessage(tt.msg, "")
 			hasHint := strings.Contains(result, "Attribute-level GRANT")
 			if hasHint != tt.wantHint {
 				t.Errorf("expected hint=%v\n  input:  %s\n  output: %s", tt.wantHint, tt.msg, result)
@@ -1327,7 +1327,7 @@ func TestEnhanceErrorMessage_EnumEquals(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := enhanceErrorMessage(tt.msg)
+			result := enhanceErrorMessage(tt.msg, "")
 			hasHint := strings.Contains(result, "Enumeration values do not use '='")
 			if hasHint != tt.wantHint {
 				t.Errorf("expected hint=%v\n  input:  %s\n  output: %s", tt.wantHint, tt.msg, result)
@@ -2279,5 +2279,55 @@ func TestCreateOrReplaceEnumeration_FlagsCreateOrModify(t *testing.T) {
 	}
 	if !stmt.CreateOrModify {
 		t.Error("CREATE OR REPLACE should set CreateOrModify=true so the executor takes the update path")
+	}
+}
+
+// TestEnhanceErrorMessage_CollapsesTokenDump verifies the noisy statement-start
+// `expecting {30 tokens}` set is rewritten to a readable phrase (findings: error
+// messages should convey the fix, not dump internal token names).
+func TestEnhanceErrorMessage_CollapsesTokenDump(t *testing.T) {
+	raw := "extraneous input '(' expecting {<EOF>, DOC_COMMENT, CREATE, ALTER, DROP, SHOW, DESCRIBE, IDENTIFIER}"
+	out := enhanceErrorMessage(raw, "")
+	if strings.Contains(out, "DOC_COMMENT") || strings.Contains(out, "IDENTIFIER") {
+		t.Errorf("token dump not collapsed:\n%s", out)
+	}
+	if !strings.Contains(out, "start of a statement") {
+		t.Errorf("expected the statement-start phrase, got:\n%s", out)
+	}
+}
+
+// TestEnhanceErrorMessage_SmallExpectingSetUntouched keeps the useful single/small
+// expected-token messages intact.
+func TestEnhanceErrorMessage_SmallExpectingSetUntouched(t *testing.T) {
+	raw := "mismatched input '=' expecting ':'"
+	out := enhanceErrorMessage(raw, "")
+	if !strings.Contains(out, "expecting ':'") {
+		t.Errorf("small expecting set should be preserved, got:\n%s", out)
+	}
+}
+
+// TestEnhanceErrorMessage_BareNotHint fires the not(expr) hint from the source
+// line (sudoku findings #3), and not otherwise.
+func TestEnhanceErrorMessage_BareNotHint(t *testing.T) {
+	const notHint = "negated expression"
+	out := enhanceErrorMessage("mismatched input '$x' expecting THEN", "  if not $Cell/IsInvalid then")
+	if !strings.Contains(out, notHint) || !strings.Contains(out, "not($Cell") {
+		t.Errorf("expected the bare-not hint, got:\n%s", out)
+	}
+	// A properly parenthesized not must not trigger it.
+	if strings.Contains(enhanceErrorMessage("mismatched input 'foo' expecting ';'", "  if not($Cell/Flag) then"), notHint) {
+		t.Error("not(expr) should not trigger the bare-not hint")
+	}
+}
+
+// TestBuild_BareNotEndToEnd confirms the hint reaches the surface through Build.
+func TestBuild_BareNotEndToEnd(t *testing.T) {
+	_, errs := Build("create microflow M.T() begin if not $x then log info 'a'; end if; return true; end")
+	joined := ""
+	for _, e := range errs {
+		joined += e.Error() + "\n"
+	}
+	if !strings.Contains(joined, "not(") {
+		t.Errorf("expected a not(expr) hint in Build errors, got:\n%s", joined)
 	}
 }
