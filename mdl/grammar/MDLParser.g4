@@ -130,7 +130,7 @@ createStatement
     ;
 
 alterStatement
-    : ALTER ENTITY qualifiedName alterEntityAction+
+    : ALTER ENTITY qualifiedName alterEntityAction (COMMA? alterEntityAction)*
     | ALTER ASSOCIATION qualifiedName alterAssociationAction+
     | ALTER ENUMERATION qualifiedName alterEnumerationAction+
     | ALTER NOTEBOOK qualifiedName alterNotebookAction+

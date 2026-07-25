@@ -425,6 +425,16 @@ var mendixSystemAttributeNames = map[string]bool{
 	"changedby":   true,
 }
 
+// autoMemberNames maps each AutoX pseudo-type to the fixed Mendix system member
+// name it materializes as. The declared identifier is discarded on write, so a
+// mismatch is worth a warning (MDL022). Compared case-insensitively.
+var autoMemberNames = map[ast.DataTypeKind]string{
+	ast.TypeAutoOwner:       "owner",
+	ast.TypeAutoChangedBy:   "ChangedBy",
+	ast.TypeAutoCreatedDate: "CreatedDate",
+	ast.TypeAutoChangedDate: "ChangedDate",
+}
+
 // ValidateEntity checks entity attribute names for reserved system names.
 // Returns a list of structured violations with rule IDs. This function does not require a project connection.
 //
@@ -437,9 +447,42 @@ var mendixSystemAttributeNames = map[string]bool{
 func ValidateEntity(stmt *ast.CreateEntityStmt) []linter.Violation {
 	var violations []linter.Violation
 	for _, attr := range stmt.Attributes {
-		// Skip pseudo-types — these ARE the system attributes (persistent entities only).
-		if attr.Type.Kind == ast.TypeAutoOwner || attr.Type.Kind == ast.TypeAutoChangedBy ||
-			attr.Type.Kind == ast.TypeAutoCreatedDate || attr.Type.Kind == ast.TypeAutoChangedDate {
+		// AutoX pseudo-types ARE the system attributes. The declared identifier is
+		// discarded — the field always materializes under its fixed system member
+		// name — so warn (MDL022) when the two differ, since the write silently
+		// renames it and the resulting member can't be bound as a regular widget
+		// attribute (a widget binding it fails the build with CE1613). (findings #7)
+		if canon, ok := autoMemberNames[attr.Type.Kind]; ok {
+			if !strings.EqualFold(attr.Name, canon) {
+				violations = append(violations, linter.Violation{
+					RuleID:   "MDL022",
+					Severity: linter.SeverityWarning,
+					Message: fmt.Sprintf(
+						"attribute '%s: %s' is renamed to the fixed system member '%s' on write — "+
+							"the declared name is discarded",
+						attr.Name, attr.Type.Kind, canon),
+					Location: linter.Location{DocumentType: "entity", DocumentName: stmt.Name.String()},
+					Suggestion: fmt.Sprintf(
+						"Declare it as '%s: %s' to match. This is a Mendix system member and cannot be "+
+							"bound in a widget; to store a value a widget can show, use a plain attribute "+
+							"(e.g. '%s: DateTime') and set it yourself.",
+						canon, attr.Type.Kind, attr.Name),
+				})
+			}
+			continue
+		}
+		// autonumber needs a seed, or the build fails CE7247 "Value cannot be
+		// empty". mxcli check accepted it silently before. (findings #6)
+		if attr.Type.Kind == ast.TypeAutoNumber && !attr.HasDefault {
+			violations = append(violations, linter.Violation{
+				RuleID:   "MDL023",
+				Severity: linter.SeverityError,
+				Message: fmt.Sprintf(
+					"autonumber attribute '%s' has no seed — the build fails CE7247 \"Value cannot be empty\"",
+					attr.Name),
+				Location:   linter.Location{DocumentType: "entity", DocumentName: stmt.Name.String()},
+				Suggestion: fmt.Sprintf("Give it a start value: '%s: autonumber default 1'", attr.Name),
+			})
 			continue
 		}
 		lower := strings.ToLower(attr.Name)

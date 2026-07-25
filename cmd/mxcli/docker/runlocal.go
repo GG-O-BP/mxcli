@@ -776,7 +776,14 @@ func watchAndApply(opts LocalRunOptions, serve *ServeServer, rt *LocalRuntime, w
 				continue
 			}
 			if !build.OK() {
+				// Surface the full serve response, not just the generic message —
+				// it carries the real detail (e.g. the SCSS compiler's
+				// "Expected expression. _x.scss 180:35" or which model errors),
+				// matching the cold-build path. (findings #15, #23)
 				fmt.Fprintf(opts.Stderr, "  build failed: %s\n", build.Message)
+				if raw := strings.TrimSpace(string(build.Raw)); raw != "" && raw != build.Message {
+					fmt.Fprintf(opts.Stderr, "    %s\n", raw)
+				}
 				continue
 			}
 			// If the serve build touched web/ source, wait (briefly) for the
