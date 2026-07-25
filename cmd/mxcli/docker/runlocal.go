@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -492,9 +493,31 @@ func RunLocal(opts LocalRunOptions) error {
 		if err != nil {
 			return fmt.Errorf("starting hub tunnel: %w", err)
 		}
-		defer tunnel.Stop()
+		// The heartbeat re-registers if the hub restarts; when that lands on a new
+		// reverse port, restart the tunnel to the new port. Guard the handle since
+		// the callback runs on the heartbeat goroutine.
+		var tunMu sync.Mutex
+		defer func() { tunMu.Lock(); tunnel.Stop(); tunMu.Unlock() }()
 
-		hb := StartHeartbeat(hubReg)
+		hb := StartHeartbeat(hubReg, func(reg *HubRegistration) {
+			tunMu.Lock()
+			defer tunMu.Unlock()
+			tunnel.Stop()
+			nt, err := StartTunnel(TunnelOptions{
+				HubURL:     reg.ControlURL,
+				LocalPort:  opts.AppPort,
+				RemotePort: reg.ReversePort,
+				Secret:     reg.TunnelAuth,
+				PublicURL:  reg.URL,
+				Stdout:     w,
+			})
+			if err != nil {
+				fmt.Fprintf(stderr, "hub re-registered but restarting the tunnel failed: %v\n", err)
+				return
+			}
+			tunnel = nt
+			fmt.Fprintf(w, "Re-registered with hub after restart; preview available at %s\n", reg.URL)
+		})
 		defer hb.Stop()
 
 		fmt.Fprintf(w, "Preview available at %s\n", hubReg.URL)
