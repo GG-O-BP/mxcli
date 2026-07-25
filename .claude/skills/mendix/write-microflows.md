@@ -818,8 +818,13 @@ empty                      -- Null/empty value
 [%CurrentDateTime%]        -- Current date/time
 [%CurrentUser%]            -- Current user object
 toString($value)           -- Convert to string
-randomInt($max)            -- Random integer
 ```
+
+> **No `randomInt`.** Mendix has no `randomInt` function. Use `random()` (returns a
+> Decimal in [0,1)) and round to an integer range — e.g. a value in 0..8 is
+> `round(random() * 8)`. Because `random()` is a Decimal, assigning it (or `div`,
+> `secondsBetween()`, and the other `*Between` functions) directly to an `integer`
+> variable fails the build with CE0117 — wrap it in `round()`/`floor()`/`ceil()`.
 
 ## Complete Example
 

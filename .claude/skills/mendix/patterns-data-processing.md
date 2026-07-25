@@ -269,7 +269,7 @@ begin
   -- Collect items to remove
   loop $item in $Items
   begin
-    if not $item/IsActive then
+    if not($item/IsActive) then
       add $item to $ToRemove;
     end if;
   end loop;

@@ -45,10 +45,12 @@ spacing, font, component shapes. Do not invent styling the prototype doesn't sho
 
 ## Where the Theme Lives (read this first — it avoids the main friction)
 
-- **Custom styles go inline in `theme/web/main.scss`, AFTER the `@import`s.** mxcli/the
-  agent generally **cannot create new SCSS partials** (only existing files are writable),
-  and styles placed after the imports win the cascade over Atlas defaults. Put all your
-  design tokens and component classes there.
+- **Custom styles go in `theme/web/main.scss` AFTER the `@import`s, or in your own
+  partial.** Styles placed after the imports win the cascade over Atlas defaults. Once
+  `main.scss` grows, prefer splitting a partial out for readability: create
+  `theme/web/_<name>.scss` and add `@import "<name>";` after the Atlas imports (the same
+  cascade-order rule then applies within the partial). New partials **are** creatable —
+  keep the import order (custom after Atlas) and everything works.
 - Use a **project prefix** for every custom class and CSS variable so they never collide
   with Atlas or widget CSS. This project uses `ss-` (e.g. `.ss-panel`, `--ss-primary`).
   Pick one prefix and use it everywhere.
@@ -415,6 +417,29 @@ container heatCell (
 ```
 
 (Note the doubled single-quotes for string literals inside an MDL expression.)
+
+### Computed dimensions — the bucket-class idiom
+
+A widget has **no computed inline style**: `Style:` is a static string and
+`DynamicClasses:` returns *class names*, not CSS values. So anything with a
+data-driven dimension — a progress bar width, a bar-chart height, a meter fill —
+can't be `Style: 'width: {expr}%'`. The idiom is to **quantise the value into a
+bucket and generate one class per bucket**:
+
+1. In a microflow, publish an integer bucket attribute (e.g. `0..20`):
+   `$obj/PctBucket = round($obj/Done / $obj/Total * 20)`.
+2. Generate the classes once with an SCSS `@for` loop:
+
+```scss
+@for $i from 0 through 20 { .ss-pb-#{$i} { width: $i * 5%; } }
+```
+
+3. Select the class from the bucket:
+   `DynamicClasses: '''ss-pb-'' + toString($currentObject/PctBucket)'`.
+
+Trade-off worth noting: this adds one bucket attribute per animated dimension to the
+domain model. Pick a bucket count that matches the visual precision you need (20 → 5%
+steps is usually plenty).
 
 ### Adding classes to an existing page
 

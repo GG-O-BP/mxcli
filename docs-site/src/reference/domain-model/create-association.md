@@ -7,7 +7,7 @@
         TO to_module.to_entity
         TYPE { Reference | ReferenceSet }
         [ OWNER { Default | Both | Parent | Child } ]
-        [ DELETE_BEHAVIOR { DELETE_BUT_KEEP_REFERENCES | DELETE_CASCADE } ]
+        [ DELETE_BEHAVIOR { DELETE_BUT_KEEP_REFERENCES | DELETE_AND_REFERENCES } ]
 
 ## Description
 
@@ -34,7 +34,7 @@ The `DELETE_BEHAVIOR` clause controls what happens when an object on the FROM si
 | Behavior | Description |
 |----------|-------------|
 | `DELETE_BUT_KEEP_REFERENCES` | Delete the object and set references to null |
-| `DELETE_CASCADE` | Delete the object and all associated objects on the TO side |
+| `DELETE_AND_REFERENCES` | Delete the object and all associated objects on the TO side |
 
 If `OR MODIFY` is specified, the statement is idempotent: if the association already exists, it is updated to match the new definition.
 
@@ -94,7 +94,7 @@ CREATE ASSOCIATION Sales.Order_Invoice
     FROM Sales.Order
     TO Sales.Invoice
     TYPE Reference
-    DELETE_BEHAVIOR DELETE_CASCADE;
+    DELETE_BEHAVIOR DELETE_AND_REFERENCES;
 ```
 
 ### Idempotent with OR MODIFY
