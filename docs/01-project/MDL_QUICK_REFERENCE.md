@@ -95,6 +95,10 @@ Modifies an existing entity without full replacement.
 | Set position | `alter entity Module.Name set position (100, 200);` | Canvas position |
 | Add system attribute | `alter entity Module.Name add attribute owner: autoowner;` | Same syntax as regular attributes |
 | Drop system attribute | `alter entity Module.Name drop attribute owner;` | Drop by system attribute name |
+| Add attribute (idempotent) | `alter entity Module.Name add attribute if not exists AttrName: type;` | Skipped (not an error) if the attribute already exists — re-runnable |
+| Drop attribute (idempotent) | `alter entity Module.Name drop attribute if exists AttrName;` | Skipped (not an error) if the attribute is already gone — re-runnable |
+
+> **Re-running domain scripts.** `IF NOT EXISTS` / `IF EXISTS` make an individual add/drop a no-op when already applied. To re-run a whole script that is partly applied, use `mxcli exec script.mdl --continue-on-error`: every statement is attempted, each failure is reported with its statement number, and the command exits non-zero if any failed (a real error is still surfaced, never masked).
 
 **Example:**
 ```sql

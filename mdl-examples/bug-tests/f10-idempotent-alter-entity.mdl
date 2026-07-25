@@ -1,0 +1,12 @@
+-- Findings #10: domain-delta scripts weren't re-runnable — a second run of
+-- `alter entity ... add attribute X` errored ("already exists") and, because
+-- exec halts on the first error, applied none of the remaining statements.
+--
+-- IF NOT EXISTS / IF EXISTS make each add/drop a no-op (skipped, not an error)
+-- when already applied, so this whole file can be run repeatedly and converge.
+-- (For scripts using the plain add/drop forms, `mxcli exec --continue-on-error`
+-- reports each failed statement and keeps going instead of halting.)
+
+alter entity Sudoku.Game add attribute if not exists PuzzleNo: integer default 1;
+alter entity Sudoku.Game add attribute if not exists DifficultyLevel: integer default 1;
+alter entity Sudoku.Game drop attribute if exists LegacyFlag;

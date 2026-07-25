@@ -49,9 +49,10 @@ func init() {
 			"alter entity", "modify entity", "add attribute",
 			"drop attribute", "rename attribute", "add index",
 			"event handler", "documentation",
+			"if not exists", "if exists", "idempotent",
 		},
-		Syntax:  "ALTER ENTITY Module.Name ADD ATTRIBUTE AttrName: Type [constraints];\nALTER ENTITY Module.Name DROP ATTRIBUTE AttrName;\nALTER ENTITY Module.Name RENAME ATTRIBUTE OldName TO NewName;\nALTER ENTITY Module.Name MODIFY ATTRIBUTE AttrName SET DEFAULT val;\nALTER ENTITY Module.Name ADD INDEX (attr1, attr2);\nALTER ENTITY Module.Name SET DOCUMENTATION 'text';\nALTER ENTITY Module.Name ADD EVENT HANDLER ON BEFORE COMMIT CALL Module.MF RAISE ERROR;",
-		Example: "ALTER ENTITY Shop.Customer ADD ATTRIBUTE Phone: String(20);\nALTER ENTITY Shop.Customer DROP ATTRIBUTE OldField;\nALTER ENTITY Shop.Customer RENAME ATTRIBUTE Email TO EmailAddress;\nALTER ENTITY Shop.Customer ADD INDEX (EmailAddress);\nALTER ENTITY Shop.Customer\n  ADD EVENT HANDLER ON BEFORE COMMIT CALL Shop.Validate($currentObject) RAISE ERROR;",
+		Syntax:  "ALTER ENTITY Module.Name ADD ATTRIBUTE [IF NOT EXISTS] AttrName: Type [constraints];\nALTER ENTITY Module.Name DROP ATTRIBUTE [IF EXISTS] AttrName;\nALTER ENTITY Module.Name RENAME ATTRIBUTE OldName TO NewName;\nALTER ENTITY Module.Name MODIFY ATTRIBUTE AttrName SET DEFAULT val;\nALTER ENTITY Module.Name ADD INDEX (attr1, attr2);\nALTER ENTITY Module.Name SET DOCUMENTATION 'text';\nALTER ENTITY Module.Name ADD EVENT HANDLER ON BEFORE COMMIT CALL Module.MF RAISE ERROR;\n\nIF NOT EXISTS / IF EXISTS make the add/drop a no-op (skipped, not an error)\nwhen the attribute is already present / already gone — so a domain script\nre-runs cleanly. For a whole script, 'mxcli exec --continue-on-error' reports\neach failed statement and keeps going instead of halting at the first.",
+		Example: "ALTER ENTITY Shop.Customer ADD ATTRIBUTE Phone: String(20);\nALTER ENTITY Shop.Customer ADD ATTRIBUTE IF NOT EXISTS Phone: String(20);  -- re-runnable\nALTER ENTITY Shop.Customer DROP ATTRIBUTE IF EXISTS OldField;              -- re-runnable\nALTER ENTITY Shop.Customer RENAME ATTRIBUTE Email TO EmailAddress;\nALTER ENTITY Shop.Customer ADD INDEX (EmailAddress);\nALTER ENTITY Shop.Customer\n  ADD EVENT HANDLER ON BEFORE COMMIT CALL Shop.Validate($currentObject) RAISE ERROR;",
 		SeeAlso: []string{"domain-model.entity.create", "domain-model.entity.attributes"},
 	})
 
