@@ -21,6 +21,17 @@ This skill provides reference for writing XPath constraint expressions in MDL RE
 | Empty check | `= empty`, `!= empty` | `= empty` |
 | Token quoting | `'[%CurrentUser%]'` (quoted) | `[%CurrentUser%]` (unquoted) |
 | Nested filter | `Assoc/entity[pred]` | Not applicable |
+| Arithmetic on value | **not supported** — pre-compute into a variable | `+`, `-`, `*`, `div`, `mod` |
+
+> **XPath constraints cannot compute values.** `where [Seq = $Game/MoveSeq + 1]`
+> is a parse error (Mendix XPath has no arithmetic on the value side). Compute the
+> value first, then compare against the variable:
+> ```mdl
+> $Next = $Game/MoveSeq + 1;
+> retrieve $M from Mod.Move where [Seq = $Next] limit 1;
+> ```
+> `mxcli check` explains this and shows the workaround when it sees `+`/`*`/`div`/
+> `mod` inside a constraint.
 
 ## Syntax Reference
 
