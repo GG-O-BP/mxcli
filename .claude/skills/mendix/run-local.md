@@ -116,7 +116,7 @@ Launch `run --local` as the **sole** command in its invocation (don't chain a tr
 | `--screenshot` | off | Playwright PNG after boot + each change |
 | `--screenshot-path` / `--screenshot-url` | `.mxcli/run-local.png` / app root | Screenshot output / page (URL or `/path`) |
 | `--screenshot-user` / `--screenshot-password` | — | Log in once, reuse session (pages behind login) |
-| `--runtime-log` | `.mxcli/runtime.log` | Tee the Mendix runtime's stdout+stderr to a file for debugging (`-` disables) |
+| `--runtime-log` | `.mxcli/runtime.log` | Runtime log file: JVM stdout/stderr **and** the application log (microflow `LOG` output + server stack traces, via an attached file log subscriber). `-` disables. |
 | `--app-port` / `--admin-port` / `--serve-port` | 8080 / 8090 / 6543 | Ports |
 | `--db-host` / `--db-name` / `--db-user` / `--db-password` | 127.0.0.1:5432 / derived / mendix / mendix | Database |
 
@@ -153,12 +153,23 @@ mxcli run --local -p app.mpr --watch --screenshot
 ## Debugging a server-side error
 
 When a page action throws, the browser shows the generic Mendix error dialog with no
-detail. The runtime's own log — server stack traces and your microflow `LOG ERROR`/
-`LOG INFO` output — is tee'd to `<projectDir>/.mxcli/runtime.log` (the path is printed
+detail. The runtime log — server stack traces and your microflow `LOG ERROR`/
+`LOG INFO` output — is written to `<projectDir>/.mxcli/runtime.log` (the path is printed
 at boot). `tail -f .mxcli/runtime.log` while you reproduce the action to see the stack
-and correlate it. The file is appended across restarts (each boot writes a
-`=== runtime start … ===` marker). Override the path with `--runtime-log <path>`, or
-pass `--runtime-log -` to disable the file.
+and correlate it.
+
+Two things feed that file, because a standalone runtime attaches **no** log subscriber
+by default (a Studio Pro / m2ee run does):
+
+- mxcli tees the runtime **JVM's** stdout/stderr to it (startup output, JVM-level crashes).
+- After start, mxcli attaches a Mendix **file log subscriber** so the **application** log
+  — microflow `LOG` output and server-side exception stack traces — lands there too.
+  Without this, application logs go nowhere and the file is nearly empty.
+
+The file is appended across restarts (each boot writes a `=== runtime start … ===`
+marker); the subscriber is re-attached on every restart and never rotates the file (so
+the JVM tee's handle stays valid). Override the path with `--runtime-log <path>`, or
+pass `--runtime-log -` to disable the file (and the subscriber) entirely.
 
 ## External browser preview (`--hub`)
 

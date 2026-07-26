@@ -250,6 +250,18 @@ func StartLocalRuntime(opts LocalRuntimeOptions) (*LocalRuntime, error) {
 		},
 	}
 	rt.ctrl = NewRuntimeController(rt.m2ee)
+	// Attach a file log subscriber (post-start, inside Start) so the runtime's
+	// application log lands in the same file the JVM stdout/stderr is tee'd to.
+	// An absolute path keeps the runtime (cwd = <install>/runtime) and the JVM
+	// tee (cwd = mxcli's) pointed at one file. Findings #25.
+	if opts.RuntimeLogPath != "" {
+		logPath := opts.RuntimeLogPath
+		if abs, err := filepath.Abs(logPath); err == nil {
+			logPath = abs
+		}
+		rt.ctrl.LogSubscriberFile = logPath
+		rt.ctrl.Stdout = opts.Stdout
+	}
 
 	if err := rt.spawnAndConfigure(); err != nil {
 		return nil, err

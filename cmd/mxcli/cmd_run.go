@@ -38,10 +38,13 @@ mxcli tunnel-hub, without leaving this machine: a chisel client reverse-tunnels
 the local app out over 443, and the runtime boots with ApplicationRootUrl set to
 the hub URL so the app works under that origin. --hub implies --local.
 
-The Mendix runtime's own stdout/stderr (server stack traces, microflow LOG
-output) is tee'd to <projectDir>/.mxcli/runtime.log so a server-side error is
-debuggable — the path is printed at boot. Override with --runtime-log <path>,
-or "-" to disable.
+The Mendix runtime log — server-side stack traces and your microflow LOG
+output — is written to <projectDir>/.mxcli/runtime.log so a server-side error
+is debuggable (the browser only shows a generic dialog). mxcli both tees the
+runtime JVM's stdout/stderr to the file and attaches a Mendix file log
+subscriber after start, so the application log lands there too (a standalone
+runtime attaches no subscriber by default). The path is printed at boot;
+override with --runtime-log <path>, or "-" to disable.
 
 Examples:
   mxcli run --local -p app.mpr
@@ -159,6 +162,6 @@ func init() {
 	runCmd.Flags().StringArray("screenshot-url", nil, "Page to screenshot: a full URL or a path relative to the app root, e.g. /p/customers (default the app root). Repeat for a multi-page set.")
 	runCmd.Flags().String("screenshot-user", "", "Log in with this user before screenshotting (for pages behind login)")
 	runCmd.Flags().String("screenshot-password", "", "Password for --screenshot-user")
-	runCmd.Flags().String("runtime-log", "", "Tee the Mendix runtime's stdout+stderr to this file for debugging (default <projectDir>/.mxcli/runtime.log; \"-\" to disable)")
+	runCmd.Flags().String("runtime-log", "", "Write the Mendix runtime log (server stack traces + microflow LOG output) to this file for debugging (default <projectDir>/.mxcli/runtime.log; \"-\" to disable)")
 	rootCmd.AddCommand(runCmd)
 }
