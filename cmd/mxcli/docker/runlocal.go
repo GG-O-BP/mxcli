@@ -88,8 +88,12 @@ type LocalRunOptions struct {
 	// screenshotStorage is the resolved Playwright storage-state file (from login);
 	// internal, set during boot.
 	screenshotStorage string
-	Stdout            io.Writer
-	Stderr            io.Writer
+	// RuntimeLogPath tees the Mendix runtime's stdout+stderr to a file so the
+	// warm loop is debuggable (server stack traces, microflow LOG output).
+	// Default <projectDir>/.mxcli/runtime.log; set to "-" to disable. Findings #25.
+	RuntimeLogPath string
+	Stdout         io.Writer
+	Stderr         io.Writer
 }
 
 // defaultLocalAdminPass is the admin password for a local dev runtime. The admin
@@ -132,6 +136,9 @@ func (o *LocalRunOptions) applyDefaults() {
 	}
 	if o.ScreenshotPath == "" {
 		o.ScreenshotPath = filepath.Join(filepath.Dir(o.ProjectPath), ".mxcli", "run-local.png")
+	}
+	if o.RuntimeLogPath == "" {
+		o.RuntimeLogPath = filepath.Join(filepath.Dir(o.ProjectPath), ".mxcli", "runtime.log")
 	}
 	if o.Stdout == nil {
 		o.Stdout = os.Stdout
@@ -458,7 +465,13 @@ func RunLocal(opts LocalRunOptions) error {
 		appRootURL = hubReg.URL
 	}
 
-	// 6. Boot the runtime against the fresh deployment.
+	// 6. Boot the runtime against the fresh deployment. Tee the runtime's own
+	// stdout/stderr to a log file so server-side errors are debuggable ("-"
+	// disables). (findings #25)
+	runtimeLog := opts.RuntimeLogPath
+	if runtimeLog == "-" {
+		runtimeLog = ""
+	}
 	rt, err := StartLocalRuntime(LocalRuntimeOptions{
 		DeployDir:   opts.DeployDir,
 		InstallPath: installPath,
@@ -468,6 +481,7 @@ func RunLocal(opts LocalRunOptions) error {
 		AdminPass:          opts.AdminPass,
 		ApplicationRootUrl: appRootURL,
 		DB:                 opts.DB,
+		RuntimeLogPath:     runtimeLog,
 		Stdout:             w,
 		Stderr:             stderr,
 	})
@@ -477,6 +491,9 @@ func RunLocal(opts LocalRunOptions) error {
 	defer rt.Stop()
 
 	fmt.Fprintf(w, "\nApp is running at %s\n", rt.AppURL())
+	if runtimeLog != "" {
+		fmt.Fprintf(w, "Runtime log: %s\n", runtimeLog)
+	}
 
 	// 6a. With --hub, open a reverse tunnel so the app is reachable in a browser at
 	// its public URL, and heartbeat so it shows as available in the hub overview.

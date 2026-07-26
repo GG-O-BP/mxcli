@@ -38,6 +38,11 @@ mxcli tunnel-hub, without leaving this machine: a chisel client reverse-tunnels
 the local app out over 443, and the runtime boots with ApplicationRootUrl set to
 the hub URL so the app works under that origin. --hub implies --local.
 
+The Mendix runtime's own stdout/stderr (server stack traces, microflow LOG
+output) is tee'd to <projectDir>/.mxcli/runtime.log so a server-side error is
+debuggable — the path is printed at boot. Override with --runtime-log <path>,
+or "-" to disable.
+
 Examples:
   mxcli run --local -p app.mpr
   mxcli run --local -p app.mpr --watch
@@ -90,6 +95,7 @@ Examples:
 		screenshotURLs, _ := cmd.Flags().GetStringArray("screenshot-url")
 		screenshotUser, _ := cmd.Flags().GetString("screenshot-user")
 		screenshotPassword, _ := cmd.Flags().GetString("screenshot-password")
+		runtimeLog, _ := cmd.Flags().GetString("runtime-log")
 
 		opts := docker.LocalRunOptions{
 			ProjectPath:        projectPath,
@@ -111,6 +117,7 @@ Examples:
 			ScreenshotURLs:     screenshotURLs,
 			ScreenshotUser:     screenshotUser,
 			ScreenshotPassword: screenshotPassword,
+			RuntimeLogPath:     runtimeLog,
 			DB: docker.DBConfig{
 				Host:     dbHost,
 				Name:     dbName,
@@ -152,5 +159,6 @@ func init() {
 	runCmd.Flags().StringArray("screenshot-url", nil, "Page to screenshot: a full URL or a path relative to the app root, e.g. /p/customers (default the app root). Repeat for a multi-page set.")
 	runCmd.Flags().String("screenshot-user", "", "Log in with this user before screenshotting (for pages behind login)")
 	runCmd.Flags().String("screenshot-password", "", "Password for --screenshot-user")
+	runCmd.Flags().String("runtime-log", "", "Tee the Mendix runtime's stdout+stderr to this file for debugging (default <projectDir>/.mxcli/runtime.log; \"-\" to disable)")
 	rootCmd.AddCommand(runCmd)
 }

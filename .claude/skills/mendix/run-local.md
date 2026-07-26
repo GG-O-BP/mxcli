@@ -116,6 +116,7 @@ Launch `run --local` as the **sole** command in its invocation (don't chain a tr
 | `--screenshot` | off | Playwright PNG after boot + each change |
 | `--screenshot-path` / `--screenshot-url` | `.mxcli/run-local.png` / app root | Screenshot output / page (URL or `/path`) |
 | `--screenshot-user` / `--screenshot-password` | — | Log in once, reuse session (pages behind login) |
+| `--runtime-log` | `.mxcli/runtime.log` | Tee the Mendix runtime's stdout+stderr to a file for debugging (`-` disables) |
 | `--app-port` / `--admin-port` / `--serve-port` | 8080 / 8090 / 6543 | Ports |
 | `--db-host` / `--db-name` / `--db-user` / `--db-password` | 127.0.0.1:5432 / derived / mendix / mendix | Database |
 
@@ -148,6 +149,16 @@ mxcli run --local -p app.mpr --watch --screenshot
 - `--screenshot-user`/`--screenshot-password` log in once (Mendix form auth) and
   reuse the session, so pages behind login render authenticated. Best-effort: an
   anonymous app with no login form proceeds unauthenticated.
+
+## Debugging a server-side error
+
+When a page action throws, the browser shows the generic Mendix error dialog with no
+detail. The runtime's own log — server stack traces and your microflow `LOG ERROR`/
+`LOG INFO` output — is tee'd to `<projectDir>/.mxcli/runtime.log` (the path is printed
+at boot). `tail -f .mxcli/runtime.log` while you reproduce the action to see the stack
+and correlate it. The file is appended across restarts (each boot writes a
+`=== runtime start … ===` marker). Override the path with `--runtime-log <path>`, or
+pass `--runtime-log -` to disable the file.
 
 ## External browser preview (`--hub`)
 
