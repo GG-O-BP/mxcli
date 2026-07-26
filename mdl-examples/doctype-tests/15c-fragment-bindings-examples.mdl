@@ -84,7 +84,10 @@ describe page BindTest.P001_Bound_Panel;
 --   action     → the first button widget (Atlas placeholder buttons ship with
 --                no action, so the target is matched by widget type)
 --
--- Requires the Atlas_Web_Content module (present in every standard Mendix app).
+-- Requires the Atlas_Web_Content.List_Cards building block, which ships with the
+-- Atlas UI in Mendix 11.x (it is absent from the 10.x Atlas), so this section is
+-- gated to 11.0+; the fragment-binding examples above run on every version.
+-- @version: 11.0+
 create page BindTest.P002_Rebound_Block
 (
   title: 'Rebound Block',
