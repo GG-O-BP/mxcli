@@ -250,6 +250,212 @@ func TestUseFragmentInNestedBody(t *testing.T) {
 	}
 }
 
+func TestDefineFragmentWithSlot(t *testing.T) {
+	input := `DEFINE FRAGMENT Card AS {
+		CONTAINER cardWrap (Class: 'card') {
+			CONTAINER cardBody (Class: 'card-body') {
+				SLOT content
+			}
+		}
+	};`
+
+	prog, errs := Build(input)
+	if len(errs) > 0 {
+		for _, err := range errs {
+			t.Errorf("Parse error: %v", err)
+		}
+		return
+	}
+
+	stmt := prog.Statements[0].(*ast.DefineFragmentStmt)
+	if len(stmt.Widgets) != 1 {
+		t.Fatalf("Expected 1 top-level widget, got %d", len(stmt.Widgets))
+	}
+	body := stmt.Widgets[0].Children[0] // cardBody
+	if len(body.Children) != 1 {
+		t.Fatalf("Expected 1 child (slot) in cardBody, got %d", len(body.Children))
+	}
+	slot := body.Children[0]
+	if slot.Type != "SLOT" {
+		t.Errorf("Expected SLOT sentinel, got %s", slot.Type)
+	}
+	if slot.Name != "content" {
+		t.Errorf("Expected slot name 'content', got %q", slot.Name)
+	}
+}
+
+func TestSlotDefaultsToContentWhenUnnamed(t *testing.T) {
+	input := `DEFINE FRAGMENT Panel AS {
+		CONTAINER p (Class: 'panel') { SLOT }
+	};`
+
+	prog, errs := Build(input)
+	if len(errs) > 0 {
+		for _, err := range errs {
+			t.Errorf("Parse error: %v", err)
+		}
+		return
+	}
+	stmt := prog.Statements[0].(*ast.DefineFragmentStmt)
+	slot := stmt.Widgets[0].Children[0]
+	if slot.Type != "SLOT" {
+		t.Fatalf("Expected SLOT sentinel, got %s", slot.Type)
+	}
+	if slot.Name != "content" {
+		t.Errorf("Expected unnamed slot to default to 'content', got %q", slot.Name)
+	}
+}
+
+func TestUseFragmentWithPayload(t *testing.T) {
+	input := `CREATE PAGE MyModule.TestPage
+	(Title: 'Test', Layout: Atlas_Core.Atlas_Default)
+	{
+		USE FRAGMENT Card {
+			DYNAMICTEXT hello (Content: 'Hi', RenderMode: H2)
+			DYNAMICTEXT sub (Content: 'wrapped')
+		}
+	};`
+
+	prog, errs := Build(input)
+	if len(errs) > 0 {
+		for _, err := range errs {
+			t.Errorf("Parse error: %v", err)
+		}
+		return
+	}
+
+	stmt := prog.Statements[0].(*ast.CreatePageStmtV3)
+	if len(stmt.Widgets) != 1 {
+		t.Fatalf("Expected 1 widget, got %d", len(stmt.Widgets))
+	}
+	w := stmt.Widgets[0]
+	if w.Type != "USE_FRAGMENT" {
+		t.Fatalf("Expected USE_FRAGMENT, got %s", w.Type)
+	}
+	if w.Name != "Card" {
+		t.Errorf("Expected fragment name 'Card', got %q", w.Name)
+	}
+	// The payload widgets ride on the sentinel's Children.
+	if len(w.Children) != 2 {
+		t.Fatalf("Expected 2 payload widgets on the USE_FRAGMENT sentinel, got %d", len(w.Children))
+	}
+	if w.Children[0].Name != "hello" || w.Children[1].Name != "sub" {
+		t.Errorf("Unexpected payload widget names: %q, %q", w.Children[0].Name, w.Children[1].Name)
+	}
+}
+
+func TestUseFragmentWithPrefixAndPayload(t *testing.T) {
+	input := `CREATE PAGE MyModule.TestPage
+	(Title: 'Test', Layout: Atlas_Core.Atlas_Default)
+	{
+		USE FRAGMENT Card AS pfx_ {
+			DYNAMICTEXT hello (Content: 'Hi')
+		}
+	};`
+
+	prog, errs := Build(input)
+	if len(errs) > 0 {
+		for _, err := range errs {
+			t.Errorf("Parse error: %v", err)
+		}
+		return
+	}
+	w := prog.Statements[0].(*ast.CreatePageStmtV3).Widgets[0]
+	if prefix, _ := w.Properties["Prefix"].(string); prefix != "pfx_" {
+		t.Errorf("Expected Prefix 'pfx_', got %v", w.Properties["Prefix"])
+	}
+	if len(w.Children) != 1 || w.Children[0].Name != "hello" {
+		t.Errorf("Expected 1 payload widget 'hello', got %+v", w.Children)
+	}
+}
+
+func TestDefineFragmentWithParams(t *testing.T) {
+	input := `DEFINE FRAGMENT Panel($data: datasource, $onEdit: action) AS {
+		LISTVIEW lv (DataSource: $data) {
+			ACTIONBUTTON b (Caption: 'Edit', Action: $onEdit)
+		}
+	};`
+
+	prog, errs := Build(input)
+	if len(errs) > 0 {
+		t.Fatalf("Parse errors: %v", errs)
+	}
+	stmt := prog.Statements[0].(*ast.DefineFragmentStmt)
+	if len(stmt.Params) != 2 {
+		t.Fatalf("Expected 2 params, got %d", len(stmt.Params))
+	}
+	if stmt.Params[0].Name != "data" || stmt.Params[0].Kind != "datasource" {
+		t.Errorf("param0 = %+v", stmt.Params[0])
+	}
+	if stmt.Params[1].Name != "onEdit" || stmt.Params[1].Kind != "action" {
+		t.Errorf("param1 = %+v", stmt.Params[1])
+	}
+	// The action button carries a $param action.
+	btn := stmt.Widgets[0].Children[0]
+	act := btn.GetAction()
+	if act == nil || act.Type != "param" || act.Target != "onEdit" {
+		t.Errorf("expected param action onEdit, got %+v", act)
+	}
+}
+
+func TestUseFragmentWithArgs(t *testing.T) {
+	input := `CREATE PAGE M.P (Title: 'x', Layout: A.B) {
+		USE FRAGMENT Panel ($data: database Sales.Order, $onEdit: microflow Sales.Edit) {
+			DYNAMICTEXT h (Content: 'Hi')
+		}
+	};`
+
+	prog, errs := Build(input)
+	if len(errs) > 0 {
+		t.Fatalf("Parse errors: %v", errs)
+	}
+	w := prog.Statements[0].(*ast.CreatePageStmtV3).Widgets[0]
+	if w.Type != "USE_FRAGMENT" {
+		t.Fatalf("expected USE_FRAGMENT, got %s", w.Type)
+	}
+	args, ok := w.Properties["Args"].([]ast.FragmentArg)
+	if !ok || len(args) != 2 {
+		t.Fatalf("expected 2 args, got %v", w.Properties["Args"])
+	}
+	if args[0].Name != "data" || args[0].DataSource == nil || args[0].DataSource.Type != "database" {
+		t.Errorf("arg0 = %+v", args[0])
+	}
+	// A microflow arg parses as a datasource (overlap); executor reinterprets it.
+	if args[1].Name != "onEdit" || args[1].DataSource == nil || args[1].DataSource.Type != "microflow" {
+		t.Errorf("arg1 = %+v", args[1])
+	}
+	// Payload still rides on Children.
+	if len(w.Children) != 1 || w.Children[0].Name != "h" {
+		t.Errorf("expected payload 'h', got %+v", w.Children)
+	}
+}
+
+func TestUseBuildingBlockWithOverrides(t *testing.T) {
+	input := `CREATE PAGE M.P (Title: 'x', Layout: A.B) {
+		USE BUILDING BLOCK Atlas_Web_Content.List_Cards (datasource: database Sales.Order, action: microflow Sales.Open) AS p_
+	};`
+
+	prog, errs := Build(input)
+	if len(errs) > 0 {
+		t.Fatalf("Parse errors: %v", errs)
+	}
+	w := prog.Statements[0].(*ast.CreatePageStmtV3).Widgets[0]
+	if w.Type != "USE_BUILDING_BLOCK" {
+		t.Fatalf("expected USE_BUILDING_BLOCK, got %s", w.Type)
+	}
+	ds, ok := w.Properties["DataSourceOverride"].(*ast.DataSourceV3)
+	if !ok || ds.Type != "database" {
+		t.Errorf("datasource override = %+v", w.Properties["DataSourceOverride"])
+	}
+	act, ok := w.Properties["ActionOverride"].(*ast.ActionV3)
+	if !ok || act.Type != "microflow" || act.Target != "Sales.Open" {
+		t.Errorf("action override = %+v", w.Properties["ActionOverride"])
+	}
+	if prefix, _ := w.Properties["Prefix"].(string); prefix != "p_" {
+		t.Errorf("expected prefix p_, got %q", prefix)
+	}
+}
+
 func TestDescribeFragmentFromPage(t *testing.T) {
 	input := `DESCRIBE FRAGMENT FROM PAGE MyModule.CustomerEdit WIDGET footer1;`
 

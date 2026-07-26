@@ -1,0 +1,10 @@
+-- Findings #4: `index name on (cols)` (the SQL-like form documented for entity
+-- indexes) failed to parse with "extraneous input 'on' expecting '('". The ON
+-- keyword is now optional in an index definition, so both forms parse.
+create persistent entity Bug4.Cell (
+  Row: integer,
+  Col: integer
+)
+index idx_cell_position on (Row, Col);
+
+alter entity Bug4.Cell add index idx_row on (Row);

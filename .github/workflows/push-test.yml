@@ -29,21 +29,11 @@ jobs:
       - name: Test
         run: make test
       - name: Check MDL example scripts
-        run: |
-          FAILED=0
-          for f in mdl-examples/doctype-tests/*.mdl; do
-            case "$f" in *.test.mdl) continue ;; esac
-            NAME=$(basename "$f")
-            echo "::group::$NAME"
-            if ./bin/mxcli check "$f"; then
-              echo "PASS: $NAME"
-            else
-              echo "::error file=$f::Syntax check failed: $NAME"
-              FAILED=1
-            fi
-            echo "::endgroup::"
-          done
-          exit $FAILED
+        # Single source of truth: `make check-mdl` covers BOTH doctype-tests/ and
+        # bug-tests/ (skipping *.test.mdl, inverting *.fail.mdl negative tests, and
+        # honouring the pre-existing-failure SKIP list). Previously this step only
+        # iterated doctype-tests/, so bug-test regression fixtures had no CI gate.
+        run: make check-mdl
       - name: Check skill MDL blocks
         run: ./scripts/check-skill-mdl.sh ./bin/mxcli .claude/skills/mendix
       - name: Check docs-site MDL blocks

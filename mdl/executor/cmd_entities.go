@@ -71,9 +71,17 @@ func execCreateEntity(ctx *ExecContext, s *ast.CreateEntityStmt) error {
 		}
 	}
 
-	// If entity exists and not using CREATE OR MODIFY, return error
+	// If entity exists and not using CREATE OR MODIFY, return error. Note the
+	// suggested fixes: `alter entity` for an incremental change (safe — it edits
+	// the members it names and leaves the rest alone), and `create or modify` only
+	// when the intent is to replace the whole definition — that path rebuilds the
+	// entity from the statement and DROPS any attribute the statement omits, so it
+	// is destructive if used for a partial update. (findings #24)
 	if existingEntity != nil && !s.CreateOrModify {
-		return mdlerrors.NewAlreadyExistsMsg("entity", s.Name.Module+"."+s.Name.Name, fmt.Sprintf("entity already exists: %s.%s (use create or modify to update)", s.Name.Module, s.Name.Name))
+		return mdlerrors.NewAlreadyExistsMsg("entity", s.Name.Module+"."+s.Name.Name,
+			fmt.Sprintf("entity already exists: %s.%s — to add or change a member use 'alter entity %s.%s add attribute ...' (leaves the rest intact); "+
+				"use 'create or modify entity' only to replace the whole definition (it drops any attribute this statement omits)",
+				s.Name.Module, s.Name.Name, s.Name.Module, s.Name.Name))
 	}
 
 	// Calculate position
@@ -307,6 +315,22 @@ func execCreateEntity(ctx *ExecContext, s *ast.CreateEntityStmt) error {
 				return mdlerrors.NewBackend("delete orphaned view entity source document", err)
 			}
 		}
+		// Warn (non-blocking) about members this CREATE OR MODIFY drops. The
+		// path rebuilds the entity from the statement alone and replaces the
+		// stored one, so any existing attribute the statement omits is silently
+		// deleted — which, when a widget or microflow still binds it, surfaces
+		// much later as CE1613. The user asked to modify, so we still apply it,
+		// but list what is being removed so accidental data loss is visible
+		// rather than silent. (findings #24)
+		if dropped := droppedEntityMembers(existingEntity, entity); len(dropped) > 0 {
+			fmt.Fprintf(ctx.Output,
+				"⚠ create or modify entity %s drops %d existing member(s) not listed in this statement: %s\n",
+				s.Name, len(dropped), strings.Join(dropped, ", "))
+			fmt.Fprintf(ctx.Output,
+				"  They are removed from the entity; anything still bound to them (widgets, microflows) will fail the build with CE1613.\n")
+			fmt.Fprintf(ctx.Output,
+				"  To add attributes without disturbing the rest, use: alter entity %s add attribute <name>: <type>;\n", s.Name)
+		}
 		// Update existing entity
 		entity.ID = existingEntity.ID
 		if err := ctx.Backend.UpdateEntity(dm.ID, entity); err != nil {
@@ -329,6 +353,39 @@ func execCreateEntity(ctx *ExecContext, s *ast.CreateEntityStmt) error {
 
 	ctx.trackModifiedDomainModel(module.ID, module.Name)
 	return nil
+}
+
+// droppedEntityMembers reports the members present on existing but absent from
+// replacement — i.e. what a CREATE OR MODIFY replace would delete. Named
+// attributes are compared case-insensitively; the four audit system fields are
+// reported when their flag is on in existing but off in replacement. Used to
+// surface accidental data loss (findings #24).
+func droppedEntityMembers(existing, replacement *domainmodel.Entity) []string {
+	keep := make(map[string]bool, len(replacement.Attributes))
+	for _, a := range replacement.Attributes {
+		keep[strings.ToLower(a.Name)] = true
+	}
+	var dropped []string
+	for _, a := range existing.Attributes {
+		if !keep[strings.ToLower(a.Name)] {
+			dropped = append(dropped, a.Name)
+		}
+	}
+	// Audit system fields that were enabled and are no longer requested are also
+	// removed by the replace.
+	if existing.HasOwner && !replacement.HasOwner {
+		dropped = append(dropped, "owner (system field)")
+	}
+	if existing.HasChangedBy && !replacement.HasChangedBy {
+		dropped = append(dropped, "changedBy (system field)")
+	}
+	if existing.HasCreatedDate && !replacement.HasCreatedDate {
+		dropped = append(dropped, "createdDate (system field)")
+	}
+	if existing.HasChangedDate && !replacement.HasChangedDate {
+		dropped = append(dropped, "changedDate (system field)")
+	}
+	return dropped
 }
 
 // execCreateViewEntity handles CREATE VIEW ENTITY statements.
@@ -560,9 +617,15 @@ func execAlterEntity(ctx *ExecContext, s *ast.AlterEntityStmt) error {
 			a.HasDefault = true
 			a.DefaultValue = false
 		}
-		// Check for duplicate attribute name
+		// Check for duplicate attribute name. With IF NOT EXISTS, an existing
+		// attribute is a no-op (with a notice) rather than an error, so a domain
+		// script re-runs cleanly (findings #10).
 		for _, existing := range entity.Attributes {
 			if existing.Name == a.Name {
+				if s.IfNotExists {
+					fmt.Fprintf(ctx.Output, "Attribute '%s' already exists on entity %s — skipped\n", a.Name, s.Name)
+					return nil
+				}
 				return mdlerrors.NewAlreadyExistsMsg("attribute", a.Name, fmt.Sprintf("attribute '%s' already exists on entity %s", a.Name, s.Name))
 			}
 		}
@@ -745,6 +808,13 @@ func execAlterEntity(ctx *ExecContext, s *ast.AlterEntityStmt) error {
 			}
 		}
 		if idx < 0 {
+			// With IF EXISTS, an already-absent attribute is a no-op (with a
+			// notice) rather than an error, so a domain script re-runs cleanly
+			// (findings #10).
+			if s.IfExists {
+				fmt.Fprintf(ctx.Output, "Attribute '%s' not found on entity %s — skipped\n", s.AttributeName, s.Name)
+				return nil
+			}
 			return mdlerrors.NewNotFoundMsg("attribute", s.AttributeName, fmt.Sprintf("attribute '%s' not found on entity %s", s.AttributeName, s.Name))
 		}
 		// Clean up entity-level references to the dropped attribute

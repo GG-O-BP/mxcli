@@ -116,12 +116,16 @@ var funcTable = map[string]funcSig{
 	"subtractYearsUTC":    {args: []TypeKind{KindDateTime, KindInteger}, ret: KindDateTime},
 
 	// DateTime — between
+	// The "between dates" duration functions return Decimal in Mendix (e.g.
+	// daysBetween can be 1.5), so assigning one to an Integer/Long variable fails
+	// the build with CE0117 (findings #2). The "calendar" variants return whole
+	// units (Integer); millisecondsBetween returns a whole count (Long).
 	"millisecondsBetween":   {args: []TypeKind{KindDateTime, KindDateTime}, ret: KindLong},
-	"secondsBetween":        {args: []TypeKind{KindDateTime, KindDateTime}, ret: KindInteger},
-	"minutesBetween":        {args: []TypeKind{KindDateTime, KindDateTime}, ret: KindInteger},
-	"hoursBetween":          {args: []TypeKind{KindDateTime, KindDateTime}, ret: KindInteger},
-	"daysBetween":           {args: []TypeKind{KindDateTime, KindDateTime}, ret: KindInteger},
-	"weeksBetween":          {args: []TypeKind{KindDateTime, KindDateTime}, ret: KindInteger},
+	"secondsBetween":        {args: []TypeKind{KindDateTime, KindDateTime}, ret: KindDecimal},
+	"minutesBetween":        {args: []TypeKind{KindDateTime, KindDateTime}, ret: KindDecimal},
+	"hoursBetween":          {args: []TypeKind{KindDateTime, KindDateTime}, ret: KindDecimal},
+	"daysBetween":           {args: []TypeKind{KindDateTime, KindDateTime}, ret: KindDecimal},
+	"weeksBetween":          {args: []TypeKind{KindDateTime, KindDateTime}, ret: KindDecimal},
 	"calendarMonthsBetween": {args: []TypeKind{KindDateTime, KindDateTime}, ret: KindInteger},
 	"calendarYearsBetween":  {args: []TypeKind{KindDateTime, KindDateTime}, ret: KindInteger},
 

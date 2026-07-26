@@ -1056,6 +1056,36 @@ END;`
 	t.Log("DECLARE without AS keyword parsed correctly")
 }
 
+// TestAlterEntityAttributeIfExistsGuards verifies ADD ATTRIBUTE IF NOT EXISTS
+// and DROP ATTRIBUTE IF EXISTS set the idempotency flags on the AST. Findings #10.
+func TestAlterEntityAttributeIfExistsGuards(t *testing.T) {
+	prog, errs := Build(`ALTER ENTITY M.E ADD ATTRIBUTE IF NOT EXISTS Score: Integer;
+ALTER ENTITY M.E DROP ATTRIBUTE IF EXISTS OldCol;
+ALTER ENTITY M.E ADD ATTRIBUTE Plain: Integer;
+ALTER ENTITY M.E DROP ATTRIBUTE PlainCol;`)
+	if len(errs) > 0 {
+		t.Fatalf("parse error: %v", errs[0])
+	}
+	if len(prog.Statements) != 4 {
+		t.Fatalf("expected 4 statements, got %d", len(prog.Statements))
+	}
+	add := prog.Statements[0].(*ast.AlterEntityStmt)
+	if !add.IfNotExists {
+		t.Error("expected IfNotExists on ADD ATTRIBUTE IF NOT EXISTS")
+	}
+	drop := prog.Statements[1].(*ast.AlterEntityStmt)
+	if !drop.IfExists {
+		t.Error("expected IfExists on DROP ATTRIBUTE IF EXISTS")
+	}
+	// Plain forms must NOT set the guards.
+	if prog.Statements[2].(*ast.AlterEntityStmt).IfNotExists {
+		t.Error("plain ADD ATTRIBUTE should not set IfNotExists")
+	}
+	if prog.Statements[3].(*ast.AlterEntityStmt).IfExists {
+		t.Error("plain DROP ATTRIBUTE should not set IfExists")
+	}
+}
+
 // TestAlterEntityAddAttribute verifies ALTER ENTITY ADD ATTRIBUTE produces correct AST.
 func TestAlterEntityAddAttribute(t *testing.T) {
 	input := `ALTER ENTITY MyModule.Customer
@@ -1224,12 +1254,39 @@ func TestEnhanceErrorMessage_Apostrophe(t *testing.T) {
 			msg:      "no viable alternative at input 'CREATE PERSISTENT'",
 			wantHint: false,
 		},
+		// findings #4: real short lowercase MDL keywords/identifiers are NOT
+		// contraction leftovers and must not draw the apostrophe hint.
+		{
+			name:     "keyword on is not apostrophe",
+			msg:      "mismatched input 'on' expecting {';', ','}",
+			wantHint: false,
+		},
+		{
+			name:     "keyword in is not apostrophe",
+			msg:      "extraneous input 'in' expecting {';', ','}",
+			wantHint: false,
+		},
+		{
+			name:     "keyword as is not apostrophe",
+			msg:      "mismatched input 'as' expecting {';', ','}",
+			wantHint: false,
+		},
+		{
+			name:     "keyword to is not apostrophe",
+			msg:      "missing ';' at 'to'",
+			wantHint: false,
+		},
+		{
+			name:     "keyword by is not apostrophe",
+			msg:      "mismatched input 'by' expecting {';', ','}",
+			wantHint: false,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := enhanceErrorMessage(tt.msg)
-			hasHint := result != tt.msg
+			result := enhanceErrorMessage(tt.msg, "")
+			hasHint := strings.Contains(result, "apostrophe")
 			if hasHint != tt.wantHint {
 				if tt.wantHint {
 					t.Errorf("expected apostrophe hint but got none.\n  input:  %s\n  output: %s", tt.msg, result)
@@ -1306,7 +1363,7 @@ func TestEnhanceErrorMessage_QuotedGrantAttribute(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := enhanceErrorMessage(tt.msg)
+			result := enhanceErrorMessage(tt.msg, "")
 			hasHint := strings.Contains(result, "Attribute-level GRANT")
 			if hasHint != tt.wantHint {
 				t.Errorf("expected hint=%v\n  input:  %s\n  output: %s", tt.wantHint, tt.msg, result)
@@ -1327,7 +1384,7 @@ func TestEnhanceErrorMessage_EnumEquals(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := enhanceErrorMessage(tt.msg)
+			result := enhanceErrorMessage(tt.msg, "")
 			hasHint := strings.Contains(result, "Enumeration values do not use '='")
 			if hasHint != tt.wantHint {
 				t.Errorf("expected hint=%v\n  input:  %s\n  output: %s", tt.wantHint, tt.msg, result)
@@ -2279,5 +2336,117 @@ func TestCreateOrReplaceEnumeration_FlagsCreateOrModify(t *testing.T) {
 	}
 	if !stmt.CreateOrModify {
 		t.Error("CREATE OR REPLACE should set CreateOrModify=true so the executor takes the update path")
+	}
+}
+
+// TestEnhanceErrorMessage_CollapsesTokenDump verifies the noisy statement-start
+// `expecting {30 tokens}` set is rewritten to a readable phrase (findings: error
+// messages should convey the fix, not dump internal token names).
+func TestEnhanceErrorMessage_CollapsesTokenDump(t *testing.T) {
+	raw := "extraneous input '(' expecting {<EOF>, DOC_COMMENT, CREATE, ALTER, DROP, SHOW, DESCRIBE, IDENTIFIER}"
+	out := enhanceErrorMessage(raw, "")
+	if strings.Contains(out, "DOC_COMMENT") || strings.Contains(out, "IDENTIFIER") {
+		t.Errorf("token dump not collapsed:\n%s", out)
+	}
+	if !strings.Contains(out, "start of a statement") {
+		t.Errorf("expected the statement-start phrase, got:\n%s", out)
+	}
+}
+
+// TestEnhanceErrorMessage_SmallExpectingSetUntouched keeps the useful single/small
+// expected-token messages intact.
+func TestEnhanceErrorMessage_SmallExpectingSetUntouched(t *testing.T) {
+	raw := "mismatched input '=' expecting ':'"
+	out := enhanceErrorMessage(raw, "")
+	if !strings.Contains(out, "expecting ':'") {
+		t.Errorf("small expecting set should be preserved, got:\n%s", out)
+	}
+}
+
+// TestEnhanceErrorMessage_BareNotHint fires the not(expr) hint from the source
+// line (sudoku findings #3), and not otherwise.
+func TestEnhanceErrorMessage_BareNotHint(t *testing.T) {
+	const notHint = "negated expression"
+	out := enhanceErrorMessage("mismatched input '$x' expecting THEN", "  if not $Cell/IsInvalid then")
+	if !strings.Contains(out, notHint) || !strings.Contains(out, "not($Cell") {
+		t.Errorf("expected the bare-not hint, got:\n%s", out)
+	}
+	// A properly parenthesized not must not trigger it.
+	if strings.Contains(enhanceErrorMessage("mismatched input 'foo' expecting ';'", "  if not($Cell/Flag) then"), notHint) {
+		t.Error("not(expr) should not trigger the bare-not hint")
+	}
+}
+
+// TestBuild_BareNotEndToEnd confirms the hint reaches the surface through Build.
+func TestBuild_BareNotEndToEnd(t *testing.T) {
+	_, errs := Build("create microflow M.T() begin if not $x then log info 'a'; end if; return true; end")
+	joined := ""
+	for _, e := range errs {
+		joined += e.Error() + "\n"
+	}
+	if !strings.Contains(joined, "not(") {
+		t.Errorf("expected a not(expr) hint in Build errors, got:\n%s", joined)
+	}
+}
+
+// TestEntityIndexOnKeyword verifies the SQL-like `INDEX name ON (cols)` form
+// parses (findings #4) and is equivalent to the bare `INDEX name (cols)` form —
+// the optional ON is not mistaken for a column, and column order is preserved.
+func TestEntityIndexOnKeyword(t *testing.T) {
+	for _, src := range []string{
+		`create persistent entity M.Cell (Row: integer, Col: integer) index idx_pos on (Row, Col);`,
+		`create persistent entity M.Cell (Row: integer, Col: integer) index idx_pos (Row, Col);`,
+	} {
+		prog, errs := Build(src)
+		if len(errs) > 0 {
+			t.Fatalf("parse error for %q: %v", src, errs[0])
+		}
+		ent, ok := prog.Statements[0].(*ast.CreateEntityStmt)
+		if !ok {
+			t.Fatalf("expected CreateEntityStmt, got %T", prog.Statements[0])
+		}
+		if len(ent.Indexes) != 1 {
+			t.Fatalf("%q: expected 1 index, got %d", src, len(ent.Indexes))
+		}
+		cols := ent.Indexes[0].Columns
+		if len(cols) != 2 || cols[0].Name != "Row" || cols[1].Name != "Col" {
+			t.Errorf("%q: expected columns [Row Col], got %+v", src, cols)
+		}
+	}
+}
+
+// TestAlterEntityAddIndexOnKeyword verifies ALTER ENTITY ADD INDEX also accepts ON.
+func TestAlterEntityAddIndexOnKeyword(t *testing.T) {
+	prog, errs := Build(`alter entity M.Cell add index idx_col on (Col);`)
+	if len(errs) > 0 {
+		t.Fatalf("parse error: %v", errs[0])
+	}
+	alt, ok := prog.Statements[0].(*ast.AlterEntityStmt)
+	if !ok {
+		t.Fatalf("expected AlterEntityStmt, got %T", prog.Statements[0])
+	}
+	if alt.Operation != ast.AlterEntityAddIndex || alt.Index == nil {
+		t.Fatalf("expected AddIndex with an Index, got op=%d index=%v", alt.Operation, alt.Index)
+	}
+	if len(alt.Index.Columns) != 1 || alt.Index.Columns[0].Name != "Col" {
+		t.Errorf("expected column [Col], got %+v", alt.Index.Columns)
+	}
+}
+
+// TestEnhanceErrorMessage_XPathArithmetic verifies the XPath-arithmetic hint
+// fires for an arithmetic operator inside a bracketed constraint (findings #8)
+// and not for arithmetic in a normal expression.
+func TestEnhanceErrorMessage_XPathArithmetic(t *testing.T) {
+	xhint := "cannot compute values"
+	// Inside a constraint: `expecting ']'` + arithmetic op → hint.
+	for _, op := range []string{"+", "*", "div", "mod"} {
+		msg := "mismatched input '" + op + "' expecting ']'"
+		if got := enhanceErrorMessage(msg, ""); !strings.Contains(got, xhint) {
+			t.Errorf("op %q: expected XPath-arithmetic hint, got:\n%s", op, got)
+		}
+	}
+	// A normal expression arithmetic error (not `expecting ']'`) must not fire.
+	if got := enhanceErrorMessage("mismatched input '+' expecting ';'", ""); strings.Contains(got, xhint) {
+		t.Errorf("did not expect XPath hint for a non-constraint arithmetic error:\n%s", got)
 	}
 }

@@ -38,6 +38,11 @@ type HubRegistration struct {
 	MultiTenant       bool          // false when we fell back to a slice-1 single-app hub
 
 	hubURL string
+	// Inputs kept so the heartbeat can re-register if the hub forgets us (e.g. the
+	// hub restarted and lost its in-memory registry — /api/status then 404s).
+	secret  string
+	meta    HubMeta
+	appPort int
 }
 
 type registerResponse struct {
@@ -94,6 +99,9 @@ func RegisterWithHub(hubURL, secret string, meta HubMeta, appPort int) (*HubRegi
 			HeartbeatInterval: time.Duration(rr.HeartbeatIntervalSec) * time.Second,
 			MultiTenant:       true,
 			hubURL:            hubURL,
+			secret:            secret,
+			meta:              meta,
+			appPort:           appPort,
 		}, nil
 	case http.StatusNotFound:
 		// No registration API — a single-app hub. Serve directly at the hub URL.
@@ -120,7 +128,16 @@ type Heartbeat struct {
 }
 
 // StartHeartbeat begins heartbeating (only for a multi-tenant registration).
-func StartHeartbeat(reg *HubRegistration) *Heartbeat {
+//
+// If the hub forgets us — it restarts and loses its in-memory registry, so
+// /api/status returns 404 "unknown token" — the heartbeat re-registers in place
+// so the preview reappears in the hub and the public URL works again (previously
+// the tunnel stayed connected but the hub listed nothing, silently dead). When a
+// re-register lands on a different reverse port, onReRegister (if set) is invoked
+// with the refreshed registration so the caller can restart the tunnel; the same
+// identity usually re-registers to the same port, in which case the existing
+// tunnel keeps working and onReRegister is not called.
+func StartHeartbeat(reg *HubRegistration, onReRegister func(*HubRegistration)) *Heartbeat {
 	if !reg.MultiTenant || reg.HeartbeatInterval <= 0 {
 		return &Heartbeat{reg: reg}
 	}
@@ -135,11 +152,40 @@ func StartHeartbeat(reg *HubRegistration) *Heartbeat {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				postToken(ctx, reg.hubURL+"/api/status", reg.Token)
+				code := postToken(ctx, reg.hubURL+"/api/status", reg.Token)
+				if code != http.StatusNotFound && code != http.StatusUnauthorized {
+					continue
+				}
+				// The hub no longer knows this token — re-register in place.
+				portChanged, err := reg.reRegister()
+				if err != nil {
+					continue // transient; try again next tick
+				}
+				if portChanged && onReRegister != nil {
+					onReRegister(reg)
+				}
 			}
 		}
 	}()
 	return h
+}
+
+// reRegister re-POSTs /api/register with the original identity after the hub has
+// forgotten this preview, updating the registration in place. Returns whether the
+// assigned reverse port changed (the caller must then restart the tunnel).
+func (reg *HubRegistration) reRegister() (portChanged bool, err error) {
+	fresh, err := RegisterWithHub(reg.hubURL, reg.secret, reg.meta, reg.appPort)
+	if err != nil {
+		return false, err
+	}
+	portChanged = fresh.ReversePort != reg.ReversePort
+	reg.URL = fresh.URL
+	reg.Subdomain = fresh.Subdomain
+	reg.ControlURL = fresh.ControlURL
+	reg.ReversePort = fresh.ReversePort
+	reg.Token = fresh.Token
+	reg.TunnelAuth = fresh.TunnelAuth
+	return portChanged, nil
 }
 
 // Stop ends heartbeating and best-effort deregisters the preview from the hub.
@@ -155,15 +201,20 @@ func (h *Heartbeat) Stop() {
 	}
 }
 
-func postToken(ctx context.Context, url, token string) {
+// postToken POSTs to a hub endpoint with the bearer token and returns the HTTP
+// status code (0 on a transport error, so callers treat it as "try again").
+func postToken(ctx context.Context, url, token string) int {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
-		return
+		return 0
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	if resp, err := http.DefaultClient.Do(req); err == nil {
-		_ = resp.Body.Close()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0
 	}
+	defer resp.Body.Close()
+	return resp.StatusCode
 }
 
 // DetectHubMeta fills a HubMeta from the project path + git, with explicit

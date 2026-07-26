@@ -74,15 +74,22 @@ type LocalRuntimeOptions struct {
 	// Stdout/Stderr receive progress messages (default os.Stdout/os.Stderr).
 	Stdout io.Writer
 	Stderr io.Writer
+	// RuntimeLogPath, when set, tees the runtime JVM's stdout+stderr to this file
+	// (appended across restarts) so the warm loop is debuggable — server-side
+	// stack traces and microflow LOG output land somewhere a developer can read.
+	// Empty disables the file tee (the in-memory buffer for startup errors is
+	// unaffected). Findings #25.
+	RuntimeLogPath string
 }
 
 // LocalRuntime is a booted standalone runtime process plus its admin connection.
 type LocalRuntime struct {
-	opts LocalRuntimeOptions
-	cmd  *exec.Cmd
-	log  *syncBuffer
-	m2ee M2EEOptions
-	ctrl *RuntimeController
+	opts    LocalRuntimeOptions
+	cmd     *exec.Cmd
+	log     *syncBuffer
+	logFile *os.File // open when RuntimeLogPath is set; runtime stdout/stderr tee
+	m2ee    M2EEOptions
+	ctrl    *RuntimeController
 }
 
 func (o *LocalRuntimeOptions) applyDefaults() {
@@ -243,6 +250,18 @@ func StartLocalRuntime(opts LocalRuntimeOptions) (*LocalRuntime, error) {
 		},
 	}
 	rt.ctrl = NewRuntimeController(rt.m2ee)
+	// Attach a file log subscriber (post-start, inside Start) so the runtime's
+	// application log lands in the same file the JVM stdout/stderr is tee'd to.
+	// An absolute path keeps the runtime (cwd = <install>/runtime) and the JVM
+	// tee (cwd = mxcli's) pointed at one file. Findings #25.
+	if opts.RuntimeLogPath != "" {
+		logPath := opts.RuntimeLogPath
+		if abs, err := filepath.Abs(logPath); err == nil {
+			logPath = abs
+		}
+		rt.ctrl.LogSubscriberFile = logPath
+		rt.ctrl.Stdout = opts.Stdout
+	}
 
 	if err := rt.spawnAndConfigure(); err != nil {
 		return nil, err
@@ -264,9 +283,23 @@ func (rt *LocalRuntime) spawnAndConfigure() error {
 	cmd.Dir = rt.opts.runtimeDir()
 	cmd.Env = localRuntimeEnv(rt.opts)
 	PrepareMxCommand(cmd) // FreeType LD_PRELOAD workaround, layered on cmd.Env
+	setProcessGroup(cmd)  // reap any JVM child on Stop so the port is freed
+	// The in-memory buffer always captures output for startup-failure reporting.
+	// When RuntimeLogPath is set, also tee stdout+stderr to that file so the
+	// runtime's own log (stack traces, microflow LOG output) is readable while
+	// the warm loop runs — otherwise it is swallowed (findings #25).
 	log := &syncBuffer{}
-	cmd.Stdout = log
-	cmd.Stderr = log
+	var out io.Writer = log
+	if rt.opts.RuntimeLogPath != "" {
+		if f, err := rt.openRuntimeLog(); err == nil {
+			rt.logFile = f
+			out = io.MultiWriter(log, f)
+		} else {
+			fmt.Fprintf(rt.opts.Stdout, "  (could not open runtime log %s: %v)\n", rt.opts.RuntimeLogPath, err)
+		}
+	}
+	cmd.Stdout = out
+	cmd.Stderr = out
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("launching runtime JVM: %w", err)
 	}
@@ -289,6 +322,25 @@ func (rt *LocalRuntime) spawnAndConfigure() error {
 		return fmt.Errorf("update_configuration: %w", err)
 	}
 	return nil
+}
+
+// openRuntimeLog opens (creating the parent dir) the runtime log for appending
+// and writes a start marker. A prior handle (from an earlier spawn/restart) is
+// closed first so the file is reused across restarts rather than leaked.
+func (rt *LocalRuntime) openRuntimeLog() (*os.File, error) {
+	if rt.logFile != nil {
+		_ = rt.logFile.Close()
+		rt.logFile = nil
+	}
+	if err := os.MkdirAll(filepath.Dir(rt.opts.RuntimeLogPath), 0o755); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(rt.opts.RuntimeLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Fprintf(f, "\n=== runtime start %s ===\n", time.Now().Format(time.RFC3339))
+	return f, nil
 }
 
 // waitAdminReady polls runtime_status until the admin API responds or times out.
@@ -353,15 +405,19 @@ func (rt *LocalRuntime) stopProcess() error {
 	if rt.cmd == nil || rt.cmd.Process == nil {
 		return nil
 	}
-	_ = rt.cmd.Process.Signal(syscall.SIGTERM)
+	_ = signalProcessGroup(rt.cmd.Process, syscall.SIGTERM)
 	done := make(chan error, 1)
 	go func() { done <- rt.cmd.Wait() }()
 	select {
 	case <-done:
 	case <-time.After(8 * time.Second):
-		_ = rt.cmd.Process.Kill()
+		_ = killProcessGroup(rt.cmd.Process)
 		<-done
 	}
 	rt.cmd = nil
+	if rt.logFile != nil {
+		_ = rt.logFile.Close()
+		rt.logFile = nil
+	}
 	return nil
 }

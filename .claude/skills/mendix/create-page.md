@@ -766,6 +766,26 @@ container card1 (OnClick: microflow MyModule.ACT_OpenDetails, class: 'clickable-
 This maps to the Mendix Container's **On click** event (`Forms$DivContainer.OnClickAction`).
 A container with no `OnClick:`/`Action:` is non-clickable (a no-op action), exactly as in Studio Pro.
 
+**Prefer a clickable container over an `actionbutton` when the trigger needs child
+widgets or a context argument.** An `actionbutton` can't contain child widgets and
+maps only page-context object parameters — so a tile showing a digit over a label,
+or a card that opens a specific object, is best built as a `container` with
+`OnClick:`. The container's `OnClick:` takes the same `(Param: …)` argument syntax
+as an `actionbutton`'s `action:`:
+
+```sql
+-- Rich, parameterised trigger: a card that opens the object it represents
+container tileCard (OnClick: microflow MyModule.ACT_Open(Item: $currentObject), class: 'tile') {
+  dynamictext tileValue (content: '4')
+  dynamictext tileLabel (content: '4 LEFT', class: 'tile-label')
+}
+```
+
+Note the Mendix limit this works around: a button (or `OnClick`) can map **object**
+parameters from the page context but **cannot pass a literal argument**. To vary a
+literal per trigger (e.g. a 1–9 number pad), make one real microflow and a thin
+wrapper per value (`ACT_Set1`…`ACT_Set9`), each calling the shared implementation.
+
 ### FOOTER Widget
 
 Container for form action buttons:
@@ -841,8 +861,14 @@ Notes:
   restore the v2 files around the normalization, so they are safe; raw
   `mx update-widgets` is only safe on a v1 project (or on a throwaway copy used purely
   for diagnosis).
-- LineChart/BubbleChart/HeatMap (the `line`/`scalecolor` object-lists) are not yet
-  authorable via MDL — use Studio Pro for those.
+- LineChart/BubbleChart/HeatMap/TimeSeries are **also MDL-authorable** (via the
+  `line`/`scalecolor` object-lists) — see
+  `mdl-examples/doctype-tests/34-chart-widget-examples.mdl` for working examples.
+  (They author on the modelsdk engine.)
+- **Slider / RangeSlider**: set `showTooltip: false`. The tooltip calls React's
+  removed `findDOMNode` on Mendix 11, throwing "Could not render widget" on drag — a
+  runtime crash `mx check` cannot catch (only a running build does). See
+  `atlas-design.md` for the full runtime-verification rule.
 
 ## Complete Examples
 

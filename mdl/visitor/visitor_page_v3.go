@@ -347,7 +347,15 @@ func buildPageBodyV3(ctx parser.IPageBodyV3Context, b *Builder) []*ast.WidgetV3 
 				widgets = append(widgets, widget)
 			}
 		case *parser.UseFragmentRefContext:
-			if ref := buildUseFragmentRef(c); ref != nil {
+			if ref := buildUseFragmentRef(c, b); ref != nil {
+				widgets = append(widgets, ref)
+			}
+		case *parser.UseBuildingBlockRefContext:
+			if ref := buildUseBuildingBlockRef(c); ref != nil {
+				widgets = append(widgets, ref)
+			}
+		case *parser.SlotMarkerV3Context:
+			if ref := buildSlotMarkerV3(c); ref != nil {
 				widgets = append(widgets, ref)
 			}
 		}
@@ -379,7 +387,15 @@ func buildPagePlaceholdersV3(ctx parser.IPageBodyV3Context, b *Builder) []*ast.P
 					ph.Widgets = append(ph.Widgets, w)
 				}
 			case *parser.UseFragmentRefContext:
-				if ref := buildUseFragmentRef(c); ref != nil {
+				if ref := buildUseFragmentRef(c, b); ref != nil {
+					ph.Widgets = append(ph.Widgets, ref)
+				}
+			case *parser.UseBuildingBlockRefContext:
+				if ref := buildUseBuildingBlockRef(c); ref != nil {
+					ph.Widgets = append(ph.Widgets, ref)
+				}
+			case *parser.SlotMarkerV3Context:
+				if ref := buildSlotMarkerV3(c); ref != nil {
 					ph.Widgets = append(ph.Widgets, ref)
 				}
 			}
@@ -398,8 +414,11 @@ func placeholderBlockName(pc *parser.PlaceholderBlockV3Context) string {
 	return ""
 }
 
-// buildUseFragmentRef creates a WidgetV3 with sentinel type USE_FRAGMENT.
-func buildUseFragmentRef(ctx *parser.UseFragmentRefContext) *ast.WidgetV3 {
+// buildUseFragmentRef creates a WidgetV3 with sentinel type USE_FRAGMENT. When the
+// `use fragment X { … }` form supplies a payload block, its widgets are built and
+// stored in the sentinel's Children — the executor splices them into the
+// fragment's content slot at expansion time.
+func buildUseFragmentRef(ctx *parser.UseFragmentRefContext, b *Builder) *ast.WidgetV3 {
 	if ctx == nil {
 		return nil
 	}
@@ -413,6 +432,69 @@ func buildUseFragmentRef(ctx *parser.UseFragmentRefContext) *ast.WidgetV3 {
 	}
 	if len(ids) > 1 {
 		w.Properties["Prefix"] = identifierOrKeywordText(ids[1]) // Optional prefix
+	}
+	if args := buildFragmentArgs(ctx.FragmentArgs()); len(args) > 0 {
+		w.Properties["Args"] = args
+	}
+	if payload := ctx.UseFragmentPayload(); payload != nil {
+		if pc, ok := payload.(*parser.UseFragmentPayloadContext); ok {
+			w.Children = buildPageBodyV3(pc.PageBodyV3(), b)
+		}
+	}
+	return w
+}
+
+// buildSlotMarkerV3 creates a WidgetV3 with sentinel type SLOT. The optional name
+// defaults to "content"; it is cosmetic in v1 (a fragment supports one slot).
+func buildSlotMarkerV3(ctx *parser.SlotMarkerV3Context) *ast.WidgetV3 {
+	if ctx == nil {
+		return nil
+	}
+	name := "content"
+	if idk := ctx.IdentifierOrKeyword(); idk != nil {
+		name = identifierOrKeywordText(idk)
+	}
+	return &ast.WidgetV3{
+		Type:       "SLOT",
+		Name:       name,
+		Properties: make(map[string]interface{}),
+	}
+}
+
+// buildUseBuildingBlockRef creates a WidgetV3 with sentinel type USE_BUILDING_BLOCK.
+// The Name holds the block's qualified name (e.g. "Atlas_Web_Content.Card"); the
+// executor resolves the block, renders its widget tree to MDL, re-parses it, and
+// deep-copies the widgets into the page/container with an optional prefix rename.
+func buildUseBuildingBlockRef(ctx *parser.UseBuildingBlockRefContext) *ast.WidgetV3 {
+	if ctx == nil {
+		return nil
+	}
+	w := &ast.WidgetV3{
+		Type:       "USE_BUILDING_BLOCK",
+		Properties: make(map[string]interface{}),
+	}
+	if qn := ctx.QualifiedName(); qn != nil {
+		w.Name = buildQualifiedName(qn).String() // "Module.BlockName"
+	}
+	w.Properties["Prefix"] = ""
+	if idk := ctx.IdentifierOrKeyword(); idk != nil {
+		w.Properties["Prefix"] = identifierOrKeywordText(idk) // Optional prefix
+	}
+	// Optional rebind overrides: (datasource: <ds>, action: <action>).
+	if ov := ctx.BlockOverrides(); ov != nil {
+		if oc, ok := ov.(*parser.BlockOverridesContext); ok {
+			for _, o := range oc.AllBlockOverride() {
+				bo, ok := o.(*parser.BlockOverrideContext)
+				if !ok {
+					continue
+				}
+				if ds := bo.DataSourceExprV3(); ds != nil {
+					w.Properties["DataSourceOverride"] = buildDataSourceV3(ds)
+				} else if act := bo.ActionExprV3(); act != nil {
+					w.Properties["ActionOverride"] = buildActionV3(act)
+				}
+			}
+		}
 	}
 	return w
 }
@@ -829,7 +911,11 @@ func buildActionV3(ctx parser.IActionExprV3Context) *ast.ActionV3 {
 	actCtx := ctx.(*parser.ActionExprV3Context)
 	action := &ast.ActionV3{}
 
-	if actCtx.SAVE_CHANGES() != nil {
+	if v := actCtx.VARIABLE(); v != nil {
+		// $handler — a fragment action parameter; resolved at expansion.
+		action.Type = "param"
+		action.Target = strings.TrimPrefix(v.GetText(), "$")
+	} else if actCtx.SAVE_CHANGES() != nil {
 		action.Type = "save"
 		action.ClosePage = actCtx.CLOSE_PAGE() != nil
 	} else if actCtx.CANCEL_CHANGES() != nil {
@@ -1396,16 +1482,81 @@ func buildWidgetBodyV3(ctx parser.IWidgetBodyV3Context, b *Builder) []*ast.Widge
 	return nil
 }
 
-// ExitDefineFragmentStatement handles DEFINE FRAGMENT Name AS { widgets }.
+// ExitDefineFragmentStatement handles DEFINE FRAGMENT Name [(params)] AS { widgets }.
 func (b *Builder) ExitDefineFragmentStatement(ctx *parser.DefineFragmentStatementContext) {
 	stmt := &ast.DefineFragmentStmt{}
 	if iok := ctx.IdentifierOrKeyword(); iok != nil {
 		stmt.Name = identifierOrKeywordText(iok)
 	}
+	stmt.Params = buildFragmentParams(ctx.FragmentParams())
 	if bodyCtx := ctx.PageBodyV3(); bodyCtx != nil {
 		stmt.Widgets = buildPageBodyV3(bodyCtx, b)
 	}
 	b.statements = append(b.statements, stmt)
+}
+
+// buildFragmentParams extracts a fragment's typed parameter declarations.
+func buildFragmentParams(ctx parser.IFragmentParamsContext) []ast.FragmentParam {
+	if ctx == nil {
+		return nil
+	}
+	pc, ok := ctx.(*parser.FragmentParamsContext)
+	if !ok {
+		return nil
+	}
+	var out []ast.FragmentParam
+	for _, p := range pc.AllFragmentParam() {
+		param, ok := p.(*parser.FragmentParamContext)
+		if !ok {
+			continue
+		}
+		fp := ast.FragmentParam{Kind: "datasource"}
+		if v := param.VARIABLE(); v != nil {
+			fp.Name = strings.TrimPrefix(v.GetText(), "$")
+		}
+		if t := param.FragmentParamType(); t != nil {
+			if tc, ok := t.(*parser.FragmentParamTypeContext); ok && tc.ACTION() != nil {
+				fp.Kind = "action"
+			}
+		}
+		out = append(out, fp)
+	}
+	return out
+}
+
+// buildFragmentArgs extracts the values supplied at a `use fragment` site. Each
+// value parses as either a datasource or an action (they overlap on
+// microflow/nanoflow); the executor picks by the parameter's declared kind.
+func buildFragmentArgs(ctx parser.IFragmentArgsContext) []ast.FragmentArg {
+	if ctx == nil {
+		return nil
+	}
+	ac, ok := ctx.(*parser.FragmentArgsContext)
+	if !ok {
+		return nil
+	}
+	var out []ast.FragmentArg
+	for _, a := range ac.AllFragmentArg() {
+		argCtx, ok := a.(*parser.FragmentArgContext)
+		if !ok {
+			continue
+		}
+		arg := ast.FragmentArg{}
+		if v := argCtx.VARIABLE(); v != nil {
+			arg.Name = strings.TrimPrefix(v.GetText(), "$")
+		}
+		if val := argCtx.FragmentArgValue(); val != nil {
+			if vc, ok := val.(*parser.FragmentArgValueContext); ok {
+				if ds := vc.DataSourceExprV3(); ds != nil {
+					arg.DataSource = buildDataSourceV3(ds)
+				} else if act := vc.ActionExprV3(); act != nil {
+					arg.Action = buildActionV3(act)
+				}
+			}
+		}
+		out = append(out, arg)
+	}
+	return out
 }
 
 // xpathExprToString converts an AST Expression to a properly formatted XPath expression string.

@@ -5,6 +5,7 @@ package visitor
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/antlr4-go/antlr/v4"
@@ -16,6 +17,7 @@ import (
 type errorListener struct {
 	*antlr.DefaultErrorListener
 	errors []error
+	source []string // input split into lines, for source-aware hints
 }
 
 func newErrorListener() *errorListener {
@@ -27,14 +29,67 @@ func newErrorListener() *errorListener {
 
 // SyntaxError is called by ANTLR when a syntax error is encountered.
 func (l *errorListener) SyntaxError(_ antlr.Recognizer, _ any, line, column int, msg string, _ antlr.RecognitionException) {
-	// Check if the error is about a reserved keyword being used as an identifier
-	enhancedMsg := enhanceErrorMessage(msg)
+	offending := ""
+	if line >= 1 && line <= len(l.source) {
+		offending = l.source[line-1]
+	}
+	enhancedMsg := enhanceErrorMessage(msg, offending)
 	l.errors = append(l.errors, fmt.Errorf("line %d:%d %s", line, column, enhancedMsg))
 }
 
-// enhanceErrorMessage checks if an error message indicates a reserved keyword
-// was used as an identifier and provides a more helpful message.
-func enhanceErrorMessage(msg string) string {
+// simplifyExpecting collapses ANTLR's raw `expecting {A, B, …}` token-set dumps,
+// which are precise but noisy: a failed statement start lists ~30 internal token
+// names (`{<EOF>, DOC_COMMENT, CREATE, ALTER, …}`), drowning the actual signal.
+// The all-statement-keywords set is rewritten to a human phrase; any other
+// oversized set is truncated. A small set (the useful case, e.g. `expecting ':'`)
+// is left untouched.
+func simplifyExpecting(msg string) string {
+	const marker = "expecting {"
+	i := strings.Index(msg, marker)
+	if i < 0 {
+		return msg
+	}
+	rel := strings.Index(msg[i:], "}")
+	if rel < 0 {
+		return msg
+	}
+	inner := msg[i+len(marker) : i+rel]
+	toks := strings.Split(inner, ", ")
+	set := make(map[string]bool, len(toks))
+	for _, t := range toks {
+		set[t] = true
+	}
+	rest := msg[i+rel+1:]
+	// The top-level statement-start set — the "this isn't a valid statement"
+	// case, usually a misspelled verb or an unterminated previous statement.
+	if set["CREATE"] && set["ALTER"] && set["DROP"] {
+		return msg[:i] + "expecting the start of a statement (create, alter, drop, show, describe, …)" + rest
+	}
+	if len(toks) > 6 {
+		return msg[:i] + "expecting one of {" + strings.Join(toks[:6], ", ") + ", …}" + rest
+	}
+	return msg
+}
+
+// enhanceErrorMessage turns a raw ANTLR syntax error into something that points
+// at the fix: it collapses noisy token-set dumps, recognises a handful of common
+// mistakes (adding a correct-vs-wrong example), and otherwise appends a pointer
+// to `mxcli syntax`. offendingLine is the source line the error occurred on (""
+// when unavailable), used for source-aware hints.
+func enhanceErrorMessage(msg, offendingLine string) string {
+	// Collapse ANTLR's oversized `expecting {…}` token dumps first, so every
+	// branch below (and the fall-through) shows the tamer form.
+	msg = simplifyExpecting(msg)
+
+	// A bare `not $x` — Mendix requires `not(expr)`. The parse error surfaces
+	// downstream (e.g. "missing THEN at '$x'"), so key off the source line, which
+	// is unambiguous for `not $…`. (sudoku findings #3)
+	if bareNotRe.MatchString(offendingLine) {
+		return fmt.Sprintf("%s\n\n  Mendix requires parentheses around a negated expression — a bare\n"+
+			"  'not <expr>' does not parse:\n"+
+			"    if not($Cell/IsInvalid) then …   (correct)\n"+
+			"    if not $Cell/IsInvalid then …    (wrong — causes parse error)", msg)
+	}
 	// Check for quoted attribute names after READ/WRITE in a GRANT clause.
 	// Users often write `READ "Attr1", "Attr2"` instead of the correct
 	// `READ (Attr1, Attr2)` — the grammar expects unquoted identifiers in parens.
@@ -55,6 +110,17 @@ func enhanceErrorMessage(msg string) string {
 			"  followed by an optional quoted caption:\n"+
 			"    create enumeration Mod.E (Value1 'Caption 1', \"Value2\" 'Caption 2');  (correct)\n"+
 			"    create enumeration Mod.E (Value1 = 'Caption 1');                       (wrong — causes parse error)", msg)
+	}
+
+	// Arithmetic inside an XPath constraint. Mendix XPath can't compute values
+	// (no +, -, *, div, mod on the value side) — compute into a variable first,
+	// then compare against it. (sudoku findings #8)
+	if looksLikeXPathArithmetic(msg) {
+		return fmt.Sprintf("%s\n\n  Mendix XPath constraints cannot compute values (no +, -, *, div, mod).\n"+
+			"  Compute the value into a variable first, then compare against it:\n"+
+			"    $Next = $Game/MoveSeq + 1;\n"+
+			"    retrieve $M from Mod.Move where [Seq = $Next] limit 1;   (correct)\n"+
+			"    retrieve $M from Mod.Move where [Seq = $Game/MoveSeq + 1] limit 1;  (wrong — XPath can't compute)", msg)
 	}
 
 	// Check for a misplaced EXTENDS / GENERALIZATION clause. It must precede the
@@ -116,7 +182,28 @@ func enhanceErrorMessage(msg string) string {
 		}
 	}
 
-	return msg
+	// Nothing matched a specific pattern — the location is precise but the fix
+	// isn't spelled out. Point at the syntax reference so the correct form is one
+	// command away. (Kept to one line since it can repeat across cascading errors.)
+	return msg + "  [see: mxcli syntax <topic>, e.g. entity | microflow | page]"
+}
+
+// bareNotRe matches a bare `not $…` (not followed by `(`) on a source line — the
+// exact shape of the unparenthesized-negation mistake. Scoped to `not $var` to
+// stay false-positive-free (it won't fire on `not(...)`, `is not null`, etc.).
+var bareNotRe = regexp.MustCompile(`(?i)\bnot\s+\$`)
+
+// xpathArithmeticRe matches an arithmetic operator that ANTLR rejected inside a
+// bracketed XPath constraint. `expecting ']'` only occurs inside `[…]`, so a
+// stray arithmetic operator there is a compute-in-constraint attempt. The op set
+// is quoted-literal to avoid matching, say, a `-` inside a normal expression.
+var xpathArithmeticRe = regexp.MustCompile(`mismatched input '(\+|\*|div|mod)' expecting '\]'`)
+
+// looksLikeXPathArithmetic detects an arithmetic operator used on the value side
+// of an XPath constraint (e.g. `[Seq = $Game/MoveSeq + 1]`). Mendix XPath cannot
+// compute values, so this must be pre-computed into a variable. (findings #8)
+func looksLikeXPathArithmetic(msg string) bool {
+	return xpathArithmeticRe.MatchString(msg)
 }
 
 // looksLikeMisplacedExtends detects ANTLR errors caused by an EXTENDS /
@@ -155,11 +242,23 @@ func looksLikeQuotedGrantAttribute(msg string) bool {
 	return false
 }
 
+// contractionSuffixes are the token fragments ANTLR is left holding after an
+// unescaped apostrophe splits an English contraction: 'don't' → string 'don' +
+// leftover t; 'it's' → s; 'you'll' → ll; 'you're' → re; 'we've' → ve; 'he'd' →
+// d; 'I'm' → m. Matching this fixed set (rather than "any short lowercase word")
+// is what keeps the apostrophe hint from firing on real MDL keywords/identifiers
+// that happen to be short and lowercase — e.g. a misplaced `on`, `in`, `as`,
+// `to`, `by` produced the wrong "unescaped apostrophe" advice before (findings #4).
+var contractionSuffixes = map[string]bool{
+	"s": true, "t": true, "d": true, "m": true,
+	"re": true, "ve": true, "ll": true,
+}
+
 // looksLikeUnescapedApostrophe detects ANTLR errors that are likely caused by
 // unescaped apostrophes in string literals. When 'don't' is parsed, ANTLR sees
 // 'don' as a complete string, then 't' as an unexpected token, producing errors
 // like: missing END at 's', mismatched input 't', or token recognition error at: ”;
-// We detect short (1-4 char) lowercase word fragments and unbalanced quote errors.
+// We detect the specific contraction-suffix fragments and unbalanced quote errors.
 func looksLikeUnescapedApostrophe(msg string) bool {
 	// Pattern 1: "token recognition error at: ''" — unbalanced trailing quote
 	if strings.Contains(msg, "token recognition error at: ''") {
@@ -202,24 +301,14 @@ func looksLikeUnescapedApostrophe(msg string) bool {
 			token = msg[searchFrom : searchFrom+tokenEnd]
 		}
 
-		// Short lowercase word fragments are likely apostrophe artifacts
-		// e.g., "s" from "it's", "ll" from "you'll", "t" from "don't",
-		// "re" from "you're", "ve" from "we've", "d" from "he'd"
-		if len(token) >= 1 && len(token) <= 4 && isLowerAlpha(token) {
+		// Only the specific contraction-suffix fragments are apostrophe artifacts.
+		// A real MDL keyword/identifier (on, in, as, to, by, …) is short and
+		// lowercase too, but is NOT a contraction leftover, so it must not match.
+		if contractionSuffixes[token] {
 			return true
 		}
 	}
 	return false
-}
-
-// isLowerAlpha returns true if s consists entirely of lowercase ASCII letters.
-func isLowerAlpha(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] < 'a' || s[i] > 'z' {
-			return false
-		}
-	}
-	return true
 }
 
 // Builder walks the ANTLR parse tree and builds AST nodes.
@@ -264,6 +353,7 @@ func collectLeafTokens(tree antlr.Tree, tokens *[]string) {
 func Build(input string) (*ast.Program, []error) {
 	// Create custom error listener to capture syntax errors
 	errListener := newErrorListener()
+	errListener.source = strings.Split(input, "\n")
 
 	// Create lexer with custom error listener
 	is := antlr.NewInputStream(input)

@@ -7,10 +7,12 @@ import (
 	"io"
 	"io/fs"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -86,8 +88,12 @@ type LocalRunOptions struct {
 	// screenshotStorage is the resolved Playwright storage-state file (from login);
 	// internal, set during boot.
 	screenshotStorage string
-	Stdout            io.Writer
-	Stderr            io.Writer
+	// RuntimeLogPath tees the Mendix runtime's stdout+stderr to a file so the
+	// warm loop is debuggable (server stack traces, microflow LOG output).
+	// Default <projectDir>/.mxcli/runtime.log; set to "-" to disable. Findings #25.
+	RuntimeLogPath string
+	Stdout         io.Writer
+	Stderr         io.Writer
 }
 
 // defaultLocalAdminPass is the admin password for a local dev runtime. The admin
@@ -130,6 +136,9 @@ func (o *LocalRunOptions) applyDefaults() {
 	}
 	if o.ScreenshotPath == "" {
 		o.ScreenshotPath = filepath.Join(filepath.Dir(o.ProjectPath), ".mxcli", "run-local.png")
+	}
+	if o.RuntimeLogPath == "" {
+		o.RuntimeLogPath = filepath.Join(filepath.Dir(o.ProjectPath), ".mxcli", "runtime.log")
 	}
 	if o.Stdout == nil {
 		o.Stdout = os.Stdout
@@ -456,7 +465,13 @@ func RunLocal(opts LocalRunOptions) error {
 		appRootURL = hubReg.URL
 	}
 
-	// 6. Boot the runtime against the fresh deployment.
+	// 6. Boot the runtime against the fresh deployment. Tee the runtime's own
+	// stdout/stderr to a log file so server-side errors are debuggable ("-"
+	// disables). (findings #25)
+	runtimeLog := opts.RuntimeLogPath
+	if runtimeLog == "-" {
+		runtimeLog = ""
+	}
 	rt, err := StartLocalRuntime(LocalRuntimeOptions{
 		DeployDir:   opts.DeployDir,
 		InstallPath: installPath,
@@ -466,6 +481,7 @@ func RunLocal(opts LocalRunOptions) error {
 		AdminPass:          opts.AdminPass,
 		ApplicationRootUrl: appRootURL,
 		DB:                 opts.DB,
+		RuntimeLogPath:     runtimeLog,
 		Stdout:             w,
 		Stderr:             stderr,
 	})
@@ -475,6 +491,9 @@ func RunLocal(opts LocalRunOptions) error {
 	defer rt.Stop()
 
 	fmt.Fprintf(w, "\nApp is running at %s\n", rt.AppURL())
+	if runtimeLog != "" {
+		fmt.Fprintf(w, "Runtime log: %s\n", runtimeLog)
+	}
 
 	// 6a. With --hub, open a reverse tunnel so the app is reachable in a browser at
 	// its public URL, and heartbeat so it shows as available in the hub overview.
@@ -491,9 +510,31 @@ func RunLocal(opts LocalRunOptions) error {
 		if err != nil {
 			return fmt.Errorf("starting hub tunnel: %w", err)
 		}
-		defer tunnel.Stop()
+		// The heartbeat re-registers if the hub restarts; when that lands on a new
+		// reverse port, restart the tunnel to the new port. Guard the handle since
+		// the callback runs on the heartbeat goroutine.
+		var tunMu sync.Mutex
+		defer func() { tunMu.Lock(); tunnel.Stop(); tunMu.Unlock() }()
 
-		hb := StartHeartbeat(hubReg)
+		hb := StartHeartbeat(hubReg, func(reg *HubRegistration) {
+			tunMu.Lock()
+			defer tunMu.Unlock()
+			tunnel.Stop()
+			nt, err := StartTunnel(TunnelOptions{
+				HubURL:     reg.ControlURL,
+				LocalPort:  opts.AppPort,
+				RemotePort: reg.ReversePort,
+				Secret:     reg.TunnelAuth,
+				PublicURL:  reg.URL,
+				Stdout:     w,
+			})
+			if err != nil {
+				fmt.Fprintf(stderr, "hub re-registered but restarting the tunnel failed: %v\n", err)
+				return
+			}
+			tunnel = nt
+			fmt.Fprintf(w, "Re-registered with hub after restart; preview available at %s\n", reg.URL)
+		})
 		defer hb.Stop()
 
 		fmt.Fprintf(w, "Preview available at %s\n", hubReg.URL)
@@ -518,7 +559,7 @@ func RunLocal(opts LocalRunOptions) error {
 	// 7. Stay up until interrupted. With --watch, rebuild + hot-apply on every
 	// project change; otherwise just keep the runtime serving.
 	if opts.Watch {
-		return watchAndApply(opts, serve, rt, watcher)
+		return watchAndApply(opts, serve, rt, watcher, mxbuildPath)
 	}
 	fmt.Fprintln(w, "(run with --watch to rebuild and hot-apply on changes; Ctrl-C to stop)")
 	waitForInterrupt()
@@ -665,10 +706,74 @@ func waitForInterrupt() {
 	<-sigCh
 }
 
+// clientProbeWindow bounds how long ensureClientServed waits for the app to serve
+// the freshly-restarted bundle before treating it as missing. A var so tests can
+// shrink it.
+var clientProbeWindow = 5 * time.Second
+
+// clientBundlePresent reports whether the rollup output exists on disk.
+func clientBundlePresent(deployDir string) bool {
+	_, err := os.Stat(filepath.Join(deployDir, "web", "dist", "index.js"))
+	return err == nil
+}
+
+// clientBundleServed reports whether the app actually serves /dist/index.js with
+// a 200 (the runtime 404s it when the bundle is missing, rendering only the
+// <noscript> shell). appURL is expected to end with "/".
+func clientBundleServed(appURL string) bool {
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(appURL + "dist/index.js")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode == http.StatusOK
+}
+
+// clientBundleServedWithin polls clientBundleServed until it succeeds or the
+// window elapses (the just-restarted runtime may need a beat before static
+// serving is live).
+func clientBundleServedWithin(appURL string, window time.Duration) bool {
+	deadline := time.Now().Add(window)
+	for {
+		if clientBundleServed(appURL) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+}
+
+// ensureClientServed guarantees the browser bundle is actually being served after
+// an apply, recovering if it is not. Under --watch, a structural model change has
+// the serve Deploy build rewrite web/ source and clear web/dist, while the
+// incremental bundler may report "success" for an intermediate bundle that does
+// not match the final source — so the restarted runtime can end up 404ing
+// /dist/index.js and booting only the <noscript> shell. When the bundle is not
+// present+served, fall back to the reliable synchronous one-shot bundle (the same
+// path the non-watch boot uses) and re-probe. A no-op when the bundle is already
+// served (a pure model reload never touches web/dist).
+func ensureClientServed(deployDir, appURL, mxbuildPath string, out io.Writer) error {
+	if clientBundlePresent(deployDir) && clientBundleServedWithin(appURL, clientProbeWindow) {
+		return nil
+	}
+	fmt.Fprintln(out, "  /dist/index.js not served after apply; re-bundling web client...")
+	if err := BuildWebClient(WebClientOptions{DeployDir: deployDir, MxBuildPath: mxbuildPath, Stdout: out}); err != nil {
+		return fmt.Errorf("web client re-bundle: %w", err)
+	}
+	if !clientBundleServedWithin(appURL, clientProbeWindow) {
+		return fmt.Errorf("web/dist/index.js still not served after re-bundle")
+	}
+	return nil
+}
+
 // watchAndApply polls the project for changes and applies each rebuild until the
 // user interrupts (Ctrl-C). StartLocalRuntime already resolved the JVM; here we
 // only rebuild via serve and let the RuntimeController decide reload vs restart.
-func watchAndApply(opts LocalRunOptions, serve *ServeServer, rt *LocalRuntime, watcher *WebClientWatcher) error {
+func watchAndApply(opts LocalRunOptions, serve *ServeServer, rt *LocalRuntime, watcher *WebClientWatcher, mxbuildPath string) error {
 	w := opts.Stdout
 
 	sigCh := make(chan os.Signal, 1)
@@ -711,7 +816,14 @@ func watchAndApply(opts LocalRunOptions, serve *ServeServer, rt *LocalRuntime, w
 				continue
 			}
 			if !build.OK() {
+				// Surface the full serve response, not just the generic message —
+				// it carries the real detail (e.g. the SCSS compiler's
+				// "Expected expression. _x.scss 180:35" or which model errors),
+				// matching the cold-build path. (findings #15, #23)
 				fmt.Fprintf(opts.Stderr, "  build failed: %s\n", build.Message)
+				if raw := strings.TrimSpace(string(build.Raw)); raw != "" && raw != build.Message {
+					fmt.Fprintf(opts.Stderr, "    %s\n", raw)
+				}
 				continue
 			}
 			// If the serve build touched web/ source, wait (briefly) for the
@@ -734,6 +846,14 @@ func watchAndApply(opts LocalRunOptions, serve *ServeServer, rt *LocalRuntime, w
 			action, err := rt.Controller().ApplyBuild(build, rt.Restart)
 			if err != nil {
 				fmt.Fprintf(opts.Stderr, "  apply (%s) failed: %v\n", action, err)
+				continue
+			}
+			// Gate the "applied" report on the browser bundle actually being served:
+			// a structural change can leave the restarted runtime 404ing
+			// /dist/index.js (see ensureClientServed). This recovers before we tell
+			// the user the build is live.
+			if err := ensureClientServed(opts.DeployDir, rt.AppURL(), mxbuildPath, opts.Stdout); err != nil {
+				fmt.Fprintf(opts.Stderr, "  client bundle not served after apply: %v\n", err)
 				continue
 			}
 			client := ""

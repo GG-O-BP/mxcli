@@ -1,0 +1,9 @@
+-- Findings #8: Mendix XPath constraints cannot compute values, so an arithmetic
+-- operator on the value side (`+ 1`) is a parse error. check now explains the
+-- limitation and the workaround (compute into a variable first, then compare).
+-- Negative test: `mxcli check` MUST fail here.
+create microflow Bug8.MF_NextMove (Game: Bug8.Game) returns Bug8.Move
+begin
+  retrieve $M from Bug8.Move where [Seq = $Game/MoveSeq + 1] limit 1;
+  return $M;
+end;

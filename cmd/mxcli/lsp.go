@@ -62,6 +62,19 @@ type mdlServer struct {
 	widgetCompletionsOnce sync.Once
 	widgetCompletionItems []protocol.CompletionItem
 	widgetRegistry        *executor.WidgetRegistry // populated by the same Once
+
+	// Design-property (theme) registry cache (lazily populated once per session,
+	// keeping design-property file I/O out of the per-keystroke path).
+	themeRegistryOnce sync.Once
+	themeRegistry     *executor.ThemeRegistry
+}
+
+// ensureThemeRegistry loads the project's design-property registry once per
+// server lifetime. Nil when there is no project/themesource metadata.
+func (s *mdlServer) ensureThemeRegistry() {
+	s.themeRegistryOnce.Do(func() {
+		s.themeRegistry = executor.LoadThemeRegistryForProject(s.mprPath)
+	})
 }
 
 func newMDLServer(client protocol.Client) *mdlServer {

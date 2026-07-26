@@ -129,18 +129,97 @@ create page Module.CustomerEdit
 }
 ```
 
-### Parameterized Fragments (Future)
+### Content Slots (Implemented)
 
-Future enhancement - fragments that accept parameters:
+The most valuable form of fragment parameterization is a **content slot**: a
+fragment that **wraps arbitrary caller-supplied content**. This is what a
+design-recipe library mostly needs — a reusable shell (a card, a panel, a
+section) whose *body varies per use*. Neither a plain fragment (fixed widgets)
+nor a Mendix Snippet (context-entity only, no content slot) can express it.
+
+Declare a `slot` where the caller's widgets should land, then fill it with the
+`use fragment X { … }` payload form:
+
+```sql
+define fragment Card as {
+  container cardWrap (class: 'card', designproperties: ['Card style': on]) {
+    container cardBody (class: 'card-body') {
+      slot content            -- caller's widgets are spliced in here
+    }
+  }
+}
+
+-- Fill the slot with page-specific content
+use fragment Card {
+  dynamictext cardHeading (content: 'Welcome', rendermode: H2)
+  dynamictext cardText (content: 'Any widgets can go inside the reusable Card shell')
+}
+```
+
+Semantics (v1):
+- The slot name is optional and defaults to `content`; a fragment supports a
+  single slot.
+- Using a slotted fragment with **no** payload expands the slot to nothing (an
+  empty shell) — valid.
+- Supplying a payload to a fragment that declares **no** slot is an error.
+- The payload is deep-cloned into the slot; the `as prefix_` rename still applies
+  to the fragment's own widgets (not the caller's payload).
+- Slots resolve entirely at fragment-expansion time — no BSON changes, and
+  `describe page` shows the fully-expanded tree (the slot marker is gone).
+
+### Parameter Bindings — datasource & action (Prototype)
+
+Beyond wrapping content, a reusable component must vary its **data** and
+**behavior**: which entity it shows, which microflow its buttons call. A fragment
+can declare typed `datasource` / `action` parameters, reference them with `$name`
+in a datasource/action position, and receive values at the use site:
+
+```sql
+define fragment DataPanel($data: datasource, $onEdit: action) as {
+  container panelWrap (class: 'card') {
+    listview lv (datasource: $data) {
+      slot content
+      actionbutton edit (caption: 'Edit', action: $onEdit, buttonstyle: primary)
+    }
+  }
+}
+
+use fragment DataPanel ($data: database Sales.Order, $onEdit: microflow Sales.Edit) {
+  dynamictext heading (content: 'Orders', rendermode: H4)
+}
+```
+
+Building blocks can't declare params (they're Studio-Pro-authored), so a
+`use building block` takes **rebind overrides** that rewrite the block's outermost
+datasource / first button after the copy:
+
+```sql
+use building block Atlas_Web_Content.List_Cards
+  (datasource: database Sales.Order, action: microflow Sales.Open) as orders_
+```
+
+Semantics: values substitute at expansion (no BSON changes; `describe` shows the
+concrete datasource/action); every declared param must be supplied; unknown args
+and type mismatches are errors. A microflow/nanoflow value parses as a datasource
+(grammar overlap) and is reinterpreted as a call action when the parameter's kind
+is `action`. **Binding-point rule for building blocks** (prototype): datasource →
+first widget carrying a datasource; action → first button widget. Anything more
+specific falls back to copy-in + `alter page … set … on prefix_widget`.
+
+**Open design points to firm up before promoting from prototype:** (1) validation
+timing — an abstract fragment's inner `attribute:` bindings can only be checked
+once `$data`'s entity is known, so `check` is currently permissive on unbound
+fragments; (2) building-block binding-point ambiguity when a block has more than
+one datasource or several buttons; (3) whether to add `attribute` and scalar
+`value` param kinds (the original "scalar params" idea, now the lowest-priority
+remainder).
+
+Original scalar-substitution sketch (subsumed by the above; kept for reference):
 
 ```sql
 define fragment FormField($label, $attr) as {
   textbox txt$attr (label: $label, attribute: $attr)
 }
-
--- Usage
-use fragment FormField('Customer Name', 'Name')
-use fragment FormField('Email Address', 'Email')
 ```
 
 ### Fragment Naming and Prefixes
@@ -499,7 +578,8 @@ alter page Module.CustomerEdit {
 - `drop widget if exists`
 
 ### Phase 5: Future Enhancements
-- Parameterized fragments: `define fragment Name($param) as { ... }`
+- **Content slots** (`define fragment Name as { … slot … }` + `use fragment Name { … }`) — **implemented**; wraps arbitrary caller content
+- Scalar parameterized fragments: `define fragment Name($param) as { ... }` (v1.1)
 - `use script 'file.mdl'` for file includes
 - Fragment libraries
 - Conditional fragments (`use fragment X if condition`)

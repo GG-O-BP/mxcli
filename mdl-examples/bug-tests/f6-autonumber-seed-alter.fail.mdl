@@ -1,0 +1,6 @@
+-- Findings #6 (alter path): the seedless-autonumber check (MDL023) also applies
+-- when the attribute is added later via ALTER ENTITY, not only at CREATE. Before
+-- this fix, `alter entity ... add attribute X: autonumber;` returned "Check
+-- passed!" and then failed the build with CE7247 "Value cannot be empty".
+-- Negative test: `mxcli check` MUST fail here.
+alter entity Bug6.Game add attribute PuzzleNo: autonumber;

@@ -38,8 +38,9 @@ create persistent entity Module.Customer (
   -- Enumeration
   status: Module.CustomerStatus default Active,
 
-  -- Auto-number
-  CustomerNumber: autonumber
+  -- Auto-number (REQUIRES a seed via `default N` — without it the build fails
+  -- CE7247 "Value cannot be empty")
+  CustomerNumber: autonumber default 1
 );
 /
 ```
@@ -73,7 +74,7 @@ create non-persistent entity Module.CustomerSearchParams (
 | DateTime | `Name: datetime` | `CreatedAt: datetime` |
 | Date | `Name: date` | `BirthDate: date` |
 | Enumeration | `Name: Module.EnumName` | `status: Module.Status` |
-| AutoNumber | `Name: autonumber` | `Code: autonumber` |
+| AutoNumber | `Name: autonumber default 1` | `Code: autonumber default 1` (seed required) |
 | Binary | `Name: binary` | `FileData: binary` |
 | Hashed String | `Name: hashedstring` | `password: hashedstring` |
 
@@ -253,10 +254,14 @@ create persistent entity Module.Product (
   Category: string(50),
   Price: decimal
 )
-index idx_product_code on (Code)
-index idx_product_category on (Category);
+index idx_product_code (Code)
+index idx_product_category (Category);
 /
 ```
+
+> The `on` keyword is optional and reads SQL-like: `index idx_product_code on (Code)`
+> is equivalent to `index idx_product_code (Code)`. Multi-column indexes list the
+> columns in order: `index idx_pos on (Row, Col)`.
 
 ## Complete Domain Model Example
 
@@ -293,7 +298,7 @@ create persistent entity Shop.Product (
 
 -- Order entity
 create persistent entity Shop.Order (
-  OrderNumber: autonumber,
+  OrderNumber: autonumber default 1,
   OrderDate: datetime not null,
   status: Shop.OrderStatus default Draft,
   TotalAmount: decimal,

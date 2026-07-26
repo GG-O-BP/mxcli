@@ -9,7 +9,11 @@ import (
 	"testing"
 
 	"github.com/mendixlabs/mxcli/mdl/ast"
+	"github.com/mendixlabs/mxcli/mdl/backend/mock"
+	"github.com/mendixlabs/mxcli/mdl/linter"
 	"github.com/mendixlabs/mxcli/mdl/visitor"
+	"github.com/mendixlabs/mxcli/model"
+	"github.com/mendixlabs/mxcli/sdk/domainmodel"
 )
 
 // TestValidateDuplicateVariableDeclareRetrieve verifies that DECLARE followed by
@@ -130,6 +134,203 @@ func TestValidateEntityReservedAttributeName(t *testing.T) {
 	if !found {
 		t.Errorf("Expected reserved attribute error for CreatedDate, got: %v", violations)
 	}
+}
+
+// TestValidateEntityAutonumberNeedsSeed verifies MDL023: an autonumber attribute
+// without a seed fails the build (CE7247), so mxcli check flags it. Findings #6.
+func TestValidateEntityAutonumberNeedsSeed(t *testing.T) {
+	build := func(src string) []linter.Violation {
+		prog, errs := visitor.Build(src)
+		if len(errs) > 0 {
+			t.Fatalf("parse error: %v", errs[0])
+		}
+		return ValidateEntity(prog.Statements[0].(*ast.CreateEntityStmt))
+	}
+	hasMDL := func(vs []linter.Violation, id string) bool {
+		for _, v := range vs {
+			if v.RuleID == id {
+				return true
+			}
+		}
+		return false
+	}
+
+	if !hasMDL(build(`create persistent entity M.G ( PuzzleNo: autonumber );`), "MDL023") {
+		t.Error("expected MDL023 for a seedless autonumber")
+	}
+	if hasMDL(build(`create persistent entity M.G ( PuzzleNo: autonumber default 1 );`), "MDL023") {
+		t.Error("did not expect MDL023 when autonumber has a seed")
+	}
+}
+
+// TestValidateEntityAutoMemberRename verifies MDL022: an AutoX pseudo-type
+// declared under a name other than its fixed system member warns that the name
+// is discarded on write. Findings #7.
+func TestValidateEntityAutoMemberRename(t *testing.T) {
+	build := func(src string) []linter.Violation {
+		prog, errs := visitor.Build(src)
+		if len(errs) > 0 {
+			t.Fatalf("parse error: %v", errs[0])
+		}
+		return ValidateEntity(prog.Statements[0].(*ast.CreateEntityStmt))
+	}
+	hasMDL := func(vs []linter.Violation, id string) bool {
+		for _, v := range vs {
+			if v.RuleID == id {
+				return true
+			}
+		}
+		return false
+	}
+
+	if !hasMDL(build(`create persistent entity M.G ( StartedAt: autocreateddate );`), "MDL022") {
+		t.Error("expected MDL022 for a renamed autocreateddate")
+	}
+	// Canonical name (case-insensitive) does not warn.
+	if hasMDL(build(`create persistent entity M.G ( CreatedDate: autocreateddate );`), "MDL022") {
+		t.Error("did not expect MDL022 when the name matches the system member")
+	}
+}
+
+// TestValidateAlterEntityAddAttribute verifies that the same per-attribute
+// checks applied on CREATE (MDL022 AutoX rename, MDL023 autonumber seed, MDL021
+// reserved words) also run on the ALTER ENTITY ADD ATTRIBUTE path. Previously an
+// attribute added via ALTER escaped these checks entirely (findings #6, half-fix).
+func TestValidateAlterEntityAddAttribute(t *testing.T) {
+	build := func(src string) []linter.Violation {
+		prog, errs := visitor.Build(src)
+		if len(errs) > 0 {
+			t.Fatalf("parse error: %v", errs[0])
+		}
+		return ValidateAlterEntity(prog.Statements[0].(*ast.AlterEntityStmt))
+	}
+	hasMDL := func(vs []linter.Violation, id string) bool {
+		for _, v := range vs {
+			if v.RuleID == id {
+				return true
+			}
+		}
+		return false
+	}
+
+	// MDL023: seedless autonumber added via ALTER.
+	if !hasMDL(build(`alter entity M.G add attribute PuzzleNo: autonumber;`), "MDL023") {
+		t.Error("expected MDL023 for a seedless autonumber added via ALTER")
+	}
+	if hasMDL(build(`alter entity M.G add attribute PuzzleNo: autonumber default 1;`), "MDL023") {
+		t.Error("did not expect MDL023 when the added autonumber has a seed")
+	}
+	// MDL022: AutoX pseudo-type added under a non-canonical name.
+	if !hasMDL(build(`alter entity M.G add attribute StartedAt: autocreateddate;`), "MDL022") {
+		t.Error("expected MDL022 for a renamed autocreateddate added via ALTER")
+	}
+	if hasMDL(build(`alter entity M.G add attribute CreatedDate: autocreateddate;`), "MDL022") {
+		t.Error("did not expect MDL022 when the added AutoX name matches the system member")
+	}
+	// MDL021: reserved word added via ALTER (kind-independent).
+	if !hasMDL(build(`alter entity M.G add attribute Type: string;`), "MDL021") {
+		t.Error("expected MDL021 for a reserved word added via ALTER")
+	}
+	// A plain, valid attribute added via ALTER produces no violations.
+	if vs := build(`alter entity M.G add attribute Score: integer;`); len(vs) != 0 {
+		t.Errorf("expected no violations for a plain added attribute, got %v", vs)
+	}
+	// Non-ADD alter operations are ignored.
+	if vs := build(`alter entity M.G drop attribute Score;`); len(vs) != 0 {
+		t.Errorf("expected no violations for a DROP ATTRIBUTE op, got %v", vs)
+	}
+}
+
+// TestDroppedEntityMembers verifies the helper that lists members a CREATE OR
+// MODIFY replace would delete (findings #24).
+func TestDroppedEntityMembers(t *testing.T) {
+	existing := &domainmodel.Entity{
+		Name: "Game",
+		Attributes: []*domainmodel.Attribute{
+			{Name: "Puzzle"}, {Name: "Solution"}, {Name: "Difficulty"},
+		},
+		HasCreatedDate: true,
+		HasOwner:       true,
+	}
+	replacement := &domainmodel.Entity{
+		Name: "Game",
+		Attributes: []*domainmodel.Attribute{
+			{Name: "puzzle"}, // case-insensitive match — kept
+			{Name: "Score"},  // new — not a drop
+		},
+		HasOwner: true, // kept
+		// HasCreatedDate now false — dropped
+	}
+	dropped := droppedEntityMembers(existing, replacement)
+	got := strings.Join(dropped, ",")
+	// Solution and Difficulty are dropped; Puzzle survives (case-insensitive);
+	// createdDate audit field is dropped; owner survives.
+	for _, want := range []string{"Solution", "Difficulty", "createdDate (system field)"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected dropped members to include %q, got %q", want, got)
+		}
+	}
+	for _, unwanted := range []string{"Puzzle", "puzzle", "Score", "owner"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("did not expect %q among dropped members, got %q", unwanted, got)
+		}
+	}
+}
+
+// TestCreateOrModifyEntity_WarnsOnDrop verifies that CREATE OR MODIFY ENTITY
+// still applies (non-blocking) but prints a data-loss warning listing the
+// attributes it removes (findings #24).
+func TestCreateOrModifyEntity_WarnsOnDrop(t *testing.T) {
+	mod := mkModule("Sudoku")
+	existing := &domainmodel.Entity{
+		BaseElement: model.BaseElement{ID: nextID("ent")},
+		ContainerID: nextID("dm"),
+		Name:        "Game",
+		Persistable: true,
+		Attributes: []*domainmodel.Attribute{
+			{Name: "Puzzle"}, {Name: "Solution"}, {Name: "Difficulty"},
+		},
+	}
+	dm := &domainmodel.DomainModel{
+		BaseElement: model.BaseElement{ID: nextID("dm")},
+		ContainerID: mod.ID,
+		Entities:    []*domainmodel.Entity{existing},
+	}
+	h := mkHierarchy(mod)
+	withContainer(h, dm.ID, mod.ID)
+	withContainer(h, existing.ContainerID, dm.ID)
+
+	updateCalled := false
+	mb := &mock.MockBackend{
+		IsConnectedFunc:      func() bool { return true },
+		ListModulesFunc:      func() ([]*model.Module, error) { return []*model.Module{mod}, nil },
+		ListDomainModelsFunc: func() ([]*domainmodel.DomainModel, error) { return []*domainmodel.DomainModel{dm}, nil },
+		GetDomainModelFunc:   func(id model.ID) (*domainmodel.DomainModel, error) { return dm, nil },
+		UpdateEntityFunc: func(dmID model.ID, e *domainmodel.Entity) error {
+			updateCalled = true
+			return nil
+		},
+	}
+
+	ctx, buf := newMockCtx(t, withBackend(mb), withHierarchy(h))
+	// Redeclare only one of the three existing attributes.
+	err := execCreateEntity(ctx, &ast.CreateEntityStmt{
+		Name:           ast.QualifiedName{Module: "Sudoku", Name: "Game"},
+		Kind:           ast.EntityPersistent,
+		CreateOrModify: true,
+		Attributes: []ast.Attribute{
+			{Name: "Puzzle", Type: ast.DataType{Kind: ast.TypeString}},
+		},
+	})
+	assertNoError(t, err)
+	if !updateCalled {
+		t.Fatal("UpdateEntity was not called — modify should still apply (non-blocking)")
+	}
+	out := buf.String()
+	assertContainsStr(t, out, "drops 2 existing member(s)")
+	assertContainsStr(t, out, "Solution")
+	assertContainsStr(t, out, "Difficulty")
+	assertContainsStr(t, out, "alter entity Sudoku.Game add attribute")
 }
 
 // TestValidateEntityNPEReservedWords verifies that non-persistent entities

@@ -126,7 +126,12 @@ while IFS= read -r md; do
 
 		for stmt in "$WORK"/stmt_*.mdl; do
 			[ -e "$stmt" ] || continue
-			first="$(grep -vE '^[[:space:]]*$' "$stmt" | head -1 | sed -E 's/^[[:space:]]+//' | tr 'A-Z' 'a-z')"
+			# First keyword = first line that is not blank, not a `/** … */` doc
+			# comment (the `create` statement's Documentation), and not a `--` line
+			# comment. Without skipping the doc comment, a `/** */`-prefixed DDL
+			# statement is misclassified as non-DDL and silently skipped — which let
+			# `index … on (…)` drift ship in mdl-entities.md (findings #4).
+			first="$(grep -vE '^[[:space:]]*($|/\*|\*|--)' "$stmt" | head -1 | sed -E 's/^[[:space:]]+//' | tr 'A-Z' 'a-z')"
 			# Only in-scope statements: domain-model DDL, or complete CREATE/DROP of a
 			# page or snippet.
 			printf '%s' "$first" | grep -qE "$DDL_RE|$PAGE_RE" || { SKIPPED=$((SKIPPED + 1)); continue; }
@@ -141,7 +146,7 @@ while IFS= read -r md; do
 			# enforced here.
 			if printf '%s' "$out" | grep -qiE 'Syntax errors found|mismatched input|no viable alternative|extraneous input|expecting'; then
 				FAILED=1
-				echo "FAIL: $md — $(grep -vE '^[[:space:]]*$' "$stmt" | head -1 | sed -E 's/^[[:space:]]+//')"
+				echo "FAIL: $md — $(grep -vE '^[[:space:]]*($|/\*|\*|--)' "$stmt" | head -1 | sed -E 's/^[[:space:]]+//')"
 				printf '%s\n' "$out" | grep -iE 'mismatched|expecting|no viable|extraneous' | grep -iv 'vibe' | sed 's/^/    /' | head -2
 			fi
 		done

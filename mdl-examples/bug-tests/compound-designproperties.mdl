@@ -1,0 +1,29 @@
+-- @version: 10.0+
+-- ============================================================================
+-- Compound (nested) design properties silently dropped on write.
+--
+-- serializeDesignProperties (sdk/mpr/writer_widgets.go) handled toggle / option /
+-- custom design-property values but hit `default: continue` for a COMPOUND value
+-- (a key whose value is a set of sub-properties, e.g. Atlas 'Spacing' →
+-- margin-top/-bottom). So a nested design property authored directly — or copied
+-- in via `use building block` on a block that uses one (the Atlas Card carries
+-- 'Spacing') — was silently lost: check passed, mx check passed, but the styling
+-- was gone.
+--
+-- Fix: add the `compound` case → Forms$CompoundDesignPropertyValue with a
+-- marker-prefixed Properties sub-list (the same shape the describe reader expects).
+-- Verified: mx check = 0 errors on a real 11.12.1 project; round-trips via
+-- `describe page`. Simple toggle/option properties were always fine.
+-- ============================================================================
+
+create page BugCompoundDP.SpacingCard (
+  title: 'Spacing Card',
+  layout: Atlas_Core.Atlas_Default
+) {
+  container card1 (designproperties: [
+    'Card style': on,
+    'Spacing': ['margin-bottom': 'Large', 'margin-top': 'Medium']
+  ]) {
+    dynamictext title1 (content: 'Title', rendermode: H4, class: 'card-title')
+  }
+}

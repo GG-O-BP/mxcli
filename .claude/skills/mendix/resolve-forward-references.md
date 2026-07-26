@@ -19,7 +19,7 @@ This applies to the following reference types:
 | `snippetcall` | page / snippet | snippet created after the page |
 | `show_page` in action | page / snippet | page created after the page that references it |
 | `SHOW PAGE` | microflow | page created after the microflow |
-| `call microflow` | microflow | already works — microflow resolver checks in-session cache |
+| `call microflow` | microflow | callee microflow created after the caller (in the same script, `exec` resolves the call against the project/backend, not later same-script definitions — so order the callee first) |
 
 > **Note:** `SHOW PAGE` inside a microflow body resolves the page reference at
 > microflow-creation time, not at invocation time. If the target page doesn't exist yet,

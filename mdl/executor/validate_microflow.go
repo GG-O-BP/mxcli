@@ -98,7 +98,9 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 			}
 		case *ast.ReturnStmt:
 			v.checkReturn(stmt)
+			v.checkExprFunctions("return", stmt.Value)
 		case *ast.IfStmt:
+			v.checkExprFunctions("if condition", stmt.Condition)
 			v.walkBody(stmt.ThenBody)
 			v.walkBody(stmt.ElseBody)
 		case *ast.EnumSplitStmt:
@@ -184,6 +186,7 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 					v.checkNumericAssignment("$"+stmt.Variable, k, stmt.InitialValue)
 				}
 			}
+			v.checkExprFunctions(fmt.Sprintf("declare '$%s'", stmt.Variable), stmt.InitialValue)
 		case *ast.MfSetStmt:
 			// SET on a plain variable target (not $var/Member = …, which is a
 			// member change). Flag a Decimal value assigned to an Integer/Long var.
@@ -192,6 +195,7 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 					v.checkNumericAssignment("$"+stmt.Target, k, stmt.Value)
 				}
 			}
+			v.checkExprFunctions(fmt.Sprintf("set '%s'", stmt.Target), stmt.Value)
 		case *ast.RetrieveStmt:
 			// RETRIEVE populates a list variable — remove from empty tracking
 			delete(v.emptyListVars, stmt.Variable)
@@ -250,9 +254,11 @@ func (v *microflowValidator) checkNumericAssignment(targetLabel string, targetKi
 	if src == "" {
 		return
 	}
-	// Only flag a raw arithmetic Decimal (e.g. `$a div $b`); a rounding function
-	// result assigned to Integer is accepted by Mendix and must not be flagged.
-	if !exprcheck.SourceIsArithmeticDecimal(src, v.varKinds) {
+	// Flag a Decimal-typed value assigned to an Integer/Long target: a raw
+	// arithmetic Decimal (e.g. `$a div $b`) or a Decimal-returning built-in such
+	// as random() / secondsBetween(...). Rounding functions (round/floor/ceil/
+	// trunc) are excluded — Mendix accepts their whole-number result. (findings #2)
+	if !exprcheck.SourceRejectedForIntegerTarget(src, v.varKinds) {
 		return
 	}
 	target := "Integer"
@@ -261,8 +267,29 @@ func (v *microflowValidator) checkNumericAssignment(targetLabel string, targetKi
 	}
 	v.addViolation("MDL041", linter.SeverityError,
 		fmt.Sprintf("assigning a Decimal expression to %s variable '%s' — Mendix rejects this with CE0117. "+
-			"Integer division ('div') always yields a Decimal.", target, targetLabel),
+			"Integer division ('div') and functions like random()/secondsBetween() yield a Decimal.", target, targetLabel),
 		fmt.Sprintf("Declare '%s' as Decimal, or round the value (e.g. round(%s) or floor(%s)).", targetLabel, src, src))
+}
+
+// checkExprFunctions flags calls to names that are not Mendix expression
+// functions (e.g. a hallucinated randomInt()) — these parse and pass a naive
+// check but fail the build with CE0117. label describes where the expression
+// appears (e.g. "declare '$r'"). (findings #1)
+func (v *microflowValidator) checkExprFunctions(label string, expr ast.Expression) {
+	src := microflowExprSource(expr)
+	if src == "" {
+		return
+	}
+	for _, u := range exprcheck.UnknownFunctionCalls(src) {
+		suggestion := "Use a built-in Mendix expression function (see 'mxcli syntax expressions')."
+		if u.Suggestion != "" {
+			suggestion = fmt.Sprintf("Did you mean '%s()'? ", u.Suggestion) + suggestion
+		}
+		v.addViolation("MDL044", linter.SeverityError,
+			fmt.Sprintf("%s calls '%s()', which is not a Mendix expression function — "+
+				"the build fails CE0117 \"Error(s) in expression\"", label, u.Name),
+			suggestion)
+	}
 }
 
 // microflowExprSource returns the Mendix source text of a microflow value

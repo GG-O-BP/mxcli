@@ -385,6 +385,264 @@ func TestExpandIfFragmentWithPrefix(t *testing.T) {
 	}
 }
 
+func slotFrag(name string, slots int) *ast.DefineFragmentStmt {
+	body := &ast.WidgetV3{Type: "container", Name: "wrap", Properties: map[string]interface{}{}}
+	for i := 0; i < slots; i++ {
+		body.Children = append(body.Children, &ast.WidgetV3{Type: "SLOT", Name: "content", Properties: map[string]interface{}{}})
+	}
+	return &ast.DefineFragmentStmt{Name: name, Widgets: []*ast.WidgetV3{body}}
+}
+
+func TestExpandFragmentSplicesPayloadIntoSlot(t *testing.T) {
+	frag := slotFrag("Card", 1)
+	pb := &pageBuilder{fragments: map[string]*ast.DefineFragmentStmt{"Card": frag}}
+
+	w := &ast.WidgetV3{
+		Type:       "USE_FRAGMENT",
+		Name:       "Card",
+		Properties: map[string]interface{}{},
+		Children: []*ast.WidgetV3{
+			{Type: "dynamictext", Name: "hello", Properties: map[string]interface{}{"Content": "Hi"}},
+			{Type: "dynamictext", Name: "sub", Properties: map[string]interface{}{"Content": "wrapped"}},
+		},
+	}
+	result, err := pb.expandIfFragment(w)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("Expected 1 top-level widget (wrap), got %d", len(result))
+	}
+	wrap := result[0]
+	if len(wrap.Children) != 2 {
+		t.Fatalf("Expected 2 spliced payload widgets, got %d", len(wrap.Children))
+	}
+	if wrap.Children[0].Name != "hello" || wrap.Children[1].Name != "sub" {
+		t.Errorf("Payload not spliced in order: %q, %q", wrap.Children[0].Name, wrap.Children[1].Name)
+	}
+	// The slot sentinel must be gone.
+	if countSlots(result) != 0 {
+		t.Error("Expected no SLOT sentinels after expansion")
+	}
+	// Payload must be a clone, not the caller's pointer.
+	if wrap.Children[0] == w.Children[0] {
+		t.Error("Spliced payload should be a clone, not the original pointer")
+	}
+	// The fragment definition must be untouched (still holds a slot).
+	if countSlots(frag.Widgets) != 1 {
+		t.Error("Fragment definition should still hold its slot after expansion")
+	}
+}
+
+func TestExpandFragmentEmptySlotWhenNoPayload(t *testing.T) {
+	frag := slotFrag("Card", 1)
+	pb := &pageBuilder{fragments: map[string]*ast.DefineFragmentStmt{"Card": frag}}
+
+	w := &ast.WidgetV3{Type: "USE_FRAGMENT", Name: "Card", Properties: map[string]interface{}{}}
+	result, err := pb.expandIfFragment(w)
+	if err != nil {
+		t.Fatalf("Unexpected error for empty slot: %v", err)
+	}
+	if len(result) != 1 || len(result[0].Children) != 0 {
+		t.Errorf("Expected an empty wrap, got %+v", result)
+	}
+}
+
+func TestExpandFragmentPayloadWithoutSlotErrors(t *testing.T) {
+	frag := slotFrag("NoSlot", 0)
+	pb := &pageBuilder{fragments: map[string]*ast.DefineFragmentStmt{"NoSlot": frag}}
+
+	w := &ast.WidgetV3{
+		Type: "USE_FRAGMENT", Name: "NoSlot", Properties: map[string]interface{}{},
+		Children: []*ast.WidgetV3{{Type: "dynamictext", Name: "extra", Properties: map[string]interface{}{}}},
+	}
+	_, err := pb.expandIfFragment(w)
+	if err == nil {
+		t.Fatal("Expected error when payload supplied to a slotless fragment")
+	}
+	if !strings.Contains(err.Error(), "does not declare a `slot`") {
+		t.Errorf("Unexpected error: %v", err)
+	}
+}
+
+func TestExpandFragmentMultipleSlotsErrors(t *testing.T) {
+	frag := slotFrag("TwoSlots", 2)
+	pb := &pageBuilder{fragments: map[string]*ast.DefineFragmentStmt{"TwoSlots": frag}}
+
+	w := &ast.WidgetV3{
+		Type: "USE_FRAGMENT", Name: "TwoSlots", Properties: map[string]interface{}{},
+		Children: []*ast.WidgetV3{{Type: "dynamictext", Name: "x", Properties: map[string]interface{}{}}},
+	}
+	_, err := pb.expandIfFragment(w)
+	if err == nil {
+		t.Fatal("Expected error for a fragment declaring multiple slots")
+	}
+	if !strings.Contains(err.Error(), "single slot") {
+		t.Errorf("Unexpected error: %v", err)
+	}
+}
+
+func TestExpandBareSlotErrors(t *testing.T) {
+	pb := &pageBuilder{fragments: map[string]*ast.DefineFragmentStmt{}}
+	w := &ast.WidgetV3{Type: "SLOT", Name: "content", Properties: map[string]interface{}{}}
+	_, err := pb.expandIfFragment(w)
+	if err == nil {
+		t.Fatal("Expected error for a bare slot outside a fragment")
+	}
+	if !strings.Contains(err.Error(), "only valid inside a `define fragment`") {
+		t.Errorf("Unexpected error: %v", err)
+	}
+}
+
+func paramFrag() *ast.DefineFragmentStmt {
+	return &ast.DefineFragmentStmt{
+		Name: "Panel",
+		Params: []ast.FragmentParam{
+			{Name: "data", Kind: "datasource"},
+			{Name: "onEdit", Kind: "action"},
+		},
+		Widgets: []*ast.WidgetV3{
+			{Type: "listview", Name: "lv", Properties: map[string]interface{}{
+				"DataSource": &ast.DataSourceV3{Type: "parameter", Reference: "$data"},
+			}, Children: []*ast.WidgetV3{
+				{Type: "actionbutton", Name: "b", Properties: map[string]interface{}{
+					"Action": &ast.ActionV3{Type: "param", Target: "onEdit"},
+				}},
+			}},
+		},
+	}
+}
+
+func TestSubstituteFragmentParams_Success(t *testing.T) {
+	frag := paramFrag()
+	pb := &pageBuilder{fragments: map[string]*ast.DefineFragmentStmt{"Panel": frag}}
+
+	w := &ast.WidgetV3{
+		Type: "USE_FRAGMENT", Name: "Panel", Properties: map[string]interface{}{
+			"Args": []ast.FragmentArg{
+				{Name: "data", DataSource: &ast.DataSourceV3{Type: "database", Reference: "Sales.Order"}},
+				// microflow supplied as a datasource (parse overlap) — must convert to an action.
+				{Name: "onEdit", DataSource: &ast.DataSourceV3{Type: "microflow", Reference: "Sales.Edit"}},
+			},
+		},
+	}
+	result, err := pb.expandIfFragment(w)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	lv := result[0]
+	ds := lv.Properties["DataSource"].(*ast.DataSourceV3)
+	if ds.Type != "database" || ds.Reference != "Sales.Order" {
+		t.Errorf("datasource not substituted: %+v", ds)
+	}
+	act := lv.Children[0].Properties["Action"].(*ast.ActionV3)
+	if act.Type != "microflow" || act.Target != "Sales.Edit" {
+		t.Errorf("action param not substituted/converted: %+v", act)
+	}
+	// The fragment definition must be untouched.
+	if frag.Widgets[0].Properties["DataSource"].(*ast.DataSourceV3).Reference != "$data" {
+		t.Error("fragment definition datasource was mutated")
+	}
+}
+
+func TestSubstituteFragmentParams_Errors(t *testing.T) {
+	frag := paramFrag()
+	pb := &pageBuilder{fragments: map[string]*ast.DefineFragmentStmt{"Panel": frag}}
+	mk := func(args []ast.FragmentArg) *ast.WidgetV3 {
+		return &ast.WidgetV3{Type: "USE_FRAGMENT", Name: "Panel", Properties: map[string]interface{}{"Args": args}}
+	}
+	cases := []struct {
+		name string
+		args []ast.FragmentArg
+		want string
+	}{
+		{"missing", []ast.FragmentArg{{Name: "data", DataSource: &ast.DataSourceV3{Type: "database"}}}, "missing argument for parameter $onEdit"},
+		{"unknown", []ast.FragmentArg{
+			{Name: "data", DataSource: &ast.DataSourceV3{Type: "database"}},
+			{Name: "onEdit", DataSource: &ast.DataSourceV3{Type: "microflow"}},
+			{Name: "bogus", DataSource: &ast.DataSourceV3{Type: "database"}},
+		}, "unknown argument $bogus"},
+		{"type-mismatch", []ast.FragmentArg{
+			{Name: "data", DataSource: &ast.DataSourceV3{Type: "database"}},
+			{Name: "onEdit", DataSource: &ast.DataSourceV3{Type: "database"}}, // database can't be an action
+		}, "expects an action"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := pb.expandIfFragment(mk(tc.args))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("expected error containing %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestSubstituteFragmentParams_ArgsToNoParamFragment(t *testing.T) {
+	frag := &ast.DefineFragmentStmt{Name: "Plain", Widgets: []*ast.WidgetV3{{Type: "dynamictext", Name: "t", Properties: map[string]interface{}{}}}}
+	pb := &pageBuilder{fragments: map[string]*ast.DefineFragmentStmt{"Plain": frag}}
+	w := &ast.WidgetV3{Type: "USE_FRAGMENT", Name: "Plain", Properties: map[string]interface{}{
+		"Args": []ast.FragmentArg{{Name: "x", DataSource: &ast.DataSourceV3{Type: "database"}}},
+	}}
+	_, err := pb.expandIfFragment(w)
+	if err == nil || !strings.Contains(err.Error(), "declares no parameters") {
+		t.Errorf("expected no-parameters error, got %v", err)
+	}
+}
+
+func TestExpandFragments_NestedInsideContainer(t *testing.T) {
+	// A USE_FRAGMENT nested inside a container (not at the top level) must still
+	// expand — expandFragments recurses into children.
+	frag := &ast.DefineFragmentStmt{
+		Name:    "Btns",
+		Widgets: []*ast.WidgetV3{{Type: "actionbutton", Name: "a", Properties: map[string]interface{}{}}},
+	}
+	pb := &pageBuilder{fragments: map[string]*ast.DefineFragmentStmt{"Btns": frag}}
+
+	tree := []*ast.WidgetV3{
+		{Type: "container", Name: "box", Properties: map[string]interface{}{}, Children: []*ast.WidgetV3{
+			{Type: "USE_FRAGMENT", Name: "Btns", Properties: map[string]interface{}{"Prefix": "p_"}},
+		}},
+	}
+	out, err := pb.expandFragments(tree)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	box := out[0]
+	if len(box.Children) != 1 || box.Children[0].Type != "actionbutton" {
+		t.Fatalf("nested fragment not expanded: %+v", box.Children)
+	}
+	if box.Children[0].Name != "p_a" {
+		t.Errorf("prefix not applied to nested expansion: %q", box.Children[0].Name)
+	}
+}
+
+func TestRebindFirst_ButtonAndDatasource(t *testing.T) {
+	tree := []*ast.WidgetV3{
+		{Type: "container", Name: "c", Properties: map[string]interface{}{}, Children: []*ast.WidgetV3{
+			{Type: "gallery", Name: "g", Properties: map[string]interface{}{"DataSource": &ast.DataSourceV3{Type: "database", Reference: "Old"}}, Children: []*ast.WidgetV3{
+				{Type: "linkbutton", Name: "lb", Properties: map[string]interface{}{}}, // no Action yet
+			}},
+		}},
+	}
+	// datasource target = first widget carrying a datasource
+	if !rebindFirst(tree, func(w *ast.WidgetV3) bool { _, ok := w.Properties["DataSource"]; return ok },
+		func(w *ast.WidgetV3) {
+			w.Properties["DataSource"] = &ast.DataSourceV3{Type: "database", Reference: "New"}
+		}) {
+		t.Fatal("datasource rebind found no target")
+	}
+	if tree[0].Children[0].Properties["DataSource"].(*ast.DataSourceV3).Reference != "New" {
+		t.Error("datasource not rebound")
+	}
+	// action target = first button-type widget, even without an existing Action
+	if !rebindFirst(tree, isButtonWidget, func(w *ast.WidgetV3) { w.Properties["Action"] = &ast.ActionV3{Type: "microflow", Target: "M"} }) {
+		t.Fatal("action rebind found no button")
+	}
+	if tree[0].Children[0].Children[0].Properties["Action"].(*ast.ActionV3).Target != "M" {
+		t.Error("action not rebound onto the linkbutton")
+	}
+}
+
 func TestRoundtripDefineAndDescribe(t *testing.T) {
 	input := `define fragment Footer as {
 		footer f1 {

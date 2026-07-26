@@ -425,6 +425,16 @@ var mendixSystemAttributeNames = map[string]bool{
 	"changedby":   true,
 }
 
+// autoMemberNames maps each AutoX pseudo-type to the fixed Mendix system member
+// name it materializes as. The declared identifier is discarded on write, so a
+// mismatch is worth a warning (MDL022). Compared case-insensitively.
+var autoMemberNames = map[ast.DataTypeKind]string{
+	ast.TypeAutoOwner:       "owner",
+	ast.TypeAutoChangedBy:   "ChangedBy",
+	ast.TypeAutoCreatedDate: "CreatedDate",
+	ast.TypeAutoChangedDate: "ChangedDate",
+}
+
 // ValidateEntity checks entity attribute names for reserved system names.
 // Returns a list of structured violations with rule IDs. This function does not require a project connection.
 //
@@ -436,47 +446,105 @@ var mendixSystemAttributeNames = map[string]bool{
 //     Mendix rejects these names at runtime regardless of persistence.
 func ValidateEntity(stmt *ast.CreateEntityStmt) []linter.Violation {
 	var violations []linter.Violation
+	persistent := stmt.Kind == ast.EntityPersistent
+	entityName := stmt.Name.String()
 	for _, attr := range stmt.Attributes {
-		// Skip pseudo-types — these ARE the system attributes (persistent entities only).
-		if attr.Type.Kind == ast.TypeAutoOwner || attr.Type.Kind == ast.TypeAutoChangedBy ||
-			attr.Type.Kind == ast.TypeAutoCreatedDate || attr.Type.Kind == ast.TypeAutoChangedDate {
-			continue
-		}
-		lower := strings.ToLower(attr.Name)
-		// MDL020: system-attribute conflict — only meaningful on persistent entities,
-		// where the suggested fix is to use the AutoX pseudo-type.
-		if stmt.Kind == ast.EntityPersistent && mendixSystemAttributeNames[lower] {
+		violations = append(violations, validateEntityAttribute(attr, persistent, entityName)...)
+	}
+	return violations
+}
+
+// ValidateAlterEntity applies the same per-attribute name/seed checks to the
+// ALTER ENTITY … ADD ATTRIBUTE path that ValidateEntity applies on CREATE, so
+// an attribute added later is held to the same rules as one declared up front
+// (findings #6). The entity's persistence kind is not known from the ALTER
+// statement alone, so the persistent-only MDL020 system-attribute check is
+// skipped here; the kind-independent checks (MDL021 reserved words, MDL022 AutoX
+// rename, MDL023 autonumber seed) all still run.
+func ValidateAlterEntity(stmt *ast.AlterEntityStmt) []linter.Violation {
+	if stmt.Operation != ast.AlterEntityAddAttribute || stmt.Attribute == nil {
+		return nil
+	}
+	return validateEntityAttribute(*stmt.Attribute, false, stmt.Name.String())
+}
+
+// validateEntityAttribute runs the reserved-name / AutoX / autonumber-seed checks
+// for a single attribute. persistent enables the MDL020 system-attribute check,
+// which is only meaningful when the entity is known to be persistent.
+func validateEntityAttribute(attr ast.Attribute, persistent bool, entityName string) []linter.Violation {
+	var violations []linter.Violation
+	// AutoX pseudo-types ARE the system attributes. The declared identifier is
+	// discarded — the field always materializes under its fixed system member
+	// name — so warn (MDL022) when the two differ, since the write silently
+	// renames it and the resulting member can't be bound as a regular widget
+	// attribute (a widget binding it fails the build with CE1613). (findings #7)
+	if canon, ok := autoMemberNames[attr.Type.Kind]; ok {
+		if !strings.EqualFold(attr.Name, canon) {
 			violations = append(violations, linter.Violation{
-				RuleID:   "MDL020",
-				Severity: linter.SeverityError,
+				RuleID:   "MDL022",
+				Severity: linter.SeverityWarning,
 				Message: fmt.Sprintf(
-					"attribute '%s' conflicts with a Mendix system attribute name. "+
-						"Mendix automatically manages '%s' on persistent entities",
-					attr.Name, attr.Name),
-				Location: linter.Location{
-					DocumentType: "entity",
-					DocumentName: stmt.Name.String(),
-				},
-				Suggestion: fmt.Sprintf("To use the Mendix built-in audit field, declare it with the pseudo-type: '%s: Auto%s'. To store an unrelated date, choose a different name (e.g., 'EntryDate', 'RecordDate')", attr.Name, attr.Name),
-			})
-			continue
-		}
-		// MDL021: CE7247 runtime reserved words — apply to all entity kinds
-		// including non-persistent and view entities.
-		if mendixReservedWords[lower] {
-			violations = append(violations, linter.Violation{
-				RuleID:   "MDL021",
-				Severity: linter.SeverityError,
-				Message: fmt.Sprintf(
-					"attribute '%s' is a reserved word (CE7247)",
-					attr.Name),
-				Location: linter.Location{
-					DocumentType: "entity",
-					DocumentName: stmt.Name.String(),
-				},
-				Suggestion: fmt.Sprintf("Rename to a non-reserved name (e.g., '%sValue' or '%sField')", attr.Name, attr.Name),
+					"attribute '%s: %s' is renamed to the fixed system member '%s' on write — "+
+						"the declared name is discarded",
+					attr.Name, attr.Type.Kind, canon),
+				Location: linter.Location{DocumentType: "entity", DocumentName: entityName},
+				Suggestion: fmt.Sprintf(
+					"Declare it as '%s: %s' to match. This is a Mendix system member and cannot be "+
+						"bound in a widget; to store a value a widget can show, use a plain attribute "+
+						"(e.g. '%s: DateTime') and set it yourself.",
+					canon, attr.Type.Kind, attr.Name),
 			})
 		}
+		return violations
+	}
+	// autonumber needs a seed, or the build fails CE7247 "Value cannot be
+	// empty". mxcli check accepted it silently before. (findings #6)
+	if attr.Type.Kind == ast.TypeAutoNumber && !attr.HasDefault {
+		violations = append(violations, linter.Violation{
+			RuleID:   "MDL023",
+			Severity: linter.SeverityError,
+			Message: fmt.Sprintf(
+				"autonumber attribute '%s' has no seed — the build fails CE7247 \"Value cannot be empty\"",
+				attr.Name),
+			Location:   linter.Location{DocumentType: "entity", DocumentName: entityName},
+			Suggestion: fmt.Sprintf("Give it a start value: '%s: autonumber default 1'", attr.Name),
+		})
+		return violations
+	}
+	lower := strings.ToLower(attr.Name)
+	// MDL020: system-attribute conflict — only meaningful on persistent entities,
+	// where the suggested fix is to use the AutoX pseudo-type.
+	if persistent && mendixSystemAttributeNames[lower] {
+		violations = append(violations, linter.Violation{
+			RuleID:   "MDL020",
+			Severity: linter.SeverityError,
+			Message: fmt.Sprintf(
+				"attribute '%s' conflicts with a Mendix system attribute name. "+
+					"Mendix automatically manages '%s' on persistent entities",
+				attr.Name, attr.Name),
+			Location: linter.Location{
+				DocumentType: "entity",
+				DocumentName: entityName,
+			},
+			Suggestion: fmt.Sprintf("To use the Mendix built-in audit field, declare it with the pseudo-type: '%s: Auto%s'. To store an unrelated date, choose a different name (e.g., 'EntryDate', 'RecordDate')", attr.Name, attr.Name),
+		})
+		return violations
+	}
+	// MDL021: CE7247 runtime reserved words — apply to all entity kinds
+	// including non-persistent and view entities.
+	if mendixReservedWords[lower] {
+		violations = append(violations, linter.Violation{
+			RuleID:   "MDL021",
+			Severity: linter.SeverityError,
+			Message: fmt.Sprintf(
+				"attribute '%s' is a reserved word (CE7247)",
+				attr.Name),
+			Location: linter.Location{
+				DocumentType: "entity",
+				DocumentName: entityName,
+			},
+			Suggestion: fmt.Sprintf("Rename to a non-reserved name (e.g., '%sValue' or '%sField')", attr.Name, attr.Name),
+		})
 	}
 	return violations
 }

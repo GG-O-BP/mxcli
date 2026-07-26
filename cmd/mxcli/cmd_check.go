@@ -113,6 +113,10 @@ Examples:
 			if entityStmt, ok := stmt.(*ast.CreateEntityStmt); ok {
 				violations = append(violations, executor.ValidateEntity(entityStmt)...)
 			}
+			// Apply the same per-attribute checks to ALTER ENTITY ADD ATTRIBUTE
+			if alterStmt, ok := stmt.(*ast.AlterEntityStmt); ok {
+				violations = append(violations, executor.ValidateAlterEntity(alterStmt)...)
+			}
 			// Check microflow body for common issues
 			if mfStmt, ok := stmt.(*ast.CreateMicroflowStmt); ok {
 				violations = append(violations, executor.ValidateMicroflow(mfStmt)...)
@@ -133,6 +137,11 @@ Examples:
 
 		// Check for intra-script duplicate definitions (CREATE X … CREATE X without DROP)
 		violations = append(violations, executor.CheckScriptDuplicates(prog)...)
+
+		// Validate design properties against the project's theme registry
+		// (themesource design-properties.json) — flags unknown keys and invalid
+		// option values, listing the allowed values. Only runs with --project.
+		violations = append(violations, executor.ValidateDesignProperties(prog, projectPath)...)
 
 		// Validate pluggable widget properties against widget definitions —
 		// catches typos in property keys before MxBuild does. Uses built-in

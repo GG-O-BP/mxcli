@@ -109,6 +109,12 @@ type AlterEntityStmt struct {
 	Position           *Position        // For SET POSITION
 	EventHandler       *EventHandlerDef // For ADD/DROP EVENT HANDLER
 	BoolValue          bool             // For SET ALLOW_CREATE_CHANGE_LOCALLY
+	// Idempotency guards (findings #10). IfNotExists on ADD ATTRIBUTE skips the
+	// add (with a notice) when the attribute already exists; IfExists on DROP
+	// ATTRIBUTE skips the drop when it is already gone — so a domain script
+	// re-runs cleanly instead of erroring and halting.
+	IfNotExists bool // For ADD ATTRIBUTE IF NOT EXISTS
+	IfExists    bool // For DROP ATTRIBUTE IF EXISTS
 }
 
 func (s *AlterEntityStmt) isStatement() {}

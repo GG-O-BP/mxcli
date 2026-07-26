@@ -130,12 +130,12 @@ var mdlKeywordToDesignPropsKey = map[string]string{
 	"footer":            "Footer",
 }
 
-// resolveDesignPropsKey converts an MDL widget type keyword (e.g., "CONTAINER")
-// to the design-properties.json key (e.g., "DivContainer"). Falls back to the input as-is
-// for unrecognized types (e.g., pluggable widget identifiers).
+// resolveDesignPropsKey converts an MDL widget type keyword (e.g., "container",
+// "CONTAINER") to the design-properties.json key (e.g., "DivContainer"). The
+// lookup is case-insensitive against the lowercase-keyed map. Falls back to the
+// input as-is for unrecognized types (e.g., pluggable widget identifiers).
 func resolveDesignPropsKey(mdlKeyword string) string {
-	upper := strings.ToUpper(mdlKeyword)
-	if key, ok := mdlKeywordToDesignPropsKey[upper]; ok {
+	if key, ok := mdlKeywordToDesignPropsKey[strings.ToLower(mdlKeyword)]; ok {
 		return key
 	}
 	return mdlKeyword

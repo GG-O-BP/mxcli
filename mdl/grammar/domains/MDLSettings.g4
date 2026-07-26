@@ -210,10 +210,27 @@ helpStatement
     ;
 
 /**
- * DEFINE FRAGMENT Name AS { widgets }
+ * DEFINE FRAGMENT Name [($p: datasource, $q: action)] AS { widgets }
+ *
+ * Optional typed parameters let a fragment bind a datasource or an action
+ * handler supplied by the caller (`use fragment Name ($p: $Data, $q: microflow M)`).
+ * References in the body use the bare `$p` form in a datasource/action position.
  */
 defineFragmentStatement
-    : DEFINE FRAGMENT identifierOrKeyword AS LBRACE pageBodyV3 RBRACE
+    : DEFINE FRAGMENT identifierOrKeyword fragmentParams? AS LBRACE pageBodyV3 RBRACE
+    ;
+
+fragmentParams
+    : LPAREN fragmentParam (COMMA fragmentParam)* RPAREN
+    ;
+
+fragmentParam
+    : VARIABLE COLON fragmentParamType
+    ;
+
+fragmentParamType
+    : DATASOURCE
+    | ACTION
     ;
 
 // =============================================================================
@@ -484,6 +501,7 @@ keyword
     | ACTIONS | ARTIFACT | COLLECTION | DEPENDENCIES | DEPENDENCY | EXCLUSION | FOLDER
     | INCLUDED | JAR | LAYOUT | LAYOUTS | LOCAL | MODEL | MODELS | MODULE | MODULES
     | NOTEBOOK | NOTEBOOKS | PAGE | PAGES | PROJECT | SNIPPET | SNIPPETS
+    | BUILDING | BLOCK | BLOCKS
     | STORE | STRUCTURE | STRUCTURES | VIEW
 
     // Agent editor
@@ -613,7 +631,7 @@ keyword
     | ANCHOR | TOP | BOTTOM
 
     // Fragment / ALTER PAGE
-    | AFTER | BEFORE | DEFINE | FRAGMENT | FRAGMENTS
+    | AFTER | BEFORE | DEFINE | FRAGMENT | FRAGMENTS | SLOT
 
     // General-purpose words (only tokens not already listed above)
     | ACTION | BOTH | CONTEXT | DATA | FORMAT | ITEM | LIST

@@ -13,7 +13,8 @@ It covers the two halves of the job:
 2. **Apply it in pages** — attach the theme's classes to widgets with MDL
    (`Class:` / `DynamicClasses:` on `create page` / `alter page`).
 
-Related skills: `theme-styling.md` (SCSS compilation chain, hot-reload, styling caveats),
+Related skills: **`atlas-design.md` (read first — the Atlas-first taste + workflow layer)**,
+`theme-styling.md` (SCSS compilation chain, hot-reload, styling caveats),
 `create-page.md` (widget syntax), `alter-page.md` (in-place widget edits),
 `bulk-widget-updates.md` (apply a class across many widgets).
 
@@ -41,14 +42,40 @@ screenshots            ──③  reference ──►  widgets get Class: / Dyna
 screen, open the matching screenshot/handoff for that screen and match it — colours,
 spacing, font, component shapes. Do not invent styling the prototype doesn't show.
 
+**Atlas-first (read `atlas-design.md`).** Reproduce the prototype with what Atlas already
+gives you *before* hand-writing custom SCSS. In order of preference:
+
+1. **An Atlas building block** — `use building block Atlas_Web_Content.Card` / `Pageheader`
+   / `List_Cards` etc. gives you the whole component's markup + styling for free. Discover
+   with `show building blocks`, inspect with `describe building block`.
+2. **Atlas utility classes and typed design properties** — `class:'card'`, `class:'btn btn-primary'`,
+   `spacing-inner-*`/`spacing-outer-*` for padding/margin, `flex-row`/`flex-column` +
+   `align-x-*`/`align-y-*` for layout (no `layoutgrid` needed); or the typed equivalents
+   `designproperties: ['Card style': on]`, `['Background color': 'Brand Primary']`,
+   `['Spacing': ['margin-bottom': 'L']]`. `mxcli check -p` validates design-property keys
+   and values (MDL-WIDGET11/12) and lists the allowed values.
+3. **Brand-token retune** — map the prototype's tokens onto Atlas brand variables
+   (`--brand-primary`, `--brand-*`) in `custom-variables.scss` so the whole app inherits
+   the palette (see "map onto Atlas" in step ①).
+4. **Custom `.ss-*` SCSS — for brand identity only.** Reach for a hand-rolled component
+   class (below) only when Atlas genuinely can't express the shape (bespoke chrome,
+   fractional-track grids, pixel-exact rows). Hand-rolling `.panel`/`.stat`/`.card` SCSS
+   that just re-implements what `class:'card'` already does is the single most common
+   mistake — see `atlas-design.md`.
+
+The rest of this skill (custom SCSS components, `.ss-*` classes, ListView row reshaping) is
+**layer 4** — the identity layer you drop to when the first three don't reach the design.
+
 ---
 
 ## Where the Theme Lives (read this first — it avoids the main friction)
 
-- **Custom styles go inline in `theme/web/main.scss`, AFTER the `@import`s.** mxcli/the
-  agent generally **cannot create new SCSS partials** (only existing files are writable),
-  and styles placed after the imports win the cascade over Atlas defaults. Put all your
-  design tokens and component classes there.
+- **Custom styles go in `theme/web/main.scss` AFTER the `@import`s, or in your own
+  partial.** Styles placed after the imports win the cascade over Atlas defaults. Once
+  `main.scss` grows, prefer splitting a partial out for readability: create
+  `theme/web/_<name>.scss` and add `@import "<name>";` after the Atlas imports (the same
+  cascade-order rule then applies within the partial). New partials **are** creatable —
+  keep the import order (custom after Atlas) and everything works.
 - Use a **project prefix** for every custom class and CSS variable so they never collide
   with Atlas or widget CSS. This project uses `ss-` (e.g. `.ss-panel`, `--ss-primary`).
   Pick one prefix and use it everywhere.
@@ -112,11 +139,19 @@ Token checklist to extract from the handoff:
 
 ---
 
-## ② Rebuild Components as Classes
+## ② Rebuild Components — Atlas block/class first, custom class only for identity
 
 For each repeated element in the prototype (panel, stat tile, chip, card, table row,
-progress bar…) write **one reusable class** driven by the tokens from step ①. Keep classes
-small and composable so a widget can stack several (`Class: 'ss-panel ss-grid-lv'`).
+progress bar…), **first check whether Atlas already provides it** (Atlas-first, above):
+is there a building block (`show building blocks`) or an Atlas class / design property
+(`card`, `btn-*`, `spacing-*`, `flex-*`+`align-*`, `['Card style': on]`) that gets you
+most of the way? If so, use it and add a thin `.ss-*` class only for the brand delta
+(colour, radius, font). Re-implementing `card`/`panel`/`btn` from scratch is the mistake
+`atlas-design.md` exists to prevent.
+
+When Atlas can't express the shape, write **one reusable class** driven by the tokens from
+step ①. Keep classes small and composable so a widget can stack several
+(`Class: 'ss-panel ss-grid-lv'`).
 
 ```scss
 // White surface panel
@@ -175,8 +210,9 @@ Scheduling and Expense Approval designs.
 | Design component | Mendix widget | Notes |
 |---|---|---|
 | Page / screen canvas | `container` | one per page, e.g. `Class: 'ea-page'` |
-| Card / panel / section | `container` | + a panel class |
+| Card / panel / section | Atlas `Card` building block, or `container class:'card'` / `['Card style': on]` | drop to a custom panel class only for brand delta |
 | KPI / stat tile | `container` | label + value + delta as child `dynamictext` |
+| Row/column layout (even columns, gaps) | `container` with `flex-row`/`flex-column` + `align-*` (or `['Flex container': …]`) | no `layoutgrid` needed for simple flex layouts |
 | Multi-column / dashboard layout | `layoutgrid` + `row` + `column` | for exact fractional tracks (`2.4fr 1.2fr …`) use a `container` styled `display:grid` instead — see Layout techniques |
 | Heading / title | `dynamictext` (RenderMode H1/H2) | |
 | Body / label / caption / table cell | `dynamictext` | the workhorse — text is inline, see techniques |
@@ -416,6 +452,29 @@ container heatCell (
 
 (Note the doubled single-quotes for string literals inside an MDL expression.)
 
+### Computed dimensions — the bucket-class idiom
+
+A widget has **no computed inline style**: `Style:` is a static string and
+`DynamicClasses:` returns *class names*, not CSS values. So anything with a
+data-driven dimension — a progress bar width, a bar-chart height, a meter fill —
+can't be `Style: 'width: {expr}%'`. The idiom is to **quantise the value into a
+bucket and generate one class per bucket**:
+
+1. In a microflow, publish an integer bucket attribute (e.g. `0..20`):
+   `$obj/PctBucket = round($obj/Done / $obj/Total * 20)`.
+2. Generate the classes once with an SCSS `@for` loop:
+
+```scss
+@for $i from 0 through 20 { .ss-pb-#{$i} { width: $i * 5%; } }
+```
+
+3. Select the class from the bucket:
+   `DynamicClasses: '''ss-pb-'' + toString($currentObject/PctBucket)'`.
+
+Trade-off worth noting: this adds one bucket attribute per animated dimension to the
+domain model. Pick a bucket count that matches the visual precision you need (20 → 5%
+steps is usually plenty).
+
 ### Adding classes to an existing page
 
 Use `alter page` to attach a class without rewriting the page (see `alter-page.md`):
@@ -467,8 +526,10 @@ for screenshotting the running app. Iterate ②–④ per screen until it matche
   `.ss-*-lv` class or rows won't read as the design's grid.
 - **For bespoke tables, prefer a styled `listview`** over the `datagrid` pluggable widget —
   you control the full row markup, which a pixel-faithful design usually needs.
-- **Design-property keys are case-sensitive** — see `theme-styling.md` if you use
-  `DesignProperties:` instead of raw classes.
+- **Prefer typed `designproperties:` / Atlas classes over custom SCSS for anything Atlas
+  covers** (spacing, alignment, card/background, flex layout) — see `atlas-design.md`. Keys
+  and values are case-sensitive; `mxcli check -p` validates them (MDL-WIDGET11/12) and lists
+  the allowed values. `theme-styling.md` has the compilation/reload mechanics.
 - **`alter styling` can't find widgets in MDL-builder-created pages** — apply classes via
   `Class:`/`DynamicClasses:` in `create page` / `alter page` instead.
 

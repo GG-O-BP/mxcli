@@ -11,6 +11,7 @@ import (
 	"github.com/mendixlabs/mxcli/mdl/ast"
 	mdlerrors "github.com/mendixlabs/mxcli/mdl/errors"
 	"github.com/mendixlabs/mxcli/mdl/types"
+	"github.com/mendixlabs/mxcli/mdl/visitor"
 	"github.com/mendixlabs/mxcli/model"
 	"github.com/mendixlabs/mxcli/sdk/domainmodel"
 	"github.com/mendixlabs/mxcli/sdk/microflows"
@@ -334,6 +335,11 @@ func (pb *pageBuilder) buildWidgetV3(w *ast.WidgetV3) (pages.Widget, error) {
 		widget, err = pb.buildContainerWithColumnV3(w)
 	case "container", "customcontainer":
 		widget, err = pb.buildContainerV3(w)
+	case "slot":
+		// A slot that reaches the builder was written somewhere the fragment
+		// expander doesn't reach (e.g. nested in a page container rather than a
+		// `define fragment` body). Slots are resolved during fragment expansion.
+		return nil, mdlerrors.NewValidation("`slot` is only valid inside a `define fragment` body")
 	case "textbox":
 		widget, err = pb.buildTextBoxV3(w)
 	case "textarea":
@@ -539,9 +545,17 @@ func applyWidgetAppearance(widget pages.Widget, w *ast.WidgetV3, theme *ThemeReg
 	// Apply design properties
 	astProps := w.GetDesignProperties()
 	if len(astProps) > 0 {
+		// Resolve the widget's design-property definitions from the theme registry
+		// (when loaded) so each value's BSON type is taken from metadata
+		// (ColorPicker/ToggleButtonGroup → custom) rather than guessed. Nil/empty
+		// when no project/themesource — the converter then falls back to option.
+		var themeProps []ThemeProperty
+		if theme != nil {
+			themeProps = theme.GetPropertiesForWidget(resolveDesignPropsKey(w.Type))
+		}
 		var dpValues []pages.DesignPropertyValue
 		for _, p := range astProps {
-			if dp, ok := astDesignPropToValue(p); ok {
+			if dp, ok := astDesignPropToValue(p, themeProps); ok {
 				dpValues = append(dpValues, dp)
 			}
 		}
@@ -561,11 +575,18 @@ func applyWidgetAppearance(widget pages.Widget, w *ast.WidgetV3, theme *ThemeReg
 // pages.DesignPropertyValue. Compound entries (a key whose value is a nested
 // list, e.g. 'Spacing': ['margin-top': 'Large', …]) recurse into sub-properties.
 // Returns ok=false for an entry that should be skipped (a flat toggle set OFF).
-func astDesignPropToValue(p ast.DesignPropertyEntryV3) (pages.DesignPropertyValue, bool) {
+//
+// themeProps are the widget's design-property definitions from the theme registry
+// (nil/empty when no project/themesource). When available, a flat value's BSON
+// type is taken from the property's declared Type — a ColorPicker or
+// ToggleButtonGroup materializes as Forms$CustomDesignPropertyValue rather than
+// the option default (findings: typed design properties). Without metadata the
+// prior syntactic behaviour (on→toggle, else→option) is preserved.
+func astDesignPropToValue(p ast.DesignPropertyEntryV3, themeProps []ThemeProperty) (pages.DesignPropertyValue, bool) {
 	if len(p.Nested) > 0 {
 		dp := pages.DesignPropertyValue{Key: p.Key, ValueType: "compound"}
 		for _, sub := range p.Nested {
-			if sv, ok := astDesignPropToValue(sub); ok {
+			if sv, ok := astDesignPropToValue(sub, themeProps); ok {
 				dp.Compound = append(dp.Compound, sv)
 			}
 		}
@@ -577,25 +598,42 @@ func astDesignPropToValue(p ast.DesignPropertyEntryV3) (pages.DesignPropertyValu
 	case "off":
 		return pages.DesignPropertyValue{}, false // toggle absence — skip
 	default:
-		return pages.DesignPropertyValue{Key: p.Key, ValueType: "option", Option: p.Value}, true
+		return pages.DesignPropertyValue{
+			Key:       p.Key,
+			ValueType: resolveDesignPropertyValueType(p.Key, p.Value, themeProps),
+			Option:    p.Value,
+		}, true
 	}
 }
 
-// resolveDesignPropertyValueType determines the correct ValueType for a design property
-// based on the theme definition. ToggleButtonGroup and ColorPicker use "custom" type;
-// Dropdown uses "option" type. Falls back to "option" if theme info is unavailable.
-func resolveDesignPropertyValueType(key string, themeProps []ThemeProperty) string {
+// resolveDesignPropertyValueType determines the BSON ValueType for a flat design
+// property value from the theme definition.
+//
+// The control type alone does NOT decide the value type: a value that is one of
+// the property's declared options is always stored as an "option", whether the
+// control is a Dropdown, a ToggleButtonGroup, or a ColorPicker's predefined
+// swatches. Studio Pro rejects a mismatch (CE6084 "Expected design property … to
+// be of type Toggle button group, but found Custom"), so a ToggleButtonGroup
+// selection like 'Column gap': 'Medium' must serialize as an option, not custom.
+//
+// Only a value that is NOT a declared option, on a ColorPicker, is a free-form
+// value (a custom hex/color) stored as "custom". Any other off-list value stays
+// "option" (an invalid value is reported separately by MDL-WIDGET12). Falls back
+// to "option" when no theme metadata is available (backward compatible).
+func resolveDesignPropertyValueType(key, value string, themeProps []ThemeProperty) string {
 	for _, tp := range themeProps {
-		if tp.Name == key {
-			switch tp.Type {
-			case "ToggleButtonGroup", "ColorPicker":
-				return "custom"
-			default:
-				return "option"
-			}
+		if tp.Name != key {
+			continue
 		}
+		if themeOptionAllowed(tp.Options, value) {
+			return "option"
+		}
+		if tp.Type == "ColorPicker" {
+			return "custom"
+		}
+		return "option"
 	}
-	// No theme info available — default to "option" (Dropdown)
+	// No theme info available — default to "option".
 	return "option"
 }
 
@@ -1718,8 +1756,11 @@ func (pb *pageBuilder) isNonStringAttribute(attrPath string) bool {
 // Fragment Expansion
 // ============================================================================
 
-// expandFragments processes a widget list, expanding any USE_FRAGMENT sentinels
-// into their referenced fragment widgets. Non-fragment widgets pass through unchanged.
+// expandFragments processes a widget list, expanding any USE_FRAGMENT /
+// USE_BUILDING_BLOCK sentinels into their referenced widgets. It recurses into
+// every widget's children, so a fragment or building block nested inside a
+// container/layout/dataview (not just at the page-body top level) is expanded
+// too. Non-sentinel widgets pass through with their (expanded) children.
 func (pb *pageBuilder) expandFragments(widgets []*ast.WidgetV3) ([]*ast.WidgetV3, error) {
 	var result []*ast.WidgetV3
 	for _, w := range widgets {
@@ -1727,18 +1768,42 @@ func (pb *pageBuilder) expandFragments(widgets []*ast.WidgetV3) ([]*ast.WidgetV3
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, expanded...)
+		for _, e := range expanded {
+			if len(e.Children) > 0 {
+				kids, err := pb.expandFragments(e.Children)
+				if err != nil {
+					return nil, err
+				}
+				e.Children = kids
+			}
+			result = append(result, e)
+		}
 	}
 	return result, nil
 }
 
-// expandIfFragment returns the widget as-is if it's not a USE_FRAGMENT sentinel,
-// or expands it into cloned fragment widgets with optional prefix.
+// expandIfFragment returns the widget as-is if it's not a USE_FRAGMENT or
+// USE_BUILDING_BLOCK sentinel, or expands it into cloned/copied widgets with an
+// optional prefix.
 func (pb *pageBuilder) expandIfFragment(w *ast.WidgetV3) ([]*ast.WidgetV3, error) {
-	if w.Type != "USE_FRAGMENT" {
+	switch w.Type {
+	case "USE_FRAGMENT":
+		return pb.expandFragmentRef(w)
+	case "USE_BUILDING_BLOCK":
+		return pb.expandBuildingBlockRef(w)
+	case "SLOT":
+		// A slot marker is only meaningful inside a `define fragment` body, where
+		// it is resolved during expandFragmentRef. Reaching here means a bare
+		// `slot` was written directly in a page/snippet body.
+		return nil, mdlerrors.NewValidation("`slot` is only valid inside a `define fragment` body")
+	default:
 		return []*ast.WidgetV3{w}, nil
 	}
+}
 
+// expandFragmentRef expands a USE_FRAGMENT sentinel into cloned fragment widgets
+// with an optional prefix rename.
+func (pb *pageBuilder) expandFragmentRef(w *ast.WidgetV3) ([]*ast.WidgetV3, error) {
 	if pb.fragments == nil {
 		return nil, mdlerrors.NewNotFound("fragment", w.Name)
 	}
@@ -1751,7 +1816,288 @@ func (pb *pageBuilder) expandIfFragment(w *ast.WidgetV3) ([]*ast.WidgetV3, error
 	if prefix, ok := w.Properties["Prefix"].(string); ok && prefix != "" {
 		prefixWidgetNames(widgets, prefix)
 	}
+
+	// Resolve declared datasource/action parameters from the supplied args, then
+	// substitute each `$param` reference in the cloned tree with the caller value.
+	if err := substituteFragmentParams(w.Name, frag.Params, w.Properties["Args"], widgets); err != nil {
+		return nil, err
+	}
+
+	// Splice any content-slot payload into the fragment's slot marker. The payload
+	// (`use fragment X { … }`) rides on the USE_FRAGMENT sentinel's Children.
+	payload := w.Children
+	slotCount := countSlots(widgets)
+	switch {
+	case slotCount == 0 && len(payload) > 0:
+		return nil, mdlerrors.NewValidation(fmt.Sprintf(
+			"fragment %q does not declare a `slot`, but content was supplied via `use fragment %s { … }`",
+			w.Name, w.Name))
+	case slotCount == 0:
+		return widgets, nil
+	case slotCount > 1:
+		return nil, mdlerrors.NewValidation(fmt.Sprintf(
+			"fragment %q declares %d slots; a content-slot fragment supports a single slot",
+			w.Name, slotCount))
+	}
+	// Expand nested fragment / building-block refs in the payload before splicing,
+	// so a payload can itself compose other fragments.
+	expandedPayload, err := pb.expandFragments(payload)
+	if err != nil {
+		return nil, err
+	}
+	widgets = replaceSlots(widgets, expandedPayload)
 	return widgets, nil
+}
+
+// countSlots returns the number of SLOT sentinels anywhere in the tree.
+func countSlots(widgets []*ast.WidgetV3) int {
+	n := 0
+	for _, w := range widgets {
+		if w.Type == "SLOT" {
+			n++
+		}
+		n += countSlots(w.Children)
+	}
+	return n
+}
+
+// replaceSlots returns a new widget list with each SLOT sentinel replaced by a
+// fresh clone of the payload, recursing into children. Callers guarantee a single
+// slot (v1), so the per-slot clone never duplicates caller-named widgets.
+func replaceSlots(widgets []*ast.WidgetV3, payload []*ast.WidgetV3) []*ast.WidgetV3 {
+	var out []*ast.WidgetV3
+	for _, w := range widgets {
+		if w.Type == "SLOT" {
+			out = append(out, cloneWidgets(payload)...)
+			continue
+		}
+		w.Children = replaceSlots(w.Children, payload)
+		out = append(out, w)
+	}
+	return out
+}
+
+// substituteFragmentParams resolves a fragment's declared datasource/action
+// parameters against the supplied args and rewrites every `$param` reference in
+// the cloned widget tree. It errors on a missing arg, an unknown arg, or a
+// type mismatch. A no-param fragment with no args is a no-op.
+func substituteFragmentParams(fragName string, params []ast.FragmentParam, rawArgs any, widgets []*ast.WidgetV3) error {
+	args, _ := rawArgs.([]ast.FragmentArg)
+	if len(params) == 0 {
+		if len(args) > 0 {
+			return mdlerrors.NewValidation(fmt.Sprintf(
+				"fragment %q declares no parameters, but %d argument(s) were supplied", fragName, len(args)))
+		}
+		return nil
+	}
+
+	// Index args by name and validate against the declared parameter set.
+	argByName := make(map[string]ast.FragmentArg, len(args))
+	for _, a := range args {
+		argByName[a.Name] = a
+	}
+	declared := make(map[string]bool, len(params))
+	for _, p := range params {
+		declared[p.Name] = true
+	}
+	for name := range argByName {
+		if !declared[name] {
+			return mdlerrors.NewValidation(fmt.Sprintf(
+				"fragment %q: unknown argument $%s (not a declared parameter)", fragName, name))
+		}
+	}
+
+	dsSubst := map[string]*ast.DataSourceV3{}
+	actSubst := map[string]*ast.ActionV3{}
+	for _, p := range params {
+		arg, ok := argByName[p.Name]
+		if !ok {
+			return mdlerrors.NewValidation(fmt.Sprintf(
+				"fragment %q: missing argument for parameter $%s (%s)", fragName, p.Name, p.Kind))
+		}
+		switch p.Kind {
+		case "datasource":
+			if arg.DataSource == nil {
+				return mdlerrors.NewValidation(fmt.Sprintf(
+					"fragment %q: parameter $%s expects a datasource", fragName, p.Name))
+			}
+			dsSubst[p.Name] = arg.DataSource
+		case "action":
+			act := arg.Action
+			if act == nil && arg.DataSource != nil {
+				// The value parsed as a datasource (microflow/nanoflow overlap).
+				// Reinterpret those two kinds as a call action.
+				if ds := arg.DataSource; ds.Type == "microflow" || ds.Type == "nanoflow" {
+					act = &ast.ActionV3{Type: ds.Type, Target: ds.Reference, Args: ds.Args}
+				}
+			}
+			if act == nil {
+				return mdlerrors.NewValidation(fmt.Sprintf(
+					"fragment %q: parameter $%s expects an action (e.g. a microflow, show_page, save)", fragName, p.Name))
+			}
+			actSubst[p.Name] = act
+		}
+	}
+
+	substituteParamRefs(widgets, dsSubst, actSubst)
+	return nil
+}
+
+// substituteParamRefs rewrites `$param` datasource/action references in the tree.
+func substituteParamRefs(widgets []*ast.WidgetV3, ds map[string]*ast.DataSourceV3, act map[string]*ast.ActionV3) {
+	for _, w := range widgets {
+		if cur, ok := w.Properties["DataSource"].(*ast.DataSourceV3); ok && cur != nil &&
+			cur.Type == "parameter" {
+			// A parameter datasource keeps the leading '$' in Reference; param
+			// names are stored without it.
+			if repl, hit := ds[strings.TrimPrefix(cur.Reference, "$")]; hit {
+				w.Properties["DataSource"] = repl
+			}
+		}
+		if cur, ok := w.Properties["Action"].(*ast.ActionV3); ok && cur != nil {
+			w.Properties["Action"] = substituteActionParam(cur, act)
+		}
+		substituteParamRefs(w.Children, ds, act)
+	}
+}
+
+// substituteActionParam replaces a `$param` action (and any nested THEN action)
+// with the caller-supplied action.
+func substituteActionParam(a *ast.ActionV3, act map[string]*ast.ActionV3) *ast.ActionV3 {
+	if a == nil {
+		return nil
+	}
+	if a.Type == "param" {
+		if repl, ok := act[a.Target]; ok {
+			return repl
+		}
+	}
+	if a.ThenAction != nil {
+		a.ThenAction = substituteActionParam(a.ThenAction, act)
+	}
+	return a
+}
+
+// expandBuildingBlockRef deep-copies a building block's widget tree into the
+// page/container. The DESCRIBE renderer already emits faithful, re-parseable MDL
+// for a block's widgets, so expansion = render the block's widgets to MDL text →
+// re-parse them via a `define fragment` wrapper → apply the optional prefix. This
+// reuses the whole existing widget parser instead of a hand-written BSON→AST
+// converter.
+func (pb *pageBuilder) expandBuildingBlockRef(w *ast.WidgetV3) ([]*ast.WidgetV3, error) {
+	if pb.ctx == nil {
+		return nil, mdlerrors.NewNotFound("building block", w.Name)
+	}
+	ctx := pb.ctx
+
+	// Resolve the block by module + name.
+	qn := parseQualifiedNameStr(w.Name)
+	h, err := getHierarchy(ctx)
+	if err != nil {
+		return nil, mdlerrors.NewBackend("build hierarchy", err)
+	}
+	blocks, err := ctx.Backend.ListBuildingBlocks()
+	if err != nil {
+		return nil, mdlerrors.NewBackend("list building blocks", err)
+	}
+	var found *pages.BuildingBlock
+	for _, bb := range blocks {
+		modID := h.FindModuleID(bb.ContainerID)
+		modName := h.GetModuleName(modID)
+		if bb.Name == qn.Name && (qn.Module == "" || modName == qn.Module) {
+			found = bb
+			break
+		}
+	}
+	if found == nil {
+		return nil, mdlerrors.NewNotFound("building block", w.Name)
+	}
+
+	// Read the block's widgets as raw BSON.
+	rawWidgets := getBuildingBlockWidgetsFromRaw(ctx, found.ID)
+	if len(rawWidgets) == 0 {
+		return nil, nil
+	}
+
+	// Render to MDL text. outputWidgetMDLV3 writes to ctx.Output; redirect it to a
+	// buffer via a shallow ExecContext copy so we can capture the rendered MDL.
+	var sb strings.Builder
+	renderCtx := *ctx
+	renderCtx.Output = &sb
+	for _, rw := range rawWidgets {
+		outputWidgetMDLV3(&renderCtx, rw, 1)
+	}
+
+	// Re-parse via a `define fragment` wrapper to obtain []*ast.WidgetV3.
+	src := "define fragment __bbtmp as {\n" + sb.String() + "\n};"
+	prog, errs := visitor.Build(src)
+	if len(errs) > 0 {
+		return nil, fmt.Errorf("use building block %s: could not expand widget tree: %v", w.Name, errs)
+	}
+	if len(prog.Statements) == 0 {
+		return nil, fmt.Errorf("use building block %s: could not expand widget tree", w.Name)
+	}
+	def, ok := prog.Statements[0].(*ast.DefineFragmentStmt)
+	if !ok {
+		return nil, fmt.Errorf("use building block %s: could not expand widget tree", w.Name)
+	}
+	widgets := def.Widgets
+
+	// Apply the optional prefix rename.
+	if prefix, ok := w.Properties["Prefix"].(string); ok && prefix != "" {
+		prefixWidgetNames(widgets, prefix)
+	}
+
+	// Apply optional rebind overrides. Binding-point rule (prototype): the
+	// override rewrites the FIRST widget in pre-order that carries a datasource /
+	// an action — the block's outermost datasource and primary action.
+	if ds, ok := w.Properties["DataSourceOverride"].(*ast.DataSourceV3); ok && ds != nil {
+		// Datasource target: the first widget that already carries a datasource
+		// (a block's outermost list/grid/dataview always emits one).
+		hit := rebindFirst(widgets,
+			func(t *ast.WidgetV3) bool { _, has := t.Properties["DataSource"]; return has },
+			func(t *ast.WidgetV3) { t.Properties["DataSource"] = ds })
+		if !hit {
+			return nil, mdlerrors.NewValidation(fmt.Sprintf(
+				"use building block %s: datasource override supplied, but the block has no datasource widget to rebind", w.Name))
+		}
+	}
+	if act, ok := w.Properties["ActionOverride"].(*ast.ActionV3); ok && act != nil {
+		// Action target: the first button-type widget. Atlas blocks ship
+		// placeholder buttons with no action, so match by widget type (not by an
+		// existing Action property) and set the handler.
+		hit := rebindFirst(widgets, isButtonWidget,
+			func(t *ast.WidgetV3) { t.Properties["Action"] = act })
+		if !hit {
+			return nil, mdlerrors.NewValidation(fmt.Sprintf(
+				"use building block %s: action override supplied, but the block has no button to rebind", w.Name))
+		}
+	}
+	return widgets, nil
+}
+
+// isButtonWidget reports whether a widget is an action-capable button.
+func isButtonWidget(w *ast.WidgetV3) bool {
+	switch strings.ToLower(w.Type) {
+	case "actionbutton", "linkbutton", "button":
+		return true
+	}
+	return false
+}
+
+// rebindFirst applies set to the first widget (pre-order) matching pred,
+// returning whether a target was found.
+func rebindFirst(widgets []*ast.WidgetV3, pred func(*ast.WidgetV3) bool, set func(*ast.WidgetV3)) bool {
+	for _, w := range widgets {
+		if pred(w) {
+			set(w)
+			return true
+		}
+		if rebindFirst(w.Children, pred, set) {
+			return true
+		}
+	}
+	return false
 }
 
 // cloneWidgets deep-copies a widget tree to avoid mutating the fragment definition.

@@ -226,7 +226,7 @@ Mendix supports four built-in auditing properties on persistent entities. Declar
  * Order with full audit trail
  */
 create persistent entity Sales.Order (
-  OrderNumber: autonumber,
+  OrderNumber: autonumber default 1,
   TotalAmount: decimal not null,
   status: enumeration(Sales.OrderStatus) not null,
   owner: autoowner,
@@ -553,6 +553,18 @@ create persistent entity Module.Address (...);
 @position(50, 250)     -- Below: Dependent entity
 create persistent entity Module.Order (...);
 ```
+
+## Modelling for the client: widgets bind members, not expressions
+
+A page widget binds an **attribute or association path** — never an expression. There
+is no `substring(attr, i, 1)` or computed binding in a widget. So a value that must be
+rendered per-part (each character of a code, each cell of a grid, each of N pencil
+marks) has to be stored as **separate attributes**, not packed into one string and
+indexed client-side. Model the wide form when the UI needs to address the parts
+individually (e.g. `N1`…`N9` booleans rather than a packed `Notes` string); reach for
+a computed/derived value only where a microflow or view-entity OQL produces it into a
+real attribute. (Same reason the bucket-class idiom exists — see
+`migrate-design-prototype.md`.)
 
 ## Documentation Best Practices
 

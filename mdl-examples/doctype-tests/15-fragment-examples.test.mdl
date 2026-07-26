@@ -8,8 +8,12 @@
 --
 -- Key concepts:
 --   DEFINE FRAGMENT Name AS { widgets }     - Define a reusable group
+--   DEFINE FRAGMENT Name AS { … slot … }    - Declare a content slot
 --   USE FRAGMENT Name                       - Insert widgets inline
 --   USE FRAGMENT Name AS prefix_            - Insert with name prefix
+--   USE FRAGMENT Name { widgets }           - Fill the fragment's content slot
+--   DEFINE FRAGMENT Name($d: datasource, $a: action) - Typed parameters (experimental)
+--   USE FRAGMENT Name ($d: database E, $a: microflow M) - Supply parameter values
 --   SHOW FRAGMENTS                          - List defined fragments
 --   DESCRIBE FRAGMENT Name                  - Show fragment definition
 --
@@ -185,6 +189,15 @@ create page FragTest.P003_Order_Form
   }
 };
 
+-- MARK: Content Slots & Bindings
+
+-- ============================================================================
+-- Content slots, parameter bindings, and building-block rebind overrides now
+-- live in focused, CI-checked standalone examples:
+--   * 15b-fragment-slots-examples.mdl     — DEFINE FRAGMENT … SLOT, USE FRAGMENT { … }
+--   * 15c-fragment-bindings-examples.mdl   — ($data: datasource, $onEdit: action) params
+--                                            and USE BUILDING BLOCK (datasource:/action:)
+-- ============================================================================
 -- MARK: Multiple Pages
 
 -- ============================================================================
@@ -197,12 +210,16 @@ create page FragTest.P003_Order_Form
  */
 create page FragTest.P004_Customer_New
 (
+  params: { $Customer: FragTest.Customer },
   title: 'New Customer',
   layout: Atlas_Core.Atlas_Default,
   url: 'frag_004_customer_new'
 )
 {
-  dataview dvCustomer (datasource: database FragTest.Customer) {
+  -- A data view shows ONE object, so it binds a page parameter (or a microflow
+  -- source), never a raw database query. The new Customer is passed in by the
+  -- microflow that opens this page.
+  dataview dvCustomer (datasource: $Customer) {
     use fragment CustomerFields
     use fragment SaveCancelFooter
   }
@@ -365,8 +382,10 @@ create snippet FragTest.CustomerCard
 -- Fragments provide script-scoped widget reuse:
 --
 --   DEFINE FRAGMENT Name AS { widgets };   -- Define
+--   DEFINE FRAGMENT Name AS { … slot … };  -- Define with a content slot
 --   USE FRAGMENT Name                      -- Use (clone & insert)
 --   USE FRAGMENT Name AS prefix_           -- Use with unique names
+--   USE FRAGMENT Name { widgets }          -- Fill the content slot
 --   SHOW FRAGMENTS;                        -- List all
 --   DESCRIBE FRAGMENT Name;                -- Show definition
 --   DESCRIBE FRAGMENT FROM PAGE Mod.Page WIDGET name;   -- Extract from page

@@ -87,7 +87,7 @@ Modifies an existing entity without full replacement.
 | Drop attributes | `alter entity Module.Name drop (AttrName, ...);` | |
 | Modify attributes | `alter entity Module.Name modify (attr: NewType [constraints]);` | Change type/constraints |
 | Rename attribute | `alter entity Module.Name rename OldName to NewName;` | |
-| Add index | `alter entity Module.Name add index (Col1 [asc\|desc], ...);` | |
+| Add index | `alter entity Module.Name add index [name] [on] (Col1 [asc\|desc], ...);` | `on` is optional (SQL-like) |
 | Drop index | `alter entity Module.Name drop index (Col1, ...);` | |
 | Add event handler | `alter entity Module.Name add event handler on before commit call Mod.MF($currentObject) [raise error];` | `($currentObject)` or `()`, RAISE ERROR only on BEFORE |
 | Drop event handler | `alter entity Module.Name drop event handler on before commit;` | |
@@ -95,6 +95,10 @@ Modifies an existing entity without full replacement.
 | Set position | `alter entity Module.Name set position (100, 200);` | Canvas position |
 | Add system attribute | `alter entity Module.Name add attribute owner: autoowner;` | Same syntax as regular attributes |
 | Drop system attribute | `alter entity Module.Name drop attribute owner;` | Drop by system attribute name |
+| Add attribute (idempotent) | `alter entity Module.Name add attribute if not exists AttrName: type;` | Skipped (not an error) if the attribute already exists — re-runnable |
+| Drop attribute (idempotent) | `alter entity Module.Name drop attribute if exists AttrName;` | Skipped (not an error) if the attribute is already gone — re-runnable |
+
+> **Re-running domain scripts.** `IF NOT EXISTS` / `IF EXISTS` make an individual add/drop a no-op when already applied. To re-run a whole script that is partly applied, use `mxcli exec script.mdl --continue-on-error`: every statement is attempted, each failure is reported with its statement number, and the command exits non-zero if any failed (a real error is still surfaced, never masked).
 
 **Example:**
 ```sql
@@ -910,6 +914,15 @@ MDL uses explicit property declarations for pages:
 | Pagination mode | `Pagination: mode` | `datagrid dg (Pagination: virtualScrolling)` |
 | Paging position | `PagingPosition: pos` | `datagrid dg (PagingPosition: both)` |
 | Paging buttons | `ShowPagingButtons: mode` | `datagrid dg (ShowPagingButtons: auto)` |
+
+**Snippets & Building Blocks (read-only discovery):**
+
+| Operation | Syntax | Notes |
+|-----------|--------|-------|
+| List snippets | `show snippets [in module];` | Editable via `create/alter snippet` |
+| Describe snippet | `describe snippet Module.Name;` | Round-trippable MDL output |
+| List building blocks | `show building blocks [in module];` | Read-only; cannot be authored via MDL |
+| Describe building block | `describe building block Module.Name;` | Informational (header comment + widget tree), not a `create` statement |
 
 **DataGrid Column Properties:**
 

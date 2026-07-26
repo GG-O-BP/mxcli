@@ -140,8 +140,10 @@ nonListDataType
     | qualifiedName  // Entity reference type (NOT list)
     ;
 
+// The optional ON reads SQL-like: `INDEX idx_name ON (Col1, Col2)`. The bare
+// form `INDEX idx_name (Col1, Col2)` (and anonymous `INDEX (Col1)`) still parse.
 indexDefinition
-    : IDENTIFIER? LPAREN indexAttributeList RPAREN
+    : IDENTIFIER? ON? LPAREN indexAttributeList RPAREN
     ;
 
 indexAttributeList
@@ -195,14 +197,14 @@ deleteBehavior
 // =============================================================================
 
 alterEntityAction
-    : ADD ATTRIBUTE attributeDefinition
-    | ADD COLUMN attributeDefinition
+    : ADD ATTRIBUTE ifNotExists? attributeDefinition
+    | ADD COLUMN ifNotExists? attributeDefinition
     | RENAME ATTRIBUTE attributeName TO attributeName
     | RENAME COLUMN attributeName TO attributeName
     | MODIFY ATTRIBUTE attributeName COLON? dataType attributeConstraint*
     | MODIFY COLUMN attributeName COLON? dataType attributeConstraint*
-    | DROP ATTRIBUTE attributeName
-    | DROP COLUMN attributeName
+    | DROP ATTRIBUTE ifExists? attributeName
+    | DROP COLUMN ifExists? attributeName
     | SET DOCUMENTATION STRING_LITERAL
     | SET COMMENT STRING_LITERAL
     | SET POSITION LPAREN NUMBER_LITERAL COMMA NUMBER_LITERAL RPAREN
@@ -211,6 +213,18 @@ alterEntityAction
     | DROP INDEX IDENTIFIER
     | ADD EVENT HANDLER eventHandlerDefinition
     | DROP EVENT HANDLER ON eventMoment eventType
+    ;
+
+// Idempotency guards for a re-runnable domain script: ADD ATTRIBUTE IF NOT
+// EXISTS skips (with a notice) when the attribute is already present, and DROP
+// ATTRIBUTE IF EXISTS skips when it is already gone — instead of erroring and
+// halting the run.
+ifNotExists
+    : IF NOT EXISTS
+    ;
+
+ifExists
+    : IF EXISTS
     ;
 
 alterAssociationAction
