@@ -259,6 +259,10 @@ index idx_product_category (Category);
 /
 ```
 
+> The `on` keyword is optional and reads SQL-like: `index idx_product_code on (Code)`
+> is equivalent to `index idx_product_code (Code)`. Multi-column indexes list the
+> columns in order: `index idx_pos on (Row, Col)`.
+
 ## Complete Domain Model Example
 
 ```mdl

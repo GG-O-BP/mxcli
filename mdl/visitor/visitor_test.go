@@ -2388,3 +2388,47 @@ func TestBuild_BareNotEndToEnd(t *testing.T) {
 		t.Errorf("expected a not(expr) hint in Build errors, got:\n%s", joined)
 	}
 }
+
+// TestEntityIndexOnKeyword verifies the SQL-like `INDEX name ON (cols)` form
+// parses (findings #4) and is equivalent to the bare `INDEX name (cols)` form —
+// the optional ON is not mistaken for a column, and column order is preserved.
+func TestEntityIndexOnKeyword(t *testing.T) {
+	for _, src := range []string{
+		`create persistent entity M.Cell (Row: integer, Col: integer) index idx_pos on (Row, Col);`,
+		`create persistent entity M.Cell (Row: integer, Col: integer) index idx_pos (Row, Col);`,
+	} {
+		prog, errs := Build(src)
+		if len(errs) > 0 {
+			t.Fatalf("parse error for %q: %v", src, errs[0])
+		}
+		ent, ok := prog.Statements[0].(*ast.CreateEntityStmt)
+		if !ok {
+			t.Fatalf("expected CreateEntityStmt, got %T", prog.Statements[0])
+		}
+		if len(ent.Indexes) != 1 {
+			t.Fatalf("%q: expected 1 index, got %d", src, len(ent.Indexes))
+		}
+		cols := ent.Indexes[0].Columns
+		if len(cols) != 2 || cols[0].Name != "Row" || cols[1].Name != "Col" {
+			t.Errorf("%q: expected columns [Row Col], got %+v", src, cols)
+		}
+	}
+}
+
+// TestAlterEntityAddIndexOnKeyword verifies ALTER ENTITY ADD INDEX also accepts ON.
+func TestAlterEntityAddIndexOnKeyword(t *testing.T) {
+	prog, errs := Build(`alter entity M.Cell add index idx_col on (Col);`)
+	if len(errs) > 0 {
+		t.Fatalf("parse error: %v", errs[0])
+	}
+	alt, ok := prog.Statements[0].(*ast.AlterEntityStmt)
+	if !ok {
+		t.Fatalf("expected AlterEntityStmt, got %T", prog.Statements[0])
+	}
+	if alt.Operation != ast.AlterEntityAddIndex || alt.Index == nil {
+		t.Fatalf("expected AddIndex with an Index, got op=%d index=%v", alt.Operation, alt.Index)
+	}
+	if len(alt.Index.Columns) != 1 || alt.Index.Columns[0].Name != "Col" {
+		t.Errorf("expected column [Col], got %+v", alt.Index.Columns)
+	}
+}
