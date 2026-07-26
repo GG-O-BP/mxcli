@@ -1,0 +1,9 @@
+-- Findings #2: secondsBetween() returns Decimal, so assigning it to an Integer
+-- variable fails the build with CE0117. check now flags it (MDL041); the fix is
+-- to round() the value or declare the variable as Decimal.
+-- Negative test: `mxcli check` MUST fail here.
+create microflow Bug2.MF_Elapsed (Start: DateTime, End: DateTime) returns Integer
+begin
+  declare $n Integer = secondsBetween($Start, $End);
+  return $n;
+end;

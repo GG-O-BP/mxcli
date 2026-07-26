@@ -1,0 +1,10 @@
+-- Findings #1: `randomInt()` is not a Mendix expression function (it's in some
+-- docs but doesn't exist). It parses and used to pass `mxcli check`, then failed
+-- the build with CE0117 "Error(s) in expression". check now flags it (MDL044)
+-- with a "did you mean random()?" hint.
+-- Negative test: `mxcli check` MUST fail here.
+create microflow Bug1.MF_Random () returns Integer
+begin
+  declare $r Integer = round(randomInt(9));
+  return $r;
+end;

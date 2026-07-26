@@ -1,0 +1,87 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package executor
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/mendixlabs/mxcli/mdl/ast"
+	"github.com/mendixlabs/mxcli/mdl/visitor"
+)
+
+func mdlIDs(mf *ast.CreateMicroflowStmt) map[string]string {
+	out := map[string]string{}
+	for _, vi := range ValidateMicroflow(mf) {
+		out[vi.RuleID] = vi.Message + " || " + vi.Suggestion
+	}
+	return out
+}
+
+func buildMF(t *testing.T, src string) *ast.CreateMicroflowStmt {
+	t.Helper()
+	prog, errs := visitor.Build(src)
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	return prog.Statements[0].(*ast.CreateMicroflowStmt)
+}
+
+// TestValidateMicroflow_UnknownFunction covers MDL044 (findings #1): a call to a
+// name that is not a Mendix expression function (e.g. randomInt) parses and
+// passes a naive check but fails the build with CE0117.
+func TestValidateMicroflow_UnknownFunction(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		wantMDL bool
+		wantSug string // substring expected in the suggestion (if wantMDL)
+	}{
+		{"randomInt is unknown", "declare $r Integer = randomInt(9);", true, "random()"},
+		{"random is known", "declare $d Decimal = random();", false, ""},
+		{"round(random()) is known", "declare $r Integer = round(random() * 8);", false, ""},
+		{"nested known funcs", "declare $s String = toUpperCase(trim($x));", false, ""},
+		{"unknown in if condition", "if isBlank($x) then\n    return;\n  end if;", true, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "create microflow M.F ($x: String)\nbegin\n  " + tc.body + "\nend;"
+			ids := mdlIDs(buildMF(t, src))
+			_, got := ids["MDL044"]
+			if got != tc.wantMDL {
+				t.Fatalf("MDL044 fired=%v, want %v (body %q)", got, tc.wantMDL, tc.body)
+			}
+			if tc.wantMDL && tc.wantSug != "" && !strings.Contains(ids["MDL044"], tc.wantSug) {
+				t.Errorf("expected suggestion to contain %q, got %q", tc.wantSug, ids["MDL044"])
+			}
+		})
+	}
+}
+
+// TestValidateMicroflow_DecimalFuncIntoInteger covers the #2 extension of MDL041:
+// a Decimal-returning built-in (random, secondsBetween, …) assigned to an
+// Integer/Long target — not just arithmetic div. Rounding funcs stay accepted.
+func TestValidateMicroflow_DecimalFuncIntoInteger(t *testing.T) {
+	cases := []struct {
+		name    string
+		params  string
+		body    string
+		wantMDL bool
+	}{
+		{"secondsBetween into Integer", "($a: DateTime, $b: DateTime)", "declare $n Integer = secondsBetween($a, $b);", true},
+		{"random into Integer", "()", "declare $n Integer = random();", true},
+		{"daysBetween into Long", "($a: DateTime, $b: DateTime)", "declare $n Long = daysBetween($a, $b);", true},
+		{"round(random) into Integer ok", "()", "declare $n Integer = round(random() * 6);", false},
+		{"secondsBetween into Decimal ok", "($a: DateTime, $b: DateTime)", "declare $n Decimal = secondsBetween($a, $b);", false},
+		{"calendarMonthsBetween into Integer ok", "($a: DateTime, $b: DateTime)", "declare $n Integer = calendarMonthsBetween($a, $b);", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "create microflow M.F " + tc.params + "\nbegin\n  " + tc.body + "\nend;"
+			_, got := mdlIDs(buildMF(t, src))["MDL041"]
+			if got != tc.wantMDL {
+				t.Errorf("MDL041 fired=%v, want %v (body %q)", got, tc.wantMDL, tc.body)
+			}
+		})
+	}
+}
