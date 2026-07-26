@@ -617,9 +617,15 @@ func execAlterEntity(ctx *ExecContext, s *ast.AlterEntityStmt) error {
 			a.HasDefault = true
 			a.DefaultValue = false
 		}
-		// Check for duplicate attribute name
+		// Check for duplicate attribute name. With IF NOT EXISTS, an existing
+		// attribute is a no-op (with a notice) rather than an error, so a domain
+		// script re-runs cleanly (findings #10).
 		for _, existing := range entity.Attributes {
 			if existing.Name == a.Name {
+				if s.IfNotExists {
+					fmt.Fprintf(ctx.Output, "Attribute '%s' already exists on entity %s — skipped\n", a.Name, s.Name)
+					return nil
+				}
 				return mdlerrors.NewAlreadyExistsMsg("attribute", a.Name, fmt.Sprintf("attribute '%s' already exists on entity %s", a.Name, s.Name))
 			}
 		}
@@ -802,6 +808,13 @@ func execAlterEntity(ctx *ExecContext, s *ast.AlterEntityStmt) error {
 			}
 		}
 		if idx < 0 {
+			// With IF EXISTS, an already-absent attribute is a no-op (with a
+			// notice) rather than an error, so a domain script re-runs cleanly
+			// (findings #10).
+			if s.IfExists {
+				fmt.Fprintf(ctx.Output, "Attribute '%s' not found on entity %s — skipped\n", s.AttributeName, s.Name)
+				return nil
+			}
 			return mdlerrors.NewNotFoundMsg("attribute", s.AttributeName, fmt.Sprintf("attribute '%s' not found on entity %s", s.AttributeName, s.Name))
 		}
 		// Clean up entity-level references to the dropped attribute

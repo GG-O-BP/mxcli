@@ -1056,6 +1056,36 @@ END;`
 	t.Log("DECLARE without AS keyword parsed correctly")
 }
 
+// TestAlterEntityAttributeIfExistsGuards verifies ADD ATTRIBUTE IF NOT EXISTS
+// and DROP ATTRIBUTE IF EXISTS set the idempotency flags on the AST. Findings #10.
+func TestAlterEntityAttributeIfExistsGuards(t *testing.T) {
+	prog, errs := Build(`ALTER ENTITY M.E ADD ATTRIBUTE IF NOT EXISTS Score: Integer;
+ALTER ENTITY M.E DROP ATTRIBUTE IF EXISTS OldCol;
+ALTER ENTITY M.E ADD ATTRIBUTE Plain: Integer;
+ALTER ENTITY M.E DROP ATTRIBUTE PlainCol;`)
+	if len(errs) > 0 {
+		t.Fatalf("parse error: %v", errs[0])
+	}
+	if len(prog.Statements) != 4 {
+		t.Fatalf("expected 4 statements, got %d", len(prog.Statements))
+	}
+	add := prog.Statements[0].(*ast.AlterEntityStmt)
+	if !add.IfNotExists {
+		t.Error("expected IfNotExists on ADD ATTRIBUTE IF NOT EXISTS")
+	}
+	drop := prog.Statements[1].(*ast.AlterEntityStmt)
+	if !drop.IfExists {
+		t.Error("expected IfExists on DROP ATTRIBUTE IF EXISTS")
+	}
+	// Plain forms must NOT set the guards.
+	if prog.Statements[2].(*ast.AlterEntityStmt).IfNotExists {
+		t.Error("plain ADD ATTRIBUTE should not set IfNotExists")
+	}
+	if prog.Statements[3].(*ast.AlterEntityStmt).IfExists {
+		t.Error("plain DROP ATTRIBUTE should not set IfExists")
+	}
+}
+
 // TestAlterEntityAddAttribute verifies ALTER ENTITY ADD ATTRIBUTE produces correct AST.
 func TestAlterEntityAddAttribute(t *testing.T) {
 	input := `ALTER ENTITY MyModule.Customer

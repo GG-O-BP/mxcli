@@ -536,9 +536,10 @@ func (b *Builder) ExitAlterEntityAction(ctx *parser.AlterEntityActionContext) {
 					attr := buildSingleAttribute(attrDef.(*parser.AttributeDefinitionContext))
 					if attr != nil {
 						b.statements = append(b.statements, &ast.AlterEntityStmt{
-							Name:      name,
-							Operation: ast.AlterEntityAddAttribute,
-							Attribute: attr,
+							Name:        name,
+							Operation:   ast.AlterEntityAddAttribute,
+							Attribute:   attr,
+							IfNotExists: ctx.IfNotExists() != nil,
 						})
 					}
 				}
@@ -609,6 +610,7 @@ func (b *Builder) ExitAlterEntityAction(ctx *parser.AlterEntityActionContext) {
 					Name:          name,
 					Operation:     ast.AlterEntityDropAttribute,
 					AttributeName: attributeNameText(attrNames[0]),
+					IfExists:      ctx.IfExists() != nil,
 				})
 				return
 			}
