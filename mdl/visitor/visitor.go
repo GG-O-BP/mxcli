@@ -112,6 +112,17 @@ func enhanceErrorMessage(msg, offendingLine string) string {
 			"    create enumeration Mod.E (Value1 = 'Caption 1');                       (wrong — causes parse error)", msg)
 	}
 
+	// Arithmetic inside an XPath constraint. Mendix XPath can't compute values
+	// (no +, -, *, div, mod on the value side) — compute into a variable first,
+	// then compare against it. (sudoku findings #8)
+	if looksLikeXPathArithmetic(msg) {
+		return fmt.Sprintf("%s\n\n  Mendix XPath constraints cannot compute values (no +, -, *, div, mod).\n"+
+			"  Compute the value into a variable first, then compare against it:\n"+
+			"    $Next = $Game/MoveSeq + 1;\n"+
+			"    retrieve $M from Mod.Move where [Seq = $Next] limit 1;   (correct)\n"+
+			"    retrieve $M from Mod.Move where [Seq = $Game/MoveSeq + 1] limit 1;  (wrong — XPath can't compute)", msg)
+	}
+
 	// Check for a misplaced EXTENDS / GENERALIZATION clause. It must precede the
 	// attribute list — `create entity Mod.Child extends Mod.Parent ( ... )` — but
 	// users often append it after the closing parenthesis, where ANTLR reports a
@@ -181,6 +192,19 @@ func enhanceErrorMessage(msg, offendingLine string) string {
 // exact shape of the unparenthesized-negation mistake. Scoped to `not $var` to
 // stay false-positive-free (it won't fire on `not(...)`, `is not null`, etc.).
 var bareNotRe = regexp.MustCompile(`(?i)\bnot\s+\$`)
+
+// xpathArithmeticRe matches an arithmetic operator that ANTLR rejected inside a
+// bracketed XPath constraint. `expecting ']'` only occurs inside `[…]`, so a
+// stray arithmetic operator there is a compute-in-constraint attempt. The op set
+// is quoted-literal to avoid matching, say, a `-` inside a normal expression.
+var xpathArithmeticRe = regexp.MustCompile(`mismatched input '(\+|\*|div|mod)' expecting '\]'`)
+
+// looksLikeXPathArithmetic detects an arithmetic operator used on the value side
+// of an XPath constraint (e.g. `[Seq = $Game/MoveSeq + 1]`). Mendix XPath cannot
+// compute values, so this must be pre-computed into a variable. (findings #8)
+func looksLikeXPathArithmetic(msg string) bool {
+	return xpathArithmeticRe.MatchString(msg)
+}
 
 // looksLikeMisplacedExtends detects ANTLR errors caused by an EXTENDS /
 // GENERALIZATION clause placed after the entity's attribute parentheses instead

@@ -2432,3 +2432,21 @@ func TestAlterEntityAddIndexOnKeyword(t *testing.T) {
 		t.Errorf("expected column [Col], got %+v", alt.Index.Columns)
 	}
 }
+
+// TestEnhanceErrorMessage_XPathArithmetic verifies the XPath-arithmetic hint
+// fires for an arithmetic operator inside a bracketed constraint (findings #8)
+// and not for arithmetic in a normal expression.
+func TestEnhanceErrorMessage_XPathArithmetic(t *testing.T) {
+	xhint := "cannot compute values"
+	// Inside a constraint: `expecting ']'` + arithmetic op → hint.
+	for _, op := range []string{"+", "*", "div", "mod"} {
+		msg := "mismatched input '" + op + "' expecting ']'"
+		if got := enhanceErrorMessage(msg, ""); !strings.Contains(got, xhint) {
+			t.Errorf("op %q: expected XPath-arithmetic hint, got:\n%s", op, got)
+		}
+	}
+	// A normal expression arithmetic error (not `expecting ']'`) must not fire.
+	if got := enhanceErrorMessage("mismatched input '+' expecting ';'", ""); strings.Contains(got, xhint) {
+		t.Errorf("did not expect XPath hint for a non-constraint arithmetic error:\n%s", got)
+	}
+}
