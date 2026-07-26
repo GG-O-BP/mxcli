@@ -119,6 +119,10 @@ client, so its `LOG` output takes two paths:
   around your microflow node names will silently drop every nanoflow line — grep for
   `Client_Nanoflow` (or the message text) to see nanoflow logs. This is a Mendix
   platform behaviour, not an mxcli one.
+- **`LOG DEBUG` never reaches the server log.** Only `INFO`/`WARNING`/`ERROR` reach
+  `runtime.log`; a nanoflow `LOG DEBUG` line is sent but dropped server-side. All four
+  levels still show in the **browser console**, so use the console (not `runtime.log`)
+  when debugging at `DEBUG` level.
 
 ### Control Flow
 ```mdl

@@ -88,11 +88,17 @@ the runtime's `poll_events`. `mxcli debug paused` (and `step`/`inspect`/`continu
 merge both sources, so a paused nanoflow appears with its `debug_id`; its variables
 are shown under the *Client events (poll_events)* section of `paused`.
 
+A nanoflow's `debug_id` is **single-use** — it changes after every step (a microflow's
+is stable). Let `step`/`inspect`/`continue` **auto-resolve** the flow (omit `--flow`);
+each command re-reads the current state and picks up the fresh id. A `--flow` value
+copied from an earlier `paused` goes stale after the first nanoflow step.
+
 **Nanoflow logging:** a nanoflow logs to the browser console and to the server
 runtime log, but the runtime **rewrites the log node to `Client_Nanoflow`** — so in
 `.mxcli/runtime.log` a nanoflow's `LOG NODE 'Sudoku' …` appears as `Client_Nanoflow:`,
 not `Sudoku:`. Grep for `Client_Nanoflow` (or the message text); a node-name filter
-built for microflows drops nanoflow lines.
+built for microflows drops nanoflow lines. Note `LOG DEBUG` from a nanoflow is dropped
+server-side (browser console only) — only `INFO`/`WARNING`/`ERROR` reach `runtime.log`.
 
 ## Important behaviour
 

@@ -96,6 +96,13 @@ Symptom of a paused nanoflow **without** mxcli: a frozen browser, the console lo
 "Starting execution" but never "Finished", and `mxcli debug status` showing
 `client_connected: true`.
 
+**Nanoflow `debug_id` is single-use.** Unlike a microflow (stable id), a nanoflow
+gets a **new** `debug_id` after every step — the old one is invalidated. Because each
+`mxcli debug` command re-reads the current state, just let `step`/`inspect`/`continue`
+**auto-resolve** the flow (don't pass `--flow`): a bare `mxcli debug step over` picks up
+the fresh id each time. Reusing a `--flow <debug_id>` copied from an earlier `paused`
+will fail on the second nanoflow step with "could not find … in debug with id".
+
 For **nanoflow log output**, see `write-nanoflows.md` — the runtime rewrites the log
 node to `Client_Nanoflow`, so grep `runtime.log` for `Client_Nanoflow`, not your node
 name.
