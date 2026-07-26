@@ -262,6 +262,7 @@ func (s *mdlServer) runSemanticValidation(text string) []protocol.Diagnostic {
 	// filesystem isn't walked on every keystroke. Nil-safe: when the registry
 	// hasn't loaded (no project context, etc.) widget validation is skipped.
 	s.ensureWidgetRegistry()
+	s.ensureThemeRegistry()
 
 	var diags []protocol.Diagnostic
 	for i, stmt := range prog.Statements {
@@ -286,6 +287,9 @@ func (s *mdlServer) runSemanticValidation(text string) []protocol.Diagnostic {
 		}
 		if s.widgetRegistry != nil {
 			violations = append(violations, executor.ValidateWidgetPropertiesForStatement(stmt, s.widgetRegistry)...)
+		}
+		if s.themeRegistry != nil {
+			violations = append(violations, executor.ValidateDesignPropertiesForStatement(stmt, s.themeRegistry)...)
 		}
 
 		lineNum := uint32(0)

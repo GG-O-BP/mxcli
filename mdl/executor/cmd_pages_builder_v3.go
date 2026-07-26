@@ -545,9 +545,17 @@ func applyWidgetAppearance(widget pages.Widget, w *ast.WidgetV3, theme *ThemeReg
 	// Apply design properties
 	astProps := w.GetDesignProperties()
 	if len(astProps) > 0 {
+		// Resolve the widget's design-property definitions from the theme registry
+		// (when loaded) so each value's BSON type is taken from metadata
+		// (ColorPicker/ToggleButtonGroup → custom) rather than guessed. Nil/empty
+		// when no project/themesource — the converter then falls back to option.
+		var themeProps []ThemeProperty
+		if theme != nil {
+			themeProps = theme.GetPropertiesForWidget(resolveDesignPropsKey(w.Type))
+		}
 		var dpValues []pages.DesignPropertyValue
 		for _, p := range astProps {
-			if dp, ok := astDesignPropToValue(p); ok {
+			if dp, ok := astDesignPropToValue(p, themeProps); ok {
 				dpValues = append(dpValues, dp)
 			}
 		}
@@ -567,11 +575,18 @@ func applyWidgetAppearance(widget pages.Widget, w *ast.WidgetV3, theme *ThemeReg
 // pages.DesignPropertyValue. Compound entries (a key whose value is a nested
 // list, e.g. 'Spacing': ['margin-top': 'Large', …]) recurse into sub-properties.
 // Returns ok=false for an entry that should be skipped (a flat toggle set OFF).
-func astDesignPropToValue(p ast.DesignPropertyEntryV3) (pages.DesignPropertyValue, bool) {
+//
+// themeProps are the widget's design-property definitions from the theme registry
+// (nil/empty when no project/themesource). When available, a flat value's BSON
+// type is taken from the property's declared Type — a ColorPicker or
+// ToggleButtonGroup materializes as Forms$CustomDesignPropertyValue rather than
+// the option default (findings: typed design properties). Without metadata the
+// prior syntactic behaviour (on→toggle, else→option) is preserved.
+func astDesignPropToValue(p ast.DesignPropertyEntryV3, themeProps []ThemeProperty) (pages.DesignPropertyValue, bool) {
 	if len(p.Nested) > 0 {
 		dp := pages.DesignPropertyValue{Key: p.Key, ValueType: "compound"}
 		for _, sub := range p.Nested {
-			if sv, ok := astDesignPropToValue(sub); ok {
+			if sv, ok := astDesignPropToValue(sub, themeProps); ok {
 				dp.Compound = append(dp.Compound, sv)
 			}
 		}
@@ -583,7 +598,11 @@ func astDesignPropToValue(p ast.DesignPropertyEntryV3) (pages.DesignPropertyValu
 	case "off":
 		return pages.DesignPropertyValue{}, false // toggle absence — skip
 	default:
-		return pages.DesignPropertyValue{Key: p.Key, ValueType: "option", Option: p.Value}, true
+		return pages.DesignPropertyValue{
+			Key:       p.Key,
+			ValueType: resolveDesignPropertyValueType(p.Key, themeProps),
+			Option:    p.Value,
+		}, true
 	}
 }
 
