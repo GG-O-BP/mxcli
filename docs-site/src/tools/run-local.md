@@ -78,6 +78,8 @@ so structural changes need a restart; behavioural changes do not.
 | `--screenshot-url` | app root | Page to shoot: full URL, or a path relative to the app root (e.g. `/p/customers`). Repeat for a multi-page set. |
 | `--screenshot-user` / `--screenshot-password` | — | Log in once (Mendix form auth) and reuse the session, so pages behind login render authenticated |
 | `--runtime-log` | `<projectDir>/.mxcli/runtime.log` | Runtime log file — JVM stdout/stderr **and** the application log (server stack traces + microflow `LOG` output); `-` disables |
+| `--debug` | off | Enable the microflow debugger at boot; then use [`mxcli debug`](debug-microflows.md) from another terminal. Behaviour-neutral until a breakpoint is set |
+| `--debug-pass` | `mxdebug` | Debugger password when `--debug` is set |
 
 ## Debugging a server-side error
 
