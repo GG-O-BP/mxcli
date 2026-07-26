@@ -49,7 +49,7 @@ Under the hood the debugger spans two runtime APIs, which `mxcli debug` hides:
 | `mxcli debug unbreak <Module.Flow> --activity <#n\|caption>` | Clear a breakpoint |
 | `mxcli debug breaks` | List the breakpoints set this session (name → object ID) |
 | `mxcli debug paused` | Paused microflows + full state (variables) |
-| `mxcli debug inspect <var> [--flow <debug_id>]` | Inspect one variable of a paused flow |
+| `mxcli debug inspect <var> [--list] [--flow <debug_id>]` | Inspect one variable of a paused flow; `--list` inspects a list variable (`get_list`) |
 | `mxcli debug step [over\|into\|out] [--flow <debug_id>]` | Advance one step (default `over`) |
 | `mxcli debug continue [--all]` | Resume the paused flow (or all with `--all`) |
 

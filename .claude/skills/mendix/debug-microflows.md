@@ -67,7 +67,7 @@ mxcli debug disable -p app.mpr
 | `mxcli debug unbreak <Module.Flow> --activity <#n\|caption>` | Clear a breakpoint |
 | `mxcli debug breaks` | List the breakpoints mxcli has set this session (name → object ID) |
 | `mxcli debug paused` | Show paused microflows + full state (variables) |
-| `mxcli debug inspect <var> [--flow <debug_id>]` | Inspect one variable of a paused flow |
+| `mxcli debug inspect <var> [--list] [--flow <debug_id>]` | Inspect one variable of a paused flow (`--list` for a list variable → `get_list`) |
 | `mxcli debug step [over\|into\|out] [--flow <debug_id>]` | Advance one step (default `over`) |
 | `mxcli debug continue [--all]` | Resume the paused flow (or all with `--all`) |
 

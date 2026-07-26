@@ -294,6 +294,23 @@ func TestDebugger_GetObject(t *testing.T) {
 	}
 }
 
+func TestDebugger_GetList(t *testing.T) {
+	ts, opts := newDebuggerTestServer(t)
+	c := NewDebuggerClient(opts)
+	if _, err := c.StartSession(); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if _, err := c.GetList("dbg-9", "Games"); err != nil {
+		t.Fatalf("GetList: %v", err)
+	}
+	if got := ts.dbgActions[len(ts.dbgActions)-1]; got != "get_list" {
+		t.Errorf("action = %q, want get_list", got)
+	}
+	if ts.dbgParams["debug_id"] != "dbg-9" || ts.dbgParams["variable_name"] != "Games" {
+		t.Errorf("params = %v, want debug_id+variable_name", ts.dbgParams)
+	}
+}
+
 func TestDebugger_AddBreakpointNanoflow(t *testing.T) {
 	// A nanoflow breakpoint must use nanoflow_name, not microflow_name (the
 	// runtime NPEs otherwise).

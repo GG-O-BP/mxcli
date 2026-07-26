@@ -275,8 +275,8 @@ var debugPausedCmd = &cobra.Command{
 }
 
 var debugInspectCmd = &cobra.Command{
-	Use:   "inspect <variable> [--flow <debug_id>]",
-	Short: "Inspect a variable of a paused microflow",
+	Use:   "inspect <variable> [--list] [--flow <debug_id>]",
+	Short: "Inspect a variable of a paused microflow (use --list for a list variable)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		c, err := resolveDebuggerClient(cmd)
@@ -288,7 +288,13 @@ var debugInspectCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		raw, err := c.GetObject(debugID, args[0])
+		asList, _ := cmd.Flags().GetBool("list")
+		var raw []byte
+		if asList {
+			raw, err = c.GetList(debugID, args[0])
+		} else {
+			raw, err = c.GetObject(debugID, args[0])
+		}
 		if err != nil {
 			return err
 		}
@@ -500,6 +506,7 @@ func init() {
 	debugBreakCmd.Flags().String("if", "", "Only pause when this Mendix expression is true (conditional breakpoint)")
 	debugUnbreakCmd.Flags().String("activity", "", "Which activity: an '#<index>' or a caption substring")
 	debugInspectCmd.Flags().String("flow", "", "Which paused microflow (debug_id); defaults to the only paused one")
+	debugInspectCmd.Flags().Bool("list", false, "Inspect a list variable (uses get_list instead of get_object)")
 	debugStepCmd.Flags().String("flow", "", "Which paused microflow (debug_id); defaults to the only paused one")
 	debugContinueCmd.Flags().Bool("all", false, "Continue all paused microflows, not just one")
 

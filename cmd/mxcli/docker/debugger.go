@@ -193,6 +193,15 @@ func (c *DebuggerClient) GetObject(debugID, variableName string) (json.RawMessag
 	})
 }
 
+// GetList inspects a LIST variable of a paused flow (by its debug_id). Use this
+// instead of GetObject when the variable is a list of objects.
+func (c *DebuggerClient) GetList(debugID, variableName string) (json.RawMessage, error) {
+	return c.post("get_list", true, map[string]any{
+		"debug_id":      debugID,
+		"variable_name": variableName,
+	})
+}
+
 // Step advances a paused microflow one step. kind is "over", "into", or "out".
 func (c *DebuggerClient) Step(kind, debugID string) error {
 	var action string
