@@ -20,9 +20,10 @@ type debuggerTestServer struct {
 	adminActions []string
 	enablePass   string // password seen on enable_debugger
 	dbgActions   []string
-	dbgAuth      string // X-Debugger-Authentication seen on the last /debugger/ call
-	dbgHadParams bool   // whether the last /debugger/ body had a params key
-	dbgToken     string // session_token seen on the last /debugger/ call
+	dbgAuth      string         // X-Debugger-Authentication seen on the last /debugger/ call
+	dbgHadParams bool           // whether the last /debugger/ body had a params key
+	dbgToken     string         // session_token seen on the last /debugger/ call
+	dbgParams    map[string]any // params of the last /debugger/ call
 }
 
 func newDebuggerTestServer(t *testing.T) (*debuggerTestServer, DebuggerOptions) {
@@ -37,6 +38,10 @@ func newDebuggerTestServer(t *testing.T) (*debuggerTestServer, DebuggerOptions) 
 			_ = json.Unmarshal(body["action"], &action)
 			ts.dbgActions = append(ts.dbgActions, action)
 			_, ts.dbgHadParams = body["params"]
+			ts.dbgParams = nil
+			if p, ok := body["params"]; ok {
+				_ = json.Unmarshal(p, &ts.dbgParams)
+			}
 			if tok, ok := body["session_token"]; ok {
 				_ = json.Unmarshal(tok, &ts.dbgToken)
 			}
@@ -157,6 +162,71 @@ func TestDebugger_DisableClearsToken(t *testing.T) {
 	}
 	if _, err := os.Stat(opts.TokenPath); !os.IsNotExist(err) {
 		t.Errorf("token file should be removed after disable, stat err=%v", err)
+	}
+}
+
+func TestDebugger_AddBreakpoint(t *testing.T) {
+	ts, opts := newDebuggerTestServer(t)
+	c := NewDebuggerClient(opts)
+	if _, err := c.StartSession(); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if err := c.AddBreakpoint("Sudoku.ACT_Hint", "guid-1", "$Game/Solved = false"); err != nil {
+		t.Fatalf("AddBreakpoint: %v", err)
+	}
+	if got := ts.dbgActions[len(ts.dbgActions)-1]; got != "add_breakpoint" {
+		t.Fatalf("last action = %q, want add_breakpoint", got)
+	}
+	// Breakpoint calls MUST carry the session token from start_session.
+	if ts.dbgToken != "tok-123" {
+		t.Errorf("add_breakpoint session_token = %q, want tok-123", ts.dbgToken)
+	}
+	if ts.dbgParams["microflow_name"] != "Sudoku.ACT_Hint" || ts.dbgParams["object_id"] != "guid-1" {
+		t.Errorf("params = %v, want microflow_name+object_id", ts.dbgParams)
+	}
+	if ts.dbgParams["condition"] != "$Game/Solved = false" {
+		t.Errorf("condition = %v, want the expression", ts.dbgParams["condition"])
+	}
+}
+
+func TestDebugger_AddBreakpointOmitsEmptyCondition(t *testing.T) {
+	ts, opts := newDebuggerTestServer(t)
+	c := NewDebuggerClient(opts)
+	if _, err := c.StartSession(); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if err := c.AddBreakpoint("M.F", "guid-2", ""); err != nil {
+		t.Fatalf("AddBreakpoint: %v", err)
+	}
+	if _, ok := ts.dbgParams["condition"]; ok {
+		t.Errorf("empty condition must be omitted, got %v", ts.dbgParams["condition"])
+	}
+}
+
+func TestDebugger_RemoveBreakpoint(t *testing.T) {
+	ts, opts := newDebuggerTestServer(t)
+	c := NewDebuggerClient(opts)
+	if _, err := c.StartSession(); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if err := c.RemoveBreakpoint("guid-1"); err != nil {
+		t.Fatalf("RemoveBreakpoint: %v", err)
+	}
+	if got := ts.dbgActions[len(ts.dbgActions)-1]; got != "remove_breakpoint" {
+		t.Fatalf("last action = %q, want remove_breakpoint", got)
+	}
+	if ts.dbgParams["object_id"] != "guid-1" {
+		t.Errorf("params = %v, want object_id guid-1", ts.dbgParams)
+	}
+}
+
+func TestDebugger_BreakpointNeedsSession(t *testing.T) {
+	// Without a session token, a breakpoint call must fail with a clear message.
+	_, opts := newDebuggerTestServer(t)
+	c := NewDebuggerClient(opts) // no StartSession / LoadToken
+	err := c.AddBreakpoint("M.F", "guid-1", "")
+	if err == nil || !strings.Contains(err.Error(), "debug enable") {
+		t.Errorf("want a 'run debug enable first' error, got %v", err)
 	}
 }
 

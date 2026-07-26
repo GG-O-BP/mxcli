@@ -91,9 +91,190 @@ var debugDisableCmd = &cobra.Command{
 		if err := c.Disable(); err != nil {
 			return err
 		}
+		// Clear the local breakpoint record too — the runtime dropped them with the
+		// session, so mxcli's view must not claim they're still set.
+		_ = os.Remove(breakpointsPath(cmd))
 		fmt.Println("Debugger disabled.")
 		return nil
 	},
+}
+
+var debugActivitiesCmd = &cobra.Command{
+	Use:   "activities <Module.Microflow>",
+	Short: "List a microflow's activities with the object IDs you can break on",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		project, _ := cmd.Flags().GetString("project")
+		if project == "" {
+			return fmt.Errorf("--project (-p) is required to read the microflow")
+		}
+		acts, err := resolveMicroflowActivities(project, args[0])
+		if err != nil {
+			return err
+		}
+		if len(acts) == 0 {
+			fmt.Printf("No objects found in %s\n", args[0])
+			return nil
+		}
+		fmt.Printf("Activities in %s:\n\n", args[0])
+		fmt.Printf("  %-4s %-22s %-38s %s\n", "#", "Type", "Object ID", "Caption")
+		for _, a := range acts {
+			fmt.Printf("  %-4d %-22s %-38s %s\n", a.Index, a.Type, a.ObjectID, a.Caption)
+		}
+		fmt.Println("\nBreak with: mxcli debug break " + args[0] + " --activity '#<n>'  (or a caption substring)")
+		return nil
+	},
+}
+
+var debugBreakCmd = &cobra.Command{
+	Use:   "break <Module.Microflow> --activity <#n|caption>",
+	Short: "Set a breakpoint on a microflow activity, resolved by name",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		project, _ := cmd.Flags().GetString("project")
+		if project == "" {
+			return fmt.Errorf("--project (-p) is required to resolve the activity")
+		}
+		selector, _ := cmd.Flags().GetString("activity")
+		if selector == "" {
+			return fmt.Errorf("--activity is required (an '#<index>' or caption substring); run 'mxcli debug activities %s' to see them", args[0])
+		}
+		condition, _ := cmd.Flags().GetString("if")
+
+		acts, err := resolveMicroflowActivities(project, args[0])
+		if err != nil {
+			return err
+		}
+		act, err := matchActivity(acts, selector)
+		if err != nil {
+			return err
+		}
+
+		c, err := resolveDebuggerClient(cmd)
+		if err != nil {
+			return err
+		}
+		if err := c.AddBreakpoint(args[0], act.ObjectID, condition); err != nil {
+			return err
+		}
+
+		// Record it locally for 'breaks' (the runtime has no list call).
+		label := act.Caption
+		if label == "" {
+			label = fmt.Sprintf("%s#%d", act.Type, act.Index)
+		}
+		bpPath := breakpointsPath(cmd)
+		bps, _ := loadBreakpoints(bpPath)
+		bps = upsertBreakpoint(bps, localBreakpoint{Microflow: args[0], Activity: label, ObjectID: act.ObjectID, Condition: condition})
+		if err := saveBreakpoints(bpPath, bps); err != nil {
+			fmt.Printf("  (warning: could not record breakpoint locally: %v)\n", err)
+		}
+
+		fmt.Printf("Breakpoint set on %s → %s (%s)\n", args[0], label, act.ObjectID)
+		if condition != "" {
+			fmt.Printf("  condition: %s\n", condition)
+		}
+		fmt.Println("Any execution that reaches it — including a browser request — pauses until 'continue' (a later slice) or 'mxcli debug disable'.")
+		return nil
+	},
+}
+
+var debugUnbreakCmd = &cobra.Command{
+	Use:   "unbreak <Module.Microflow> --activity <#n|caption>",
+	Short: "Clear a breakpoint on a microflow activity",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		project, _ := cmd.Flags().GetString("project")
+		if project == "" {
+			return fmt.Errorf("--project (-p) is required to resolve the activity")
+		}
+		selector, _ := cmd.Flags().GetString("activity")
+		if selector == "" {
+			return fmt.Errorf("--activity is required (an '#<index>' or caption substring)")
+		}
+		acts, err := resolveMicroflowActivities(project, args[0])
+		if err != nil {
+			return err
+		}
+		act, err := matchActivity(acts, selector)
+		if err != nil {
+			return err
+		}
+		c, err := resolveDebuggerClient(cmd)
+		if err != nil {
+			return err
+		}
+		if err := c.RemoveBreakpoint(act.ObjectID); err != nil {
+			return err
+		}
+		bpPath := breakpointsPath(cmd)
+		bps, _ := loadBreakpoints(bpPath)
+		bps = removeBreakpoint(bps, act.ObjectID)
+		_ = saveBreakpoints(bpPath, bps)
+		fmt.Printf("Breakpoint cleared on %s (%s)\n", args[0], act.ObjectID)
+		return nil
+	},
+}
+
+var debugBreaksCmd = &cobra.Command{
+	Use:   "breaks",
+	Short: "List the breakpoints mxcli has set this session (name → object ID)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		bps, err := loadBreakpoints(breakpointsPath(cmd))
+		if err != nil {
+			return err
+		}
+		if len(bps) == 0 {
+			fmt.Println("No breakpoints recorded. Set one with 'mxcli debug break <Module.Flow> --activity …'.")
+			return nil
+		}
+		fmt.Println("Breakpoints set this session (mxcli's view):")
+		for _, b := range bps {
+			line := fmt.Sprintf("  %s → %s (%s)", b.Microflow, b.Activity, b.ObjectID)
+			if b.Condition != "" {
+				line += " if " + b.Condition
+			}
+			fmt.Println(line)
+		}
+		return nil
+	},
+}
+
+// upsertBreakpoint replaces an existing entry for the same object ID or appends.
+func upsertBreakpoint(bps []localBreakpoint, bp localBreakpoint) []localBreakpoint {
+	for i := range bps {
+		if bps[i].ObjectID == bp.ObjectID {
+			bps[i] = bp
+			return bps
+		}
+	}
+	return append(bps, bp)
+}
+
+// removeBreakpoint drops the entry with the given object ID.
+func removeBreakpoint(bps []localBreakpoint, objectID string) []localBreakpoint {
+	out := bps[:0]
+	for _, b := range bps {
+		if b.ObjectID != objectID {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// debugStateDir is the <projectDir>/.mxcli directory holding the session token
+// and local breakpoint record (cwd/.mxcli when no project is given).
+func debugStateDir(cmd *cobra.Command) string {
+	project, _ := cmd.Flags().GetString("project")
+	dir := "."
+	if project != "" {
+		dir = filepath.Dir(project)
+	}
+	return filepath.Join(dir, ".mxcli")
+}
+
+func breakpointsPath(cmd *cobra.Command) string {
+	return filepath.Join(debugStateDir(cmd), "debug-breakpoints.json")
 }
 
 // resolveDebuggerClient builds a DebuggerClient from the flags/env, defaulting to
@@ -104,18 +285,13 @@ func resolveDebuggerClient(cmd *cobra.Command) (*docker.DebuggerClient, error) {
 	adminPort, _ := cmd.Flags().GetInt("admin-port")
 	adminPass, _ := cmd.Flags().GetString("admin-pass")
 	debugPass, _ := cmd.Flags().GetString("debug-pass")
-	project, _ := cmd.Flags().GetString("project")
 
 	u, err := url.Parse(appURL)
 	if err != nil || u.Hostname() == "" {
 		return nil, fmt.Errorf("invalid --app-url %q", appURL)
 	}
 
-	dir := "."
-	if project != "" {
-		dir = filepath.Dir(project)
-	}
-	tokenPath := filepath.Join(dir, ".mxcli", "debug-session.token")
+	tokenPath := filepath.Join(debugStateDir(cmd), "debug-session.token")
 
 	c := docker.NewDebuggerClient(docker.DebuggerOptions{
 		Admin: docker.M2EEOptions{
@@ -154,7 +330,15 @@ func init() {
 	debugCmd.PersistentFlags().String("admin-pass", envOr("MXCLI_ADMIN_PASS", "mxcli-local-dev"), "M2EE admin password")
 	debugCmd.PersistentFlags().String("debug-pass", envOr("MXCLI_DEBUG_PASS", "mxdebug"), "Debugger password (passed to enable_debugger and used as the debugger-endpoint credential)")
 
+	debugBreakCmd.Flags().String("activity", "", "Which activity: an '#<index>' (see 'debug activities') or a caption substring")
+	debugBreakCmd.Flags().String("if", "", "Only pause when this Mendix expression is true (conditional breakpoint)")
+	debugUnbreakCmd.Flags().String("activity", "", "Which activity: an '#<index>' or a caption substring")
+
 	debugCmd.AddCommand(debugStatusCmd)
+	debugCmd.AddCommand(debugActivitiesCmd)
+	debugCmd.AddCommand(debugBreakCmd)
+	debugCmd.AddCommand(debugUnbreakCmd)
+	debugCmd.AddCommand(debugBreaksCmd)
 	debugCmd.AddCommand(debugEnableCmd)
 	debugCmd.AddCommand(debugDisableCmd)
 	rootCmd.AddCommand(debugCmd)

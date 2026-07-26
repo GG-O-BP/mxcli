@@ -145,6 +145,27 @@ func (c *DebuggerClient) StartSession() (string, error) {
 	return r.SessionToken, nil
 }
 
+// AddBreakpoint sets a breakpoint on an activity (object_id) of a microflow.
+// A non-empty condition is a Mendix expression that gates the pause. Requires an
+// active session (run 'mxcli debug enable' first).
+func (c *DebuggerClient) AddBreakpoint(microflowName, objectID, condition string) error {
+	params := map[string]any{
+		"microflow_name": microflowName,
+		"object_id":      objectID,
+	}
+	if condition != "" {
+		params["condition"] = condition
+	}
+	_, err := c.post("add_breakpoint", true, params)
+	return err
+}
+
+// RemoveBreakpoint clears the breakpoint on an activity (object_id).
+func (c *DebuggerClient) RemoveBreakpoint(objectID string) error {
+	_, err := c.post("remove_breakpoint", true, map[string]any{"object_id": objectID})
+	return err
+}
+
 // LoadToken reads a previously cached session token into memory (best-effort:
 // a missing file is not an error, since the session may not exist yet).
 func (c *DebuggerClient) LoadToken() error {

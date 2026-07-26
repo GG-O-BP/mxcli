@@ -1,0 +1,117 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package main
+
+import (
+	"testing"
+
+	"github.com/mendixlabs/mxcli/model"
+	"github.com/mendixlabs/mxcli/sdk/microflows"
+)
+
+func TestExtractActivities(t *testing.T) {
+	mf := &microflows.Microflow{
+		ObjectCollection: &microflows.MicroflowObjectCollection{
+			Objects: []microflows.MicroflowObject{
+				&microflows.StartEvent{BaseMicroflowObject: microflows.BaseMicroflowObject{BaseElement: model.BaseElement{ID: "id-start"}}},
+				&microflows.Annotation{BaseMicroflowObject: microflows.BaseMicroflowObject{BaseElement: model.BaseElement{ID: "id-note"}}, Caption: "Give hint"},
+			},
+		},
+	}
+	acts := extractActivities(mf)
+	if len(acts) != 2 {
+		t.Fatalf("got %d activities, want 2", len(acts))
+	}
+	if acts[0].Index != 1 || acts[0].Type != "StartEvent" || acts[0].Caption != "" || acts[0].ObjectID != "id-start" {
+		t.Errorf("act[0] = %+v", acts[0])
+	}
+	if acts[1].Index != 2 || acts[1].Type != "Annotation" || acts[1].Caption != "Give hint" || acts[1].ObjectID != "id-note" {
+		t.Errorf("act[1] = %+v", acts[1])
+	}
+}
+
+func TestExtractActivities_NilCollection(t *testing.T) {
+	if got := extractActivities(&microflows.Microflow{}); got != nil {
+		t.Errorf("nil ObjectCollection should yield nil, got %v", got)
+	}
+}
+
+func TestMatchActivity(t *testing.T) {
+	acts := []activityInfo{
+		{Index: 1, Type: "StartEvent", Caption: "", ObjectID: "g1"},
+		{Index: 2, Type: "ActionActivity", Caption: "Create 'Game'", ObjectID: "g2"},
+		{Index: 3, Type: "ActionActivity", Caption: "Commit 'Game'", ObjectID: "g3"},
+	}
+	cases := []struct {
+		selector string
+		wantID   string
+		wantErr  bool
+	}{
+		{"#2", "g2", false},
+		{"#1", "g1", false},
+		{"create", "g2", false},        // caption substring, case-insensitive
+		{"Commit 'Game'", "g3", false}, // exact caption
+		{"#0", "", true},               // out of range
+		{"#9", "", true},               // out of range
+		{"nope", "", true},             // no caption match
+		{"game", "", true},             // ambiguous (matches g2 and g3)
+		{"", "", true},                 // empty
+	}
+	for _, c := range cases {
+		got, err := matchActivity(acts, c.selector)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("matchActivity(%q): want error, got %+v", c.selector, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("matchActivity(%q): unexpected error %v", c.selector, err)
+			continue
+		}
+		if got.ObjectID != c.wantID {
+			t.Errorf("matchActivity(%q) = %q, want %q", c.selector, got.ObjectID, c.wantID)
+		}
+	}
+}
+
+func TestBreakpointRegistry_UpsertRemove(t *testing.T) {
+	var bps []localBreakpoint
+	bps = upsertBreakpoint(bps, localBreakpoint{Microflow: "M.F", Activity: "A", ObjectID: "g1"})
+	bps = upsertBreakpoint(bps, localBreakpoint{Microflow: "M.F", Activity: "B", ObjectID: "g2"})
+	if len(bps) != 2 {
+		t.Fatalf("want 2 breakpoints, got %d", len(bps))
+	}
+	// Upsert with the same object ID replaces, not appends.
+	bps = upsertBreakpoint(bps, localBreakpoint{Microflow: "M.F", Activity: "A2", ObjectID: "g1", Condition: "x > 0"})
+	if len(bps) != 2 {
+		t.Fatalf("upsert on same ID should replace; got %d", len(bps))
+	}
+	if bps[0].Activity != "A2" || bps[0].Condition != "x > 0" {
+		t.Errorf("upsert did not replace: %+v", bps[0])
+	}
+	// Remove.
+	bps = removeBreakpoint(bps, "g1")
+	if len(bps) != 1 || bps[0].ObjectID != "g2" {
+		t.Errorf("after remove: %+v", bps)
+	}
+}
+
+func TestBreakpointRegistry_SaveLoad(t *testing.T) {
+	path := t.TempDir() + "/.mxcli/debug-breakpoints.json"
+	want := []localBreakpoint{{Microflow: "M.F", Activity: "Create", ObjectID: "g1", Condition: "y"}}
+	if err := saveBreakpoints(path, want); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	got, err := loadBreakpoints(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(got) != 1 || got[0] != want[0] {
+		t.Errorf("round-trip = %+v, want %+v", got, want)
+	}
+	// A missing file loads as empty, not an error.
+	if bps, err := loadBreakpoints(t.TempDir() + "/nope.json"); err != nil || bps != nil {
+		t.Errorf("missing file: got %v err=%v, want nil,nil", bps, err)
+	}
+}
