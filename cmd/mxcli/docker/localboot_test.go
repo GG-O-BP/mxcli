@@ -5,6 +5,7 @@ package docker
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -198,5 +199,54 @@ func TestStartLocalRuntime_Validation(t *testing.T) {
 	// Launcher jar not present.
 	if _, err := StartLocalRuntime(LocalRuntimeOptions{AdminPass: "p", InstallPath: t.TempDir()}); err == nil {
 		t.Error("expected error when the launcher jar is absent")
+	}
+}
+
+// TestOpenRuntimeLog verifies the runtime-log tee creates the parent dir, appends
+// across restarts (reusing the file, closing the prior handle), and writes a
+// start marker each spawn. Findings #25.
+func TestOpenRuntimeLog(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "nested", ".mxcli", "runtime.log")
+	rt := &LocalRuntime{opts: LocalRuntimeOptions{RuntimeLogPath: logPath}}
+
+	// First spawn: opens, writes marker, then some "runtime" output.
+	f1, err := rt.openRuntimeLog()
+	if err != nil {
+		t.Fatalf("openRuntimeLog: %v", err)
+	}
+	rt.logFile = f1
+	if _, err := f1.WriteString("first-run line\n"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Second spawn (a restart): must reuse the same file (append) and close f1.
+	f2, err := rt.openRuntimeLog()
+	if err != nil {
+		t.Fatalf("openRuntimeLog restart: %v", err)
+	}
+	rt.logFile = f2
+	if _, err := f2.WriteString("second-run line\n"); err != nil {
+		t.Fatalf("write 2: %v", err)
+	}
+	_ = f2.Close()
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	s := string(data)
+	for _, want := range []string{"first-run line", "second-run line", "=== runtime start"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("runtime log missing %q; got:\n%s", want, s)
+		}
+	}
+	// Two start markers (one per spawn) → append, not truncate.
+	if n := strings.Count(s, "=== runtime start"); n != 2 {
+		t.Errorf("expected 2 start markers (append across restarts), got %d", n)
+	}
+	// Writing to the first (now-closed) handle must fail — it was closed on reopen.
+	if _, err := f1.WriteString("x"); err == nil {
+		t.Error("expected write to the closed prior handle to fail")
 	}
 }
