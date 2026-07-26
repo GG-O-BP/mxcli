@@ -131,9 +131,10 @@ func TestStart_AttachesLogSubscriber(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	// The subscriber is attached after a successful start.
-	if len(actions) != 2 || actions[0] != "start" || actions[1] != "create_log_subscriber" {
-		t.Fatalf("actions = %v, want [start create_log_subscriber]", actions)
+	// The subscriber is attached AND logging is started after a successful start —
+	// order matters: a standalone runtime boots with logging inactive (findings #25).
+	if len(actions) != 3 || actions[0] != "start" || actions[1] != "create_log_subscriber" || actions[2] != "start_logging" {
+		t.Fatalf("actions = %v, want [start create_log_subscriber start_logging]", actions)
 	}
 	if subParams == nil {
 		t.Fatal("create_log_subscriber received no params")
@@ -189,6 +190,29 @@ func TestStart_LogSubscriberFailureNonFatal(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "application log not attached") {
 		t.Errorf("expected a non-fatal warning on stdout, got %q", stdout.String())
+	}
+}
+
+func TestStart_StartLoggingAlreadyStartedIsSuccess(t *testing.T) {
+	// start_logging can be re-issued on a still-running JVM; an "already started"
+	// response must be treated as success, not warned about (findings #25).
+	m, opts := newMockAdmin(t, map[string]func(int) M2EEResponse{
+		"start":                 ok,
+		"create_log_subscriber": ok,
+		"start_logging":         func(int) M2EEResponse { return M2EEResponse{Result: 1, Message: "Logging has already been started"} },
+	})
+	var stdout bytes.Buffer
+	c := NewRuntimeController(opts)
+	c.LogSubscriberFile = "/tmp/x/runtime.log"
+	c.Stdout = &stdout
+	if _, err := c.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if len(m.calls) != 3 || m.calls[2] != "start_logging" {
+		t.Errorf("calls = %v, want [start create_log_subscriber start_logging]", m.calls)
+	}
+	if strings.Contains(stdout.String(), "not attached") {
+		t.Errorf("an already-started logging response should be silent, got %q", stdout.String())
 	}
 }
 

@@ -113,17 +113,26 @@ func (c *RuntimeController) Start() (*M2EEResponse, error) {
 	// The runtime is up; wire the application log to a file (best-effort — a
 	// logging hiccup must not fail an otherwise-good start). Re-run on every
 	// Start so a restart's fresh JVM re-attaches the subscriber (findings #25).
-	if err := c.attachFileLogSubscriber(); err != nil && c.Stdout != nil {
+	if err := c.configureRuntimeLogging(); err != nil && c.Stdout != nil {
 		fmt.Fprintf(c.Stdout, "  (runtime application log not attached: %v)\n", err)
 	}
 	return resp, nil
 }
 
-// attachFileLogSubscriber wires the runtime's application log to
-// LogSubscriberFile via the create_log_subscriber admin action (a no-op when the
-// field is empty). It mirrors what m2ee-tools does after start: register a
-// "file" subscriber that autosubscribes to every log node at INFO or above.
-func (c *RuntimeController) attachFileLogSubscriber() error {
+// configureRuntimeLogging wires the runtime's application log to LogSubscriberFile
+// (a no-op when the field is empty). Two admin actions are needed, in order:
+//
+//  1. create_log_subscriber — register a "file" subscriber that autosubscribes to
+//     every log node at INFO or above (mirrors m2ee-tools' post-start setup).
+//  2. start_logging — a standalone runtime boots with logging NOT started, so the
+//     registered subscriber sits inert and receives nothing until logging is
+//     activated. Without this, runtime.log holds only the JVM banner and no
+//     microflow LOG output or server stack traces ever appear (findings #25).
+//
+// start_logging is idempotent from our side: Start can run again on a
+// still-running JVM (e.g. the DB-update retry path), so an "already started"
+// response is treated as success rather than an error.
+func (c *RuntimeController) configureRuntimeLogging() error {
 	if c.LogSubscriberFile == "" {
 		return nil
 	}
@@ -141,6 +150,14 @@ func (c *RuntimeController) attachFileLogSubscriber() error {
 	}
 	if msg := resp.M2EEError(); msg != "" {
 		return fmt.Errorf("create_log_subscriber: %s", msg)
+	}
+
+	lg, err := CallM2EE(c.opts, "start_logging", nil)
+	if err != nil {
+		return err
+	}
+	if msg := lg.M2EEError(); msg != "" && !strings.Contains(strings.ToLower(msg), "already") {
+		return fmt.Errorf("start_logging: %s", msg)
 	}
 	return nil
 }
