@@ -52,6 +52,27 @@ func TestLocalRunOptions_Defaults(t *testing.T) {
 	}
 }
 
+func TestLocalRunOptions_DebugPassDefault(t *testing.T) {
+	// --debug with no password defaults to "mxdebug".
+	o := LocalRunOptions{ProjectPath: "/proj/App.mpr", Debug: true}
+	o.applyDefaults()
+	if o.DebugPass != "mxdebug" {
+		t.Errorf("DebugPass = %q, want mxdebug", o.DebugPass)
+	}
+	// An explicit password is preserved.
+	o2 := LocalRunOptions{ProjectPath: "/proj/App.mpr", Debug: true, DebugPass: "secret"}
+	o2.applyDefaults()
+	if o2.DebugPass != "secret" {
+		t.Errorf("DebugPass override lost: %q", o2.DebugPass)
+	}
+	// Without --debug, no password is set.
+	o3 := LocalRunOptions{ProjectPath: "/proj/App.mpr"}
+	o3.applyDefaults()
+	if o3.DebugPass != "" {
+		t.Errorf("DebugPass should stay empty without --debug, got %q", o3.DebugPass)
+	}
+}
+
 func TestLocalRunOptions_DefaultsRespectOverrides(t *testing.T) {
 	o := LocalRunOptions{
 		ProjectPath: "/proj/App.mpr",

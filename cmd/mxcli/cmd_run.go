@@ -46,9 +46,15 @@ subscriber after start, so the application log lands there too (a standalone
 runtime attaches no subscriber by default). The path is printed at boot;
 override with --runtime-log <path>, or "-" to disable.
 
+With --debug, the microflow debugger is enabled at boot and a session is started,
+so 'mxcli debug break/paused/step/continue' works from another terminal (use the
+same -p). No breakpoints exist until you set one, so --debug alone does not change
+runtime behaviour; it is turned back off on shutdown.
+
 Examples:
   mxcli run --local -p app.mpr
   mxcli run --local -p app.mpr --watch
+  mxcli run --local -p app.mpr --debug          # then: mxcli debug break … -p app.mpr
   mxcli run --local -p app.mpr --app-port 8081 --db-name myapp
   mxcli run --hub https://hub.example.com -p app.mpr            # browser preview
   mxcli run --hub https://hub.example.com --hub-secret u:pass -p app.mpr --watch
@@ -99,6 +105,8 @@ Examples:
 		screenshotUser, _ := cmd.Flags().GetString("screenshot-user")
 		screenshotPassword, _ := cmd.Flags().GetString("screenshot-password")
 		runtimeLog, _ := cmd.Flags().GetString("runtime-log")
+		debug, _ := cmd.Flags().GetBool("debug")
+		debugPass, _ := cmd.Flags().GetString("debug-pass")
 
 		opts := docker.LocalRunOptions{
 			ProjectPath:        projectPath,
@@ -121,6 +129,8 @@ Examples:
 			ScreenshotUser:     screenshotUser,
 			ScreenshotPassword: screenshotPassword,
 			RuntimeLogPath:     runtimeLog,
+			Debug:              debug,
+			DebugPass:          debugPass,
 			DB: docker.DBConfig{
 				Host:     dbHost,
 				Name:     dbName,
@@ -163,5 +173,7 @@ func init() {
 	runCmd.Flags().String("screenshot-user", "", "Log in with this user before screenshotting (for pages behind login)")
 	runCmd.Flags().String("screenshot-password", "", "Password for --screenshot-user")
 	runCmd.Flags().String("runtime-log", "", "Write the Mendix runtime log (server stack traces + microflow LOG output) to this file for debugging (default <projectDir>/.mxcli/runtime.log; \"-\" to disable)")
+	runCmd.Flags().Bool("debug", false, "Enable the microflow debugger at boot and start a session, so 'mxcli debug break/paused/…' works from another terminal (no breakpoints = no behaviour change)")
+	runCmd.Flags().String("debug-pass", "", "Debugger password when --debug is set (default \"mxdebug\")")
 	rootCmd.AddCommand(runCmd)
 }
