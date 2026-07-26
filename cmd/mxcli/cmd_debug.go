@@ -3,6 +3,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -240,6 +242,137 @@ var debugBreaksCmd = &cobra.Command{
 	},
 }
 
+var debugPausedCmd = &cobra.Command{
+	Use:   "paused",
+	Short: "Show microflows currently paused at a breakpoint, with their variables",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		c, err := resolveDebuggerClient(cmd)
+		if err != nil {
+			return err
+		}
+		raw, err := c.PausedMicroflows()
+		if err != nil {
+			return err
+		}
+		flows := extractPausedFlows(raw)
+		if len(flows) == 0 {
+			fmt.Println("No microflows are paused.")
+			return nil
+		}
+		fmt.Printf("%d paused microflow(s):\n", len(flows))
+		for _, f := range flows {
+			fmt.Printf("  %s  (debug_id: %s)\n", f.Microflow, f.DebugID)
+		}
+		fmt.Println("\nFull state:")
+		printJSON(raw)
+		return nil
+	},
+}
+
+var debugInspectCmd = &cobra.Command{
+	Use:   "inspect <variable> [--flow <debug_id>]",
+	Short: "Inspect a variable of a paused microflow",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		c, err := resolveDebuggerClient(cmd)
+		if err != nil {
+			return err
+		}
+		flow, _ := cmd.Flags().GetString("flow")
+		debugID, err := resolveDebugID(c, flow)
+		if err != nil {
+			return err
+		}
+		raw, err := c.GetObject(debugID, args[0])
+		if err != nil {
+			return err
+		}
+		printJSON(raw)
+		return nil
+	},
+}
+
+var debugStepCmd = &cobra.Command{
+	Use:       "step [over|into|out] [--flow <debug_id>]",
+	Short:     "Advance a paused microflow one step (default: over)",
+	Args:      cobra.MaximumNArgs(1),
+	ValidArgs: []string{"over", "into", "out"},
+	RunE: func(cmd *cobra.Command, args []string) error {
+		kind := "over"
+		if len(args) == 1 {
+			kind = args[0]
+		}
+		c, err := resolveDebuggerClient(cmd)
+		if err != nil {
+			return err
+		}
+		flow, _ := cmd.Flags().GetString("flow")
+		debugID, err := resolveDebugID(c, flow)
+		if err != nil {
+			return err
+		}
+		if err := c.Step(kind, debugID); err != nil {
+			return err
+		}
+		fmt.Printf("Stepped %s (debug_id: %s).\n", kind, debugID)
+		return nil
+	},
+}
+
+var debugContinueCmd = &cobra.Command{
+	Use:   "continue [--all]",
+	Short: "Resume a paused microflow (or all with --all)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		c, err := resolveDebuggerClient(cmd)
+		if err != nil {
+			return err
+		}
+		all, _ := cmd.Flags().GetBool("all")
+		if err := c.Continue(all); err != nil {
+			return err
+		}
+		if all {
+			fmt.Println("Continued all paused microflows.")
+		} else {
+			fmt.Println("Continued.")
+		}
+		return nil
+	},
+}
+
+// resolveDebugID returns the explicit --flow value, or auto-selects the single
+// paused microflow. It errors (asking for --flow) when zero or several are paused
+// so an action never targets the wrong flow.
+func resolveDebugID(c *docker.DebuggerClient, flag string) (string, error) {
+	if flag != "" {
+		return flag, nil
+	}
+	raw, err := c.PausedMicroflows()
+	if err != nil {
+		return "", err
+	}
+	flows := extractPausedFlows(raw)
+	switch {
+	case len(flows) == 1 && flows[0].DebugID != "":
+		return flows[0].DebugID, nil
+	case len(flows) == 0:
+		return "", fmt.Errorf("no paused microflows — nothing to act on")
+	default:
+		return "", fmt.Errorf("%d microflows are paused — pass --flow <debug_id> (see 'mxcli debug paused')", len(flows))
+	}
+}
+
+// printJSON pretty-prints a raw JSON message, falling back to the raw bytes if it
+// isn't valid JSON.
+func printJSON(raw []byte) {
+	var buf bytes.Buffer
+	if json.Indent(&buf, raw, "", "  ") == nil {
+		fmt.Println(buf.String())
+		return
+	}
+	fmt.Println(string(raw))
+}
+
 // upsertBreakpoint replaces an existing entry for the same object ID or appends.
 func upsertBreakpoint(bps []localBreakpoint, bp localBreakpoint) []localBreakpoint {
 	for i := range bps {
@@ -333,12 +466,19 @@ func init() {
 	debugBreakCmd.Flags().String("activity", "", "Which activity: an '#<index>' (see 'debug activities') or a caption substring")
 	debugBreakCmd.Flags().String("if", "", "Only pause when this Mendix expression is true (conditional breakpoint)")
 	debugUnbreakCmd.Flags().String("activity", "", "Which activity: an '#<index>' or a caption substring")
+	debugInspectCmd.Flags().String("flow", "", "Which paused microflow (debug_id); defaults to the only paused one")
+	debugStepCmd.Flags().String("flow", "", "Which paused microflow (debug_id); defaults to the only paused one")
+	debugContinueCmd.Flags().Bool("all", false, "Continue all paused microflows, not just one")
 
 	debugCmd.AddCommand(debugStatusCmd)
 	debugCmd.AddCommand(debugActivitiesCmd)
 	debugCmd.AddCommand(debugBreakCmd)
 	debugCmd.AddCommand(debugUnbreakCmd)
 	debugCmd.AddCommand(debugBreaksCmd)
+	debugCmd.AddCommand(debugPausedCmd)
+	debugCmd.AddCommand(debugInspectCmd)
+	debugCmd.AddCommand(debugStepCmd)
+	debugCmd.AddCommand(debugContinueCmd)
 	debugCmd.AddCommand(debugEnableCmd)
 	debugCmd.AddCommand(debugDisableCmd)
 	rootCmd.AddCommand(debugCmd)

@@ -166,6 +166,48 @@ func (c *DebuggerClient) RemoveBreakpoint(objectID string) error {
 	return err
 }
 
+// PausedMicroflows returns the runtime's paused-microflow state (each paused
+// flow, its current activity, and in-scope variables) as the raw result object.
+func (c *DebuggerClient) PausedMicroflows() (json.RawMessage, error) {
+	return c.post("get_paused_microflows", true, nil)
+}
+
+// GetObject inspects one variable of a paused microflow (by its debug_id).
+func (c *DebuggerClient) GetObject(debugID, variableName string) (json.RawMessage, error) {
+	return c.post("get_object", true, map[string]any{
+		"debug_id":      debugID,
+		"variable_name": variableName,
+	})
+}
+
+// Step advances a paused microflow one step. kind is "over", "into", or "out".
+func (c *DebuggerClient) Step(kind, debugID string) error {
+	var action string
+	switch kind {
+	case "over":
+		action = "step_over"
+	case "into":
+		action = "step_into"
+	case "out":
+		action = "step_out"
+	default:
+		return fmt.Errorf("unknown step %q (want over|into|out)", kind)
+	}
+	_, err := c.post(action, true, map[string]any{"debug_id": debugID})
+	return err
+}
+
+// Continue resumes execution: the current paused flow, or all paused flows when
+// all is true.
+func (c *DebuggerClient) Continue(all bool) error {
+	action := "continue"
+	if all {
+		action = "continue_all"
+	}
+	_, err := c.post(action, true, nil)
+	return err
+}
+
 // LoadToken reads a previously cached session token into memory (best-effort:
 // a missing file is not an error, since the session may not exist yet).
 func (c *DebuggerClient) LoadToken() error {

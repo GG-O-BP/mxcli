@@ -75,6 +75,47 @@ func TestMatchActivity(t *testing.T) {
 	}
 }
 
+func TestExtractPausedFlows(t *testing.T) {
+	cases := []struct {
+		name string
+		json string
+		want []pausedFlowSummary
+	}{
+		{
+			name: "top-level array",
+			json: `[{"debug_id":"d1","microflow_name":"Sudoku.ACT_Hint"}]`,
+			want: []pausedFlowSummary{{DebugID: "d1", Microflow: "Sudoku.ACT_Hint"}},
+		},
+		{
+			name: "nested under a key, alt field names",
+			json: `{"paused_microflows":[{"id":"d2","microflow":"M.F"},{"debugId":"d3","name":"M.G"}]}`,
+			want: []pausedFlowSummary{{DebugID: "d2", Microflow: "M.F"}, {DebugID: "d3", Microflow: "M.G"}},
+		},
+		{
+			name: "empty object",
+			json: `{}`,
+			want: nil,
+		},
+		{
+			name: "invalid json",
+			json: `not json`,
+			want: nil,
+		},
+	}
+	for _, c := range cases {
+		got := extractPausedFlows([]byte(c.json))
+		if len(got) != len(c.want) {
+			t.Errorf("%s: got %d flows, want %d (%+v)", c.name, len(got), len(c.want), got)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("%s[%d] = %+v, want %+v", c.name, i, got[i], c.want[i])
+			}
+		}
+	}
+}
+
 func TestBreakpointRegistry_UpsertRemove(t *testing.T) {
 	var bps []localBreakpoint
 	bps = upsertBreakpoint(bps, localBreakpoint{Microflow: "M.F", Activity: "A", ObjectID: "g1"})

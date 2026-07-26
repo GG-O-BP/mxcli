@@ -115,6 +115,65 @@ func matchActivity(acts []activityInfo, selector string) (activityInfo, error) {
 	}
 }
 
+// pausedFlowSummary is a best-effort extraction of one paused microflow from the
+// get_paused_microflows result. Field names in the runtime response are not
+// contract-stable across versions, so parsing is defensive and used only for the
+// friendly summary + single-flow default — the full detail is always the raw JSON.
+type pausedFlowSummary struct {
+	DebugID   string
+	Microflow string
+}
+
+// extractPausedFlows pulls {debug_id, microflow} pairs out of the paused-flows
+// result, tolerating a top-level array or an array nested one level under an
+// object key, and several field-name spellings.
+func extractPausedFlows(raw []byte) []pausedFlowSummary {
+	var v any
+	if json.Unmarshal(raw, &v) != nil {
+		return nil
+	}
+	list := firstList(v)
+	var out []pausedFlowSummary
+	for _, it := range list {
+		m, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+		id := firstString(m, "debug_id", "debugId", "id")
+		mf := firstString(m, "microflow_name", "microflowName", "microflow", "name")
+		if id != "" || mf != "" {
+			out = append(out, pausedFlowSummary{DebugID: id, Microflow: mf})
+		}
+	}
+	return out
+}
+
+// firstList returns v if it is an array, else the first array value found among a
+// map's values (one level deep).
+func firstList(v any) []any {
+	if a, ok := v.([]any); ok {
+		return a
+	}
+	if m, ok := v.(map[string]any); ok {
+		for _, val := range m {
+			if a, ok := val.([]any); ok {
+				return a
+			}
+		}
+	}
+	return nil
+}
+
+// firstString returns the first non-empty string value among the given keys.
+func firstString(m map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if s, ok := m[k].(string); ok && s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
 // localBreakpoint is one breakpoint mxcli has set, recorded so 'breaks' can show
 // the name→GUID reverse map (the runtime has no read-back).
 type localBreakpoint struct {

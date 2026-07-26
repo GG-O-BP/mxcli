@@ -230,6 +230,70 @@ func TestDebugger_BreakpointNeedsSession(t *testing.T) {
 	}
 }
 
+func TestDebugger_StepActions(t *testing.T) {
+	ts, opts := newDebuggerTestServer(t)
+	c := NewDebuggerClient(opts)
+	if _, err := c.StartSession(); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	cases := []struct{ kind, want string }{
+		{"over", "step_over"},
+		{"into", "step_into"},
+		{"out", "step_out"},
+	}
+	for _, tc := range cases {
+		if err := c.Step(tc.kind, "dbg-9"); err != nil {
+			t.Fatalf("Step(%s): %v", tc.kind, err)
+		}
+		if got := ts.dbgActions[len(ts.dbgActions)-1]; got != tc.want {
+			t.Errorf("Step(%s) action = %q, want %q", tc.kind, got, tc.want)
+		}
+		if ts.dbgParams["debug_id"] != "dbg-9" {
+			t.Errorf("Step(%s) debug_id = %v, want dbg-9", tc.kind, ts.dbgParams["debug_id"])
+		}
+	}
+	if err := c.Step("sideways", "dbg-9"); err == nil {
+		t.Error("Step with an unknown kind should error")
+	}
+}
+
+func TestDebugger_Continue(t *testing.T) {
+	ts, opts := newDebuggerTestServer(t)
+	c := NewDebuggerClient(opts)
+	if _, err := c.StartSession(); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if err := c.Continue(false); err != nil {
+		t.Fatalf("Continue: %v", err)
+	}
+	if got := ts.dbgActions[len(ts.dbgActions)-1]; got != "continue" {
+		t.Errorf("Continue(false) = %q, want continue", got)
+	}
+	if err := c.Continue(true); err != nil {
+		t.Fatalf("Continue(all): %v", err)
+	}
+	if got := ts.dbgActions[len(ts.dbgActions)-1]; got != "continue_all" {
+		t.Errorf("Continue(true) = %q, want continue_all", got)
+	}
+}
+
+func TestDebugger_GetObject(t *testing.T) {
+	ts, opts := newDebuggerTestServer(t)
+	c := NewDebuggerClient(opts)
+	if _, err := c.StartSession(); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if _, err := c.GetObject("dbg-9", "Game"); err != nil {
+		t.Fatalf("GetObject: %v", err)
+	}
+	if got := ts.dbgActions[len(ts.dbgActions)-1]; got != "get_object" {
+		t.Errorf("action = %q, want get_object", got)
+	}
+	if ts.dbgParams["debug_id"] != "dbg-9" || ts.dbgParams["variable_name"] != "Game" {
+		t.Errorf("params = %v, want debug_id+variable_name", ts.dbgParams)
+	}
+}
+
 func TestDebugger_AuthFailure(t *testing.T) {
 	// A 401 from the debugger endpoint must produce an actionable error.
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
