@@ -138,6 +138,11 @@ Examples:
 		// Check for intra-script duplicate definitions (CREATE X … CREATE X without DROP)
 		violations = append(violations, executor.CheckScriptDuplicates(prog)...)
 
+		// Validate design properties against the project's theme registry
+		// (themesource design-properties.json) — flags unknown keys and invalid
+		// option values, listing the allowed values. Only runs with --project.
+		violations = append(violations, executor.ValidateDesignProperties(prog, projectPath)...)
+
 		// Validate pluggable widget properties against widget definitions —
 		// catches typos in property keys before MxBuild does. Uses built-in
 		// definitions alone when no project is given; with --project, also

@@ -123,10 +123,25 @@ Sub-property keys are case-sensitive, same as flat keys.
 
 `alter styling` cannot find widgets in pages created by the MDL page builder because `walkPageWidgets` traverses `LayoutCall.Arguments` but the page parser doesn't fully reconstruct the widget tree when re-reading builder-created pages. These commands work on pages originally created in Studio Pro.
 
+## Validation with `mxcli check -p`
+
+When a project is supplied (`mxcli check page.mdl -p app.mpr`), design properties are
+validated against the project's theme registry (`themesource/*/web/design-properties.json`):
+
+- **MDL-WIDGET11** — a design-property key not defined for that widget type (with a
+  case-sensitivity hint, or the list of valid keys).
+- **MDL-WIDGET12** — an option value that isn't allowed; the message **lists the
+  allowed values** (case-sensitive), which is the fastest way to fix a casing typo.
+
+Both are warnings (a newer theme may add keys/values), so they inform without blocking.
+`show design properties <widget>` lists the same allowed keys/values up front. On the
+write side, the value's BSON type is taken from the registry (a `ColorPicker` /
+`ToggleButtonGroup` property serializes as a custom value, not a plain option).
+
 ## Checklist
 
 - [ ] Never apply `style` directly to DYNAMICTEXT — wrap in a CONTAINER
-- [ ] Design property keys are case-sensitive — match `design-properties.json` exactly
+- [ ] Design property keys are case-sensitive — match `design-properties.json` exactly (`check -p` flags mismatches as MDL-WIDGET11/12)
 - [ ] Compound/nested design properties (e.g. grouped Spacing) use a nested list: `'Spacing': ['margin-top': 'Large']`
 - [ ] For CSS changes, run `docker build` then `docker reload --css`
 - [ ] Use `describe styling` to verify changes after modification

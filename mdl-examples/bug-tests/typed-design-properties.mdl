@@ -1,0 +1,20 @@
+-- Typed design properties: with `mxcli check -p app.mpr`, design-property keys
+-- and values are validated against the project's theme registry
+-- (themesource/*/web/design-properties.json):
+--   * MDL-WIDGET11 — unknown key for the widget (case-sensitive; keys are listed)
+--   * MDL-WIDGET12 — value not in the allowed set (allowed values are listed)
+-- On write, a ColorPicker / ToggleButtonGroup value is serialized as a custom
+-- value (correct BSON $Type), not a plain option. Simple toggles/dropdowns and
+-- compound (Spacing) are unchanged. This file itself is valid MDL.
+create page TypedDP.Home (
+  title: 'Home',
+  layout: Atlas_Core.Atlas_Default
+) {
+  container hero (designproperties: [
+    'Background color': 'Brand Primary',
+    'Card style': on,
+    'Spacing': ['margin-bottom': 'Large']
+  ]) {
+    dynamictext t1 (content: 'Welcome', rendermode: H2)
+  }
+}
