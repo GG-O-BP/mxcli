@@ -4,6 +4,7 @@ package docker
 
 import (
 	"fmt"
+	"io"
 	"strings"
 )
 
@@ -15,7 +16,29 @@ import (
 // docs/11-proposals/PROPOSAL_mxcli_dev_warm_loop.md § Hot-reload scope).
 type RuntimeController struct {
 	opts M2EEOptions
+	// LogSubscriberFile, when non-empty, makes Start attach a Mendix "file" log
+	// subscriber writing the application log (microflow LOG output, server-side
+	// stack traces) to this file after a successful start. A standalone runtime
+	// attaches no log subscriber by default — unlike a Studio Pro / m2ee run,
+	// which configures one after start — so without this the application log is
+	// never written anywhere and a page-action error shows only the generic
+	// Mendix dialog (findings #25). The runtime is told never to rotate the file
+	// (max_rotate 0) because run --local also tees the JVM's own stdout/stderr to
+	// this same path, and a rotate-rename would detach that handle.
+	LogSubscriberFile string
+	// Stdout receives a non-fatal warning if the log subscriber cannot be
+	// attached (the app is already up at that point). nil is silent.
+	Stdout io.Writer
 }
+
+// logSubscriberName identifies the file log subscriber run --local attaches. A
+// stable name means a restart's re-attach replaces rather than duplicates it.
+const logSubscriberName = "mxcli-run-local"
+
+// maxRuntimeLogSize bounds the file subscriber. With max_rotate 0 the runtime
+// never rotates, so keep this generous — it is a per-session dev log, not a
+// production sink.
+const maxRuntimeLogSize = 1 << 30 // 1 GiB
 
 // NewRuntimeController returns a controller for the given admin API connection.
 func NewRuntimeController(opts M2EEOptions) *RuntimeController {
@@ -87,7 +110,39 @@ func (c *RuntimeController) Start() (*M2EEResponse, error) {
 	if msg := resp.M2EEError(); msg != "" {
 		return resp, fmt.Errorf("start failed: %s", msg)
 	}
+	// The runtime is up; wire the application log to a file (best-effort — a
+	// logging hiccup must not fail an otherwise-good start). Re-run on every
+	// Start so a restart's fresh JVM re-attaches the subscriber (findings #25).
+	if err := c.attachFileLogSubscriber(); err != nil && c.Stdout != nil {
+		fmt.Fprintf(c.Stdout, "  (runtime application log not attached: %v)\n", err)
+	}
 	return resp, nil
+}
+
+// attachFileLogSubscriber wires the runtime's application log to
+// LogSubscriberFile via the create_log_subscriber admin action (a no-op when the
+// field is empty). It mirrors what m2ee-tools does after start: register a
+// "file" subscriber that autosubscribes to every log node at INFO or above.
+func (c *RuntimeController) attachFileLogSubscriber() error {
+	if c.LogSubscriberFile == "" {
+		return nil
+	}
+	params := map[string]any{
+		"type":          "file",
+		"name":          logSubscriberName,
+		"autosubscribe": "INFO",
+		"filename":      c.LogSubscriberFile,
+		"max_size":      maxRuntimeLogSize,
+		"max_rotate":    0,
+	}
+	resp, err := CallM2EE(c.opts, "create_log_subscriber", params)
+	if err != nil {
+		return err
+	}
+	if msg := resp.M2EEError(); msg != "" {
+		return fmt.Errorf("create_log_subscriber: %s", msg)
+	}
+	return nil
 }
 
 // RuntimeStatus returns the runtime status string (e.g. "running", "starting").

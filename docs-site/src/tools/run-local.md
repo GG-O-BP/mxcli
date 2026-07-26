@@ -77,16 +77,22 @@ so structural changes need a restart; behavioural changes do not.
 | `--screenshot-path` | `<projectDir>/.mxcli/run-local.png` | Screenshot output PNG |
 | `--screenshot-url` | app root | Page to shoot: full URL, or a path relative to the app root (e.g. `/p/customers`). Repeat for a multi-page set. |
 | `--screenshot-user` / `--screenshot-password` | — | Log in once (Mendix form auth) and reuse the session, so pages behind login render authenticated |
-| `--runtime-log` | `<projectDir>/.mxcli/runtime.log` | Tee the Mendix runtime's stdout+stderr (server stack traces, microflow `LOG` output) to a file; `-` disables |
+| `--runtime-log` | `<projectDir>/.mxcli/runtime.log` | Runtime log file — JVM stdout/stderr **and** the application log (server stack traces + microflow `LOG` output); `-` disables |
 
 ## Debugging a server-side error
 
 When a page action throws, the browser shows the generic Mendix error dialog with no
-detail. The runtime's own log is tee'd to `<projectDir>/.mxcli/runtime.log` (the path is
+detail. The runtime log is written to `<projectDir>/.mxcli/runtime.log` (the path is
 printed at boot) — `tail -f .mxcli/runtime.log` while you reproduce the action to see the
-server stack trace and your microflow `LOG` output. The file is appended across restarts,
-each marked with `=== runtime start … ===`. Use `--runtime-log <path>` to relocate it or
-`--runtime-log -` to turn it off.
+server stack trace and your microflow `LOG` output.
+
+A standalone runtime attaches **no** log subscriber by default (a Studio Pro / m2ee run
+does), so mxcli wires two sources into that file: it tees the runtime JVM's stdout/stderr,
+and after start it attaches a Mendix **file log subscriber** so the application log
+(microflow `LOG` output and server-side stack traces) lands there too — otherwise the file
+would be nearly empty. The file is appended across restarts, each marked with
+`=== runtime start … ===`; the subscriber is re-attached on each restart and never rotates
+the file. Use `--runtime-log <path>` to relocate it or `--runtime-log -` to turn it off.
 
 ## External browser preview (`--hub`)
 

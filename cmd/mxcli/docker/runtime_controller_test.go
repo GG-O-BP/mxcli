@@ -3,12 +3,14 @@
 package docker
 
 import (
+	"bytes"
 	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -100,6 +102,93 @@ func TestStart_CleanDatabase(t *testing.T) {
 	}
 	if len(m.calls) != 1 || m.calls[0] != "start" {
 		t.Errorf("calls = %v, want a single [start]", m.calls)
+	}
+}
+
+func TestStart_AttachesLogSubscriber(t *testing.T) {
+	// Capture the create_log_subscriber params so we can assert the file
+	// subscriber is wired correctly (findings #25).
+	var subParams map[string]any
+	var actions []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Action string         `json:"action"`
+			Params map[string]any `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		actions = append(actions, req.Action)
+		if req.Action == "create_log_subscriber" {
+			subParams = req.Params
+		}
+		_ = json.NewEncoder(w).Encode(M2EEResponse{})
+	}))
+	t.Cleanup(ts.Close)
+	host, port := parseTestServerAddr(t, ts.URL)
+
+	c := NewRuntimeController(M2EEOptions{Host: host, Port: port, Token: "test", Direct: true})
+	c.LogSubscriberFile = "/tmp/x/runtime.log"
+	if _, err := c.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// The subscriber is attached after a successful start.
+	if len(actions) != 2 || actions[0] != "start" || actions[1] != "create_log_subscriber" {
+		t.Fatalf("actions = %v, want [start create_log_subscriber]", actions)
+	}
+	if subParams == nil {
+		t.Fatal("create_log_subscriber received no params")
+	}
+	if subParams["type"] != "file" {
+		t.Errorf("type = %v, want file", subParams["type"])
+	}
+	if subParams["filename"] != "/tmp/x/runtime.log" {
+		t.Errorf("filename = %v, want /tmp/x/runtime.log", subParams["filename"])
+	}
+	if subParams["autosubscribe"] != "INFO" {
+		t.Errorf("autosubscribe = %v, want INFO", subParams["autosubscribe"])
+	}
+	if subParams["name"] != logSubscriberName {
+		t.Errorf("name = %v, want %v", subParams["name"], logSubscriberName)
+	}
+	// max_rotate 0 = never rename the file (the JVM tee holds an fd on it). JSON
+	// numbers decode to float64.
+	if mr, ok := subParams["max_rotate"].(float64); !ok || mr != 0 {
+		t.Errorf("max_rotate = %v, want 0", subParams["max_rotate"])
+	}
+}
+
+func TestStart_NoLogSubscriberWhenUnset(t *testing.T) {
+	// Without LogSubscriberFile, Start must not attach a subscriber.
+	m, opts := newMockAdmin(t, map[string]func(int) M2EEResponse{"start": ok})
+	if _, err := NewRuntimeController(opts).Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	for _, a := range m.calls {
+		if a == "create_log_subscriber" {
+			t.Fatalf("create_log_subscriber was called with no LogSubscriberFile set (calls=%v)", m.calls)
+		}
+	}
+}
+
+func TestStart_LogSubscriberFailureNonFatal(t *testing.T) {
+	// A failing create_log_subscriber must not fail an otherwise-good start; the
+	// app is already up. The failure is reported to Stdout instead.
+	m, opts := newMockAdmin(t, map[string]func(int) M2EEResponse{
+		"start":                 ok,
+		"create_log_subscriber": func(int) M2EEResponse { return M2EEResponse{Result: 1, Message: "no disk"} },
+	})
+	var stdout bytes.Buffer
+	c := NewRuntimeController(opts)
+	c.LogSubscriberFile = "/tmp/x/runtime.log"
+	c.Stdout = &stdout
+	if _, err := c.Start(); err != nil {
+		t.Fatalf("Start should not fail when the log subscriber fails: %v", err)
+	}
+	if len(m.calls) != 2 || m.calls[1] != "create_log_subscriber" {
+		t.Errorf("calls = %v, want [start create_log_subscriber]", m.calls)
+	}
+	if !strings.Contains(stdout.String(), "application log not attached") {
+		t.Errorf("expected a non-fatal warning on stdout, got %q", stdout.String())
 	}
 }
 
