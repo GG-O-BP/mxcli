@@ -171,7 +171,7 @@ func TestDebugger_AddBreakpoint(t *testing.T) {
 	if _, err := c.StartSession(); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	if err := c.AddBreakpoint("Sudoku.ACT_Hint", "guid-1", "$Game/Solved = false"); err != nil {
+	if err := c.AddBreakpoint("Sudoku.ACT_Hint", "guid-1", "$Game/Solved = false", false); err != nil {
 		t.Fatalf("AddBreakpoint: %v", err)
 	}
 	if got := ts.dbgActions[len(ts.dbgActions)-1]; got != "add_breakpoint" {
@@ -195,7 +195,7 @@ func TestDebugger_AddBreakpointOmitsEmptyCondition(t *testing.T) {
 	if _, err := c.StartSession(); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	if err := c.AddBreakpoint("M.F", "guid-2", ""); err != nil {
+	if err := c.AddBreakpoint("M.F", "guid-2", "", false); err != nil {
 		t.Fatalf("AddBreakpoint: %v", err)
 	}
 	if _, ok := ts.dbgParams["condition"]; ok {
@@ -224,7 +224,7 @@ func TestDebugger_BreakpointNeedsSession(t *testing.T) {
 	// Without a session token, a breakpoint call must fail with a clear message.
 	_, opts := newDebuggerTestServer(t)
 	c := NewDebuggerClient(opts) // no StartSession / LoadToken
-	err := c.AddBreakpoint("M.F", "guid-1", "")
+	err := c.AddBreakpoint("M.F", "guid-1", "", false)
 	if err == nil || !strings.Contains(err.Error(), "debug enable") {
 		t.Errorf("want a 'run debug enable first' error, got %v", err)
 	}
@@ -291,6 +291,42 @@ func TestDebugger_GetObject(t *testing.T) {
 	}
 	if ts.dbgParams["debug_id"] != "dbg-9" || ts.dbgParams["variable_name"] != "Game" {
 		t.Errorf("params = %v, want debug_id+variable_name", ts.dbgParams)
+	}
+}
+
+func TestDebugger_AddBreakpointNanoflow(t *testing.T) {
+	// A nanoflow breakpoint must use nanoflow_name, not microflow_name (the
+	// runtime NPEs otherwise).
+	ts, opts := newDebuggerTestServer(t)
+	c := NewDebuggerClient(opts)
+	if _, err := c.StartSession(); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if err := c.AddBreakpoint("Sudoku.NF_ToggleNotes", "guid-n", "", true); err != nil {
+		t.Fatalf("AddBreakpoint(nanoflow): %v", err)
+	}
+	if ts.dbgParams["nanoflow_name"] != "Sudoku.NF_ToggleNotes" {
+		t.Errorf("want nanoflow_name, got params %v", ts.dbgParams)
+	}
+	if _, ok := ts.dbgParams["microflow_name"]; ok {
+		t.Errorf("nanoflow breakpoint must not send microflow_name, got %v", ts.dbgParams)
+	}
+}
+
+func TestDebugger_PollEvents(t *testing.T) {
+	ts, opts := newDebuggerTestServer(t)
+	c := NewDebuggerClient(opts)
+	if _, err := c.StartSession(); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if _, err := c.PollEvents(); err != nil {
+		t.Fatalf("PollEvents: %v", err)
+	}
+	if got := ts.dbgActions[len(ts.dbgActions)-1]; got != "poll_events" {
+		t.Errorf("action = %q, want poll_events", got)
+	}
+	if ts.dbgToken != "tok-123" {
+		t.Errorf("poll_events must carry the session token, got %q", ts.dbgToken)
 	}
 }
 

@@ -72,6 +72,28 @@ or remote runtime.
 | `--debug-pass` | `MXCLI_DEBUG_PASS` | `mxdebug` |
 | `-p, --project` | — | (for the `.mxcli/` session + breakpoint files) |
 
+## Nanoflows (client-side)
+
+`mxcli debug` works for **nanoflows** as well as microflows. `break` / `activities` /
+`unbreak` auto-detect the document type and set the breakpoint correctly — a nanoflow
+uses the runtime's `nanoflow_name` parameter (the wrong key NPEs the runtime; mxcli
+handles it). Break by name the same way:
+
+```bash
+mxcli debug break Sudoku.NF_ToggleNotes --activity 'Change' -p app.mpr
+```
+
+A paused **nanoflow** does not appear in `get_paused_microflows`; it surfaces only in
+the runtime's `poll_events`. `mxcli debug paused` (and `step`/`inspect`/`continue`)
+merge both sources, so a paused nanoflow appears with its `debug_id`; its variables
+are shown under the *Client events (poll_events)* section of `paused`.
+
+**Nanoflow logging:** a nanoflow logs to the browser console and to the server
+runtime log, but the runtime **rewrites the log node to `Client_Nanoflow`** — so in
+`.mxcli/runtime.log` a nanoflow's `LOG NODE 'Sudoku' …` appears as `Client_Nanoflow:`,
+not `Sudoku:`. Grep for `Client_Nanoflow` (or the message text); a node-name filter
+built for microflows drops nanoflow lines.
+
 ## Important behaviour
 
 - **A breakpoint pauses whoever hits it — the browser included.** The triggering

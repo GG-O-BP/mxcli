@@ -76,6 +76,30 @@ caption substring like `--activity 'Retrieve'` (must match exactly one, case-
 insensitive). Selecting a paused flow: `--flow <debug_id>` (from `paused`); with a
 single paused flow it is auto-selected.
 
+## Nanoflows (client-side)
+
+`mxcli debug` works for **nanoflows** too — `break`/`activities`/`unbreak` auto-detect
+whether `Module.Flow` is a microflow or a nanoflow and set the breakpoint the right
+way (a nanoflow needs the `nanoflow_name` param; the wrong key NPEs the runtime —
+mxcli handles this for you). Break by name exactly as for a microflow:
+
+```bash
+mxcli debug break Sudoku.NF_ToggleNotes --activity 'Change' -p app.mpr
+```
+
+A paused **nanoflow** does not appear in `get_paused_microflows` — it surfaces only
+in the runtime's `poll_events`. `mxcli debug paused` (and `step`/`inspect`/`continue`)
+merge both sources, so a paused nanoflow shows up with its `debug_id` like any other;
+its variables are in the "Client events (poll_events)" section of `paused`.
+
+Symptom of a paused nanoflow **without** mxcli: a frozen browser, the console logging
+"Starting execution" but never "Finished", and `mxcli debug status` showing
+`client_connected: true`.
+
+For **nanoflow log output**, see `write-nanoflows.md` — the runtime rewrites the log
+node to `Client_Nanoflow`, so grep `runtime.log` for `Client_Nanoflow`, not your node
+name.
+
 ## Gotchas
 
 1. **A breakpoint pauses whoever hits it — the browser included.** The triggering

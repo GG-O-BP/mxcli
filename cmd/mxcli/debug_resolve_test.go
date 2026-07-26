@@ -116,6 +116,29 @@ func TestExtractPausedFlows(t *testing.T) {
 	}
 }
 
+func TestExtractPausedFromEvents(t *testing.T) {
+	// A paused nanoflow surfaces only in poll_events, as a paused_microflow event
+	// whose data uses the microflow_name field.
+	json := `{"events":[
+		{"type":"log","data":{"message":"hi"}},
+		{"type":"paused_microflow","data":{"debug_id":"d-nano","microflow_name":"Sudoku.NF_ToggleNotes","object_id":"o1"}}
+	]}`
+	got := extractPausedFromEvents([]byte(json))
+	if len(got) != 1 {
+		t.Fatalf("got %d, want 1 (%+v)", len(got), got)
+	}
+	if got[0].DebugID != "d-nano" || got[0].Microflow != "Sudoku.NF_ToggleNotes" {
+		t.Errorf("got %+v", got[0])
+	}
+	// No paused entries → nil.
+	if g := extractPausedFromEvents([]byte(`{"events":[{"type":"log"}]}`)); g != nil {
+		t.Errorf("want nil for no paused entries, got %+v", g)
+	}
+	if g := extractPausedFromEvents([]byte(`not json`)); g != nil {
+		t.Errorf("want nil for invalid json, got %+v", g)
+	}
+}
+
 func TestBreakpointRegistry_UpsertRemove(t *testing.T) {
 	var bps []localBreakpoint
 	bps = upsertBreakpoint(bps, localBreakpoint{Microflow: "M.F", Activity: "A", ObjectID: "g1"})

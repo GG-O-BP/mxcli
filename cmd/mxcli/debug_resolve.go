@@ -30,22 +30,42 @@ type activityInfo struct {
 	ObjectID string // model GUID == debugger object_id
 }
 
-// resolveMicroflowActivities opens the project and lists a microflow's objects.
-func resolveMicroflowActivities(projectPath, qualifiedName string) ([]activityInfo, error) {
+// flowKind distinguishes a server microflow from a client nanoflow. It matters
+// for the debugger: a nanoflow breakpoint uses the nanoflow_name param and a
+// paused nanoflow surfaces only via poll_events (findings — nanoflow debugging).
+type flowKind string
+
+const (
+	flowMicroflow flowKind = "microflow"
+	flowNanoflow  flowKind = "nanoflow"
+)
+
+// resolveFlowActivities opens the project and lists a microflow's OR nanoflow's
+// objects, auto-detecting which it is (microflow first, then nanoflow). The
+// object-collection format is identical, so extractActivities handles both.
+func resolveFlowActivities(projectPath, qualifiedName string) ([]activityInfo, flowKind, error) {
 	r, err := mpr.Open(projectPath)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer r.Close()
-	contents, err := r.GetRawMicroflowByName(qualifiedName)
-	if err != nil {
-		return nil, err
+
+	if contents, err := r.GetRawMicroflowByName(qualifiedName); err == nil {
+		mf, err := mpr.ParseMicroflowBSON(contents, "", "")
+		if err != nil {
+			return nil, "", fmt.Errorf("parsing microflow %s: %w", qualifiedName, err)
+		}
+		return extractActivities(mf), flowMicroflow, nil
 	}
-	mf, err := mpr.ParseMicroflowBSON(contents, "", "")
-	if err != nil {
-		return nil, fmt.Errorf("parsing microflow %s: %w", qualifiedName, err)
+	// Not a microflow — try a nanoflow (same ObjectCollection shape).
+	if u, err := r.GetRawUnitByName("nanoflow", qualifiedName); err == nil && u != nil {
+		nf, err := mpr.ParseMicroflowBSON(u.Contents, "", "")
+		if err != nil {
+			return nil, "", fmt.Errorf("parsing nanoflow %s: %w", qualifiedName, err)
+		}
+		return extractActivities(nf), flowNanoflow, nil
 	}
-	return extractActivities(mf), nil
+	return nil, "", fmt.Errorf("no microflow or nanoflow named %s", qualifiedName)
 }
 
 // extractActivities flattens a microflow's object collection into activityInfo.
@@ -145,6 +165,43 @@ func extractPausedFlows(raw []byte) []pausedFlowSummary {
 			out = append(out, pausedFlowSummary{DebugID: id, Microflow: mf})
 		}
 	}
+	return out
+}
+
+// extractPausedFromEvents pulls paused flows out of a poll_events response. A
+// paused NANOFLOW does not appear in get_paused_microflows — it surfaces only as
+// a poll_events entry {"type":"paused_microflow","data":{debug_id, microflow_name,
+// …}} (the data field is named microflow_name even for a nanoflow). Parsed
+// defensively: any object anywhere with type=="paused_microflow" and a data map.
+func extractPausedFromEvents(raw []byte) []pausedFlowSummary {
+	var v any
+	if json.Unmarshal(raw, &v) != nil {
+		return nil
+	}
+	var out []pausedFlowSummary
+	var walk func(any)
+	walk = func(n any) {
+		switch t := n.(type) {
+		case []any:
+			for _, e := range t {
+				walk(e)
+			}
+		case map[string]any:
+			if s, _ := t["type"].(string); s == "paused_microflow" {
+				if data, ok := t["data"].(map[string]any); ok {
+					id := firstString(data, "debug_id", "debugId", "id")
+					mf := firstString(data, "microflow_name", "nanoflow_name", "microflowName", "name")
+					if id != "" || mf != "" {
+						out = append(out, pausedFlowSummary{DebugID: id, Microflow: mf})
+					}
+				}
+			}
+			for _, val := range t {
+				walk(val)
+			}
+		}
+	}
+	walk(v)
 	return out
 }
 

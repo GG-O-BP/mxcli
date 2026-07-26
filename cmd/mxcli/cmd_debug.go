@@ -110,7 +110,7 @@ var debugActivitiesCmd = &cobra.Command{
 		if project == "" {
 			return fmt.Errorf("--project (-p) is required to read the microflow")
 		}
-		acts, err := resolveMicroflowActivities(project, args[0])
+		acts, kind, err := resolveFlowActivities(project, args[0])
 		if err != nil {
 			return err
 		}
@@ -118,7 +118,7 @@ var debugActivitiesCmd = &cobra.Command{
 			fmt.Printf("No objects found in %s\n", args[0])
 			return nil
 		}
-		fmt.Printf("Activities in %s:\n\n", args[0])
+		fmt.Printf("Activities in %s (%s):\n\n", args[0], kind)
 		fmt.Printf("  %-4s %-22s %-38s %s\n", "#", "Type", "Object ID", "Caption")
 		for _, a := range acts {
 			fmt.Printf("  %-4d %-22s %-38s %s\n", a.Index, a.Type, a.ObjectID, a.Caption)
@@ -143,7 +143,7 @@ var debugBreakCmd = &cobra.Command{
 		}
 		condition, _ := cmd.Flags().GetString("if")
 
-		acts, err := resolveMicroflowActivities(project, args[0])
+		acts, kind, err := resolveFlowActivities(project, args[0])
 		if err != nil {
 			return err
 		}
@@ -156,7 +156,7 @@ var debugBreakCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if err := c.AddBreakpoint(args[0], act.ObjectID, condition); err != nil {
+		if err := c.AddBreakpoint(args[0], act.ObjectID, condition, kind == flowNanoflow); err != nil {
 			return err
 		}
 
@@ -194,7 +194,7 @@ var debugUnbreakCmd = &cobra.Command{
 		if selector == "" {
 			return fmt.Errorf("--activity is required (an '#<index>' or caption substring)")
 		}
-		acts, err := resolveMicroflowActivities(project, args[0])
+		acts, _, err := resolveFlowActivities(project, args[0])
 		if err != nil {
 			return err
 		}
@@ -250,21 +250,26 @@ var debugPausedCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		raw, err := c.PausedMicroflows()
+		flows, raw, events, err := allPausedFlows(c)
 		if err != nil {
 			return err
 		}
-		flows := extractPausedFlows(raw)
 		if len(flows) == 0 {
-			fmt.Println("No microflows are paused.")
+			fmt.Println("No microflows or nanoflows are paused.")
 			return nil
 		}
-		fmt.Printf("%d paused microflow(s):\n", len(flows))
+		fmt.Printf("%d paused flow(s):\n", len(flows))
 		for _, f := range flows {
 			fmt.Printf("  %s  (debug_id: %s)\n", f.Microflow, f.DebugID)
 		}
-		fmt.Println("\nFull state:")
+		fmt.Println("\nMicroflow state (get_paused_microflows):")
 		printJSON(raw)
+		// A paused nanoflow's variables live in the poll_events payload, not in
+		// get_paused_microflows — print it too when it carries paused entries.
+		if len(extractPausedFromEvents(events)) > 0 {
+			fmt.Println("\nClient events (poll_events) — includes paused nanoflows:")
+			printJSON(events)
+		}
 		return nil
 	},
 }
@@ -347,11 +352,10 @@ func resolveDebugID(c *docker.DebuggerClient, flag string) (string, error) {
 	if flag != "" {
 		return flag, nil
 	}
-	raw, err := c.PausedMicroflows()
+	flows, _, _, err := allPausedFlows(c)
 	if err != nil {
 		return "", err
 	}
-	flows := extractPausedFlows(raw)
 	switch {
 	case len(flows) == 1 && flows[0].DebugID != "":
 		return flows[0].DebugID, nil
@@ -360,6 +364,35 @@ func resolveDebugID(c *docker.DebuggerClient, flag string) (string, error) {
 	default:
 		return "", fmt.Errorf("%d microflows are paused — pass --flow <debug_id> (see 'mxcli debug paused')", len(flows))
 	}
+}
+
+// allPausedFlows merges the two sources of paused flows: get_paused_microflows
+// (microflows) and poll_events (nanoflows, which do NOT appear in the former).
+// Returns the merged summary plus both raw payloads for full-state printing.
+func allPausedFlows(c *docker.DebuggerClient) (flows []pausedFlowSummary, paused, events []byte, err error) {
+	paused, err = c.PausedMicroflows()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	flows = extractPausedFlows(paused)
+	// poll_events is best-effort: a runtime that lacks it shouldn't break `paused`.
+	if ev, evErr := c.PollEvents(); evErr == nil {
+		events = ev
+		for _, f := range extractPausedFromEvents(ev) {
+			flows = appendUniqueFlow(flows, f)
+		}
+	}
+	return flows, paused, events, nil
+}
+
+// appendUniqueFlow appends f unless a flow with the same debug_id is already present.
+func appendUniqueFlow(flows []pausedFlowSummary, f pausedFlowSummary) []pausedFlowSummary {
+	for _, e := range flows {
+		if e.DebugID == f.DebugID {
+			return flows
+		}
+	}
+	return append(flows, f)
 }
 
 // printJSON pretty-prints a raw JSON message, falling back to the raw bytes if it

@@ -145,19 +145,32 @@ func (c *DebuggerClient) StartSession() (string, error) {
 	return r.SessionToken, nil
 }
 
-// AddBreakpoint sets a breakpoint on an activity (object_id) of a microflow.
-// A non-empty condition is a Mendix expression that gates the pause. Requires an
-// active session (run 'mxcli debug enable' first).
-func (c *DebuggerClient) AddBreakpoint(microflowName, objectID, condition string) error {
+// AddBreakpoint sets a breakpoint on an activity (object_id) of a microflow or
+// nanoflow. A non-empty condition is a Mendix expression that gates the pause.
+// Requires an active session (run 'mxcli debug enable' first).
+//
+// A nanoflow breakpoint uses the nanoflow_name param, not microflow_name — the
+// runtime NPEs on the wrong key (findings — nanoflow debugging).
+func (c *DebuggerClient) AddBreakpoint(flowName, objectID, condition string, nanoflow bool) error {
+	nameKey := "microflow_name"
+	if nanoflow {
+		nameKey = "nanoflow_name"
+	}
 	params := map[string]any{
-		"microflow_name": microflowName,
-		"object_id":      objectID,
+		nameKey:     flowName,
+		"object_id": objectID,
 	}
 	if condition != "" {
 		params["condition"] = condition
 	}
 	_, err := c.post("add_breakpoint", true, params)
 	return err
+}
+
+// PollEvents returns the runtime's pending debugger events. A paused NANOFLOW
+// appears here (as a paused_microflow event) but NOT in PausedMicroflows.
+func (c *DebuggerClient) PollEvents() (json.RawMessage, error) {
+	return c.post("poll_events", true, nil)
 }
 
 // RemoveBreakpoint clears the breakpoint on an activity (object_id).
