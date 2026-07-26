@@ -600,27 +600,40 @@ func astDesignPropToValue(p ast.DesignPropertyEntryV3, themeProps []ThemePropert
 	default:
 		return pages.DesignPropertyValue{
 			Key:       p.Key,
-			ValueType: resolveDesignPropertyValueType(p.Key, themeProps),
+			ValueType: resolveDesignPropertyValueType(p.Key, p.Value, themeProps),
 			Option:    p.Value,
 		}, true
 	}
 }
 
-// resolveDesignPropertyValueType determines the correct ValueType for a design property
-// based on the theme definition. ToggleButtonGroup and ColorPicker use "custom" type;
-// Dropdown uses "option" type. Falls back to "option" if theme info is unavailable.
-func resolveDesignPropertyValueType(key string, themeProps []ThemeProperty) string {
+// resolveDesignPropertyValueType determines the BSON ValueType for a flat design
+// property value from the theme definition.
+//
+// The control type alone does NOT decide the value type: a value that is one of
+// the property's declared options is always stored as an "option", whether the
+// control is a Dropdown, a ToggleButtonGroup, or a ColorPicker's predefined
+// swatches. Studio Pro rejects a mismatch (CE6084 "Expected design property … to
+// be of type Toggle button group, but found Custom"), so a ToggleButtonGroup
+// selection like 'Column gap': 'Medium' must serialize as an option, not custom.
+//
+// Only a value that is NOT a declared option, on a ColorPicker, is a free-form
+// value (a custom hex/color) stored as "custom". Any other off-list value stays
+// "option" (an invalid value is reported separately by MDL-WIDGET12). Falls back
+// to "option" when no theme metadata is available (backward compatible).
+func resolveDesignPropertyValueType(key, value string, themeProps []ThemeProperty) string {
 	for _, tp := range themeProps {
-		if tp.Name == key {
-			switch tp.Type {
-			case "ToggleButtonGroup", "ColorPicker":
-				return "custom"
-			default:
-				return "option"
-			}
+		if tp.Name != key {
+			continue
 		}
+		if themeOptionAllowed(tp.Options, value) {
+			return "option"
+		}
+		if tp.Type == "ColorPicker" {
+			return "custom"
+		}
+		return "option"
 	}
-	// No theme info available — default to "option" (Dropdown)
+	// No theme info available — default to "option".
 	return "option"
 }
 

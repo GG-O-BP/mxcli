@@ -23,21 +23,28 @@ func testThemeRegistry() *ThemeRegistry {
 }
 
 // TestAstDesignPropToValue_Typed verifies the write path picks the BSON value
-// type from the theme registry (ColorPicker/ToggleButtonGroup → custom) rather
-// than always defaulting flat values to option. Typed design properties.
+// type from the theme registry: a value that is one of the property's declared
+// options is stored as "option" for every control type (Dropdown,
+// ToggleButtonGroup, ColorPicker swatch); only a ColorPicker's off-list value is
+// "custom". A ToggleButtonGroup selection must NOT become custom or Studio Pro
+// fails CE6084 ("Expected … Toggle button group, but found Custom"). Typed design
+// properties.
 func TestAstDesignPropToValue_Typed(t *testing.T) {
 	props := []ThemeProperty{
-		{Name: "Background color", Type: "Dropdown"},
-		{Name: "Text alignment", Type: "ToggleButtonGroup"},
-		{Name: "Accent", Type: "ColorPicker"},
+		{Name: "Background color", Type: "Dropdown", Options: []ThemeOption{{Name: "Brand Primary"}, {Name: "Default"}}},
+		{Name: "Text alignment", Type: "ToggleButtonGroup", Options: []ThemeOption{{Name: "Left"}, {Name: "Center"}, {Name: "Right"}}},
+		{Name: "Column gap", Type: "ToggleButtonGroup", Options: []ThemeOption{{Name: "Small"}, {Name: "Medium"}, {Name: "Large"}}},
+		{Name: "Accent", Type: "ColorPicker", Options: []ThemeOption{{Name: "Brand Primary"}}},
 	}
 	cases := []struct {
 		key, val, wantType string
 	}{
 		{"Background color", "Brand Primary", "option"},
-		{"Text alignment", "Center", "custom"},
-		{"Accent", "#ff0000", "custom"},
-		{"Unknown Key", "x", "option"}, // not in registry → default option
+		{"Text alignment", "Center", "option"},          // ToggleButtonGroup option → option (not custom!)
+		{"Column gap", "Medium", "option"},              // the CE6084 regression case
+		{"Accent", "Brand Primary", "option"},           // ColorPicker predefined swatch → option
+		{"Accent", "#ff0000", "custom"},                 // ColorPicker free-form color → custom
+		{"Unknown Key", "x", "option"},                  // not in registry → default option
 	}
 	for _, c := range cases {
 		dp, ok := astDesignPropToValue(ast.DesignPropertyEntryV3{Key: c.key, Value: c.val}, props)
