@@ -134,6 +134,18 @@ func enhanceErrorMessage(msg, offendingLine string) string {
 			"    create entity Mod.Child (Name: String) extends Mod.Parent;  (wrong — causes parse error)", msg)
 	}
 
+	// Check for a string literal that runs off the end of its line BEFORE the
+	// apostrophe heuristic — a newline inside the offending token means the lexer
+	// hit end-of-line inside an unterminated literal, which the "double your
+	// apostrophes" hint would only make worse. (findings #6)
+	if looksLikeMultilineStringLiteral(msg) {
+		return fmt.Sprintf("%s\n\n  A string literal is not terminated before the end of the line —\n"+
+			"  MDL string literals cannot span multiple lines. Keep the whole string on\n"+
+			"  one line (concatenate across lines with + if it is long):\n"+
+			"    dynamicclasses: 'if $x then ''a'' else ''b'''   (correct — one line)\n"+
+			"    dynamicclasses: 'if $x then ''a''\n                     else ''b'''   (wrong — spans lines)", msg)
+	}
+
 	// Check for unescaped apostrophe in string literals first.
 	// When 'it's here' is parsed, ANTLR sees 'it' as a complete string, then
 	// the leftover characters (like "s", "ll", "t") appear as unexpected tokens.
@@ -252,6 +264,19 @@ func looksLikeQuotedGrantAttribute(msg string) bool {
 var contractionSuffixes = map[string]bool{
 	"s": true, "t": true, "d": true, "m": true,
 	"re": true, "ve": true, "ll": true,
+}
+
+// looksLikeMultilineStringLiteral detects an unterminated string literal that ran
+// off the end of its line. ANTLR reports "token recognition error at: ''" with the
+// offending text spilling onto the next line (a newline appears in the payload).
+// This must be distinguished from a plain unescaped apostrophe — the apostrophe
+// hint ("double your apostrophes") would make a line-spanning string worse.
+func looksLikeMultilineStringLiteral(msg string) bool {
+	idx := strings.Index(msg, "token recognition error at:")
+	if idx < 0 {
+		return false
+	}
+	return strings.ContainsAny(msg[idx:], "\n\r")
 }
 
 // looksLikeUnescapedApostrophe detects ANTLR errors that are likely caused by

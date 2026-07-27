@@ -1062,7 +1062,7 @@ After every `send rest request`, Mendix automatically populates `$latestHttpResp
 ```mdl
 -- ✅ CORRECT: check $latestHttpResponse
 $RootResult = send rest request Module.Service.GetData;
-if $latestHttpResponse/content != empty then
+if $latestHttpResponse/Content != empty then
   -- Process $RootResult (the mapped entity)
 end if;
 
@@ -1071,7 +1071,7 @@ if $RootResult != empty then  -- ERROR!
 ```
 
 **Key attributes on `$latestHttpResponse`:**
-- `content` (String) — response body as string
+- `Content` (String) — response body as string. **Capital `C`** — it is inherited from the parent entity `System.HttpMessage`, so `DESCRIBE ENTITY System.HttpResponse` does not list it. Lowercase `$latestHttpResponse/content` fails CE0117.
 - `StatusCode` (Integer) — HTTP status code (200, 404, etc.)
 
 **Restrictions:**
