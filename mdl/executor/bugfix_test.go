@@ -104,6 +104,48 @@ end;`
 	}
 }
 
+// TestValidateDuplicateMicroflowCallOutputVar covers finding #5 (second trigger):
+// a microflow-call output variable reused across a fallback chain is a fresh
+// declaration each time, so the second assignment is CE0111 — the natural
+// "try A, else try B" shape. Both the same-scope and the nested-in-if forms
+// must be caught (the fallback is almost always written inside an if).
+func TestValidateDuplicateMicroflowCallOutputVar(t *testing.T) {
+	t.Run("same scope", func(t *testing.T) {
+		input := `create microflow Test.MF_Fallback ()
+begin
+  $Summary = call microflow Test.Inner(Tag = 'description');
+  $Summary = call microflow Test.Inner(Tag = 'summary');
+end;`
+		errors := validateMicroflowFromMDL(t, input)
+		if !hasDupError(errors, "Summary") {
+			t.Errorf("Expected duplicate variable error for $Summary, got: %v", errors)
+		}
+	})
+
+	t.Run("fallback inside if", func(t *testing.T) {
+		input := `create microflow Test.MF_FallbackIf ()
+begin
+  $Summary = call microflow Test.Inner(Tag = 'description');
+  if trim($Summary) = '' then
+    $Summary = call microflow Test.Inner(Tag = 'summary');
+  end if;
+end;`
+		errors := validateMicroflowFromMDL(t, input)
+		if !hasDupError(errors, "Summary") {
+			t.Errorf("Expected duplicate variable error for $Summary (fallback in if), got: %v", errors)
+		}
+	})
+}
+
+func hasDupError(errors []string, varName string) bool {
+	for _, e := range errors {
+		if strings.Contains(e, "duplicate") && strings.Contains(e, varName) {
+			return true
+		}
+	}
+	return false
+}
+
 // TestValidateEntityReservedAttributeName verifies that persistent entity attributes
 // using reserved system names (CreatedDate, ChangedDate, Owner, ChangedBy) are caught.
 func TestValidateEntityReservedAttributeName(t *testing.T) {

@@ -491,7 +491,7 @@ Regenerate after modifying `MDLLexer.g4`, `MDLParser.g4`, or any `domains/*.g4` 
 These rules apply whenever generating microflow or nanoflow MDL. Violations are caught by `mxcli check`.
 
 1. **NEVER create empty list variables as loop sources.** If processing imported data, accept the list as a microflow parameter — `declare $Items list of ... = empty` followed by `loop $item in $Items` is always wrong.
-2. **NEVER use nested LOOPs for list matching.** Loop over the primary list and use `retrieve $match from $TargetList where key = $item/key limit 1` for O(N) lookup. Nested loops are O(N^2).
+2. **NEVER use nested LOOPs for list matching.** Loop over the primary list and use `$match = FIND($TargetList, key = $item/key)` for an O(N) in-memory lookup. A plain `retrieve … where` **cannot** filter a list variable (only a database/association source), so `retrieve $match from $TargetList where …` is a parse error — use `FIND`/`FILTER`. Nested loops are O(N^2).
 3. **Use append logic when merging**, not overwrite: `$Existing/Field + '\n' + $New/Field` inside an `if $New/Field != empty` guard.
 4. **Read `.claude/skills/patterns-data-processing.md`** for delta merge, batch processing, and list operation patterns.
 

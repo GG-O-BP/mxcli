@@ -987,6 +987,25 @@ retrieve $Items from Module.Entity where Active = true;
 
 **Note**: `returns type as $Var` in the microflow signature does NOT create an activity variable — it only names the return value. So `$Var = call java action ...` after `returns as $Var` is fine (one creation).
 
+**Fallback chains reuse the same name = CE0111.** Because each `$Var = call microflow …` (or retrieve/create) is a *fresh* variable creation, the natural "try A, else try B" shape is invalid — even when the retry is inside an `if`:
+
+```mdl
+-- WRONG: the second call re-creates $Summary — CE0111
+$Summary = call microflow M.Inner(Tag = 'description');
+if trim($Summary) = '' then
+  $Summary = call microflow M.Inner(Tag = 'summary');   -- CE0111!
+end if;
+
+-- CORRECT: one variable per call, then a plain `set` picks the winner
+$Summary = call microflow M.Inner(Tag = 'description');
+if trim($Summary) = '' then
+  $SummaryFallback = call microflow M.Inner(Tag = 'summary');
+  set $Summary = $SummaryFallback;
+end if;
+```
+
+`mxcli check --references` catches this (CE0111) before the build.
+
 ## Legacy SOAP Web Service Calls
 
 `call web service` preserves legacy Mendix SOAP activities. Prefer REST clients

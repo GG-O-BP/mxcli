@@ -215,8 +215,8 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 			if v.loopDepth > 0 {
 				v.addViolation("MDL001", linter.SeverityWarning,
 					"nested loop detected (loop inside a loop). "+
-						"Use retrieve $Match from $List where ... limit 1 for list matching instead of nested loops (O(N^2) performance).",
-					"Replace nested loop with retrieve ... where ... limit 1 for O(N) lookup")
+						"Use FIND($List, <condition>) for in-memory list matching instead of an inner loop (O(N) vs O(N^2)).",
+					"Replace the inner loop with $Match = FIND($List, key = $item/key) (a plain retrieve ... where cannot filter a list variable)")
 			}
 			// Check: loop over empty declared list
 			if v.emptyListVars[stmt.ListVariable] {
@@ -271,6 +271,13 @@ func (v *microflowValidator) checkNumericAssignment(targetLabel string, targetKi
 		fmt.Sprintf("Declare '%s' as Decimal, or round the value (e.g. round(%s) or floor(%s)).", targetLabel, src, src))
 }
 
+// mendixAggregateFuncs are the list aggregates that Mendix exposes as
+// activities, not expression functions. Used inside an expression they fail
+// CE0117; the fix is to assign the aggregate to a variable first.
+var mendixAggregateFuncs = map[string]bool{
+	"count": true, "sum": true, "average": true, "minimum": true, "maximum": true,
+}
+
 // checkExprFunctions flags calls to names that are not Mendix expression
 // functions (e.g. a hallucinated randomInt()) — these parse and pass a naive
 // check but fail the build with CE0117. label describes where the expression
@@ -281,9 +288,20 @@ func (v *microflowValidator) checkExprFunctions(label string, expr ast.Expressio
 		return
 	}
 	for _, u := range exprcheck.UnknownFunctionCalls(src) {
-		suggestion := "Use a built-in Mendix expression function (see 'mxcli syntax expressions')."
-		if u.Suggestion != "" {
-			suggestion = fmt.Sprintf("Did you mean '%s()'? ", u.Suggestion) + suggestion
+		var suggestion string
+		if mendixAggregateFuncs[strings.ToLower(u.Name)] {
+			// count/sum/average/minimum/maximum are aggregate ACTIVITIES, not
+			// expression functions — a did-you-mean against an unrelated math
+			// function (e.g. count→round) sends the author the wrong way. Tell them
+			// to assign the aggregate to a variable first, then use the variable.
+			suggestion = fmt.Sprintf(
+				"'%s' is an aggregate activity, not an expression function. Assign it to a variable first: $n = %s($List); then use $n in the expression.",
+				u.Name, u.Name)
+		} else {
+			suggestion = "Use a built-in Mendix expression function (see 'mxcli syntax microflow')."
+			if u.Suggestion != "" {
+				suggestion = fmt.Sprintf("Did you mean '%s()'? ", u.Suggestion) + suggestion
+			}
 		}
 		v.addViolation("MDL044", linter.SeverityError,
 			fmt.Sprintf("%s calls '%s()', which is not a Mendix expression function — "+
