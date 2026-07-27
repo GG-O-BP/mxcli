@@ -288,10 +288,22 @@ lines (no login). See *Open questions* on retention default and JSONL-vs-SQLite.
    state → 400 + `callback_fail`, preview authorize allow/redirect/deny with an
    `access_deny` line on the 403, soft-mode leaves previews open, logout clears + audits,
    and the audit `Event` carries no secret field.
-3. **Hub API keys + registration by key**: `POST/DELETE /api/keys`, `X-Hub-Key` on
-   `/api/register` → stamp `Owner`; keep `X-Hub-Secret` for open mode. Emits
-   `key_mint`/`key_revoke`/`register_ok`/`register_deny`. Tests: mint/resolve/revoke,
-   register stamps owner, open-mode fallback, audit lines on register accept/reject.
+3. **Hub API keys + registration by key** — ✅ **done**: `KeyStore` (mint/resolve/revoke,
+   keys stored SHA-256-hashed, plain key returned once); `POST /api/keys` validates the
+   caller's GitHub token via `GET /user` and mints a login-bound key (token discarded,
+   never stored), `DELETE /api/keys` revokes the presented `X-Hub-Key` (both `404` in open
+   mode). `/api/register` now runs through `authorizeRegister`: open mode keeps the legacy
+   `X-Hub-Secret` (owner `""`); auth-on resolves `X-Hub-Key` → login and stamps
+   `Backend.Owner` (`RegisterRequest.Owner` is `json:"-"`, server-derived only);
+   `--require-auth` (default) rejects a missing/invalid key, soft mode registers
+   anonymously. Emits `key_mint`/`key_revoke`/`register_ok`/`register_deny` through
+   `ServerOptions.Audit` → `APIOptions.Audit` (also in open mode when `--audit-log` is
+   set). Tests (`keys_test.go`, `api_keys_test.go`): mint/resolve/revoke,
+   distinct-key-per-mint, hashed-not-plaintext, mint→register stamps owner + filters the
+   listing, `--require-auth` rejects keyless/bogus with `register_deny`, soft-mode
+   anonymous register, revoked key can't register, open-mode keys `404` and register
+   unchanged. **Client is slice 4** (`mxcli run --hub` still sends `X-Hub-Secret` until
+   then, so enabling `--require-auth` on a hosted hub waits for slice 4).
 4. **Client**: `mxcli auth hub login/status/logout` (device flow), `run --hub` sends
    `X-Hub-Key` (env → auth.json → legacy secret). Tests: auth.json round-trip, header
    selection.
