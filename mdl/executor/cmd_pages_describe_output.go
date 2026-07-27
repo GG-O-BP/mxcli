@@ -365,6 +365,12 @@ func outputWidgetMDLV3(ctx *ExecContext, w rawWidget, indent int) {
 		if w.Content != "" {
 			props = append(props, fmt.Sprintf("Attribute: %s", w.Content))
 		}
+		if w.Placeholder != "" {
+			props = append(props, fmt.Sprintf("Placeholder: %s", mdlQuote(w.Placeholder)))
+		}
+		if w.OnChange != "" {
+			props = append(props, fmt.Sprintf("OnChange: %s", w.OnChange))
+		}
 		props = appendAppearanceProps(props, w)
 		formatWidgetProps(ctx.Output, prefix, header, props, "\n")
 
@@ -969,14 +975,34 @@ func extractIconRef(w map[string]any) string {
 }
 
 func extractButtonAction(ctx *ExecContext, w map[string]any) string {
-	action, ok := w["Action"].(map[string]any)
-	if !ok {
-		// Try primitive.M type
-		if actionM, okM := w["Action"].(primitive.M); okM {
-			action = map[string]any(actionM)
-		} else {
-			return ""
-		}
+	return renderClientActionMDL(ctx, actionMapForKey(w, "Action"))
+}
+
+// extractOnChangeAction renders a widget's OnChangeAction (input widgets) as MDL,
+// reusing the same client-action renderer as buttons — OnChangeAction is the same
+// client-action type, just under a different BSON key.
+func extractOnChangeAction(ctx *ExecContext, w map[string]any) string {
+	return renderClientActionMDL(ctx, actionMapForKey(w, "OnChangeAction"))
+}
+
+// actionMapForKey unwraps a client-action node stored under key into a plain map
+// (handling both map[string]any and primitive.M), or nil when absent.
+func actionMapForKey(w map[string]any, key string) map[string]any {
+	if action, ok := w[key].(map[string]any); ok {
+		return action
+	}
+	if actionM, ok := w[key].(primitive.M); ok {
+		return map[string]any(actionM)
+	}
+	return nil
+}
+
+// renderClientActionMDL renders a client-action map (a Forms$*ClientAction) back
+// to its MDL form (microflow/nanoflow/show_page/save_changes/…). Returns "" for a
+// nil action or a NoClientAction.
+func renderClientActionMDL(ctx *ExecContext, action map[string]any) string {
+	if action == nil {
+		return ""
 	}
 	typeName, _ := action["$Type"].(string)
 	switch typeName {
