@@ -54,8 +54,10 @@ runtime behaviour; it is turned back off on shutdown.
 With --metrics, a Prometheus meter registry is registered at boot and the runtime
 serves metrics at http://127.0.0.1:<admin-port>/prometheus. With --trace, the
 bundled OpenTelemetry agent is attached (spans -> the runtime log via the console
-exporter) with default span filters (unfiltered tracing is ~10x slower). Use
---runtime-setting Key=Value (repeatable) to merge any other runtime setting into
+exporter) with default span filters (unfiltered tracing is ~10x slower). The
+console exporter omits timestamps and parent span IDs, so for flame charts pass
+--trace-otlp <endpoint> to export to an OTLP collector (e.g. http://127.0.0.1:4318)
+instead. Use --runtime-setting Key=Value (repeatable) to merge any other runtime setting into
 the boot config (the admin config action replaces rather than merges, so mxcli
 folds these into its single boot call), e.g. a different Metrics.Registries type or
 custom OpenTelemetry span filters.
@@ -120,6 +122,10 @@ Examples:
 		runtimeSettings, _ := cmd.Flags().GetStringArray("runtime-setting")
 		trace, _ := cmd.Flags().GetBool("trace")
 		traceService, _ := cmd.Flags().GetString("trace-service")
+		traceOTLP, _ := cmd.Flags().GetString("trace-otlp")
+		if traceOTLP != "" {
+			trace = true // --trace-otlp implies --trace
+		}
 
 		opts := docker.LocalRunOptions{
 			ProjectPath:        projectPath,
@@ -148,6 +154,7 @@ Examples:
 			RuntimeSettings:    runtimeSettings,
 			Trace:              trace,
 			TraceService:       traceService,
+			TraceOTLP:          traceOTLP,
 			DB: docker.DBConfig{
 				Host:     dbHost,
 				Name:     dbName,
@@ -196,5 +203,6 @@ func init() {
 	runCmd.Flags().StringArray("runtime-setting", nil, "Extra runtime setting Key=Value merged into the boot configuration (Value parsed as JSON when possible), e.g. --runtime-setting 'OpenTelemetry._RuntimeSpanFilters=[\"Loop\",\"Gateway\"]'. Repeatable.")
 	runCmd.Flags().Bool("trace", false, "Enable OpenTelemetry tracing: attach the bundled agent (console exporter → the runtime log) and apply default span filters (unfiltered tracing is ~10x slower)")
 	runCmd.Flags().String("trace-service", "", "OTEL_SERVICE_NAME under --trace (default: the .mpr name)")
+	runCmd.Flags().String("trace-otlp", "", "Export traces to this OTLP collector endpoint (e.g. http://127.0.0.1:4318) instead of the console — needed for flame charts (the console exporter omits timestamps/parent IDs). Implies --trace")
 	rootCmd.AddCommand(runCmd)
 }

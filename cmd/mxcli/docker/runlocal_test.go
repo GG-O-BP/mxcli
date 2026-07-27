@@ -134,7 +134,7 @@ func TestBuildRuntimeSettings(t *testing.T) {
 
 func TestWithTraceEnv(t *testing.T) {
 	base := []string{"PATH=/bin", "JAVA_TOOL_OPTIONS=-Xmx512m"}
-	env := withTraceEnv(base, "/agents/otel.jar", "sudoku")
+	env := withTraceEnv(base, "/agents/otel.jar", "sudoku", "")
 
 	get := func(key string) (string, bool) {
 		for _, e := range env {
@@ -166,9 +166,31 @@ func TestWithTraceEnv(t *testing.T) {
 	}
 
 	// A user-provided OTEL_* is respected (not overridden).
-	env = withTraceEnv([]string{"OTEL_TRACES_EXPORTER=otlp"}, "/agents/otel.jar", "svc")
+	env = withTraceEnv([]string{"OTEL_TRACES_EXPORTER=otlp"}, "/agents/otel.jar", "svc", "")
 	if v, _ := get2(env, "OTEL_TRACES_EXPORTER"); v != "otlp" {
 		t.Errorf("user OTEL_TRACES_EXPORTER should win, got %q", v)
+	}
+
+	// An OTLP endpoint switches the traces exporter to otlp and wires the
+	// protocol + endpoint (for flame charts). (sudoku tracing follow-up)
+	env = withTraceEnv([]string{"PATH=/bin"}, "/agents/otel.jar", "svc", "http://127.0.0.1:4318")
+	if v, _ := get2(env, "OTEL_TRACES_EXPORTER"); v != "otlp" {
+		t.Errorf("OTEL_TRACES_EXPORTER = %q, want otlp", v)
+	}
+	if v, _ := get2(env, "OTEL_EXPORTER_OTLP_PROTOCOL"); v != "http/protobuf" {
+		t.Errorf("OTEL_EXPORTER_OTLP_PROTOCOL = %q, want http/protobuf", v)
+	}
+	if v, _ := get2(env, "OTEL_EXPORTER_OTLP_ENDPOINT"); v != "http://127.0.0.1:4318" {
+		t.Errorf("OTEL_EXPORTER_OTLP_ENDPOINT = %q, want the endpoint", v)
+	}
+
+	// A user-set exporter still wins even when an OTLP endpoint is passed.
+	env = withTraceEnv([]string{"OTEL_TRACES_EXPORTER=console"}, "/agents/otel.jar", "svc", "http://127.0.0.1:4318")
+	if v, _ := get2(env, "OTEL_TRACES_EXPORTER"); v != "console" {
+		t.Errorf("user OTEL_TRACES_EXPORTER should win over --trace-otlp, got %q", v)
+	}
+	if _, ok := get2(env, "OTEL_EXPORTER_OTLP_ENDPOINT"); ok {
+		t.Error("endpoint should not be set when the user pinned a non-otlp exporter")
 	}
 }
 
