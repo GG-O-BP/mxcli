@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 
 	"github.com/mendixlabs/mxcli/model"
@@ -1334,6 +1335,31 @@ func extractTextCaption(ctx *ExecContext, w map[string]any) string {
 }
 
 // extractClientTemplateParameters extracts parameter values from a ClientTemplate field (Content or Caption).
+// toStringCurrentObjectParamRe matches the exact `toString($currentObject/<path>)`
+// form the write side emits for a non-String own-attribute binding. The path may
+// carry association hops (Module.Assoc/Attr).
+var toStringCurrentObjectParamRe = regexp.MustCompile(`^toString\(\$currentObject/([A-Za-z_][A-Za-z0-9_.]*(?:/[A-Za-z_][A-Za-z0-9_.]*)*)\)$`)
+
+// toStringParamRefRe matches the `toString($<param>/<attr>)` form emitted for a
+// non-String page/snippet-parameter binding.
+var toStringParamRefRe = regexp.MustCompile(`^toString\(\$([A-Za-z_][A-Za-z0-9_]*)/([A-Za-z_][A-Za-z0-9_.]*)\)$`)
+
+// unwrapToStringAttrParam reverses the write side's non-String attribute→toString
+// transform so a ContentParam round-trips as a bare attribute (or $param.attr)
+// rather than a rendered expression that re-applies as a bogus attribute name.
+// Only the exact auto-generated forms are unwrapped; any other expression (extra
+// text, operators, a hand-written toString) is left untouched.
+func unwrapToStringAttrParam(expr string) (string, bool) {
+	if m := toStringCurrentObjectParamRe.FindStringSubmatch(expr); m != nil {
+		return m[1], true
+	}
+	if m := toStringParamRefRe.FindStringSubmatch(expr); m != nil {
+		// $param/attr → $param.attr (the round-trip form for a parameter ref)
+		return "$" + m[1] + "." + m[2], true
+	}
+	return "", false
+}
+
 func extractClientTemplateParameters(ctx *ExecContext, w map[string]any, fieldName string) []string {
 	template, ok := w[fieldName].(map[string]any)
 	if !ok {
@@ -1351,7 +1377,17 @@ func extractClientTemplateParameters(ctx *ExecContext, w map[string]any, fieldNa
 		}
 		// Check for Expression first (literal value)
 		if expr, ok := pMap["Expression"].(string); ok && expr != "" {
-			result = append(result, expr)
+			// A non-String attribute binding (Integer/DateTime/…) is written as
+			// `toString($currentObject/Attr)` / `toString($param/Attr)` — see
+			// resolveTemplateAttributePathFull. Emit it back as the bare attribute
+			// (or $param.Attr) so DESCRIBE round-trips; re-applying the bare name
+			// re-derives the same toString expression on the write side. Otherwise
+			// the rendered expression re-applies as a bogus attribute NAME (CE1613).
+			if unwrapped, ok := unwrapToStringAttrParam(expr); ok {
+				result = append(result, unwrapped)
+			} else {
+				result = append(result, expr)
+			}
 			continue
 		}
 
