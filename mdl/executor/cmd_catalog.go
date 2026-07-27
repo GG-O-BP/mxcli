@@ -78,11 +78,12 @@ func execShowCatalogTables(ctx *ExecContext) error {
 
 // fullOnlyTables are catalog tables only populated by REFRESH CATALOG FULL.
 var fullOnlyTables = map[string]bool{
-	"widgets":     true,
-	"activities":  true,
-	"refs":        true,
-	"strings":     true,
-	"permissions": true,
+	"widgets":           true,
+	"activities":        true,
+	"refs":              true,
+	"xpath_expressions": true,
+	"strings":           true,
+	"permissions":       true,
 	// graph_* analysis views read the refs graph, so they need full mode too.
 	"graph_god_nodes":            true,
 	"graph_module_coupling":      true,
