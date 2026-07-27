@@ -234,23 +234,12 @@ duckdb -c "ATTACH '.mxcli/catalog.db' AS cat (TYPE sqlite, READ_ONLY);
            FROM cat.activities_data GROUP BY 1 ORDER BY 2 DESC LIMIT 10;"
 ```
 
-### Cross-source "app warehouse" (dev container)
+### Cross-source "app warehouse"
 
-Because the catalog is a plain database, one engine can join it to the app's data
-and its telemetry without any ETL — useful for questions no single source can
-answer (e.g. runtime cost per microflow *joined to* model shape, or query time per
-entity *joined to* live row counts). This is an **external** DuckDB recipe — mxcli
-does not embed DuckDB — scoped to dev data in the dev container:
-
-```sql
--- model metadata (catalog) + app data (the local app Postgres), both read-only
-ATTACH '.mxcli/catalog.db' AS cat (TYPE sqlite, READ_ONLY);
-ATTACH 'dbname=app host=127.0.0.1 user=mendix' AS app (TYPE postgres, READ_ONLY);
--- traces exported by `mxcli run --local --trace-otlp …` (or a JSONL span dump)
-SELECT * FROM read_json_auto('spans.jsonl') LIMIT 10;
-```
-
-Caveats: keep every attachment **read-only** (especially the app database — never
-attach a production DB, and even locally make it an explicit choice), and note that
-unfiltered per-activity tracing produces a very large span volume (~110k spans for
-one busy transaction), so filter or sample before loading traces.
+Because the catalog is a plain database, one engine (e.g. DuckDB — mxcli does not
+embed it) can `ATTACH` it alongside the app's dev Postgres **read-only** and a trace
+dump, joining model shape + live data + telemetry with no ETL to answer questions no
+single source can (runtime cost × model shape, query time × entity × live rows). The
+full logging/metrics/tracing/catalog analysis procedure — including this join — is the
+**`analyze-runtime`** skill (`mxcli init` installs it into your project's
+`.claude/skills/mendix/`).
