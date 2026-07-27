@@ -1,0 +1,42 @@
+-- ============================================================================
+-- `create or modify persistent entity` destroyed all column data
+-- ============================================================================
+--
+-- Symptom (before fix):
+--   Re-applying a byte-for-byte identical `create or modify persistent entity`
+--   wiped every value in the affected columns on the next runtime DB sync. The
+--   rows survived; every attribute value became NULL. On a real domain model this
+--   ran 160 synchronization commands and blanked 11 feeds + 98 articles.
+--
+--   Isolated repro (needs a running app to observe the sync):
+--     create persistent entity Demo.ZTest ( Val: string(50) );
+--     -- start app, INSERT a row with Val='SURVIVE-ME'
+--     create or modify persistent entity Demo.ZTest ( Val: string(50) );  -- identical
+--     -- restart runtime -> "Executing N database synchronization command(s)"
+--     -- SELECT val -> NULL   (column dropped and re-added)
+--
+-- Root cause:
+--   execCreateEntity minted a FRESH attribute ID (GUID) for every attribute on
+--   each run, even unchanged ones. Attribute identity is what Mendix's DB
+--   synchronizer keys off — a new ID for an unchanged attribute reads as "old
+--   attribute departed, new attribute added", so it drops and re-adds the column,
+--   discarding the data. Only the entity's own ID was preserved.
+--
+-- After fix:
+--   On CREATE OR MODIFY of an existing entity, each retained attribute reuses its
+--   existing ID (matched by name); only genuinely new attributes get a fresh ID.
+--   An identical re-run is now identity-idempotent: no spurious DB sync, no data
+--   loss. Regression covered by
+--   TestCreateOrModifyEntity_PreservesAttributeIDs (mdl/executor).
+--
+-- Usage:
+--   mxcli exec mdl-examples/bug-tests/create-or-modify-preserves-attribute-ids.mdl -p app.mpr
+--   mxcli exec mdl-examples/bug-tests/create-or-modify-preserves-attribute-ids.mdl -p app.mpr  # 2nd run must be a no-op at the attribute-identity level
+-- ============================================================================
+
+create or modify persistent entity MyFirstModule.ZTest
+(
+  Val: String(50)
+);
+
+describe entity MyFirstModule.ZTest;

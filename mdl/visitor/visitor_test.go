@@ -1303,6 +1303,32 @@ func TestEnhanceErrorMessage_Apostrophe(t *testing.T) {
 	}
 }
 
+// TestEnhanceErrorMessage_MultilineString covers finding #6: a string literal
+// that runs off the end of its line must get the "cannot span multiple lines"
+// hint, NOT the "double your apostrophes" advice (which would make it worse). The
+// distinguishing signal is a newline inside the token-recognition-error payload.
+func TestEnhanceErrorMessage_MultilineString(t *testing.T) {
+	// A literal spanning two lines: the offending text carries a newline.
+	multiline := "line 8:66 token recognition error at: ''\n'"
+	out := enhanceErrorMessage(multiline, "")
+	if !strings.Contains(out, "cannot span multiple lines") {
+		t.Errorf("expected multiline-string hint, got: %s", out)
+	}
+	if strings.Contains(out, "unescaped apostrophe") {
+		t.Errorf("multiline-string error must not show the apostrophe hint, got: %s", out)
+	}
+
+	// A single-line unbalanced quote (no newline) keeps the apostrophe hint.
+	singleLine := "line 3:12 token recognition error at: ''"
+	out = enhanceErrorMessage(singleLine, "")
+	if strings.Contains(out, "cannot span multiple lines") {
+		t.Errorf("single-line error must not show the multiline hint, got: %s", out)
+	}
+	if !strings.Contains(out, "apostrophe") {
+		t.Errorf("expected apostrophe hint for single-line unbalanced quote, got: %s", out)
+	}
+}
+
 func TestParseError_UnescapedApostrophe(t *testing.T) {
 	// This MDL contains an unescaped apostrophe in a string literal.
 	// The parser should produce an error with an apostrophe hint.

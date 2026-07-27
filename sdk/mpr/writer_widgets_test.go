@@ -259,6 +259,90 @@ func TestSerializeTextBox(t *testing.T) {
 	}
 }
 
+// TestSerializeTextBox_PlaceholderAndOnChange guards finding #9: placeholder and
+// onchange were hardcoded to empty on the legacy write path (silently dropped).
+// They must now serialize from the model's Placeholder / OnChangeAction.
+func TestSerializeTextBox_PlaceholderAndOnChange(t *testing.T) {
+	tb := &pages.TextBox{
+		BaseWidget: pages.BaseWidget{
+			BaseElement: model.BaseElement{ID: "tb-id", TypeName: "Forms$TextBox"},
+			Name:        "txtQuery",
+		},
+		AttributePath: "M.Filter.Query",
+		Placeholder: &model.Text{
+			BaseElement:  model.BaseElement{ID: "ph-id", TypeName: "Texts$Text"},
+			Translations: map[string]string{"en_US": "Search all articles"},
+		},
+		OnChangeAction: &pages.MicroflowClientAction{
+			MicroflowName: "M.ACT_Search",
+		},
+	}
+
+	result := serializeTextBox(tb)
+
+	// PlaceholderTemplate must carry the placeholder text (not the empty template).
+	var placeholderText string
+	var onChangeType string
+	for _, elem := range result {
+		switch elem.Key {
+		case "PlaceholderTemplate":
+			if d, ok := elem.Value.(bson.D); ok {
+				placeholderText = extractTemplateText(d)
+			}
+		case "OnChangeAction":
+			if d, ok := elem.Value.(bson.D); ok {
+				for _, e := range d {
+					if e.Key == "$Type" {
+						onChangeType, _ = e.Value.(string)
+					}
+				}
+			}
+		}
+	}
+	if placeholderText != "Search all articles" {
+		t.Errorf("PlaceholderTemplate text = %q, want %q", placeholderText, "Search all articles")
+	}
+	if onChangeType == "" || onChangeType == "Forms$NoAction" {
+		t.Errorf("OnChangeAction should be a real action, got $Type = %q", onChangeType)
+	}
+}
+
+// extractTemplateText pulls the first Translation Text out of a Forms$ClientTemplate.
+func extractTemplateText(ct bson.D) string {
+	for _, e := range ct {
+		if e.Key != "Template" {
+			continue
+		}
+		tmpl, ok := e.Value.(bson.D)
+		if !ok {
+			continue
+		}
+		for _, te := range tmpl {
+			if te.Key != "Items" {
+				continue
+			}
+			items, ok := te.Value.(bson.A)
+			if !ok {
+				continue
+			}
+			for _, it := range items {
+				trans, ok := it.(bson.D)
+				if !ok {
+					continue
+				}
+				for _, tr := range trans {
+					if tr.Key == "Text" {
+						if s, ok := tr.Value.(string); ok {
+							return s
+						}
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
 func TestSerializeDataViewLabelWidth(t *testing.T) {
 	five := 5
 	zero := 0

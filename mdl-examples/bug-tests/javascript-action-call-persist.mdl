@@ -1,0 +1,47 @@
+-- ============================================================================
+-- `call javascript action` parsed + validated but never persisted
+-- ============================================================================
+--
+-- Symptom (before fix):
+--   A `call javascript action` in a microflow or nanoflow passed
+--   `mxcli check --references` (the reference resolved) and `mxcli exec` reported
+--   success — but the activity was written with NO action. DESCRIBE showed it
+--   round-tripping as `-- Empty action`, and `mx check` failed:
+--     [CE0008] "No action defined." at Action activity 'Activity'
+--     [CE0109] "Undefined variable 'Opened'." at End event
+--   (the output variable's producing activity was gone).
+--
+-- Root cause:
+--   The default `modelsdk` engine's microflowActionToGen had no case for
+--   *microflows.JavaScriptActionCallAction, so it returned nil and the
+--   ActionActivity was emitted without an Action. The read path and the legacy
+--   engine both handled it (which is why check/exec looked fine). Nanoflows reuse
+--   the same converter, so both flow kinds were affected.
+--
+-- After fix:
+--   microflowActionToGen emits Microflows$JavaScriptActionCallAction (mirroring
+--   the legacy serializer), including the JS-specific ParameterValue key for
+--   parameter mappings. The activity persists and round-trips.
+--
+-- Usage (needs the NanoflowCommons module, i.e. an app with NanoflowCommons):
+--   mxcli exec mdl-examples/bug-tests/javascript-action-call-persist.mdl -p app.mpr
+-- ============================================================================
+
+create entity MyFirstModule.Bookmark ( Link: String );
+
+-- Microflow variant.
+create or replace microflow MyFirstModule.ACT_OpenLink ($Bookmark: MyFirstModule.Bookmark)
+begin
+  $Opened = call javascript action NanoflowCommons.OpenURL(url = $Bookmark/Link);
+end;
+
+-- Nanoflow variant (the shape the RSS reader hit).
+create or replace nanoflow MyFirstModule.NF_OpenLink ($Bookmark: MyFirstModule.Bookmark)
+returns boolean as $ok
+begin
+  $Opened = call javascript action NanoflowCommons.OpenURL(url = $Bookmark/Link);
+  return $Opened;
+end;
+
+describe microflow MyFirstModule.ACT_OpenLink;
+describe nanoflow MyFirstModule.NF_OpenLink;

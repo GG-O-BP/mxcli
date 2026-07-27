@@ -42,6 +42,10 @@ func TestValidateMicroflow_UnknownFunction(t *testing.T) {
 		{"round(random()) is known", "declare $r Integer = round(random() * 8);", false, ""},
 		{"nested known funcs", "declare $s String = toUpperCase(trim($x));", false, ""},
 		{"unknown in if condition", "if isBlank($x) then\n    return;\n  end if;", true, ""},
+		// count/sum/... are aggregate activities, not expression functions: MDL044
+		// fires, but the hint must steer to "assign to a variable first", not a
+		// did-you-mean against an unrelated math function (finding #7).
+		{"count aggregate hint", "declare $ok Boolean = if count($x) > 0 then true else false;", true, "aggregate activity"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -1801,45 +1801,50 @@ func setWidgetConditionalSettingMut(widget bson.D, field, typeName, expression s
 }
 
 func setRawWidgetPropertyMut(widget bson.D, propName string, value any) error {
-	switch propName {
-	case "Caption":
+	// Property names arrive verbatim from MDL (any case) — `set class on …` is as
+	// valid as `set Class on …`, and `create page` reads them case-insensitively
+	// (WidgetV3.GetStringProp). Match the first-class properties case-insensitively
+	// so the ALTER path behaves the same; the pluggable fallback (default) keeps the
+	// original casing, since pluggable property keys must match the template exactly.
+	switch strings.ToLower(propName) {
+	case "caption":
 		return setWidgetCaptionMut(widget, value)
-	case "Content":
+	case "content":
 		return setWidgetContentMut(widget, value)
-	case "Label":
+	case "label":
 		return setWidgetLabelMut(widget, value)
-	case "ButtonStyle":
+	case "buttonstyle":
 		if s, ok := value.(string); ok {
 			bsonnav.DSet(widget, "ButtonStyle", s)
 		}
 		return nil
-	case "Class":
+	case "class":
 		if appearance := bsonnav.DGetDoc(widget, "Appearance"); appearance != nil {
 			if s, ok := value.(string); ok {
 				bsonnav.DSet(appearance, "Class", s)
 			}
 		}
 		return nil
-	case "Style":
+	case "style":
 		if appearance := bsonnav.DGetDoc(widget, "Appearance"); appearance != nil {
 			if s, ok := value.(string); ok {
 				bsonnav.DSet(appearance, "Style", s)
 			}
 		}
 		return nil
-	case "DynamicClasses":
+	case "dynamicclasses":
 		if appearance := bsonnav.DGetDoc(widget, "Appearance"); appearance != nil {
 			if s, ok := value.(string); ok {
 				bsonnav.DSet(appearance, "DynamicClasses", s)
 			}
 		}
 		return nil
-	case "Editable":
+	case "editable":
 		if s, ok := value.(string); ok {
 			bsonnav.DSet(widget, "Editable", s)
 		}
 		return nil
-	case "Visible":
+	case "visible":
 		// A page widget has no plain boolean "Visible" field — visibility is modeled
 		// via ConditionalVisibilitySettings. Route static booleans and expression
 		// strings into it (previously a bare "Visible" string was written and Studio
@@ -1855,7 +1860,7 @@ func setRawWidgetPropertyMut(widget bson.D, propName string, value any) error {
 			return fmt.Errorf("widget does not support conditional visibility")
 		}
 		return nil
-	case "VisibleIf":
+	case "visibleif":
 		// Conditional visibility expression (issue #627): replace the widget's
 		// ConditionalVisibilitySettings node (null when unset) with one carrying
 		// the rooted expression the visitor produced.
@@ -1865,19 +1870,19 @@ func setRawWidgetPropertyMut(widget bson.D, propName string, value any) error {
 			return fmt.Errorf("widget does not support conditional visibility")
 		}
 		return nil
-	case "EditableIf":
+	case "editableif":
 		expr, _ := value.(string)
 		if !setWidgetConditionalSettingMut(widget, "ConditionalEditabilitySettings",
 			"Forms$ConditionalEditabilitySettings", expr, false) {
 			return fmt.Errorf("widget does not support conditional editability (only input widgets are editable)")
 		}
 		return nil
-	case "Name":
+	case "name":
 		if s, ok := value.(string); ok {
 			bsonnav.DSet(widget, "Name", s)
 		}
 		return nil
-	case "Attribute":
+	case "attribute":
 		return setWidgetAttributeRefMut(widget, value)
 	default:
 		// Try as pluggable widget property

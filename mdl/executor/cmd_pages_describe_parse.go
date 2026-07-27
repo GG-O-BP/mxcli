@@ -259,6 +259,8 @@ func parseRawWidget(ctx *ExecContext, w map[string]any, parentEntityContext ...s
 	case "Forms$TextBox", "Pages$TextBox":
 		widget.Caption = extractLabelText(ctx, w)
 		widget.Content = extractAttributeRef(ctx, w)
+		widget.Placeholder = extractPlaceholderText(ctx, w)
+		widget.OnChange = extractOnChangeAction(ctx, w)
 		return []rawWidget{widget}
 
 	case "Forms$TextArea", "Pages$TextArea":
@@ -633,6 +635,16 @@ func extractLabelText(ctx *ExecContext, w map[string]any) string {
 		return ""
 	}
 	return extractTextFromTemplate(ctx, labelTemplate)
+}
+
+// extractPlaceholderText extracts the placeholder hint text from an input widget.
+// PlaceholderTemplate is a Forms$ClientTemplate, same shape as LabelTemplate.
+func extractPlaceholderText(ctx *ExecContext, w map[string]any) string {
+	placeholderTemplate, ok := w["PlaceholderTemplate"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	return extractTextFromTemplate(ctx, placeholderTemplate)
 }
 
 // extractEditable extracts the Editable setting from an input widget.

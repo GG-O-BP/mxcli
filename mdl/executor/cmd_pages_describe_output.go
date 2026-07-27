@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 
 	"github.com/mendixlabs/mxcli/model"
@@ -364,6 +365,12 @@ func outputWidgetMDLV3(ctx *ExecContext, w rawWidget, indent int) {
 		}
 		if w.Content != "" {
 			props = append(props, fmt.Sprintf("Attribute: %s", w.Content))
+		}
+		if w.Placeholder != "" {
+			props = append(props, fmt.Sprintf("Placeholder: %s", mdlQuote(w.Placeholder)))
+		}
+		if w.OnChange != "" {
+			props = append(props, fmt.Sprintf("OnChange: %s", w.OnChange))
 		}
 		props = appendAppearanceProps(props, w)
 		formatWidgetProps(ctx.Output, prefix, header, props, "\n")
@@ -969,14 +976,34 @@ func extractIconRef(w map[string]any) string {
 }
 
 func extractButtonAction(ctx *ExecContext, w map[string]any) string {
-	action, ok := w["Action"].(map[string]any)
-	if !ok {
-		// Try primitive.M type
-		if actionM, okM := w["Action"].(primitive.M); okM {
-			action = map[string]any(actionM)
-		} else {
-			return ""
-		}
+	return renderClientActionMDL(ctx, actionMapForKey(w, "Action"))
+}
+
+// extractOnChangeAction renders a widget's OnChangeAction (input widgets) as MDL,
+// reusing the same client-action renderer as buttons — OnChangeAction is the same
+// client-action type, just under a different BSON key.
+func extractOnChangeAction(ctx *ExecContext, w map[string]any) string {
+	return renderClientActionMDL(ctx, actionMapForKey(w, "OnChangeAction"))
+}
+
+// actionMapForKey unwraps a client-action node stored under key into a plain map
+// (handling both map[string]any and primitive.M), or nil when absent.
+func actionMapForKey(w map[string]any, key string) map[string]any {
+	if action, ok := w[key].(map[string]any); ok {
+		return action
+	}
+	if actionM, ok := w[key].(primitive.M); ok {
+		return map[string]any(actionM)
+	}
+	return nil
+}
+
+// renderClientActionMDL renders a client-action map (a Forms$*ClientAction) back
+// to its MDL form (microflow/nanoflow/show_page/save_changes/…). Returns "" for a
+// nil action or a NoClientAction.
+func renderClientActionMDL(ctx *ExecContext, action map[string]any) string {
+	if action == nil {
+		return ""
 	}
 	typeName, _ := action["$Type"].(string)
 	switch typeName {
@@ -1308,6 +1335,31 @@ func extractTextCaption(ctx *ExecContext, w map[string]any) string {
 }
 
 // extractClientTemplateParameters extracts parameter values from a ClientTemplate field (Content or Caption).
+// toStringCurrentObjectParamRe matches the exact `toString($currentObject/<path>)`
+// form the write side emits for a non-String own-attribute binding. The path may
+// carry association hops (Module.Assoc/Attr).
+var toStringCurrentObjectParamRe = regexp.MustCompile(`^toString\(\$currentObject/([A-Za-z_][A-Za-z0-9_.]*(?:/[A-Za-z_][A-Za-z0-9_.]*)*)\)$`)
+
+// toStringParamRefRe matches the `toString($<param>/<attr>)` form emitted for a
+// non-String page/snippet-parameter binding.
+var toStringParamRefRe = regexp.MustCompile(`^toString\(\$([A-Za-z_][A-Za-z0-9_]*)/([A-Za-z_][A-Za-z0-9_.]*)\)$`)
+
+// unwrapToStringAttrParam reverses the write side's non-String attribute→toString
+// transform so a ContentParam round-trips as a bare attribute (or $param.attr)
+// rather than a rendered expression that re-applies as a bogus attribute name.
+// Only the exact auto-generated forms are unwrapped; any other expression (extra
+// text, operators, a hand-written toString) is left untouched.
+func unwrapToStringAttrParam(expr string) (string, bool) {
+	if m := toStringCurrentObjectParamRe.FindStringSubmatch(expr); m != nil {
+		return m[1], true
+	}
+	if m := toStringParamRefRe.FindStringSubmatch(expr); m != nil {
+		// $param/attr → $param.attr (the round-trip form for a parameter ref)
+		return "$" + m[1] + "." + m[2], true
+	}
+	return "", false
+}
+
 func extractClientTemplateParameters(ctx *ExecContext, w map[string]any, fieldName string) []string {
 	template, ok := w[fieldName].(map[string]any)
 	if !ok {
@@ -1325,7 +1377,17 @@ func extractClientTemplateParameters(ctx *ExecContext, w map[string]any, fieldNa
 		}
 		// Check for Expression first (literal value)
 		if expr, ok := pMap["Expression"].(string); ok && expr != "" {
-			result = append(result, expr)
+			// A non-String attribute binding (Integer/DateTime/…) is written as
+			// `toString($currentObject/Attr)` / `toString($param/Attr)` — see
+			// resolveTemplateAttributePathFull. Emit it back as the bare attribute
+			// (or $param.Attr) so DESCRIBE round-trips; re-applying the bare name
+			// re-derives the same toString expression on the write side. Otherwise
+			// the rendered expression re-applies as a bogus attribute NAME (CE1613).
+			if unwrapped, ok := unwrapToStringAttrParam(expr); ok {
+				result = append(result, unwrapped)
+			} else {
+				result = append(result, expr)
+			}
 			continue
 		}
 

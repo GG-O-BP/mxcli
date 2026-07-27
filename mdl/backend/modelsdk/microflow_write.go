@@ -501,6 +501,32 @@ func microflowActionToGen(action microflows.MicroflowAction) element.Element {
 		}
 		addPartList(g, "ParameterMappings", mappings)
 		return g
+	case *microflows.JavaScriptActionCallAction:
+		// Built directly like JavaActionCallAction: the JS action call binds
+		// distinct storage keys (JavaScriptAction/OutputVariableName, and the
+		// parameter value goes under "ParameterValue", not "Value"). Mirrors the
+		// legacy serializer (sdk/mpr/writer_microflow_actions.go). Without this
+		// case the action fell through to `default: return nil`, so the
+		// ActionActivity was written with no Action → CE0008 "No action defined."
+		// and CE0109 on the (now-missing) output variable.
+		g := newElem("Microflows$JavaScriptActionCallAction", string(a.ID))
+		addStr(g, "ErrorHandlingType", orDefault(string(a.ErrorHandlingType), "Rollback"))
+		addStr(g, "JavaScriptAction", a.JavaScriptAction)
+		addStr(g, "OutputVariableName", a.OutputVariableName)
+		addBool(g, "UseReturnVariable", a.UseReturnVariable)
+		mappings := make([]element.Element, 0, len(a.ParameterMappings))
+		for _, pm := range a.ParameterMappings {
+			m := newElem("Microflows$JavaScriptActionParameterMapping", string(pm.ID))
+			addStr(m, "Parameter", pm.Parameter)
+			if pm.Value != nil {
+				if v := codeActionParameterValueToGen(pm.Value); v != nil {
+					addPart(m, "ParameterValue", v)
+				}
+			}
+			mappings = append(mappings, m)
+		}
+		addPartList(g, "ParameterMappings", mappings)
+		return g
 	case *microflows.LogMessageAction:
 		g := genMf.NewLogMessageAction()
 		g.SetID(element.ID(a.ID))

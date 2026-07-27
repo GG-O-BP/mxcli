@@ -1,0 +1,45 @@
+-- ============================================================================
+-- DESCRIBE PAGE did not round-trip a non-string attribute binding
+-- ============================================================================
+--
+-- Symptom (before fix):
+--   A dynamictext bound to a NON-STRING attribute (Integer/DateTime/…) came back
+--   from `describe page` as the rendered template expression:
+--       dynamictext num (Content: '{1}', ContentParams: [{1} = toString($currentObject/CountAll)])
+--   Re-applying that made mxcli treat `toString($currentObject/CountAll)` as an
+--   attribute NAME, failing the build:
+--       [CE1613] "The selected attribute
+--         'Module.Entity.toString($currentObject/CountAll)' no longer exists."
+--   A string binding round-tripped fine (bare attribute name).
+--
+-- Root cause:
+--   The write side converts a non-String attribute binding to
+--   `toString($currentObject/Attr)` (dynamictext template params must be String);
+--   the describe reader emitted that Expression verbatim instead of reversing it.
+--
+-- After fix:
+--   The describe reader unwraps the exact auto-generated `toString($currentObject/Attr)`
+--   / `toString($param/Attr)` forms back to the bare attribute (or $param.Attr), so
+--   DESCRIBE round-trips — the write side re-derives the toString on the next apply.
+--
+-- Usage:
+--   mxcli exec mdl-examples/bug-tests/describe-dynamictext-nonstring-attribute.mdl -p app.mpr
+--   mxcli -p app.mpr -c "describe page MyFirstModule.P_NonStringRT"   # re-apply must build clean
+-- ============================================================================
+
+create entity MyFirstModule.Counter ( CountAll: Integer, ListTitle: String );
+
+create or replace page MyFirstModule.P_NonStringRT
+(
+  Title: 'Non-string round-trip',
+  Layout: Atlas_Core.Atlas_Default,
+  Params: { $Counter: MyFirstModule.Counter }
+)
+{
+  dataview dv (datasource: $Counter) {
+    dynamictext num (attribute: CountAll)    -- Integer → written as toString(...)
+    dynamictext str (attribute: ListTitle)   -- String
+  }
+}
+
+describe page MyFirstModule.P_NonStringRT;

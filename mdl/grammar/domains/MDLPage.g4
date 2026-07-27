@@ -338,6 +338,8 @@ widgetPropertyV3
     | BINDS COLON attributePathV3                     // Binds: (deprecated, use Attribute:)
     | ACTION COLON actionExprV3                       // Action: SAVE_CHANGES | SHOW_PAGE ...
     | ONCLICK COLON actionExprV3                      // OnClick: MICROFLOW ... (alias of Action: — e.g. clickable CONTAINER, issue #603)
+    | ONCHANGE COLON actionExprV3                     // OnChange: MICROFLOW ... (input widgets — TextBox/TextArea/DatePicker/CheckBox)
+    | PLACEHOLDER COLON STRING_LITERAL               // Placeholder: 'Search all articles' (input widgets)
     | CAPTION COLON stringExprV3                      // Caption: 'Save'
     | LABEL COLON STRING_LITERAL                      // Label: 'Name'
     | ATTR COLON attributePathV3                      // Attr: (deprecated, use Attribute:)
@@ -436,7 +438,9 @@ microflowArgsV3
     ;
 
 microflowArgV3
-    : (IDENTIFIER | QUOTED_IDENTIFIER) COLON expression  // Param: $value (canonical; "Param" if reserved)
+    : identifierOrKeyword COLON expression            // Param: $value (identifierOrKeyword so a param
+                                                      // named after a keyword — View/Source/Item/Page/
+                                                      // Entity — works unquoted, matching callArgument)
     | VARIABLE EQUALS expression                     // $Param = $value (microflow-style, also accepted)
     ;
 

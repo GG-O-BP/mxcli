@@ -577,9 +577,17 @@ func CheckProjectConflicts(ctx *ExecContext, prog *ast.Program) []error {
 		if !idempotent && !reg.isAlive(dt, name) && !droppedFromProject.isAlive(dt, name) {
 			projectSet := ps.setFor(dt)
 			if projectSet != nil && projectSet[name] {
+				hint := "use CREATE OR MODIFY to update it"
+				if dt == "entity" {
+					// For a persistent entity, CREATE OR MODIFY rebuilds the whole
+					// definition and drops any attribute this statement omits — steer
+					// toward the incremental, non-destructive path instead. (findings #13)
+					hint = "to add or change a member use 'alter entity " + name +
+						" add attribute ...' (leaves the rest intact); use CREATE OR MODIFY only to replace the whole definition"
+				}
 				errs = append(errs, fmt.Errorf(
-					"statement %d: %s already exists in project: %s — use CREATE OR MODIFY to update it",
-					stmtNum, friendlyDocType(dt), name,
+					"statement %d: %s already exists in project: %s — %s",
+					stmtNum, friendlyDocType(dt), name, hint,
 				))
 			}
 		}
