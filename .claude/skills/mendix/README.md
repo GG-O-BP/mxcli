@@ -66,6 +66,7 @@ Page-specific patterns:
 | [create-custom-widget.md](create-custom-widget.md) | Custom pluggable widget AIGC | Creating custom React widgets from scratch |
 | [migrate-design-prototype.md](migrate-design-prototype.md) | Turn a Claude Design prototype into a themed Mendix app | Reproducing a design handoff/prototype as an SCSS theme + styled pages |
 | [debug-bson.md](debug-bson.md) | BSON debugging | Troubleshooting SDK issues |
+| [analyze-runtime.md](analyze-runtime.md) | Analyze runtime behavior — logs, metrics, traces, catalog, and cross-source joins | Profiling a slow page/microflow, finding what hits the DB, correlating cost with model shape |
 
 ---
 
@@ -97,6 +98,8 @@ Load skills based on the task:
 | "Build a pluggable widget" | `create-custom-widget.md` |
 | "Turn a design prototype/handoff into a Mendix app" | `migrate-design-prototype.md`, `theme-styling.md`, `create-page.md` |
 | "Build/apply a theme from a design" | `migrate-design-prototype.md`, `theme-styling.md` |
+| "Why is this slow / profile the app / what hits the database" | `analyze-runtime.md`, `run-local.md` |
+| "Trace / metrics / flame chart / correlate cost with model" | `analyze-runtime.md` |
 
 ### For Error Recovery
 

@@ -108,6 +108,11 @@ type LocalRunOptions struct {
 	Trace bool
 	// TraceService is OTEL_SERVICE_NAME under --trace (default: the .mpr name).
 	TraceService string
+	// TraceOTLP, when set, exports traces to this OTLP collector endpoint
+	// (e.g. http://127.0.0.1:4318) instead of the console — needed for flame
+	// charts, since the console exporter omits timestamps/parent span IDs.
+	// Implies Trace.
+	TraceOTLP string
 	// RuntimeSettings are raw "Key=Value" runtime settings merged into the boot
 	// update_configuration payload (Value is parsed as JSON, else a string), e.g.
 	// 'Metrics.Registries=[{"type":"otlp"}]' or
@@ -568,6 +573,7 @@ func RunLocal(opts LocalRunOptions) error {
 		RuntimeSettings:    runtimeSettings,
 		Trace:              opts.Trace,
 		TraceServiceName:   traceService,
+		TraceOTLPEndpoint:  opts.TraceOTLP,
 		Stdout:             w,
 		Stderr:             stderr,
 	})
@@ -585,10 +591,13 @@ func RunLocal(opts LocalRunOptions) error {
 		fmt.Fprintf(w, "Metrics (Prometheus): http://127.0.0.1:%d/prometheus\n", opts.AdminPort)
 	}
 	if opts.Trace {
-		if runtimeLog != "" {
+		switch {
+		case opts.TraceOTLP != "":
+			fmt.Fprintf(w, "Tracing enabled (OpenTelemetry, service %q); spans -> OTLP %s\n", traceService, opts.TraceOTLP)
+		case runtimeLog != "":
 			fmt.Fprintf(w, "Tracing enabled (OpenTelemetry, service %q); spans -> %s\n", traceService, runtimeLog)
-		} else {
-			fmt.Fprintf(w, "Tracing enabled (OpenTelemetry, service %q); spans go to the console only (pass --runtime-log to capture them)\n", traceService)
+		default:
+			fmt.Fprintf(w, "Tracing enabled (OpenTelemetry, service %q); spans go to the console only (pass --runtime-log to capture them, or --trace-otlp <url> for a collector)\n", traceService)
 		}
 	}
 

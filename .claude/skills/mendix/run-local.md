@@ -122,6 +122,7 @@ Launch `run --local` as the **sole** command in its invocation (don't chain a tr
 | `--metrics` | off | Register a Prometheus meter registry at boot; the runtime serves metrics at `http://127.0.0.1:<admin-port>/prometheus` |
 | `--trace` | off | Enable OpenTelemetry tracing (bundled agent, console exporter → the runtime log) with default span filters |
 | `--trace-service` | `.mpr` name | `OTEL_SERVICE_NAME` under `--trace` |
+| `--trace-otlp` | off (console) | Export traces to this OTLP collector endpoint (e.g. `http://127.0.0.1:4318`) instead of the console. Implies `--trace`. Needed for flame charts |
 | `--runtime-setting Key=Value` | — | Merge an extra runtime setting into the boot config (Value parsed as JSON when possible). Repeatable. |
 
 ## Metrics and OpenTelemetry
@@ -159,8 +160,19 @@ with metrics/logs exporters off.
 the microflow-level spans). Override with
 `--runtime-setting 'OpenTelemetry._RuntimeSpanFilters=[…]'`.
 
-**Export to a collector (OTLP) instead of the console:** set the OTEL env yourself
-before running — `--trace` won't override an exporter you've already set:
+**Export to a collector (OTLP) instead of the console:** the console exporter
+omits start/end timestamps and parent span IDs, so call trees and durations can't
+be reconstructed from it — for flame charts, export to an OTLP collector. Pass
+`--trace-otlp <endpoint>` (implies `--trace`); mxcli sets
+`OTEL_TRACES_EXPORTER=otlp`, `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`, and
+`OTEL_EXPORTER_OTLP_ENDPOINT` for you:
+
+```bash
+mxcli run --local -p app.mpr --trace-otlp http://127.0.0.1:4318
+```
+
+You can still set the `OTEL_*` env yourself for full control — `--trace` /
+`--trace-otlp` never override an exporter you've already set:
 
 ```bash
 export OTEL_TRACES_EXPORTER=otlp OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
