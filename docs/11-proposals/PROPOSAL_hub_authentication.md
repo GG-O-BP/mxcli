@@ -208,9 +208,12 @@ Client (`mxcli run --hub` / `mxcli auth`):
 
 ## Implementation slices
 
-1. **Owner field + filtered list** (no auth yet): add `Backend.Owner`,
-   `List(sort, viewer)`, thread a viewer through admin/`/api/backends`. Pure refactor,
-   `""` viewer = today. Tests: registry filtering.
+1. **Owner field + filtered list** (no auth yet) — ✅ **done**: added `Backend.Owner`,
+   `Owner` is first in `identity()` (so two users' same-named project/branch don't
+   collide), `List(sort, viewer)` filters by owner (`""` viewer = all = today), and a
+   `viewerLogin(r)` seam (returns `""` until slice 2's cookie) threads through
+   `/api/backends` + the reaper. Tests: `TestList_FiltersByOwner`,
+   `TestIdentity_OwnerDisambiguates`.
 2. **GitHub OAuth web flow + session cookie**: `/auth/github/*`, signing, middleware on
    preview + admin; skip WS/ACME. Tests: middleware allow/deny, cookie round-trip
    (httptest, GitHub stubbed).

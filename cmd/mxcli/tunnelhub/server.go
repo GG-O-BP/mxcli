@@ -223,7 +223,7 @@ func (s *Server) Start(ctx context.Context, httpsAddr, httpAddr string) error {
 			case <-ctx.Done():
 				return
 			case <-reaper.C:
-				s.reg.List("")
+				s.reg.List("", "") // periodic reap; viewer "" = all
 			}
 		}
 	}()

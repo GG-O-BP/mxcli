@@ -32,6 +32,7 @@ type Backend struct {
 	Solution    string `json:"solution"` // optional grouping for multi-app solutions
 	Branch      string `json:"branch"`   // git branch
 	Worktree    string `json:"worktree"` // optional, distinguishes worktrees of one branch
+	Owner       string `json:"owner"`    // GitHub login that registered it ("" = anonymous / self-hosted / auth off)
 	Subdomain   string `json:"subdomain"`
 	ReversePort int    `json:"reversePort"`
 	AppPort     int    `json:"appPort"`
@@ -41,10 +42,12 @@ type Backend struct {
 	LastUsedAt   time.Time `json:"lastUsedAt"` // last browser request to the subdomain
 }
 
-// identity is the stable key for a preview across reconnects: same prefix +
-// project + branch + worktree + solution re-registers to the same slot (stable URL).
+// identity is the stable key for a preview across reconnects: same owner + prefix
+// + project + branch + worktree + solution re-registers to the same slot (stable
+// URL). Owner is first so two different users' identically-named project/branch
+// never collide on one slot (Owner is "" until auth stamps it — see slice 3).
 func (b *Backend) identity() string {
-	return strings.Join([]string{b.Prefix, b.Solution, b.Project, b.Branch, b.Worktree}, "\x00")
+	return strings.Join([]string{b.Owner, b.Prefix, b.Solution, b.Project, b.Branch, b.Worktree}, "\x00")
 }
 
 // BackendView is a Backend plus derived fields, for the API/admin page.
@@ -210,15 +213,20 @@ func (r *Registry) LookupSubdomain(subdomain string) (*Backend, bool) {
 	return &cp, true
 }
 
-// List returns a snapshot of all backends as views, sorted by the given key
-// ("used", "registered", "project"; default "used"), most-recent/first.
-func (r *Registry) List(sortKey string) []BackendView {
+// List returns a snapshot of backends as views, sorted by the given key ("used",
+// "registered", "project"; default "used"), most-recent/first. When viewerLogin is
+// non-empty, only that owner's backends are returned; an empty viewerLogin (auth
+// off / self-hosted) returns all — preserving today's behaviour.
+func (r *Registry) List(sortKey, viewerLogin string) []BackendView {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.reapLocked()
 
 	out := make([]BackendView, 0, len(r.byID))
 	for _, b := range r.byID {
+		if viewerLogin != "" && b.Owner != viewerLogin {
+			continue
+		}
 		out = append(out, r.viewLocked(b))
 	}
 	sortViews(out, sortKey)

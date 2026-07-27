@@ -127,8 +127,15 @@ func (a *API) byToken(w http.ResponseWriter, r *http.Request, fn func(token stri
 }
 
 func (a *API) handleBackends(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, a.opts.Registry.List(r.URL.Query().Get("sort")))
+	// viewerLogin is "" until the session-cookie middleware (slice 2) supplies the
+	// authenticated GitHub login; "" lists all backends (self-hosted / auth off).
+	writeJSON(w, http.StatusOK, a.opts.Registry.List(r.URL.Query().Get("sort"), viewerLogin(r)))
 }
+
+// viewerLogin returns the authenticated GitHub login for a request, or "" when
+// auth is off (self-hosted) or the viewer is anonymous. Slice 1 always returns
+// "" (no auth yet); slice 2's session-cookie middleware fills this in.
+func viewerLogin(_ *http.Request) string { return "" }
 
 func bearerToken(r *http.Request) string {
 	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
