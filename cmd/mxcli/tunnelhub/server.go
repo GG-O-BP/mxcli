@@ -197,6 +197,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.opts.Auth.authHandler().ServeHTTP(w, r)
 			return
 		}
+		// The admin overview shows the viewer's own previews — gate it behind a
+		// session so an anonymous visitor is sent to login rather than served a
+		// page whose /api/backends fetch would 401.
+		if s.opts.Auth.enabled() && s.opts.Auth.sessionLogin(r) == "" {
+			ret := "https://" + s.opts.HubHost + r.URL.RequestURI()
+			http.Redirect(w, r, "https://"+s.opts.HubHost+"/auth/github/login?return="+url.QueryEscape(ret), http.StatusFound)
+			return
+		}
 		s.admin.ServeHTTP(w, r)
 	default:
 		sub, ok := s.subOf(host)

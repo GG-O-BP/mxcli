@@ -300,16 +300,14 @@ func TestAuthorizePreview_OwnerAllowsOtherDenies(t *testing.T) {
 	}
 }
 
-func TestClientIP_PrefersForwardedFor(t *testing.T) {
+// The hub is the TLS edge, so clientIP must use RemoteAddr and must NOT trust a
+// client-supplied X-Forwarded-For (which would let a caller spoof audit IPs).
+func TestClientIP_UsesRemoteAddrNotForwardedFor(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "https://app.mxcli.org/", nil)
 	r.RemoteAddr = "10.0.0.1:5555"
-	r.Header.Set("X-Forwarded-For", "203.0.113.7, 10.0.0.1")
-	if got := clientIP(r); got != "203.0.113.7" {
-		t.Errorf("clientIP = %q, want 203.0.113.7", got)
-	}
-	r.Header.Del("X-Forwarded-For")
+	r.Header.Set("X-Forwarded-For", "203.0.113.7, 10.0.0.1") // attacker-supplied
 	if got := clientIP(r); got != "10.0.0.1" {
-		t.Errorf("clientIP fallback = %q, want 10.0.0.1", got)
+		t.Errorf("clientIP = %q, want 10.0.0.1 (RemoteAddr, XFF ignored)", got)
 	}
 }
 
@@ -349,5 +347,23 @@ func TestLogout_ClearsCookieAndAudits(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), `"event":"logout"`) {
 		t.Errorf("expected logout audit line, got: %s", buf.String())
+	}
+}
+
+// TestSessionStateDomainSeparation asserts a session cookie can't be replayed as
+// an OAuth state, and vice versa — the two share a secret but not a signing tag.
+func TestSessionStateDomainSeparation(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	a := testAuth(now)
+
+	// A valid session cookie must NOT verify as a state token.
+	cookie := signSession(a.SessionSecret, "alice", now.Add(time.Hour))
+	if _, ok := a.verifyState(cookie); ok {
+		t.Error("a session cookie must not be accepted as an OAuth state")
+	}
+	// A valid state token must NOT verify as a session cookie.
+	state := a.signState("https://app.mxcli.org/")
+	if _, ok := verifySession(a.SessionSecret, state, now); ok {
+		t.Error("an OAuth state must not be accepted as a session cookie")
 	}
 }

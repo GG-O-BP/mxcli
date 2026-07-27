@@ -214,6 +214,31 @@ Client (`mxcli run --hub` / `mxcli auth`):
   `--require-auth` defaults on with a client id present; document that a client id
   without a session secret refuses to start.
 
+### Review follow-ups (external code review of the PR)
+
+An independent review of the implementation surfaced these; the first four are **fixed
+in the PR**, the last two are **acknowledged limitations** tracked here:
+
+- **Anonymous listing leak (fixed).** `GET /api/backends` filtered by `sessionLogin`,
+  which returned `""` for both "auth off" and "no session" — so with `--require-auth` on,
+  an unauthenticated caller received *every* user's previews. `handleBackends` now `401`s
+  when auth is enabled and the caller has no valid session; the admin page redirects an
+  anonymous visitor to login rather than serving a shell whose fetch would `401`.
+- **Session/state confusion (fixed).** The session cookie and the OAuth `state` shared one
+  HMAC scheme. They are now domain-separated by a signing tag (`session` vs `state`), so
+  neither can be replayed as the other.
+- **OAuth status handling (fixed).** `exchangeCode`/`fetchLogin` now check the HTTP status
+  (and the token endpoint's `error` field) before decoding, instead of decoding blindly.
+- **Spoofable audit IP (fixed).** The hub *is* the TLS edge, so `clientIP` now uses
+  `RemoteAddr` and ignores the client-supplied `X-Forwarded-For` (which could forge audit
+  IPs). A future trusted-proxy deployment would add an explicit allow-list option.
+- **Key persistence (acknowledged, deferred).** The key store is in-memory, so a hub
+  restart invalidates all hub keys (automation must re-run `auth hub login`, or use a
+  durable `MXCLI_HUB_KEY`). Persisting keys to disk is future work — see *Open questions*.
+- **No rate-limiting on `/api/keys` (acknowledged, deferred).** A holder of a valid GitHub
+  token can mint unbounded keys. Keys are login-bound and revocable, so the blast radius is
+  that user's own quota; a mint rate-limit is hardening for a later pass.
+
 ## Audit logging & usage tracking
 
 A hosted, internet-facing hub needs a durable record of **who authenticated, who was

@@ -267,10 +267,21 @@ func (a *API) byToken(w http.ResponseWriter, r *http.Request, fn func(token stri
 }
 
 func (a *API) handleBackends(w http.ResponseWriter, r *http.Request) {
-	// In open mode Auth.sessionLogin returns "" and every backend is listed;
-	// with auth on it returns the viewer's GitHub login so the list is filtered
-	// to the caller's own previews.
-	writeJSON(w, http.StatusOK, a.opts.Registry.List(r.URL.Query().Get("sort"), a.opts.Auth.sessionLogin(r)))
+	sort := r.URL.Query().Get("sort")
+	if a.opts.Auth.enabled() {
+		// Auth on: the listing is the caller's own-previews view. An unauthenticated
+		// caller must NOT receive the full list (that would leak every user's
+		// subdomains/owners/ports); require a valid session and filter to its login.
+		login := a.opts.Auth.sessionLogin(r)
+		if login == "" {
+			http.Error(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+		writeJSON(w, http.StatusOK, a.opts.Registry.List(sort, login))
+		return
+	}
+	// Open mode (no auth): list everything — today's behaviour.
+	writeJSON(w, http.StatusOK, a.opts.Registry.List(sort, ""))
 }
 
 func bearerToken(r *http.Request) string {

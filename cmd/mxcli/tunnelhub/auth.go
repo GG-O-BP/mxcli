@@ -7,6 +7,8 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -72,19 +74,31 @@ func (a *AuthConfig) auditSink() audit.Sink {
 	return audit.NoOp()
 }
 
-// signSession produces an HMAC-signed cookie value carrying {login, exp}. Format:
-// base64url(payload) "." base64url(HMAC-SHA256(payload)), payload = "login|expUnix".
-func signSession(secret []byte, login string, exp time.Time) string {
-	payload := login + "|" + strconv.FormatInt(exp.Unix(), 10)
+// Signing tags domain-separate the two token types so a session cookie can never
+// be replayed as an OAuth state (or vice versa): the tag is mixed into the MAC,
+// and each verifier only accepts its own tag.
+const (
+	tagSession = "session"
+	tagState   = "state"
+)
+
+// signTagged produces an HMAC-signed value carrying {msg, exp} under a domain tag.
+// Format: base64url(payload) "." base64url(HMAC-SHA256(tag ‖ 0x00 ‖ payload)),
+// payload = "msg|expUnix". The tag is authenticated but not carried in the token
+// (the verifier supplies the expected tag).
+func signTagged(secret []byte, tag, msg string, exp time.Time) string {
+	payload := msg + "|" + strconv.FormatInt(exp.Unix(), 10)
 	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(tag))
+	mac.Write([]byte{0})
 	mac.Write([]byte(payload))
 	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 	return base64.RawURLEncoding.EncodeToString([]byte(payload)) + "." + sig
 }
 
-// verifySession validates a cookie value and returns the login when the signature
-// is valid and the session has not expired. Constant-time signature comparison.
-func verifySession(secret []byte, value string, now time.Time) (login string, ok bool) {
+// verifyTagged validates a value under the expected tag and returns msg when the
+// signature is valid and it has not expired. Constant-time signature comparison.
+func verifyTagged(secret []byte, tag, value string, now time.Time) (msg string, ok bool) {
 	dot := strings.LastIndexByte(value, '.')
 	if dot <= 0 {
 		return "", false
@@ -95,12 +109,14 @@ func verifySession(secret []byte, value string, now time.Time) (login string, ok
 		return "", false
 	}
 	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(tag))
+	mac.Write([]byte{0})
 	mac.Write(payload)
 	want := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 	if !hmac.Equal([]byte(want), []byte(sigB64)) {
 		return "", false
 	}
-	// payload = "login|expUnix"; login (GitHub) never contains '|'.
+	// payload = "msg|expUnix"; msg (GitHub login / b64 url) never contains '|'.
 	sep := strings.LastIndexByte(string(payload), '|')
 	if sep <= 0 {
 		return "", false
@@ -113,6 +129,15 @@ func verifySession(secret []byte, value string, now time.Time) (login string, ok
 		return "", false // expired
 	}
 	return string(payload[:sep]), true
+}
+
+// signSession / verifySession are the session-cookie wrappers (tag "session").
+func signSession(secret []byte, login string, exp time.Time) string {
+	return signTagged(secret, tagSession, login, exp)
+}
+
+func verifySession(secret []byte, value string, now time.Time) (login string, ok bool) {
+	return verifyTagged(secret, tagSession, value, now)
 }
 
 // setSessionCookie writes a fresh signed session cookie for login.
@@ -189,11 +214,11 @@ func (a *AuthConfig) callbackURL() string {
 // no delimiter collides), reusing the session HMAC scheme with a short TTL.
 func (a *AuthConfig) signState(returnURL string) string {
 	enc := base64.RawURLEncoding.EncodeToString([]byte(returnURL))
-	return signSession(a.SessionSecret, enc, a.clock().Add(10*time.Minute))
+	return signTagged(a.SessionSecret, tagState, enc, a.clock().Add(10*time.Minute))
 }
 
 func (a *AuthConfig) verifyState(state string) (returnURL string, ok bool) {
-	enc, ok := verifySession(a.SessionSecret, state, a.clock())
+	enc, ok := verifyTagged(a.SessionSecret, tagState, state, a.clock())
 	if !ok {
 		return "", false
 	}
@@ -204,15 +229,12 @@ func (a *AuthConfig) verifyState(state string) (returnURL string, ok bool) {
 	return string(b), true
 }
 
-// clientIP returns the source address for audit, honouring the 443 front's
-// X-Forwarded-For (first hop) when present.
+// clientIP returns the source address for audit. The hub terminates TLS directly
+// (it *is* the 443 edge), so RemoteAddr is the real peer and X-Forwarded-For is
+// attacker-controlled — we deliberately do NOT trust it, to keep audit IPs
+// unspoofable. A deployment that fronts the hub with a trusted reverse proxy would
+// need an explicit allow-listed-proxy option before honouring XFF.
 func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if i := strings.IndexByte(xff, ','); i >= 0 {
-			return strings.TrimSpace(xff[:i])
-		}
-		return strings.TrimSpace(xff)
-	}
 	return stripPort(r.RemoteAddr)
 }
 
@@ -320,11 +342,21 @@ func (a *AuthConfig) exchangeCode(code string) (string, error) {
 		return "", err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("github token exchange returned HTTP %d", resp.StatusCode)
+	}
 	var body struct {
 		AccessToken string `json:"access_token"`
+		Error       string `json:"error"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&body); err != nil {
 		return "", err
+	}
+	if body.Error != "" {
+		return "", fmt.Errorf("github token exchange failed: %s", body.Error)
+	}
+	if body.AccessToken == "" {
+		return "", fmt.Errorf("github token exchange returned no access_token")
 	}
 	return body.AccessToken, nil
 }
@@ -338,10 +370,13 @@ func (a *AuthConfig) fetchLogin(token string) (string, error) {
 		return "", err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("github /user returned HTTP %d", resp.StatusCode)
+	}
 	var body struct {
 		Login string `json:"login"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&body); err != nil {
 		return "", err
 	}
 	return body.Login, nil

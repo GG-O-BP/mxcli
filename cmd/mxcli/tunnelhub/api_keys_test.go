@@ -196,3 +196,34 @@ func TestAPI_AuthConfig(t *testing.T) {
 		t.Errorf("authed auth-config = %+v, want enabled/require/cid", ac)
 	}
 }
+
+// TestAPI_BackendsRequiresAuthWhenEnabled is the fix for the anonymous-listing
+// leak: with auth on, an unauthenticated GET /api/backends must 401 (not return
+// every user's previews). A valid session gets its own filtered list.
+func TestAPI_BackendsRequiresAuthWhenEnabled(t *testing.T) {
+	api, _, done := newAuthedAPI(t, true)
+	defer done()
+
+	// Register a preview owned by alice (via a minted key).
+	key := mintKey(t, api, "gho_test")
+	if rec := doJSON(t, api, http.MethodPost, "/api/register",
+		`{"project":"Secret","branch":"main"}`, map[string]string{"X-Hub-Key": key}); rec.Code != http.StatusOK {
+		t.Fatalf("register status = %d", rec.Code)
+	}
+
+	// Anonymous (no cookie) must NOT get the listing.
+	anon := doJSON(t, api, http.MethodGet, "/api/backends", "", nil)
+	if anon.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous /api/backends = %d, want 401 (leak!)", anon.Code)
+	}
+	if strings.Contains(anon.Body.String(), "Secret") {
+		t.Errorf("anonymous response leaked a preview: %s", anon.Body)
+	}
+
+	// A valid alice session sees her own preview.
+	cookie := signSession(api.opts.Auth.SessionSecret, "alice", time.Unix(1_700_000_000, 0).Add(time.Hour))
+	ok := doJSON(t, api, http.MethodGet, "/api/backends", "", map[string]string{"Cookie": sessionCookieName + "=" + cookie})
+	if ok.Code != http.StatusOK || !strings.Contains(ok.Body.String(), "Secret") {
+		t.Errorf("alice /api/backends = %d body %s, want 200 with her preview", ok.Code, ok.Body)
+	}
+}
