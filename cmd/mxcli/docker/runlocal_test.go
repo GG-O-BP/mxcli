@@ -73,6 +73,130 @@ func TestLocalRunOptions_DebugPassDefault(t *testing.T) {
 	}
 }
 
+func TestBuildRuntimeSettings(t *testing.T) {
+	// --metrics alone → a Prometheus registry.
+	s, err := buildRuntimeSettings(true, false, nil)
+	if err != nil {
+		t.Fatalf("buildRuntimeSettings: %v", err)
+	}
+	regs, ok := s["Metrics.Registries"].([]any)
+	if !ok || len(regs) != 1 {
+		t.Fatalf("Metrics.Registries = %v, want one registry", s["Metrics.Registries"])
+	}
+	if m, _ := regs[0].(map[string]any); m["type"] != "prometheus" {
+		t.Errorf("registry = %v, want type prometheus", regs[0])
+	}
+
+	// --runtime-setting with a JSON array value passes through typed, and an
+	// explicit Metrics.Registries is not overridden by --metrics.
+	s, err = buildRuntimeSettings(true, false, []string{
+		`OpenTelemetry._RuntimeSpanFilters=["Loop","Gateway"]`,
+		`Metrics.Registries=[{"type":"otlp"}]`,
+	})
+	if err != nil {
+		t.Fatalf("buildRuntimeSettings: %v", err)
+	}
+	filters, ok := s["OpenTelemetry._RuntimeSpanFilters"].([]any)
+	if !ok || len(filters) != 2 || filters[0] != "Loop" {
+		t.Errorf("span filters = %v", s["OpenTelemetry._RuntimeSpanFilters"])
+	}
+	if regs, _ := s["Metrics.Registries"].([]any); len(regs) != 1 || regs[0].(map[string]any)["type"] != "otlp" {
+		t.Errorf("explicit Metrics.Registries should win over --metrics, got %v", s["Metrics.Registries"])
+	}
+
+	// --trace adds the default span filters…
+	s, _ = buildRuntimeSettings(false, true, nil)
+	if f, _ := s["OpenTelemetry._RuntimeSpanFilters"].([]any); len(f) != len(defaultOtelSpanFilters) {
+		t.Errorf("--trace should add %d default span filters, got %v", len(defaultOtelSpanFilters), s["OpenTelemetry._RuntimeSpanFilters"])
+	}
+	// …but an explicit filter set wins over --trace defaults.
+	s, _ = buildRuntimeSettings(false, true, []string{`OpenTelemetry._RuntimeSpanFilters=["Only"]`})
+	if f, _ := s["OpenTelemetry._RuntimeSpanFilters"].([]any); len(f) != 1 || f[0] != "Only" {
+		t.Errorf("explicit span filters should win over --trace, got %v", s["OpenTelemetry._RuntimeSpanFilters"])
+	}
+
+	// A non-JSON value stays a plain string.
+	s, _ = buildRuntimeSettings(false, false, []string{"DTAPMode=A"})
+	if s["DTAPMode"] != "A" {
+		t.Errorf("DTAPMode = %v, want string A", s["DTAPMode"])
+	}
+
+	// Nothing requested → nil (no overlay).
+	if s, _ := buildRuntimeSettings(false, false, nil); s != nil {
+		t.Errorf("want nil for no settings, got %v", s)
+	}
+
+	// Malformed setting errors.
+	if _, err := buildRuntimeSettings(false, false, []string{"noequals"}); err == nil {
+		t.Error("want error for a setting without '='")
+	}
+}
+
+func TestWithTraceEnv(t *testing.T) {
+	base := []string{"PATH=/bin", "JAVA_TOOL_OPTIONS=-Xmx512m"}
+	env := withTraceEnv(base, "/agents/otel.jar", "sudoku")
+
+	get := func(key string) (string, bool) {
+		for _, e := range env {
+			if strings.HasPrefix(e, key+"=") {
+				return e[len(key)+1:], true
+			}
+		}
+		return "", false
+	}
+	// Agent appended to the existing JAVA_TOOL_OPTIONS (not duplicated).
+	jto, _ := get("JAVA_TOOL_OPTIONS")
+	if !strings.Contains(jto, "-Xmx512m") || !strings.Contains(jto, "-javaagent:/agents/otel.jar") {
+		t.Errorf("JAVA_TOOL_OPTIONS = %q, want existing + agent", jto)
+	}
+	n := 0
+	for _, e := range env {
+		if strings.HasPrefix(e, "JAVA_TOOL_OPTIONS=") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("JAVA_TOOL_OPTIONS appears %d times, want 1", n)
+	}
+	if v, _ := get("OTEL_SERVICE_NAME"); v != "sudoku" {
+		t.Errorf("OTEL_SERVICE_NAME = %q, want sudoku", v)
+	}
+	if v, _ := get("OTEL_TRACES_EXPORTER"); v != "console" {
+		t.Errorf("OTEL_TRACES_EXPORTER = %q, want console", v)
+	}
+
+	// A user-provided OTEL_* is respected (not overridden).
+	env = withTraceEnv([]string{"OTEL_TRACES_EXPORTER=otlp"}, "/agents/otel.jar", "svc")
+	if v, _ := get2(env, "OTEL_TRACES_EXPORTER"); v != "otlp" {
+		t.Errorf("user OTEL_TRACES_EXPORTER should win, got %q", v)
+	}
+}
+
+func get2(env []string, key string) (string, bool) {
+	for _, e := range env {
+		if strings.HasPrefix(e, key+"=") {
+			return e[len(key)+1:], true
+		}
+	}
+	return "", false
+}
+
+func TestRuntimeConfigParams_OverlaysSettings(t *testing.T) {
+	o := LocalRuntimeOptions{
+		DeployDir: "/d", DB: DBConfig{Type: "PostgreSQL", Name: "app"},
+		RuntimeSettings: map[string]any{"Metrics.Registries": []any{map[string]any{"type": "prometheus"}}},
+	}
+	p := runtimeConfigParams(o, nil)
+	// Base keys still present…
+	if p["DatabaseName"] != "app" {
+		t.Errorf("DatabaseName lost: %v", p["DatabaseName"])
+	}
+	// …and the overlay merged in (not a separate replace call).
+	if _, ok := p["Metrics.Registries"]; !ok {
+		t.Errorf("Metrics.Registries not merged into config params: %v", p)
+	}
+}
+
 func TestLocalRunOptions_DefaultsRespectOverrides(t *testing.T) {
 	o := LocalRunOptions{
 		ProjectPath: "/proj/App.mpr",

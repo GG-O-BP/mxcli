@@ -3,6 +3,7 @@
 package docker
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -99,8 +100,21 @@ type LocalRunOptions struct {
 	Debug bool
 	// DebugPass is the debugger password used when Debug is set (default "mxdebug").
 	DebugPass string
-	Stdout    io.Writer
-	Stderr    io.Writer
+	// Metrics registers a Prometheus meter registry at boot; the runtime then
+	// serves /prometheus on the admin port. Sugar for a Metrics.Registries setting.
+	Metrics bool
+	// Trace attaches the bundled OpenTelemetry Java agent (traces → the runtime
+	// log via the console exporter) and applies default span filters.
+	Trace bool
+	// TraceService is OTEL_SERVICE_NAME under --trace (default: the .mpr name).
+	TraceService string
+	// RuntimeSettings are raw "Key=Value" runtime settings merged into the boot
+	// update_configuration payload (Value is parsed as JSON, else a string), e.g.
+	// 'Metrics.Registries=[{"type":"otlp"}]' or
+	// 'OpenTelemetry._RuntimeSpanFilters=["Loop","Gateway"]'.
+	RuntimeSettings []string
+	Stdout          io.Writer
+	Stderr          io.Writer
 }
 
 // defaultLocalAdminPass is the admin password for a local dev runtime. The admin
@@ -156,6 +170,57 @@ func (o *LocalRunOptions) applyDefaults() {
 	if o.Stderr == nil {
 		o.Stderr = os.Stderr
 	}
+}
+
+// defaultOtelSpanFilters are the internal runtime spans suppressed under --trace.
+// Unfiltered per-activity tracing is ~10x slower; these bring it near baseline
+// while keeping the microflow-level spans (findings — OpenTelemetry).
+var defaultOtelSpanFilters = []any{"CreateOrChangeVariable", "Loop", "Gateway", "RetrieveFromCache"}
+
+// buildRuntimeSettings turns --metrics/--trace + repeatable --runtime-setting
+// Key=Value into the map merged into the boot update_configuration payload. A
+// Value that parses as JSON is used as-is; otherwise it is a plain string.
+// --metrics adds a Prometheus registry and --trace adds default span filters,
+// each unless the corresponding key was already set explicitly.
+func buildRuntimeSettings(metrics, trace bool, raw []string) (map[string]any, error) {
+	out := map[string]any{}
+	for _, s := range raw {
+		k, v, err := parseRuntimeSetting(s)
+		if err != nil {
+			return nil, err
+		}
+		out[k] = v
+	}
+	if metrics {
+		if _, ok := out["Metrics.Registries"]; !ok {
+			out["Metrics.Registries"] = []any{map[string]any{"type": "prometheus"}}
+		}
+	}
+	if trace {
+		if _, ok := out["OpenTelemetry._RuntimeSpanFilters"]; !ok {
+			out["OpenTelemetry._RuntimeSpanFilters"] = defaultOtelSpanFilters
+		}
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// parseRuntimeSetting splits "Key=Value"; Value is parsed as JSON when possible
+// (so arrays/objects/numbers/bools pass through typed), else kept as a string.
+func parseRuntimeSetting(s string) (string, any, error) {
+	i := strings.IndexByte(s, '=')
+	if i <= 0 {
+		return "", nil, fmt.Errorf("invalid --runtime-setting %q (want Key=Value)", s)
+	}
+	key := strings.TrimSpace(s[:i])
+	rawVal := s[i+1:]
+	var v any
+	if json.Unmarshal([]byte(rawVal), &v) == nil {
+		return key, v, nil
+	}
+	return key, rawVal, nil
 }
 
 // deriveDBName turns a project file name into a safe Postgres database name:
@@ -482,6 +547,14 @@ func RunLocal(opts LocalRunOptions) error {
 	if runtimeLog == "-" {
 		runtimeLog = ""
 	}
+	runtimeSettings, err := buildRuntimeSettings(opts.Metrics, opts.Trace, opts.RuntimeSettings)
+	if err != nil {
+		return err
+	}
+	traceService := opts.TraceService
+	if opts.Trace && traceService == "" {
+		traceService = strings.TrimSuffix(filepath.Base(opts.ProjectPath), filepath.Ext(opts.ProjectPath))
+	}
 	rt, err := StartLocalRuntime(LocalRuntimeOptions{
 		DeployDir:   opts.DeployDir,
 		InstallPath: installPath,
@@ -492,6 +565,9 @@ func RunLocal(opts LocalRunOptions) error {
 		ApplicationRootUrl: appRootURL,
 		DB:                 opts.DB,
 		RuntimeLogPath:     runtimeLog,
+		RuntimeSettings:    runtimeSettings,
+		Trace:              opts.Trace,
+		TraceServiceName:   traceService,
 		Stdout:             w,
 		Stderr:             stderr,
 	})
@@ -503,6 +579,17 @@ func RunLocal(opts LocalRunOptions) error {
 	fmt.Fprintf(w, "\nApp is running at %s\n", rt.AppURL())
 	if runtimeLog != "" {
 		fmt.Fprintf(w, "Runtime log: %s\n", runtimeLog)
+	}
+	if opts.Metrics {
+		// The Prometheus registry is served from the admin port (loopback).
+		fmt.Fprintf(w, "Metrics (Prometheus): http://127.0.0.1:%d/prometheus\n", opts.AdminPort)
+	}
+	if opts.Trace {
+		if runtimeLog != "" {
+			fmt.Fprintf(w, "Tracing enabled (OpenTelemetry, service %q); spans -> %s\n", traceService, runtimeLog)
+		} else {
+			fmt.Fprintf(w, "Tracing enabled (OpenTelemetry, service %q); spans go to the console only (pass --runtime-log to capture them)\n", traceService)
+		}
 	}
 
 	// 6·debug: --debug enables the microflow debugger and starts a session now, so
