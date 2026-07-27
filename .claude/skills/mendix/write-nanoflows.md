@@ -108,6 +108,22 @@ DECLARE $IsValid Boolean = true;
 SET $IsValid = false;
 ```
 
+**Where nanoflow log output goes (and a filtering trap):** a nanoflow runs on the
+client, so its `LOG` output takes two paths:
+
+- **Browser console** — with automatic timing, e.g.
+  `[Nanoflow] [flow_…] Starting execution of Sudoku.NF_ToggleNotes` … `Finished … 6.7 ms`.
+- **Server runtime log** (`.mxcli/runtime.log` under `run --local`) — but the runtime
+  **rewrites the log node** to `Client_Nanoflow`. So `LOG INFO NODE 'Sudoku' '…'` from a
+  nanoflow appears as `Client_Nanoflow: …`, **not** `Sudoku: …`. A log filter built
+  around your microflow node names will silently drop every nanoflow line — grep for
+  `Client_Nanoflow` (or the message text) to see nanoflow logs. This is a Mendix
+  platform behaviour, not an mxcli one.
+- **`LOG DEBUG` never reaches the server log.** Only `INFO`/`WARNING`/`ERROR` reach
+  `runtime.log`; a nanoflow `LOG DEBUG` line is sent but dropped server-side. All four
+  levels still show in the **browser console**, so use the console (not `runtime.log`)
+  when debugging at `DEBUG` level.
+
 ### Control Flow
 ```mdl
 IF $Cart/ItemCount = 0 THEN

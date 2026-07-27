@@ -92,8 +92,15 @@ type LocalRunOptions struct {
 	// warm loop is debuggable (server stack traces, microflow LOG output).
 	// Default <projectDir>/.mxcli/runtime.log; set to "-" to disable. Findings #25.
 	RuntimeLogPath string
-	Stdout         io.Writer
-	Stderr         io.Writer
+	// Debug enables the runtime microflow debugger at boot and starts a session,
+	// caching its token under <projectDir>/.mxcli so `mxcli debug break/paused/…`
+	// (in another terminal, same -p) works immediately. Enabling with no
+	// breakpoints does not change runtime behaviour — only a set breakpoint pauses.
+	Debug bool
+	// DebugPass is the debugger password used when Debug is set (default "mxdebug").
+	DebugPass string
+	Stdout    io.Writer
+	Stderr    io.Writer
 }
 
 // defaultLocalAdminPass is the admin password for a local dev runtime. The admin
@@ -139,6 +146,9 @@ func (o *LocalRunOptions) applyDefaults() {
 	}
 	if o.RuntimeLogPath == "" {
 		o.RuntimeLogPath = filepath.Join(filepath.Dir(o.ProjectPath), ".mxcli", "runtime.log")
+	}
+	if o.Debug && o.DebugPass == "" {
+		o.DebugPass = "mxdebug"
 	}
 	if o.Stdout == nil {
 		o.Stdout = os.Stdout
@@ -493,6 +503,31 @@ func RunLocal(opts LocalRunOptions) error {
 	fmt.Fprintf(w, "\nApp is running at %s\n", rt.AppURL())
 	if runtimeLog != "" {
 		fmt.Fprintf(w, "Runtime log: %s\n", runtimeLog)
+	}
+
+	// 6·debug: --debug enables the microflow debugger and starts a session now, so
+	// breakpoints can be set from another terminal without a separate
+	// `mxcli debug enable`. No breakpoints exist yet, so nothing pauses; the token
+	// is cached under <projectDir>/.mxcli for the `mxcli debug …` commands.
+	if opts.Debug {
+		dbg := NewDebuggerClient(DebuggerOptions{
+			Admin:     rt.m2ee,
+			AppURL:    rt.AppURL(),
+			DebugPass: opts.DebugPass,
+			TokenPath: filepath.Join(filepath.Dir(opts.ProjectPath), ".mxcli", "debug-session.token"),
+		})
+		if err := dbg.Enable(); err != nil {
+			fmt.Fprintf(stderr, "  (debugger not enabled: %v)\n", err)
+		} else if _, err := dbg.StartSession(); err != nil {
+			fmt.Fprintf(stderr, "  (debugger enabled but starting a session failed: %v)\n", err)
+		} else {
+			fmt.Fprintf(w, "Debugger enabled. Set a breakpoint from another terminal:\n")
+			fmt.Fprintf(w, "  mxcli debug break <Module.Flow> --activity <#n|caption> -p %s\n", opts.ProjectPath)
+			// Best-effort: turn the debugger back off on shutdown so a breakpoint
+			// can't be left pausing requests. (The runtime dies with the process
+			// anyway; this also clears the cached session token.)
+			defer func() { _ = dbg.Disable() }()
+		}
 	}
 
 	// 6a. With --hub, open a reverse tunnel so the app is reachable in a browser at
