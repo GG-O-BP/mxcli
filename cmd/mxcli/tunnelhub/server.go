@@ -14,6 +14,8 @@ import (
 
 	chserver "github.com/jpillora/chisel/server"
 	"golang.org/x/crypto/acme/autocert"
+
+	"github.com/mendixlabs/mxcli/cmd/mxcli/tunnelhub/audit"
 )
 
 // ctxKey is the type for request-context values the front handler passes to the
@@ -49,6 +51,9 @@ type ServerOptions struct {
 	// owner check on preview + admin access. Nil / open mode preserves today's
 	// behaviour.
 	Auth *AuthConfig
+	// Audit receives auth + registration events (login/deny/register/key). Nil →
+	// audit.NoOp(). The same sink is shared with Auth.
+	Audit audit.Sink
 }
 
 // Server is the running multi-tenant hub: one embedded chisel reverse server
@@ -89,12 +94,17 @@ func NewServer(o ServerOptions) (*Server, error) {
 		return nil, fmt.Errorf("chisel server: %w", err)
 	}
 
+	// A shared key store backs /api/keys + X-Hub-Key registration (only reachable
+	// when Auth is enabled; harmless otherwise).
+	keys := NewKeyStore()
 	api := NewAPI(APIOptions{
 		Registry:       o.Registry,
 		ControlURL:     "https://" + o.HubHost,
 		TunnelAuth:     o.TunnelAuth,
 		RegisterSecret: o.RegisterSecret,
 		Auth:           o.Auth,
+		Keys:           keys,
+		Audit:          o.Audit,
 	})
 	apiMux := http.NewServeMux()
 	api.Mount(apiMux)

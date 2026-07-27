@@ -66,6 +66,9 @@ type RegisterRequest struct {
 	Branch   string `json:"branch"`
 	Worktree string `json:"worktree"`
 	AppPort  int    `json:"appPort"`
+	// Owner is set server-side from the X-Hub-Key → login lookup, never trusted
+	// from the client body (json:"-" keeps it off the wire).
+	Owner string `json:"-"`
 }
 
 // Registry is the in-memory store of registered backends. All methods are safe
@@ -142,6 +145,7 @@ func (r *Registry) Register(req RegisterRequest) (*Backend, error) {
 		Solution: strings.TrimSpace(req.Solution),
 		Branch:   strings.TrimSpace(req.Branch),
 		Worktree: strings.TrimSpace(req.Worktree),
+		Owner:    strings.TrimSpace(req.Owner),
 		AppPort:  req.AppPort,
 	}
 	if existing, ok := r.byIdentity[b.identity()]; ok {

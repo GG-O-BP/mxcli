@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+
+	"github.com/mendixlabs/mxcli/cmd/mxcli/tunnelhub/audit"
 )
 
 // APIOptions configures the registration API.
@@ -26,11 +28,23 @@ type APIOptions struct {
 	// cookie so /api/backends is filtered to the caller's own previews. Nil or
 	// open-mode → "" (list everything, today's behaviour).
 	Auth *AuthConfig
+	// Keys is the hub API-key store backing /api/keys and X-Hub-Key registration.
+	// Nil disables the key endpoints (open mode uses the legacy X-Hub-Secret).
+	Keys *KeyStore
+	// Audit receives key/registration events. Nil → audit.NoOp().
+	Audit audit.Sink
 }
 
 // API serves the hub's registration + query endpoints over the registry.
 type API struct {
 	opts APIOptions
+}
+
+// KeyResponse is returned by POST /api/keys after a successful mint. The key is
+// shown exactly once; the client caches it in ~/.mxcli/auth.json.
+type KeyResponse struct {
+	Key   string `json:"key"`
+	Login string `json:"login"`
 }
 
 // RegisterResponse is returned to `mxcli run --hub` after registration.
@@ -49,6 +63,9 @@ func NewAPI(o APIOptions) *API {
 	if o.HeartbeatIntervalSec == 0 {
 		o.HeartbeatIntervalSec = 20
 	}
+	if o.Audit == nil {
+		o.Audit = audit.NoOp()
+	}
 	return &API{opts: o}
 }
 
@@ -58,6 +75,7 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/api/status", a.handleStatus)
 	mux.HandleFunc("/api/deregister", a.handleDeregister)
 	mux.HandleFunc("/api/backends", a.handleBackends)
+	mux.HandleFunc("/api/keys", a.handleKeys)
 }
 
 func (a *API) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -65,9 +83,10 @@ func (a *API) handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if a.opts.RegisterSecret != "" && r.Header.Get("X-Hub-Secret") != a.opts.RegisterSecret {
-		http.Error(w, "invalid or missing hub secret", http.StatusUnauthorized)
-		return
+	// Authenticate the registrant and (when auth is on) learn the owner login.
+	owner, ok := a.authorizeRegister(w, r)
+	if !ok {
+		return // authorizeRegister has written the 401 + a register_deny audit line
 	}
 	var req RegisterRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
@@ -78,11 +97,16 @@ func (a *API) handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "project is required", http.StatusBadRequest)
 		return
 	}
+	req.Owner = owner // server-derived; never trusted from the body
 	b, err := a.opts.Registry.Register(req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
+	a.opts.Audit.Log(audit.Event{
+		Event: audit.EventRegisterOK, Login: owner, IP: clientIP(r),
+		Subdomain: b.Subdomain, Owner: owner, Outcome: "ok",
+	})
 	host := b.Subdomain
 	if d := a.opts.Registry.domain; d != "" {
 		host = b.Subdomain + "." + d
@@ -96,6 +120,91 @@ func (a *API) handleRegister(w http.ResponseWriter, r *http.Request) {
 		TunnelAuth:           a.opts.TunnelAuth,
 		HeartbeatIntervalSec: a.opts.HeartbeatIntervalSec,
 	})
+}
+
+// authorizeRegister decides whether a /api/register call may proceed and, when
+// auth is on, resolves the X-Hub-Key to the owner login. It writes the 401 +
+// register_deny audit line itself on rejection and returns ok=false.
+//
+//   - Open mode (auth off): the legacy X-Hub-Secret gate; owner is "".
+//   - Auth on: an X-Hub-Key is resolved to a login and stamped as owner. With
+//     --require-auth (default) a missing/invalid key is rejected; in soft mode a
+//     keyless registration is allowed but stays owner-less.
+func (a *API) authorizeRegister(w http.ResponseWriter, r *http.Request) (owner string, ok bool) {
+	if !a.opts.Auth.enabled() {
+		if a.opts.RegisterSecret != "" && r.Header.Get("X-Hub-Secret") != a.opts.RegisterSecret {
+			http.Error(w, "invalid or missing hub secret", http.StatusUnauthorized)
+			return "", false
+		}
+		return "", true
+	}
+	key := strings.TrimSpace(r.Header.Get("X-Hub-Key"))
+	if a.opts.Keys != nil {
+		if login, found := a.opts.Keys.Resolve(key); found {
+			return login, true
+		}
+	}
+	// No valid key. Enforce only when required; soft mode registers anonymously.
+	if a.opts.Auth.RequireAuth {
+		a.opts.Audit.Log(audit.Event{
+			Event: audit.EventRegisterDeny, IP: clientIP(r), Outcome: "deny",
+			Detail: "missing or invalid X-Hub-Key",
+		})
+		http.Error(w, "missing or invalid X-Hub-Key (run 'mxcli auth hub login')", http.StatusUnauthorized)
+		return "", false
+	}
+	return "", true
+}
+
+// handleKeys mints (POST) or revokes (DELETE) a hub API key. Only available when
+// auth is configured; the key store is the registration credential that replaces
+// the shared secret for a hosted hub.
+func (a *API) handleKeys(w http.ResponseWriter, r *http.Request) {
+	if !a.opts.Auth.enabled() || a.opts.Keys == nil {
+		http.Error(w, "hub keys are not enabled on this hub", http.StatusNotFound)
+		return
+	}
+	switch r.Method {
+	case http.MethodPost:
+		a.handleKeyMint(w, r)
+	case http.MethodDelete:
+		a.handleKeyRevoke(w, r)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleKeyMint validates the caller's GitHub token (Bearer) against GitHub, then
+// issues an opaque hub key bound to that login. The GitHub token is used once and
+// discarded — never stored.
+func (a *API) handleKeyMint(w http.ResponseWriter, r *http.Request) {
+	token := bearerToken(r)
+	if token == "" {
+		http.Error(w, "missing GitHub token (Authorization: Bearer <token>)", http.StatusUnauthorized)
+		return
+	}
+	login, err := a.opts.Auth.fetchLogin(token)
+	if err != nil || login == "" {
+		http.Error(w, "could not verify GitHub identity", http.StatusUnauthorized)
+		return
+	}
+	key := a.opts.Keys.Mint(login)
+	a.opts.Audit.Log(audit.Event{
+		Event: audit.EventKeyMint, Login: login, IP: clientIP(r), Outcome: "ok",
+	})
+	writeJSON(w, http.StatusOK, KeyResponse{Key: key, Login: login})
+}
+
+// handleKeyRevoke removes the presented key (X-Hub-Key). Idempotent: revoking an
+// unknown key still returns 204.
+func (a *API) handleKeyRevoke(w http.ResponseWriter, r *http.Request) {
+	key := strings.TrimSpace(r.Header.Get("X-Hub-Key"))
+	if login, ok := a.opts.Keys.Revoke(key); ok {
+		a.opts.Audit.Log(audit.Event{
+			Event: audit.EventKeyRevoke, Login: login, IP: clientIP(r), Outcome: "ok",
+		})
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *API) handleStatus(w http.ResponseWriter, r *http.Request) {

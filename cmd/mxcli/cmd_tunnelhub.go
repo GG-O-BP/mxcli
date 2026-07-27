@@ -105,6 +105,7 @@ Then, in each app's environment:
 			RegisterSecret: secret,
 			CertCacheDir:   certCache,
 			Auth:           auth,
+			Audit:          auditSink,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: configuring tunnel-hub: %v\n", err)
