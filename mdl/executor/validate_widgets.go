@@ -557,6 +557,49 @@ func validateStaticWidget(w *ast.WidgetV3, locationPrefix string) []linter.Viola
 		}
 	}
 
+	// A widget EXPRESSION property (DynamicClasses / VisibleIf / EditableIf) that
+	// walks an association fails the build with CE0117 — Mendix client-side
+	// expressions cannot traverse associations (only data bindings such as
+	// contentparams/attribute can). This is statically checkable and easy to trip
+	// over, because a data binding on the SAME widget can traverse the same
+	// association legitimately. (findings #4)
+	out = append(out, validateWidgetExpressionAssociations(w, locationPrefix)...)
+
+	return out
+}
+
+// exprAssociationStepRe matches an association step inside an expression: a
+// slash-delimited, module-qualified name (e.g. `/Feedline.Article_Source/`). A
+// plain attribute access (`$obj/Slug`) is a single unqualified segment and does
+// not match; a qualified enum literal (`Mod.Enum.Value`) has no leading slash and
+// does not match either.
+var exprAssociationStepRe = regexp.MustCompile(`/([A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*)/`)
+
+// expressionWidgetProps are the widget property keys whose value is a client-side
+// Mendix expression (never a data binding). An association step in any of these
+// is always CE0117.
+var expressionWidgetProps = []string{"DynamicClasses", "VisibleIf", "EditableIf"}
+
+// validateWidgetExpressionAssociations flags an association traversal inside an
+// expression-typed widget property (MDL-WIDGET13).
+func validateWidgetExpressionAssociations(w *ast.WidgetV3, locationPrefix string) []linter.Violation {
+	var out []linter.Violation
+	for _, key := range expressionWidgetProps {
+		expr, ok := lookupWidgetProp(w, key)
+		if !ok || expr == "" {
+			continue
+		}
+		if m := exprAssociationStepRe.FindStringSubmatch(expr); m != nil {
+			out = append(out, linter.Violation{
+				RuleID:   "MDL-WIDGET13",
+				Severity: linter.SeverityError,
+				Message: fmt.Sprintf(
+					"%s: widget `%s` property `%s` expression traverses association `%s` — Mendix expressions cannot follow associations (CE0117). Bind the value via a data binding (contentparams/attribute) or precompute it onto the bound entity (e.g. a calculated attribute).",
+					locationPrefix, w.Name, key, m[1],
+				),
+			})
+		}
+	}
 	return out
 }
 

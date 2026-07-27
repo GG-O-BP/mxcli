@@ -154,6 +154,47 @@ func TestValidateStaticWidget_DataViewDatabaseSource(t *testing.T) {
 	}
 }
 
+// TestValidateWidgetExpressionAssociations — MDL-WIDGET13 flags an association
+// step inside an expression-typed widget property (DynamicClasses/VisibleIf/
+// EditableIf). Such expressions fail the build with CE0117; a data binding on the
+// same widget may traverse the same association legitimately (not flagged here).
+func TestValidateWidgetExpressionAssociations(t *testing.T) {
+	cases := []struct {
+		name   string
+		widget *ast.WidgetV3
+		want   bool // expect an MDL-WIDGET13 violation
+	}{
+		{"dynamicclasses traversing association → rejected",
+			&ast.WidgetV3{Type: "dynamictext", Name: "rowBadge", Properties: map[string]any{
+				"DynamicClasses": "'fl-tint-' + $currentObject/Feedline.Article_Source/Slug"}}, true},
+		{"visibleif traversing association → rejected",
+			&ast.WidgetV3{Type: "container", Name: "box", Properties: map[string]any{
+				"VisibleIf": "$currentObject/Feedline.Article_Source/Active"}}, true},
+		{"editableif traversing association → rejected",
+			&ast.WidgetV3{Type: "textbox", Name: "tb", Properties: map[string]any{
+				"EditableIf": "$currentObject/Feedline.Article_Source/Editable"}}, true},
+		{"dynamicclasses on a plain attribute → ok",
+			&ast.WidgetV3{Type: "dynamictext", Name: "rowBadge", Properties: map[string]any{
+				"DynamicClasses": "'fl-tint-' + $currentObject/SourceSlug"}}, false},
+		{"visibleif comparing an enum literal → ok (not a traversal)",
+			&ast.WidgetV3{Type: "container", Name: "box", Properties: map[string]any{
+				"VisibleIf": "$currentObject/Status = Feedline.State.Open"}}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := false
+			for _, v := range validateStaticWidget(c.widget, "page X") {
+				if v.RuleID == "MDL-WIDGET13" {
+					got = true
+				}
+			}
+			if got != c.want {
+				t.Errorf("MDL-WIDGET13 present = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
 // TestValidateObjectListItemEnums — MDL-WIDGET08 flags an object-list item's
 // enumeration sub-property whose value isn't a declared member key (e.g. a Maps
 // marker LocationType outside {address, latlng}). Studio Pro silently defaults
