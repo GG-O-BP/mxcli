@@ -51,6 +51,10 @@ type LocalRunOptions struct {
 	// HubSecret is the shared auth secret for the hub ("user:pass"), matching the
 	// hub's --secret. Optional but recommended.
 	HubSecret string
+	// HubKey is a per-user tunnel-hub API key (from `mxcli auth hub login` or
+	// MXCLI_HUB_KEY) presented to an authenticated hub as X-Hub-Key; it stamps the
+	// preview's owner. Empty for open self-hosted hubs.
+	HubKey string
 	// Hub identity (multi-tenant hub): these drive the assigned subdomain and the
 	// hub overview grouping. Blank Project/Branch are auto-detected from the .mpr
 	// name and git.
@@ -538,7 +542,7 @@ func RunLocal(opts LocalRunOptions) error {
 			Branch: opts.HubBranch, Worktree: opts.HubWorktree,
 		})
 		fmt.Fprintf(w, "Registering with hub %s...\n", opts.Hub)
-		hubReg, err = RegisterWithHub(opts.Hub, opts.HubSecret, meta, opts.AppPort)
+		hubReg, err = RegisterWithHub(opts.Hub, opts.HubSecret, opts.HubKey, meta, opts.AppPort)
 		if err != nil {
 			return fmt.Errorf("hub registration: %w", err)
 		}

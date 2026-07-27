@@ -76,6 +76,33 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/api/deregister", a.handleDeregister)
 	mux.HandleFunc("/api/backends", a.handleBackends)
 	mux.HandleFunc("/api/keys", a.handleKeys)
+	mux.HandleFunc("/api/auth-config", a.handleAuthConfig)
+}
+
+// AuthConfigResponse tells a client whether the hub requires GitHub auth and, if
+// so, which OAuth App client id to use for the device flow. The client id is a
+// public value (it appears in every browser redirect); no secret is exposed.
+type AuthConfigResponse struct {
+	AuthEnabled    bool   `json:"authEnabled"`
+	RequireAuth    bool   `json:"requireAuth"`
+	GitHubClientID string `json:"githubClientId,omitempty"`
+}
+
+// handleAuthConfig (GET /api/auth-config) lets `mxcli auth hub login` discover the
+// hub's OAuth App client id so the user needn't configure one. Open-mode hubs
+// report authEnabled:false and the client falls back to the shared secret.
+func (a *API) handleAuthConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	resp := AuthConfigResponse{}
+	if a.opts.Auth.enabled() {
+		resp.AuthEnabled = true
+		resp.RequireAuth = a.opts.Auth.RequireAuth
+		resp.GitHubClientID = a.opts.Auth.GitHubClientID
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (a *API) handleRegister(w http.ResponseWriter, r *http.Request) {

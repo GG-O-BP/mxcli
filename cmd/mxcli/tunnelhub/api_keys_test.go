@@ -172,3 +172,27 @@ func TestAPI_OpenModeRegisterUnchanged(t *testing.T) {
 		t.Errorf("open-mode register should be owner-less, got %+v", got)
 	}
 }
+
+func TestAPI_AuthConfig(t *testing.T) {
+	// Open mode: authEnabled false, no client id.
+	open, _ := newTestAPI(t, "")
+	rec := doJSON(t, open, http.MethodGet, "/api/auth-config", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("open auth-config status = %d", rec.Code)
+	}
+	var oc AuthConfigResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &oc)
+	if oc.AuthEnabled || oc.GitHubClientID != "" {
+		t.Errorf("open mode auth-config = %+v, want disabled/empty", oc)
+	}
+
+	// Auth on: exposes the client id.
+	api, _, done := newAuthedAPI(t, true)
+	defer done()
+	r2 := doJSON(t, api, http.MethodGet, "/api/auth-config", "", nil)
+	var ac AuthConfigResponse
+	_ = json.Unmarshal(r2.Body.Bytes(), &ac)
+	if !ac.AuthEnabled || !ac.RequireAuth || ac.GitHubClientID != "cid" {
+		t.Errorf("authed auth-config = %+v, want enabled/require/cid", ac)
+	}
+}
