@@ -230,6 +230,59 @@ func TestSetWidgetProperty_DynamicClasses(t *testing.T) {
 	}
 }
 
+// TestSetWidgetProperty_LowercaseFirstClassProps locks in the fix for `alter page
+// … set class/dynamicclasses on <builtin>`: property names arrive from MDL in
+// whatever case the author typed, and `create page` reads them case-insensitively,
+// so the ALTER path must too. Previously a lowercase name fell through to the
+// pluggable-property setter and hard-errored "widget has no pluggable Object" on
+// every built-in widget.
+func TestSetWidgetProperty_LowercaseFirstClassProps(t *testing.T) {
+	t.Run("class", func(t *testing.T) {
+		rawData := makeRawPage(makeStyleableWidget("ctn1"))
+		m := &Mutator{rawData: rawData, widgetFinder: findBsonWidget}
+		if err := m.SetWidgetProperty("ctn1", "class", "fl-topbar"); err != nil {
+			t.Fatalf("SetWidgetProperty(class) failed: %v", err)
+		}
+		app := bsonnav.DGetDoc(findBsonWidget(rawData, "ctn1").widget, "Appearance")
+		if got := bsonnav.DGetString(app, "Class"); got != "fl-topbar" {
+			t.Errorf("Appearance.Class = %q, want %q", got, "fl-topbar")
+		}
+	})
+
+	t.Run("dynamicclasses", func(t *testing.T) {
+		rawData := makeRawPage(makeStyleableWidget("ctn1"))
+		m := &Mutator{rawData: rawData, widgetFinder: findBsonWidget}
+		expr := "'c--' + $currentObject/Name"
+		if err := m.SetWidgetProperty("ctn1", "dynamicclasses", expr); err != nil {
+			t.Fatalf("SetWidgetProperty(dynamicclasses) failed: %v", err)
+		}
+		app := bsonnav.DGetDoc(findBsonWidget(rawData, "ctn1").widget, "Appearance")
+		if got := bsonnav.DGetString(app, "DynamicClasses"); got != expr {
+			t.Errorf("Appearance.DynamicClasses = %q, want %q", got, expr)
+		}
+	})
+
+	t.Run("caption on built-in", func(t *testing.T) {
+		w := bson.D{
+			{Key: "$Type", Value: "Pages$ActionButton"},
+			{Key: "Name", Value: "btnKeys"},
+			{Key: "Caption", Value: bson.D{
+				{Key: "$Type", Value: "Forms$TextTemplate"},
+				{Key: "Text", Value: bson.D{
+					{Key: "$Type", Value: "Forms$Text"},
+					{Key: "Translations", Value: bson.A{int32(3)}},
+				}},
+				{Key: "Parameters", Value: bson.A{int32(3)}},
+			}},
+		}
+		rawData := makeRawPage(w)
+		m := &Mutator{rawData: rawData, widgetFinder: findBsonWidget}
+		if err := m.SetWidgetProperty("btnKeys", "caption", "Keys"); err != nil {
+			t.Fatalf("SetWidgetProperty(caption) failed: %v", err)
+		}
+	})
+}
+
 // makeVisibilityWidget builds a widget with a null ConditionalVisibilitySettings
 // slot (as Studio Pro writes it when unset), matching the widgets that support
 // conditional visibility.
