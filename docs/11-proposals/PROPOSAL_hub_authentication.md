@@ -304,9 +304,17 @@ lines (no login). See *Open questions* on retention default and JSONL-vs-SQLite.
    anonymous register, revoked key can't register, open-mode keys `404` and register
    unchanged. **Client is slice 4** (`mxcli run --hub` still sends `X-Hub-Secret` until
    then, so enabling `--require-auth` on a hosted hub waits for slice 4).
-4. **Client**: `mxcli auth hub login/status/logout` (device flow), `run --hub` sends
-   `X-Hub-Key` (env → auth.json → legacy secret). Tests: auth.json round-trip, header
-   selection.
+4. **Client** — ✅ **done**: `GET /api/auth-config` advertises the OAuth client id (public)
+   so login needs no config; the `hubauth` package runs the GitHub **device flow** (poll
+   honouring `authorization_pending`/`slow_down`/expiry), mints a key via `POST /api/keys`
+   (GitHub token sent once, never stored), and caches it per hub host in `~/.mxcli/auth.json`
+   (new `SchemeHubKey`, profile `hub:<host>`, mode `0600`). `mxcli auth hub login/status/
+   logout` (logout best-effort revokes on the hub then drops the local copy). `run --hub`
+   resolves the key (`MXCLI_HUB_KEY` env → store) and `RegisterWithHub` sends `X-Hub-Key`
+   (owner stamped) alongside the legacy `X-Hub-Secret`, so authed and open hubs both work
+   from one client. Tests: store round-trip + env-override precedence, `HostOf`, device-flow
+   pending→success (stubbed GitHub), mint, full `Login` stores the key, open-mode-hub login
+   errors, `auth-config` open vs authed. Docs: `run-local` skill "Authenticated hub" section.
 5. **Wire-up + docs + E2E** against `hub.mxcli.org`: flags in `tunnel-hub`, `run-local`
    skill + docs-site, CLAUDE.md status line; verify owner isolation end-to-end (two
    GitHub users, cross-access = 403).
