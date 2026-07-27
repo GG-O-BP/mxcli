@@ -363,10 +363,11 @@ func auditEventFail(r *http.Request, login, detail string) audit.Event {
 // authorizePreview enforces the owner check on a preview request. It returns true
 // when the request may proceed; otherwise it has already written the response
 // (302 to login when unauthenticated, 403 when the viewer isn't the owner) and
-// the caller must stop. In open mode (auth disabled) or for an unowned backend it
-// always allows.
+// the caller must stop. It only enforces when auth is enabled AND RequireAuth is
+// set: in open mode, soft mode (auth on for listing but RequireAuth off), or for
+// an unowned backend it always allows.
 func (a *AuthConfig) authorizePreview(w http.ResponseWriter, r *http.Request, b *Backend, publicHost string) bool {
-	if !a.enabled() || b.Owner == "" {
+	if !a.enabled() || !a.RequireAuth || b.Owner == "" {
 		return true
 	}
 	login := a.sessionLogin(r)

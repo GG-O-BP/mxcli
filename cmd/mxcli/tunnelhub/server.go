@@ -44,6 +44,11 @@ type ServerOptions struct {
 	// chiselAddr is the internal address the embedded chisel control server binds
 	// (default 127.0.0.1:8100). Not public — the front proxies the WS here.
 	ChiselAddr string
+	// Auth, when enabled, adds the GitHub OAuth viewer plane: /auth/* on the hub
+	// host, a session cookie, backend-list filtering, and (when RequireAuth) an
+	// owner check on preview + admin access. Nil / open mode preserves today's
+	// behaviour.
+	Auth *AuthConfig
 }
 
 // Server is the running multi-tenant hub: one embedded chisel reverse server
@@ -89,6 +94,7 @@ func NewServer(o ServerOptions) (*Server, error) {
 		ControlURL:     "https://" + o.HubHost,
 		TunnelAuth:     o.TunnelAuth,
 		RegisterSecret: o.RegisterSecret,
+		Auth:           o.Auth,
 	})
 	apiMux := http.NewServeMux()
 	api.Mount(apiMux)
@@ -175,6 +181,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.apiMux.ServeHTTP(w, r)
 			return
 		}
+		// The OAuth login/callback/logout endpoints live on the hub host so the
+		// SSO cookie is issued for the whole cookie domain.
+		if s.opts.Auth.enabled() && strings.HasPrefix(r.URL.Path, "/auth/") {
+			s.opts.Auth.authHandler().ServeHTTP(w, r)
+			return
+		}
 		s.admin.ServeHTTP(w, r)
 	default:
 		sub, ok := s.subOf(host)
@@ -185,6 +197,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		b, found := s.reg.LookupSubdomain(sub)
 		if !found {
 			writeNoSuchPreview(w, host)
+			return
+		}
+		// Enforce the owner check before proxying (no-op in open mode / for an
+		// unowned backend). On deny it has already written 302/403.
+		if !s.opts.Auth.authorizePreview(w, r, b, host) {
 			return
 		}
 		s.reg.TouchUsed(sub)

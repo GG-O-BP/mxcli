@@ -270,11 +270,24 @@ lines (no login). See *Open questions* on retention default and JSONL-vs-SQLite.
    `viewerLogin(r)` seam (returns `""` until slice 2's cookie) threads through
    `/api/backends` + the reaper. Tests: `TestList_FiltersByOwner`,
    `TestIdentity_OwnerDisambiguates`.
-2. **GitHub OAuth web flow + session cookie**: `/auth/github/*`, signing, middleware on
-   preview + admin; skip WS/ACME. **Introduces the audit sink** (`audit` package +
-   `--audit-log`) and emits `login_ok`/`logout`/`callback_fail`/`access_deny`. Tests:
-   middleware allow/deny, cookie round-trip (httptest, GitHub stubbed), and an
-   `access_deny` line is written on a 403.
+2. **GitHub OAuth web flow + session cookie** — ✅ **done**: `AuthConfig` (zero value =
+   open mode), `/auth/github/{login,callback,logout}` on the hub host, an HMAC-signed
+   SSO session cookie (`signSession`/`verifySession`, `Domain=.<domain>`), a signed
+   OAuth `state` carrying the return URL with an open-redirect guard, and
+   `authorizePreview` on the preview path (enforced when `--require-auth`, default on;
+   soft mode filters the listing but leaves owned previews open). Wired into
+   `server.go` (mounts `/auth/*`, gates previews) and `api.go` (`/api/backends` filters
+   by `Auth.sessionLogin(r)`, replacing the slice-1 `viewerLogin` stub). **Introduced the
+   audit sink** (`cmd/mxcli/tunnelhub/audit` package + `--audit-log`, JSONL mode `0600`,
+   `Event` has no secret field) emitting `login_ok`/`logout`/`callback_fail`/`access_deny`.
+   Flags: `--github-oauth-client-id`, `--github-oauth-client-secret`
+   (env `MXCLI_HUB_GH_SECRET`), `--session-secret` (env `MXCLI_HUB_SESSION_SECRET`),
+   `--cookie-domain`, `--require-auth`, `--audit-log`. Tests (`auth_test.go`,
+   `audit_test.go`): cookie + state sign/verify round-trip (valid/tampered/expired),
+   open-mode no-op, stubbed-GitHub callback sets the session + writes `login_ok`, forged
+   state → 400 + `callback_fail`, preview authorize allow/redirect/deny with an
+   `access_deny` line on the 403, soft-mode leaves previews open, logout clears + audits,
+   and the audit `Event` carries no secret field.
 3. **Hub API keys + registration by key**: `POST/DELETE /api/keys`, `X-Hub-Key` on
    `/api/register` → stamp `Owner`; keep `X-Hub-Secret` for open mode. Emits
    `key_mint`/`key_revoke`/`register_ok`/`register_deny`. Tests: mint/resolve/revoke,

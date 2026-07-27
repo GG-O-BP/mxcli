@@ -15,6 +15,7 @@ import (
 )
 
 // testAuth builds an AuthConfig with a fixed clock and no real GitHub endpoints.
+// RequireAuth is on so the preview owner-check tests exercise enforcement.
 func testAuth(now time.Time) *AuthConfig {
 	return &AuthConfig{
 		GitHubClientID:     "cid",
@@ -22,6 +23,7 @@ func testAuth(now time.Time) *AuthConfig {
 		SessionSecret:      []byte("test-session-secret-0123456789ab"),
 		CookieDomain:       ".mxcli.org",
 		HubHost:            "hub.mxcli.org",
+		RequireAuth:        true,
 		now:                func() time.Time { return now },
 	}
 }
@@ -220,6 +222,19 @@ func TestAuthorizePreview_UnownedAllows(t *testing.T) {
 	w := httptest.NewRecorder()
 	if !a.authorizePreview(w, r, b, "app.mxcli.org") {
 		t.Error("an unowned backend must be public even when auth is on")
+	}
+}
+
+func TestAuthorizePreview_SoftModeLeavesPreviewsOpen(t *testing.T) {
+	// Auth enabled for listing, but RequireAuth off: an owned preview is still
+	// reachable by anyone (the listing is filtered, the preview itself is open).
+	a := testAuth(time.Unix(1_700_000_000, 0))
+	a.RequireAuth = false
+	b := &Backend{Subdomain: "app", Owner: "alice"}
+	r := httptest.NewRequest(http.MethodGet, "https://app.mxcli.org/", nil)
+	w := httptest.NewRecorder()
+	if !a.authorizePreview(w, r, b, "app.mxcli.org") {
+		t.Error("soft mode (RequireAuth off) must leave previews open")
 	}
 }
 

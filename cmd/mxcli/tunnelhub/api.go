@@ -22,6 +22,10 @@ type APIOptions struct {
 	RegisterSecret string
 	// HeartbeatIntervalSec is how often the client should heartbeat (default 20).
 	HeartbeatIntervalSec int
+	// Auth, when enabled, resolves the viewer's GitHub login from the session
+	// cookie so /api/backends is filtered to the caller's own previews. Nil or
+	// open-mode → "" (list everything, today's behaviour).
+	Auth *AuthConfig
 }
 
 // API serves the hub's registration + query endpoints over the registry.
@@ -127,15 +131,11 @@ func (a *API) byToken(w http.ResponseWriter, r *http.Request, fn func(token stri
 }
 
 func (a *API) handleBackends(w http.ResponseWriter, r *http.Request) {
-	// viewerLogin is "" until the session-cookie middleware (slice 2) supplies the
-	// authenticated GitHub login; "" lists all backends (self-hosted / auth off).
-	writeJSON(w, http.StatusOK, a.opts.Registry.List(r.URL.Query().Get("sort"), viewerLogin(r)))
+	// In open mode Auth.sessionLogin returns "" and every backend is listed;
+	// with auth on it returns the viewer's GitHub login so the list is filtered
+	// to the caller's own previews.
+	writeJSON(w, http.StatusOK, a.opts.Registry.List(r.URL.Query().Get("sort"), a.opts.Auth.sessionLogin(r)))
 }
-
-// viewerLogin returns the authenticated GitHub login for a request, or "" when
-// auth is off (self-hosted) or the viewer is anonymous. Slice 1 always returns
-// "" (no auth yet); slice 2's session-cookie middleware fills this in.
-func viewerLogin(_ *http.Request) string { return "" }
 
 func bearerToken(r *http.Request) string {
 	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
