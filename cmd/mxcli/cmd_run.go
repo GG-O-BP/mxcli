@@ -52,11 +52,13 @@ same -p). No breakpoints exist until you set one, so --debug alone does not chan
 runtime behaviour; it is turned back off on shutdown.
 
 With --metrics, a Prometheus meter registry is registered at boot and the runtime
-serves metrics at http://127.0.0.1:<admin-port>/prometheus. Use --runtime-setting
-Key=Value (repeatable) to merge any other runtime setting into the boot config
-(the admin config action replaces rather than merges, so mxcli folds these into
-its single boot call), e.g. a different Metrics.Registries type or the
-OpenTelemetry span filters.
+serves metrics at http://127.0.0.1:<admin-port>/prometheus. With --trace, the
+bundled OpenTelemetry agent is attached (spans -> the runtime log via the console
+exporter) with default span filters (unfiltered tracing is ~10x slower). Use
+--runtime-setting Key=Value (repeatable) to merge any other runtime setting into
+the boot config (the admin config action replaces rather than merges, so mxcli
+folds these into its single boot call), e.g. a different Metrics.Registries type or
+custom OpenTelemetry span filters.
 
 Examples:
   mxcli run --local -p app.mpr
@@ -116,6 +118,8 @@ Examples:
 		debugPass, _ := cmd.Flags().GetString("debug-pass")
 		metrics, _ := cmd.Flags().GetBool("metrics")
 		runtimeSettings, _ := cmd.Flags().GetStringArray("runtime-setting")
+		trace, _ := cmd.Flags().GetBool("trace")
+		traceService, _ := cmd.Flags().GetString("trace-service")
 
 		opts := docker.LocalRunOptions{
 			ProjectPath:        projectPath,
@@ -142,6 +146,8 @@ Examples:
 			DebugPass:          debugPass,
 			Metrics:            metrics,
 			RuntimeSettings:    runtimeSettings,
+			Trace:              trace,
+			TraceService:       traceService,
 			DB: docker.DBConfig{
 				Host:     dbHost,
 				Name:     dbName,
@@ -188,5 +194,7 @@ func init() {
 	runCmd.Flags().String("debug-pass", "", "Debugger password when --debug is set (default \"mxdebug\")")
 	runCmd.Flags().Bool("metrics", false, "Register a Prometheus meter registry at boot; the runtime serves metrics at http://127.0.0.1:<admin-port>/prometheus")
 	runCmd.Flags().StringArray("runtime-setting", nil, "Extra runtime setting Key=Value merged into the boot configuration (Value parsed as JSON when possible), e.g. --runtime-setting 'OpenTelemetry._RuntimeSpanFilters=[\"Loop\",\"Gateway\"]'. Repeatable.")
+	runCmd.Flags().Bool("trace", false, "Enable OpenTelemetry tracing: attach the bundled agent (console exporter → the runtime log) and apply default span filters (unfiltered tracing is ~10x slower)")
+	runCmd.Flags().String("trace-service", "", "OTEL_SERVICE_NAME under --trace (default: the .mpr name)")
 	rootCmd.AddCommand(runCmd)
 }

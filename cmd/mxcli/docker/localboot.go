@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -70,6 +71,13 @@ type LocalRuntimeOptions struct {
 	// payload (e.g. "Metrics.Registries", "OpenTelemetry._RuntimeSpanFilters").
 	// Merged here because the admin action replaces rather than merges.
 	RuntimeSettings map[string]any
+	// Trace attaches the bundled OpenTelemetry Java agent to the runtime JVM
+	// (traces via the console exporter → the tee'd runtime log). The caller should
+	// also set OpenTelemetry._RuntimeSpanFilters via RuntimeSettings — unfiltered
+	// per-activity tracing is ~10x slower.
+	Trace bool
+	// TraceServiceName is OTEL_SERVICE_NAME when Trace is set (default: the app).
+	TraceServiceName string
 	// DB is the database the runtime connects to.
 	DB DBConfig
 	// ReadyTimeout bounds how long StartLocalRuntime waits for the admin API
@@ -138,6 +146,66 @@ func localRuntimeEnv(o LocalRuntimeOptions) []string {
 		"MX_INSTALL_PATH="+o.InstallPath,
 		"MX_LOG_LEVEL=i",
 	)
+}
+
+// otelAgentJar locates the OpenTelemetry Java agent bundled with the runtime
+// (<runtimeDir>/agents/opentelemetry-javaagent*.jar). The version suffix varies,
+// so it is globbed.
+func (o *LocalRuntimeOptions) otelAgentJar() (string, error) {
+	pattern := filepath.Join(o.runtimeDir(), "agents", "opentelemetry-javaagent*.jar")
+	matches, _ := filepath.Glob(pattern)
+	if len(matches) == 0 {
+		return "", fmt.Errorf("OpenTelemetry agent not found at %s (this runtime may not bundle it)", pattern)
+	}
+	return matches[0], nil
+}
+
+// withTraceEnv layers the OpenTelemetry Java-agent + OTEL_* env onto base. The
+// agent is always attached (via JAVA_TOOL_OPTIONS, appended to any existing
+// value); the OTEL_* exporters default to console traces / no metrics+logs but
+// are NOT overridden if the caller already set them (so OTLP-to-a-collector via
+// the user's own env still works). Traces on the console exporter land in the
+// tee'd runtime log.
+func withTraceEnv(base []string, agentJar, serviceName string) []string {
+	has := func(key string) bool {
+		for _, e := range base {
+			if strings.HasPrefix(e, key+"=") {
+				return true
+			}
+		}
+		return false
+	}
+	get := func(key string) string {
+		for _, e := range base {
+			if strings.HasPrefix(e, key+"=") {
+				return e[len(key)+1:]
+			}
+		}
+		return ""
+	}
+	jto := strings.TrimSpace(get("JAVA_TOOL_OPTIONS") + " -javaagent:" + agentJar)
+
+	out := make([]string, 0, len(base)+5)
+	for _, e := range base {
+		if strings.HasPrefix(e, "JAVA_TOOL_OPTIONS=") {
+			continue // replaced below with the agent appended
+		}
+		out = append(out, e)
+	}
+	out = append(out, "JAVA_TOOL_OPTIONS="+jto)
+	if !has("OTEL_SERVICE_NAME") && serviceName != "" {
+		out = append(out, "OTEL_SERVICE_NAME="+serviceName)
+	}
+	if !has("OTEL_TRACES_EXPORTER") {
+		out = append(out, "OTEL_TRACES_EXPORTER=console")
+	}
+	if !has("OTEL_METRICS_EXPORTER") {
+		out = append(out, "OTEL_METRICS_EXPORTER=none")
+	}
+	if !has("OTEL_LOGS_EXPORTER") {
+		out = append(out, "OTEL_LOGS_EXPORTER=none")
+	}
+	return out
 }
 
 // appContainerParams is the update_appcontainer_configuration payload (which port
@@ -294,6 +362,13 @@ func (rt *LocalRuntime) spawnAndConfigure() error {
 	cmd := exec.Command(javaExe, "-jar", rt.opts.launcherJar(), rt.opts.DeployDir)
 	cmd.Dir = rt.opts.runtimeDir()
 	cmd.Env = localRuntimeEnv(rt.opts)
+	if rt.opts.Trace {
+		jar, err := rt.opts.otelAgentJar()
+		if err != nil {
+			return fmt.Errorf("--trace: %w", err)
+		}
+		cmd.Env = withTraceEnv(cmd.Env, jar, rt.opts.TraceServiceName)
+	}
 	PrepareMxCommand(cmd) // FreeType LD_PRELOAD workaround, layered on cmd.Env
 	setProcessGroup(cmd)  // reap any JVM child on Stop so the port is freed
 	// The in-memory buffer always captures output for startup-failure reporting.

@@ -81,6 +81,8 @@ so structural changes need a restart; behavioural changes do not.
 | `--debug` | off | Enable the microflow debugger at boot; then use [`mxcli debug`](debug-microflows.md) from another terminal. Behaviour-neutral until a breakpoint is set |
 | `--debug-pass` | `mxdebug` | Debugger password when `--debug` is set |
 | `--metrics` | off | Register a Prometheus meter registry; metrics served at `http://127.0.0.1:<admin-port>/prometheus` |
+| `--trace` | off | Enable OpenTelemetry tracing (bundled agent → runtime log) with default span filters |
+| `--trace-service` | `.mpr` name | `OTEL_SERVICE_NAME` under `--trace` |
 | `--runtime-setting Key=Value` | — | Merge an extra runtime setting into the boot config (Value parsed as JSON when possible); repeatable |
 
 ## Metrics and OpenTelemetry
@@ -100,17 +102,24 @@ action **replaces** the whole config (no read-back), so a separate call would wi
 DB/BasePath settings — `--metrics`/`--runtime-setting` merge into mxcli's single boot
 `update_configuration`.
 
-**Traces** are manual for now: the runtime bundles the OpenTelemetry Java agent but no
-flag enables it. Launch with `JAVA_TOOL_OPTIONS=-javaagent:<agent.jar>` + `OTEL_*` env
-(console exporter → `runtime.log`) and **apply span filters** — default per-activity
-tracing is ~10× slower:
+**Traces (`--trace`):** attaches the bundled OpenTelemetry Java agent to the runtime
+JVM (console exporter → `runtime.log`) and applies default span filters — unfiltered
+per-activity tracing is ~10× slower, so `--trace` ships
+`OpenTelemetry._RuntimeSpanFilters=["CreateOrChangeVariable","Loop","Gateway","RetrieveFromCache"]`
+(override via `--runtime-setting`).
 
 ```bash
-mxcli run --local -p app.mpr \
-  --runtime-setting 'OpenTelemetry._RuntimeSpanFilters=["CreateOrChangeVariable","Loop","Gateway","RetrieveFromCache"]'
+mxcli run --local -p app.mpr --trace
+tail -f .mxcli/runtime.log     # microflow spans: mx.microflow.name / mx.microflow.depth
 ```
 
-A first-class `--trace` flag is a planned follow-up.
+To export to a collector instead of the console, set the OTEL env yourself before
+running (`--trace` won't override an exporter you've set):
+
+```bash
+export OTEL_TRACES_EXPORTER=otlp OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+mxcli run --local -p app.mpr --trace
+```
 
 ## Debugging a server-side error
 
