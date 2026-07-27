@@ -152,6 +152,11 @@ Owner string `json:"owner"` // GitHub login that registered it ("" = anonymous/s
 New durable state: a `keys` store `map[string]string` (hub key → GitHub login). In-memory
 for the first cut (see *Open questions* re: persistence).
 
+The **audit trail** is the one thing written to disk (append-only `audit.jsonl`, mode
+`0600`) — see *Audit logging & usage tracking*. An `auditEvent` struct (ts, event,
+login, ip, subdomain, owner, outcome, detail — never a secret) is emitted through an
+`audit.Sink` interface, so the store backend is swappable.
+
 ## HTTP surface
 
 | Method & path (on `hub.mxcli.org`) | Purpose |
@@ -174,6 +179,9 @@ Preview subdomains: unchanged path, now behind the viewer-auth middleware.
 --session-secret             HMAC key for the session cookie (env: MXCLI_HUB_SESSION_SECRET)
 --require-auth               require a valid session for every preview + register (default: on
                              when a client id is set; forced off when it is not)
+--audit-log <path>           append-only JSONL audit trail of auth + registration events
+                             (default: <state-dir>/audit.jsonl when auth is on; "" / "-" disables;
+                             "stdout" for containers). File mode 0600.
 ```
 
 **Absent client id ⇒ open mode** — the middleware is a no-op, `/api/register` keeps
@@ -206,6 +214,54 @@ Client (`mxcli run --hub` / `mxcli auth`):
   `--require-auth` defaults on with a client id present; document that a client id
   without a session secret refuses to start.
 
+## Audit logging & usage tracking
+
+A hosted, internet-facing hub needs a durable record of **who authenticated, who was
+denied, and who is using it** — both to investigate abuse (the threat model already
+contemplates a leaked `X-Hub-Key` used to register as another user) and to answer the
+plain operational question *"who is on the hub, and how much?"*. Ephemeral log lines
+aren't enough; the registry itself is in-memory and reaped, so it forgets. We keep a
+**durable audit trail**.
+
+**Store: append-only JSONL** (`audit.jsonl`, mode `0600`), one event per line. Chosen
+over SQLite for the first cut: durable across restarts (unlike the registry/keys),
+no schema or migrations, greppable, rotatable with standard tooling, and directly
+queryable with DuckDB `read_json_auto` — so "who is using the hub" is a `SELECT`
+(this composes with the `analyze-runtime` warehouse pattern). A `Sink` interface backs
+it (`jsonlSink` / `noopSink` / `stdoutSink`) so SQLite or an external collector can be
+added later without touching call sites.
+
+**Event schema** (secrets are *never* recorded):
+
+```json
+{"ts":"2026-07-27T10:15:04Z","event":"access_deny","login":"bob","ip":"203.0.113.9",
+ "subdomain":"app-x","owner":"alice","outcome":"deny","detail":"not owner"}
+```
+
+| Event | Slice | Emitted when |
+|-------|-------|--------------|
+| `login_ok` / `logout` | 2 | web-flow session established / cleared |
+| `callback_fail` | 2 | bad `state`, or GitHub code exchange failed |
+| `access_deny` | 2 | preview request where `cookie.login != Backend.Owner` (the 403 path) |
+| `key_mint` / `key_revoke` | 3 | hub API key issued / revoked for a login |
+| `register_ok` / `register_deny` | 3 | registration accepted (owner stamped) / rejected (bad/absent `X-Hub-Key`) |
+
+Fields: `ts` (RFC3339 UTC), `event`, `login` (GitHub login or `""`), `ip` (source,
+read from the 443 front's `X-Forwarded-For`), `subdomain`, `owner` (of the target
+preview), `outcome`, `detail`. **Never logged:** GitHub tokens, hub keys, session
+cookies, `--session-secret`, or the OAuth client secret.
+
+**Usage, not just auth.** `login_ok` + `register_ok` are the load-bearing "who is
+using the hub" signal — distinct logins over time, and which project/branch each
+registered. We deliberately do **not** log per-request preview traffic (too high
+volume, and low value); the registry's `LastUsedAt` already covers "is it live now".
+
+**Privacy / retention.** GitHub logins + IPs are PII. The audit file is `0600`; the
+proposal documents (and the flag help states) that operators own retention — rotate
+or truncate on a schedule. **Open mode** (no client id) writes nothing unless
+`--audit-log` is explicitly set, and then only anonymous `register_ok`/`register_deny`
+lines (no login). See *Open questions* on retention default and JSONL-vs-SQLite.
+
 ## Implementation slices
 
 1. **Owner field + filtered list** (no auth yet) — ✅ **done**: added `Backend.Owner`,
@@ -215,11 +271,14 @@ Client (`mxcli run --hub` / `mxcli auth`):
    `/api/backends` + the reaper. Tests: `TestList_FiltersByOwner`,
    `TestIdentity_OwnerDisambiguates`.
 2. **GitHub OAuth web flow + session cookie**: `/auth/github/*`, signing, middleware on
-   preview + admin; skip WS/ACME. Tests: middleware allow/deny, cookie round-trip
-   (httptest, GitHub stubbed).
+   preview + admin; skip WS/ACME. **Introduces the audit sink** (`audit` package +
+   `--audit-log`) and emits `login_ok`/`logout`/`callback_fail`/`access_deny`. Tests:
+   middleware allow/deny, cookie round-trip (httptest, GitHub stubbed), and an
+   `access_deny` line is written on a 403.
 3. **Hub API keys + registration by key**: `POST/DELETE /api/keys`, `X-Hub-Key` on
-   `/api/register` → stamp `Owner`; keep `X-Hub-Secret` for open mode. Tests: mint/resolve/
-   revoke, register stamps owner, open-mode fallback.
+   `/api/register` → stamp `Owner`; keep `X-Hub-Secret` for open mode. Emits
+   `key_mint`/`key_revoke`/`register_ok`/`register_deny`. Tests: mint/resolve/revoke,
+   register stamps owner, open-mode fallback, audit lines on register accept/reject.
 4. **Client**: `mxcli auth hub login/status/logout` (device flow), `run --hub` sends
    `X-Hub-Key` (env → auth.json → legacy secret). Tests: auth.json round-trip, header
    selection.
@@ -230,7 +289,8 @@ Client (`mxcli run --hub` / `mxcli auth`):
 ## Testing
 
 - Unit: registry owner-filtering; cookie sign/verify; middleware allow/deny/redirect;
-  key mint/resolve/revoke; header precedence in the client.
+  key mint/resolve/revoke; header precedence in the client; audit sink writes the
+  expected JSONL line per event and **never** leaks a token/cookie/secret.
 - Integration (`-tags integration`, GitHub stubbed via httptest): full web-flow redirect
   chain; register-with-key stamps owner; a second user's cookie gets 403 on the first's
   preview.
@@ -251,6 +311,10 @@ Client (`mxcli run --hub` / `mxcli auth`):
    prompt in `docs-site/src/tools/bootstrap-prompt.md`.)
 4. **`mxcli.org` OAuth App ownership** — who registers/owns the OAuth App and holds the
    client secret + session secret for the hosted instance?
+5. **Audit retention & backend** — default retention for `audit.jsonl` (rotate/truncate
+   after N days, or leave to the operator?), and whether to graduate from JSONL to
+   SQLite once "who is using the hub" needs indexed/aggregated queries rather than a log
+   scan. First cut: JSONL, operator-owned retention, documented in the flag help.
 
 ## Future work
 
