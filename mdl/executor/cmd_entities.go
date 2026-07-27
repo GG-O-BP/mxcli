@@ -141,6 +141,20 @@ func execCreateEntity(ctx *ExecContext, s *ast.CreateEntityStmt) error {
 	// Also detect pseudo-types (AutoOwner, AutoChangedBy, etc.) and set entity flags
 	var storeOwner, storeChangedBy, storeCreatedDate, storeChangedDate bool
 
+	// On CREATE OR MODIFY of an existing entity, reuse each retained attribute's
+	// existing ID rather than minting a fresh one. Attribute identity is what
+	// Mendix's DB synchronizer keys off: a new ID for an unchanged attribute reads
+	// as "old attribute departed, new attribute added", so it DROPS and re-adds the
+	// column — wiping the stored data. Reusing the ID by name makes an identical
+	// re-run truly idempotent (no spurious sync, no data loss). Genuinely new
+	// attributes still get a fresh ID. (findings #13)
+	existingAttrIDByName := make(map[string]model.ID)
+	if s.CreateOrModify && existingEntity != nil {
+		for _, ea := range existingEntity.Attributes {
+			existingAttrIDByName[ea.Name] = ea.ID
+		}
+	}
+
 	var attrs []*domainmodel.Attribute
 	attrNameToID := make(map[string]model.ID)
 	for _, a := range s.Attributes {
@@ -171,8 +185,13 @@ func execCreateEntity(ctx *ExecContext, s *ast.CreateEntityStmt) error {
 			doc = a.Comment
 		}
 
-		// Generate ID for the attribute so we can reference it in validation rules/indexes
+		// Generate ID for the attribute so we can reference it in validation rules/indexes.
+		// On CREATE OR MODIFY, reuse the existing attribute's ID (by name) to preserve
+		// identity and avoid a destructive DB column drop/re-add. (findings #13)
 		attrID := model.ID(types.GenerateID())
+		if id, ok := existingAttrIDByName[a.Name]; ok {
+			attrID = id
+		}
 		attrNameToID[a.Name] = attrID
 
 		attr := &domainmodel.Attribute{
