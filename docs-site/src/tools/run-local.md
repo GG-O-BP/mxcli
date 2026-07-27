@@ -80,6 +80,37 @@ so structural changes need a restart; behavioural changes do not.
 | `--runtime-log` | `<projectDir>/.mxcli/runtime.log` | Runtime log file — JVM stdout/stderr **and** the application log (server stack traces + microflow `LOG` output); `-` disables |
 | `--debug` | off | Enable the microflow debugger at boot; then use [`mxcli debug`](debug-microflows.md) from another terminal. Behaviour-neutral until a breakpoint is set |
 | `--debug-pass` | `mxdebug` | Debugger password when `--debug` is set |
+| `--metrics` | off | Register a Prometheus meter registry; metrics served at `http://127.0.0.1:<admin-port>/prometheus` |
+| `--runtime-setting Key=Value` | — | Merge an extra runtime setting into the boot config (Value parsed as JSON when possible); repeatable |
+
+## Metrics and OpenTelemetry
+
+`--metrics` registers a **Prometheus** meter registry at boot, so
+`http://127.0.0.1:8090/prometheus` (the admin port) serves the runtime's Micrometer
+metrics (`connectionbus_*`, `handler_requests_total`, `sessions_*`, `taskqueue_*`, …).
+For another registry, use `--runtime-setting`:
+
+```bash
+mxcli run --local -p app.mpr --metrics
+mxcli run --local -p app.mpr --runtime-setting 'Metrics.Registries=[{"type":"otlp"}]'
+```
+
+These are flags rather than a post-boot call because the admin `update_configuration`
+action **replaces** the whole config (no read-back), so a separate call would wipe the
+DB/BasePath settings — `--metrics`/`--runtime-setting` merge into mxcli's single boot
+`update_configuration`.
+
+**Traces** are manual for now: the runtime bundles the OpenTelemetry Java agent but no
+flag enables it. Launch with `JAVA_TOOL_OPTIONS=-javaagent:<agent.jar>` + `OTEL_*` env
+(console exporter → `runtime.log`) and **apply span filters** — default per-activity
+tracing is ~10× slower:
+
+```bash
+mxcli run --local -p app.mpr \
+  --runtime-setting 'OpenTelemetry._RuntimeSpanFilters=["CreateOrChangeVariable","Loop","Gateway","RetrieveFromCache"]'
+```
+
+A first-class `--trace` flag is a planned follow-up.
 
 ## Debugging a server-side error
 

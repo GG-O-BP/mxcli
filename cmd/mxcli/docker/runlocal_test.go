@@ -73,6 +73,70 @@ func TestLocalRunOptions_DebugPassDefault(t *testing.T) {
 	}
 }
 
+func TestBuildRuntimeSettings(t *testing.T) {
+	// --metrics alone → a Prometheus registry.
+	s, err := buildRuntimeSettings(true, nil)
+	if err != nil {
+		t.Fatalf("buildRuntimeSettings: %v", err)
+	}
+	regs, ok := s["Metrics.Registries"].([]any)
+	if !ok || len(regs) != 1 {
+		t.Fatalf("Metrics.Registries = %v, want one registry", s["Metrics.Registries"])
+	}
+	if m, _ := regs[0].(map[string]any); m["type"] != "prometheus" {
+		t.Errorf("registry = %v, want type prometheus", regs[0])
+	}
+
+	// --runtime-setting with a JSON array value passes through typed, and an
+	// explicit Metrics.Registries is not overridden by --metrics.
+	s, err = buildRuntimeSettings(true, []string{
+		`OpenTelemetry._RuntimeSpanFilters=["Loop","Gateway"]`,
+		`Metrics.Registries=[{"type":"otlp"}]`,
+	})
+	if err != nil {
+		t.Fatalf("buildRuntimeSettings: %v", err)
+	}
+	filters, ok := s["OpenTelemetry._RuntimeSpanFilters"].([]any)
+	if !ok || len(filters) != 2 || filters[0] != "Loop" {
+		t.Errorf("span filters = %v", s["OpenTelemetry._RuntimeSpanFilters"])
+	}
+	if regs, _ := s["Metrics.Registries"].([]any); len(regs) != 1 || regs[0].(map[string]any)["type"] != "otlp" {
+		t.Errorf("explicit Metrics.Registries should win over --metrics, got %v", s["Metrics.Registries"])
+	}
+
+	// A non-JSON value stays a plain string.
+	s, _ = buildRuntimeSettings(false, []string{"DTAPMode=A"})
+	if s["DTAPMode"] != "A" {
+		t.Errorf("DTAPMode = %v, want string A", s["DTAPMode"])
+	}
+
+	// Nothing requested → nil (no overlay).
+	if s, _ := buildRuntimeSettings(false, nil); s != nil {
+		t.Errorf("want nil for no settings, got %v", s)
+	}
+
+	// Malformed setting errors.
+	if _, err := buildRuntimeSettings(false, []string{"noequals"}); err == nil {
+		t.Error("want error for a setting without '='")
+	}
+}
+
+func TestRuntimeConfigParams_OverlaysSettings(t *testing.T) {
+	o := LocalRuntimeOptions{
+		DeployDir: "/d", DB: DBConfig{Type: "PostgreSQL", Name: "app"},
+		RuntimeSettings: map[string]any{"Metrics.Registries": []any{map[string]any{"type": "prometheus"}}},
+	}
+	p := runtimeConfigParams(o, nil)
+	// Base keys still present…
+	if p["DatabaseName"] != "app" {
+		t.Errorf("DatabaseName lost: %v", p["DatabaseName"])
+	}
+	// …and the overlay merged in (not a separate replace call).
+	if _, ok := p["Metrics.Registries"]; !ok {
+		t.Errorf("Metrics.Registries not merged into config params: %v", p)
+	}
+}
+
 func TestLocalRunOptions_DefaultsRespectOverrides(t *testing.T) {
 	o := LocalRunOptions{
 		ProjectPath: "/proj/App.mpr",

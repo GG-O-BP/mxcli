@@ -66,6 +66,10 @@ type LocalRuntimeOptions struct {
 	// when the app is served through an external tunnel/reverse proxy rather than
 	// localhost. Empty for a plain local run.
 	ApplicationRootUrl string
+	// RuntimeSettings are extra update_configuration keys merged into the boot
+	// payload (e.g. "Metrics.Registries", "OpenTelemetry._RuntimeSpanFilters").
+	// Merged here because the admin action replaces rather than merges.
+	RuntimeSettings map[string]any
 	// DB is the database the runtime connects to.
 	DB DBConfig
 	// ReadyTimeout bounds how long StartLocalRuntime waits for the admin API
@@ -167,6 +171,14 @@ func runtimeConfigParams(o LocalRuntimeOptions, constants map[string]string) map
 	// on a plain local run the runtime defaults it from the listen address.
 	if o.ApplicationRootUrl != "" {
 		params["ApplicationRootUrl"] = o.ApplicationRootUrl
+	}
+	// Overlay extra runtime settings (e.g. Metrics.Registries,
+	// OpenTelemetry._RuntimeSpanFilters) into this SAME payload. The admin
+	// update_configuration action REPLACES rather than merges and has no
+	// read-back, so merging here — into mxcli's single boot call — is the only
+	// safe way to add settings without clobbering the DB/BasePath config.
+	for k, v := range o.RuntimeSettings {
+		params[k] = v
 	}
 	return params
 }

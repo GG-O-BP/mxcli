@@ -51,6 +51,13 @@ so 'mxcli debug break/paused/step/continue' works from another terminal (use the
 same -p). No breakpoints exist until you set one, so --debug alone does not change
 runtime behaviour; it is turned back off on shutdown.
 
+With --metrics, a Prometheus meter registry is registered at boot and the runtime
+serves metrics at http://127.0.0.1:<admin-port>/prometheus. Use --runtime-setting
+Key=Value (repeatable) to merge any other runtime setting into the boot config
+(the admin config action replaces rather than merges, so mxcli folds these into
+its single boot call), e.g. a different Metrics.Registries type or the
+OpenTelemetry span filters.
+
 Examples:
   mxcli run --local -p app.mpr
   mxcli run --local -p app.mpr --watch
@@ -107,6 +114,8 @@ Examples:
 		runtimeLog, _ := cmd.Flags().GetString("runtime-log")
 		debug, _ := cmd.Flags().GetBool("debug")
 		debugPass, _ := cmd.Flags().GetString("debug-pass")
+		metrics, _ := cmd.Flags().GetBool("metrics")
+		runtimeSettings, _ := cmd.Flags().GetStringArray("runtime-setting")
 
 		opts := docker.LocalRunOptions{
 			ProjectPath:        projectPath,
@@ -131,6 +140,8 @@ Examples:
 			RuntimeLogPath:     runtimeLog,
 			Debug:              debug,
 			DebugPass:          debugPass,
+			Metrics:            metrics,
+			RuntimeSettings:    runtimeSettings,
 			DB: docker.DBConfig{
 				Host:     dbHost,
 				Name:     dbName,
@@ -175,5 +186,7 @@ func init() {
 	runCmd.Flags().String("runtime-log", "", "Write the Mendix runtime log (server stack traces + microflow LOG output) to this file for debugging (default <projectDir>/.mxcli/runtime.log; \"-\" to disable)")
 	runCmd.Flags().Bool("debug", false, "Enable the microflow debugger at boot and start a session, so 'mxcli debug break/paused/…' works from another terminal (no breakpoints = no behaviour change)")
 	runCmd.Flags().String("debug-pass", "", "Debugger password when --debug is set (default \"mxdebug\")")
+	runCmd.Flags().Bool("metrics", false, "Register a Prometheus meter registry at boot; the runtime serves metrics at http://127.0.0.1:<admin-port>/prometheus")
+	runCmd.Flags().StringArray("runtime-setting", nil, "Extra runtime setting Key=Value merged into the boot configuration (Value parsed as JSON when possible), e.g. --runtime-setting 'OpenTelemetry._RuntimeSpanFilters=[\"Loop\",\"Gateway\"]'. Repeatable.")
 	rootCmd.AddCommand(runCmd)
 }
