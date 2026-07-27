@@ -77,3 +77,9 @@ The catalog is cached in `.mxcli/catalog.db` next to the MPR file. On subsequent
 - **Before cross-reference navigation** -- Run `REFRESH CATALOG FULL` to enable CALLERS/CALLEES/IMPACT
 - **After making changes** -- Refresh to update the catalog with new elements
 - **If results seem stale** -- Use `REFRESH CATALOG FULL FORCE` to force a rebuild
+
+> **FULL mode populates the analytic tables.** Plain `REFRESH CATALOG` (fast mode)
+> leaves `CATALOG.ACTIVITIES`, `CATALOG.REFS`, `CATALOG.XPATH_EXPRESSIONS`, and
+> `CATALOG.WIDGETS` **empty** — a fast-mode query against them warns *"requires
+> refresh catalog full"*. Run `REFRESH CATALOG FULL` to fill them (activity rows
+> carry the model GUIDs, cross-reference edges, and XPath expressions).

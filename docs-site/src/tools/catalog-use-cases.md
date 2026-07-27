@@ -211,3 +211,46 @@ WHERE Name != UPPER(SUBSTR(Name, 1, 1)) || SUBSTR(Name, 2)
    OR Name LIKE '%_%'
    OR Name LIKE '% %';
 ```
+
+## Query the catalog directly (and join it to other sources)
+
+The catalog **is** a SQLite database — `<projectDir>/.mxcli/catalog.db`, written
+next to the `.mpr` and refreshed by `refresh catalog`. You do not need to export
+it to JSON (that drags in human-readable formatting, exposes only a subset of the
+tables, and goes stale immediately). Attach the file directly with any SQLite- or
+DuckDB-compatible tool for ad-hoc analysis beyond what `SELECT … FROM CATALOG.*`
+exposes in one query.
+
+> **Run `refresh catalog full` first for the analytic tables.** Plain
+> `refresh catalog` (fast mode) leaves `activities` / `refs` / `xpath_expressions`
+> (and `widgets`) **empty** — a fast-mode query against them warns
+> *"requires refresh catalog full"*. Full mode populates them (activities carry
+> the model GUIDs the debugger uses, one row per activity with its sequence).
+
+```bash
+# from a dev container, after: mxcli -p app.mpr -c "refresh catalog full"
+duckdb -c "ATTACH '.mxcli/catalog.db' AS cat (TYPE sqlite, READ_ONLY);
+           SELECT MicroflowQualifiedName, COUNT(*) AS activities
+           FROM cat.activities_data GROUP BY 1 ORDER BY 2 DESC LIMIT 10;"
+```
+
+### Cross-source "app warehouse" (dev container)
+
+Because the catalog is a plain database, one engine can join it to the app's data
+and its telemetry without any ETL — useful for questions no single source can
+answer (e.g. runtime cost per microflow *joined to* model shape, or query time per
+entity *joined to* live row counts). This is an **external** DuckDB recipe — mxcli
+does not embed DuckDB — scoped to dev data in the dev container:
+
+```sql
+-- model metadata (catalog) + app data (the local app Postgres), both read-only
+ATTACH '.mxcli/catalog.db' AS cat (TYPE sqlite, READ_ONLY);
+ATTACH 'dbname=app host=127.0.0.1 user=mendix' AS app (TYPE postgres, READ_ONLY);
+-- traces exported by `mxcli run --local --trace-otlp …` (or a JSONL span dump)
+SELECT * FROM read_json_auto('spans.jsonl') LIMIT 10;
+```
+
+Caveats: keep every attachment **read-only** (especially the app database — never
+attach a production DB, and even locally make it an explicit choice), and note that
+unfiltered per-activity tracing produces a very large span volume (~110k spans for
+one busy transaction), so filter or sample before loading traces.
