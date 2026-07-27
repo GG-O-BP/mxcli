@@ -436,7 +436,9 @@ microflowArgsV3
     ;
 
 microflowArgV3
-    : (IDENTIFIER | QUOTED_IDENTIFIER) COLON expression  // Param: $value (canonical; "Param" if reserved)
+    : identifierOrKeyword COLON expression            // Param: $value (identifierOrKeyword so a param
+                                                      // named after a keyword — View/Source/Item/Page/
+                                                      // Entity — works unquoted, matching callArgument)
     | VARIABLE EQUALS expression                     // $Param = $value (microflow-style, also accepted)
     ;
 

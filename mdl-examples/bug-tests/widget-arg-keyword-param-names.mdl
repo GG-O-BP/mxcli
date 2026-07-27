@@ -1,0 +1,51 @@
+-- ============================================================================
+-- Widget action argument names that are keywords required quoting; call microflow
+-- did not
+-- ============================================================================
+--
+-- Symptom (before fix):
+--   A parameter name accepted bare by `call microflow M.Foo(Source = $x)` was a
+--   parse error in a widget's OnClick/Action argument list:
+--     container r (OnClick: microflow M.Foo(Source: $x)) { ... }
+--       -> line N:col no viable alternative at input 'OnClick'
+--   Affected names: View, Source, Item, Page, Entity (all lexer keywords).
+--   Quoting worked ("Source": $x), but the error also pointed at the wrong token
+--   (OnClick, a valid property) making it very hard to diagnose.
+--
+-- Root cause:
+--   The widget-argument name rule (microflowArgV3) accepted only
+--   (IDENTIFIER | QUOTED_IDENTIFIER), while call-microflow's callArgument used the
+--   permissive identifierOrKeyword. Keyword-named params therefore failed the
+--   widget rule but passed call-microflow — the same identifier, two grammars.
+--
+-- After fix:
+--   microflowArgV3 uses identifierOrKeyword, so keyword-named params parse
+--   unquoted in widget action args, matching call microflow. The misattributed
+--   error position also disappears for these names (they no longer fail to parse).
+--
+-- Usage:
+--   mxcli exec mdl-examples/bug-tests/widget-arg-keyword-param-names.mdl -p app.mpr
+-- ============================================================================
+
+create entity MyFirstModule.Item ( Name: String );
+
+create or replace microflow MyFirstModule.ACT_Select ($Source: MyFirstModule.Item)
+begin
+end;
+
+create or replace page MyFirstModule.P_KwArg
+(
+  Title: 'Keyword Arg Names',
+  Layout: Atlas_Core.Atlas_Default,
+  Params: { $Item: MyFirstModule.Item }
+)
+{
+  dataview dv (datasource: $Item) {
+    -- 'Source' is a lexer keyword; previously a parse error unless quoted.
+    container rowBox (OnClick: microflow MyFirstModule.ACT_Select(Source: $Item)) {
+      dynamictext t (content: 'open')
+    }
+  }
+}
+
+describe page MyFirstModule.P_KwArg;
