@@ -267,7 +267,7 @@ var contractionSuffixes = map[string]bool{
 }
 
 // looksLikeMultilineStringLiteral detects an unterminated string literal that ran
-// off the end of its line. ANTLR reports "token recognition error at: ''" with the
+// off the end of its line. ANTLR reports "token recognition error at: ”" with the
 // offending text spilling onto the next line (a newline appears in the payload).
 // This must be distinguished from a plain unescaped apostrophe — the apostrophe
 // hint ("double your apostrophes") would make a line-spanning string worse.
