@@ -1,0 +1,57 @@
+-- ============================================================================
+-- textbox silently dropped `placeholder` and `onchange`
+-- ============================================================================
+--
+-- Symptom (before fix):
+--   `placeholder:` and `onchange:` on a textbox passed check (with an
+--   MDL-WIDGET07 "unrecognized property … will be silently dropped" warning) and
+--   then vanished — `DESCRIBE PAGE` showed neither. The design's live-search box
+--   degraded to a search *button* (no On change), and the field lost its hint
+--   text. Both are standard Mendix TextBox properties.
+--
+-- Root cause:
+--   The pages.TextBox model already had Placeholder/OnChangeAction, and the
+--   modelsdk (default) engine already serialized them — but the grammar had no
+--   onchange:/placeholder: property, buildTextBoxV3 never populated the model,
+--   the legacy serializer hardcoded empty, and they weren't in the known-props
+--   list (hence the MDL-WIDGET07 warning).
+--
+-- After fix:
+--   `onchange: <action>` and `placeholder: '<text>'` parse, populate the model,
+--   and serialize on both engines (OnChange reuses the button client-action path;
+--   Placeholder is a ClientTemplate like the label).
+--
+-- Usage:
+--   mxcli exec mdl-examples/bug-tests/textbox-placeholder-onchange.mdl -p app.mpr
+-- ============================================================================
+
+create entity MyFirstModule.Filter ( Query: String );
+
+create or replace nanoflow MyFirstModule.NF_Search ($Filter: MyFirstModule.Filter)
+begin
+end;
+
+create or replace page MyFirstModule.P_Search
+(
+  Title: 'Search',
+  Layout: Atlas_Core.Atlas_Default,
+  Params: { $Filter: MyFirstModule.Filter }
+)
+{
+  layoutgrid grid {
+    row r {
+      column c (desktopwidth: autofill) {
+        dataview dv (datasource: $Filter) {
+          textbox txtQuery (
+            Attribute: Query,
+            Label: 'Search',
+            Placeholder: 'Search all articles',
+            OnChange: nanoflow MyFirstModule.NF_Search(Filter: $Filter)
+          )
+        }
+      }
+    }
+  }
+}
+
+describe page MyFirstModule.P_Search;

@@ -230,6 +230,42 @@ func TestQuotedReservedSelectionAndArgNames(t *testing.T) {
 	}
 }
 
+// TestWidgetArgKeywordParamNames covers finding #2/#3: a widget action argument
+// whose parameter name is a lexer keyword (View/Source/Item/Page/Entity) was a
+// parse error unless quoted, even though `call microflow` accepts the same names
+// bare. microflowArgV3 now uses identifierOrKeyword (like callArgument), so these
+// parse unquoted and the visitor recovers the bare name.
+func TestWidgetArgKeywordParamNames(t *testing.T) {
+	for _, name := range []string{"View", "Source", "Item", "Page", "Entity"} {
+		t.Run(name, func(t *testing.T) {
+			input := `CREATE PAGE M.Home (
+				Layout: Atlas_Core.Atlas_Default
+			) {
+				DATAVIEW detail (DataSource: M.Product) {
+					ACTIONBUTTON btnOpen (
+						Caption: 'Open',
+						Action: MICROFLOW M.ACT_Select (` + name + `: $currentObject)
+					)
+				}
+			};`
+			prog, errs := Build(input)
+			if len(errs) > 0 {
+				t.Fatalf("Parse errors for unquoted keyword arg %q: %v", name, errs)
+			}
+			stmt := prog.Statements[0].(*ast.CreatePageStmtV3)
+			detail := findChildByName2(stmt.Widgets, "detail")
+			btnOpen := findChildByName(detail, "btnOpen")
+			if btnOpen == nil || btnOpen.GetAction() == nil {
+				t.Fatal("btnOpen or its action not found")
+			}
+			args := btnOpen.GetAction().Args
+			if len(args) != 1 || args[0].Name != name {
+				t.Errorf("expected one arg named %q, got %+v", name, args)
+			}
+		})
+	}
+}
+
 func findChildByName(parent *ast.WidgetV3, name string) *ast.WidgetV3 {
 	for _, c := range parent.Children {
 		if c.Name == name {

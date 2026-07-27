@@ -136,20 +136,30 @@ Examples:
 				os.Exit(1)
 			}
 		} else {
-			// Running on Linux — copy ourselves
+			// Running on Linux — link ourselves into the project. Prefer a hard link:
+			// it shares the inode (no ~111MB duplicated per project on the same
+			// filesystem), is a real ELF the devcontainer can exec, and survives the
+			// original binary being moved/removed (unlike a symlink). Fall back to a
+			// full copy across filesystems (EXDEV) or when linking isn't possible.
 			self, err := os.Executable()
-			if err == nil {
-				selfBytes, err := os.ReadFile(self)
-				if err == nil {
-					if err := os.WriteFile(mxcliBinPath, selfBytes, 0755); err != nil {
-						fmt.Fprintf(os.Stderr, "  Warning: could not copy mxcli binary: %v\n", err)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  Warning: could not locate mxcli binary: %v\n", err)
+			} else if resolved, rerr := filepath.EvalSymlinks(self); rerr == nil {
+				self = resolved
+				_ = os.Remove(mxcliBinPath) // os.Link fails if the target already exists
+				if err := os.Link(self, mxcliBinPath); err == nil {
+					fmt.Printf("  Linked mxcli to %s (shared inode, no copy)\n", mxcliBinPath)
+				} else if selfBytes, rerr := os.ReadFile(self); rerr == nil {
+					if werr := os.WriteFile(mxcliBinPath, selfBytes, 0o755); werr != nil {
+						fmt.Fprintf(os.Stderr, "  Warning: could not copy mxcli binary: %v\n", werr)
 					} else {
 						fmt.Printf("  Copied mxcli to %s\n", mxcliBinPath)
 					}
+				} else {
+					fmt.Fprintf(os.Stderr, "  Warning: could not read mxcli binary: %v\n", rerr)
 				}
-			}
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "  Warning: could not copy mxcli binary: %v\n", err)
+			} else {
+				fmt.Fprintf(os.Stderr, "  Warning: could not resolve mxcli binary path: %v\n", rerr)
 			}
 		}
 

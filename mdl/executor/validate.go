@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/mendixlabs/mxcli/mdl/ast"
@@ -560,11 +561,19 @@ func validateFlowBodyReferences(ctx *ExecContext, body []ast.MicroflowStatement,
 			// appear in the project's MPR. Skip them to avoid false
 			// positives — Studio Pro's `mx check` resolves these against
 			// the runtime, which `mxcli check` cannot reach.
-			if isBuiltinModuleEntity(qualifiedNameModule(ref)) {
+			if isBuiltinModuleEntity(qualifiedNameModule(ref.name)) {
 				continue
 			}
-			if !known[ref] {
-				errors = append(errors, fmt.Sprintf("java action not found: %s (referenced by call java action)", ref))
+			if !known[ref.name] {
+				errors = append(errors, fmt.Sprintf("java action not found: %s (referenced by call java action)", ref.name))
+				continue
+			}
+			if ja, err := ctx.Backend.ReadJavaActionByName(ref.name); err == nil && ja != nil {
+				var declared []string
+				for _, p := range ja.Parameters {
+					declared = append(declared, p.Name)
+				}
+				errors = append(errors, validateCodeActionParams("java action", ref, declared)...)
 			}
 		}
 	}
@@ -572,11 +581,19 @@ func validateFlowBodyReferences(ctx *ExecContext, body []ast.MicroflowStatement,
 	if len(refs.javaScriptActions) > 0 {
 		known := buildJavaScriptActionQualifiedNames(ctx)
 		for _, ref := range refs.javaScriptActions {
-			if isBuiltinModuleEntity(qualifiedNameModule(ref)) {
+			if isBuiltinModuleEntity(qualifiedNameModule(ref.name)) {
 				continue
 			}
-			if !known[ref] {
-				errors = append(errors, fmt.Sprintf("javascript action not found: %s (referenced by call javascript action)", ref))
+			if !known[ref.name] {
+				errors = append(errors, fmt.Sprintf("javascript action not found: %s (referenced by call javascript action)", ref.name))
+				continue
+			}
+			if jsa, err := ctx.Backend.ReadJavaScriptActionByName(ref.name); err == nil && jsa != nil {
+				var declared []string
+				for _, p := range jsa.Parameters {
+					declared = append(declared, p.Name)
+				}
+				errors = append(errors, validateCodeActionParams("javascript action", ref, declared)...)
 			}
 		}
 	}
@@ -700,10 +717,70 @@ type flowRefCollector struct {
 	pages             []string
 	microflows        []string
 	nanoflows         []string
-	javaActions       []string
-	javaScriptActions []string
+	javaActions       []codeActionCallRef
+	javaScriptActions []codeActionCallRef
 	entities          []entityRef
 	retrieves         []retrieveConstraintRef
+}
+
+// codeActionCallRef is a Java / JavaScript action call: the action's qualified
+// name plus the parameter names the author wrote, so both the action's existence
+// and its parameter names can be validated (a wrong/mis-cased name writes a
+// dangling reference that only fails at build time with CE1613).
+type codeActionCallRef struct {
+	name     string
+	argNames []string
+}
+
+// callArgNames extracts the written parameter names from a code-action call's
+// argument list.
+func callArgNames(args []ast.CallArgument) []string {
+	if len(args) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(args))
+	for _, a := range args {
+		if a.Name != "" {
+			names = append(names, a.Name)
+		}
+	}
+	return names
+}
+
+// validateCodeActionParams checks that each parameter name written in a Java /
+// JavaScript action call matches a declared parameter (case-sensitively — Mendix
+// parameter names are case-sensitive, and a mismatch writes a dangling reference
+// that fails the build with CE1613). When the mismatch is only a casing
+// difference, the message suggests the correct spelling. `declared` empty means
+// the backend could not report parameters — skip (degrade gracefully).
+func validateCodeActionParams(kind string, ref codeActionCallRef, declared []string) []string {
+	if len(declared) == 0 {
+		return nil
+	}
+	declaredSet := make(map[string]bool, len(declared))
+	for _, d := range declared {
+		declaredSet[d] = true
+	}
+	var errs []string
+	for _, written := range ref.argNames {
+		if declaredSet[written] {
+			continue
+		}
+		msg := fmt.Sprintf("%s %s has no parameter %q", kind, ref.name, written)
+		// Case-only mismatch → point at the correct spelling.
+		for _, d := range declared {
+			if strings.EqualFold(d, written) {
+				msg += fmt.Sprintf(" — did you mean %q?", d)
+				break
+			}
+		}
+		sorted := append([]string(nil), declared...)
+		sort.Strings(sorted)
+		msg += fmt.Sprintf(" (declared parameters: %s). Mendix build fails CE1613 \"The selected %s parameter … no longer exists\".",
+			strings.Join(sorted, ", "), kind)
+		errs = append(errs, msg)
+	}
+	return errs
 }
 
 // entityRef tracks an entity reference along with the statement that referenced it.
@@ -742,11 +819,15 @@ func (c *flowRefCollector) collectFromStatements(stmts []ast.MicroflowStatement)
 			}
 		case *ast.CallJavaActionStmt:
 			if s.ActionName.Module != "" {
-				c.javaActions = append(c.javaActions, s.ActionName.String())
+				c.javaActions = append(c.javaActions, codeActionCallRef{
+					name: s.ActionName.String(), argNames: callArgNames(s.Arguments),
+				})
 			}
 		case *ast.CallJavaScriptActionStmt:
 			if s.ActionName.Module != "" {
-				c.javaScriptActions = append(c.javaScriptActions, s.ActionName.String())
+				c.javaScriptActions = append(c.javaScriptActions, codeActionCallRef{
+					name: s.ActionName.String(), argNames: callArgNames(s.Arguments),
+				})
 			}
 		case *ast.CallWebServiceStmt:
 			// Web service and mapping references can be raw IDs; reference validation

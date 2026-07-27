@@ -211,3 +211,35 @@ WHERE Name != UPPER(SUBSTR(Name, 1, 1)) || SUBSTR(Name, 2)
    OR Name LIKE '%_%'
    OR Name LIKE '% %';
 ```
+
+## Query the catalog directly (and join it to other sources)
+
+The catalog **is** a SQLite database — `<projectDir>/.mxcli/catalog.db`, written
+next to the `.mpr` and refreshed by `refresh catalog`. You do not need to export
+it to JSON (that drags in human-readable formatting, exposes only a subset of the
+tables, and goes stale immediately). Attach the file directly with any SQLite- or
+DuckDB-compatible tool for ad-hoc analysis beyond what `SELECT … FROM CATALOG.*`
+exposes in one query.
+
+> **Run `refresh catalog full` first for the analytic tables.** Plain
+> `refresh catalog` (fast mode) leaves `activities` / `refs` / `xpath_expressions`
+> (and `widgets`) **empty** — a fast-mode query against them warns
+> *"requires refresh catalog full"*. Full mode populates them (activities carry
+> the model GUIDs the debugger uses, one row per activity with its sequence).
+
+```bash
+# from a dev container, after: mxcli -p app.mpr -c "refresh catalog full"
+duckdb -c "ATTACH '.mxcli/catalog.db' AS cat (TYPE sqlite, READ_ONLY);
+           SELECT MicroflowQualifiedName, COUNT(*) AS activities
+           FROM cat.activities_data GROUP BY 1 ORDER BY 2 DESC LIMIT 10;"
+```
+
+### Cross-source "app warehouse"
+
+Because the catalog is a plain database, one engine (e.g. DuckDB — mxcli does not
+embed it) can `ATTACH` it alongside the app's dev Postgres **read-only** and a trace
+dump, joining model shape + live data + telemetry with no ETL to answer questions no
+single source can (runtime cost × model shape, query time × entity × live rows). The
+full logging/metrics/tracing/catalog analysis procedure — including this join — is the
+**`analyze-runtime`** skill (`mxcli init` installs it into your project's
+`.claude/skills/mendix/`).

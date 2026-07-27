@@ -150,6 +150,60 @@ func TestAlterEntity_AllowCreateChangeLocally_Issue534(t *testing.T) {
 	}
 }
 
+// TestCreateOrModifyEntity_PreservesAttributeIDs guards finding #13 (data loss):
+// re-running an identical CREATE OR MODIFY on an existing entity must reuse each
+// retained attribute's existing ID. A fresh ID reads to Mendix's DB synchronizer
+// as "attribute departed + new attribute added", so it drops and re-adds the
+// column — wiping the stored values. Genuinely new attributes still get a fresh ID.
+func TestCreateOrModifyEntity_PreservesAttributeIDs(t *testing.T) {
+	mod := mkModule("M")
+	const existingNameID = model.ID("attr-name-STABLE")
+	entity := mkEntity(mod.ID, "Feed")
+	entity.Attributes = []*domainmodel.Attribute{
+		{BaseElement: model.BaseElement{ID: existingNameID}, Name: "Name", Type: &domainmodel.StringAttributeType{}},
+	}
+	dm := mkDomainModel(mod.ID, entity)
+
+	var updated *domainmodel.Entity
+	mb := &mock.MockBackend{
+		IsConnectedFunc:      func() bool { return true },
+		ListModulesFunc:      func() ([]*model.Module, error) { return []*model.Module{mod}, nil },
+		ListDomainModelsFunc: func() ([]*domainmodel.DomainModel, error) { return []*domainmodel.DomainModel{dm}, nil },
+		GetDomainModelFunc:   func(id model.ID) (*domainmodel.DomainModel, error) { return dm, nil },
+		ListEnumerationsFunc: func() ([]*model.Enumeration, error) { return nil, nil },
+		UpdateEntityFunc:     func(dmID model.ID, e *domainmodel.Entity) error { updated = e; return nil },
+	}
+	h := mkHierarchy(mod)
+	withContainer(h, dm.ID, mod.ID)
+	ctx, _ := newMockCtx(t, withBackend(mb), withHierarchy(h))
+
+	// Same "Name" attribute (unchanged) plus a genuinely new "Url".
+	err := execCreateEntity(ctx, &ast.CreateEntityStmt{
+		Name:           ast.QualifiedName{Module: "M", Name: "Feed"},
+		Kind:           ast.EntityPersistent,
+		CreateOrModify: true,
+		Attributes: []ast.Attribute{
+			{Name: "Name", Type: ast.DataType{Kind: ast.TypeString}},
+			{Name: "Url", Type: ast.DataType{Kind: ast.TypeString}},
+		},
+	})
+	assertNoError(t, err)
+	if updated == nil {
+		t.Fatal("expected UpdateEntity to be called")
+	}
+
+	byName := map[string]model.ID{}
+	for _, a := range updated.Attributes {
+		byName[a.Name] = a.ID
+	}
+	if byName["Name"] != existingNameID {
+		t.Errorf("retained attribute 'Name' ID = %q, want preserved %q (data-loss regression)", byName["Name"], existingNameID)
+	}
+	if byName["Url"] == "" || byName["Url"] == existingNameID {
+		t.Errorf("new attribute 'Url' should get a fresh non-empty ID, got %q", byName["Url"])
+	}
+}
+
 func TestShowEntities_JSON(t *testing.T) {
 	mod := mkModule("App")
 	ent := mkEntity(mod.ID, "Item")

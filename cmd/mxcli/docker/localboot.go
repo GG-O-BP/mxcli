@@ -78,6 +78,11 @@ type LocalRuntimeOptions struct {
 	Trace bool
 	// TraceServiceName is OTEL_SERVICE_NAME when Trace is set (default: the app).
 	TraceServiceName string
+	// TraceOTLPEndpoint, when set, switches the traces exporter from console to
+	// OTLP and points it at this collector (e.g. http://127.0.0.1:4318) — needed
+	// for flame charts, since the console exporter omits timestamps/parent IDs.
+	// Implies Trace. User-set OTEL_* vars still take precedence.
+	TraceOTLPEndpoint string
 	// DB is the database the runtime connects to.
 	DB DBConfig
 	// ReadyTimeout bounds how long StartLocalRuntime waits for the admin API
@@ -162,11 +167,13 @@ func (o *LocalRuntimeOptions) otelAgentJar() (string, error) {
 
 // withTraceEnv layers the OpenTelemetry Java-agent + OTEL_* env onto base. The
 // agent is always attached (via JAVA_TOOL_OPTIONS, appended to any existing
-// value); the OTEL_* exporters default to console traces / no metrics+logs but
-// are NOT overridden if the caller already set them (so OTLP-to-a-collector via
-// the user's own env still works). Traces on the console exporter land in the
-// tee'd runtime log.
-func withTraceEnv(base []string, agentJar, serviceName string) []string {
+// value). The traces exporter defaults to the console (lands in the tee'd
+// runtime log) — but when otlpEndpoint is set, it is switched to OTLP and pointed
+// at that collector (protocol http/protobuf), which is what flame-chart tools
+// need since the console exporter omits timestamps and parent span IDs. Metrics
+// and logs exporters default to none. None of these are overridden if the caller
+// already set the corresponding OTEL_* var, so a fully hand-rolled env still works.
+func withTraceEnv(base []string, agentJar, serviceName, otlpEndpoint string) []string {
 	has := func(key string) bool {
 		for _, e := range base {
 			if strings.HasPrefix(e, key+"=") {
@@ -197,7 +204,18 @@ func withTraceEnv(base []string, agentJar, serviceName string) []string {
 		out = append(out, "OTEL_SERVICE_NAME="+serviceName)
 	}
 	if !has("OTEL_TRACES_EXPORTER") {
-		out = append(out, "OTEL_TRACES_EXPORTER=console")
+		if otlpEndpoint != "" {
+			// Export to an OTLP collector so call trees + durations are usable.
+			out = append(out, "OTEL_TRACES_EXPORTER=otlp")
+			if !has("OTEL_EXPORTER_OTLP_PROTOCOL") {
+				out = append(out, "OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf")
+			}
+			if !has("OTEL_EXPORTER_OTLP_ENDPOINT") {
+				out = append(out, "OTEL_EXPORTER_OTLP_ENDPOINT="+otlpEndpoint)
+			}
+		} else {
+			out = append(out, "OTEL_TRACES_EXPORTER=console")
+		}
 	}
 	if !has("OTEL_METRICS_EXPORTER") {
 		out = append(out, "OTEL_METRICS_EXPORTER=none")
@@ -367,7 +385,7 @@ func (rt *LocalRuntime) spawnAndConfigure() error {
 		if err != nil {
 			return fmt.Errorf("--trace: %w", err)
 		}
-		cmd.Env = withTraceEnv(cmd.Env, jar, rt.opts.TraceServiceName)
+		cmd.Env = withTraceEnv(cmd.Env, jar, rt.opts.TraceServiceName, rt.opts.TraceOTLPEndpoint)
 	}
 	PrepareMxCommand(cmd) // FreeType LD_PRELOAD workaround, layered on cmd.Env
 	setProcessGroup(cmd)  // reap any JVM child on Stop so the port is freed

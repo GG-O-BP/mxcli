@@ -593,6 +593,22 @@ func parseWidgetPropertyV3(ctx parser.IWidgetPropertyV3Context, widget *ast.Widg
 		return
 	}
 
+	// OnChange: ... (input widgets — the "On change" action)
+	if propCtx.ONCHANGE() != nil {
+		if actCtx := propCtx.ActionExprV3(); actCtx != nil {
+			widget.Properties["OnChange"] = buildActionV3(actCtx)
+		}
+		return
+	}
+
+	// Placeholder: 'text' (input widgets)
+	if propCtx.PLACEHOLDER() != nil {
+		if str := propCtx.STRING_LITERAL(); str != nil {
+			widget.Properties["Placeholder"] = unquoteString(str.GetText())
+		}
+		return
+	}
+
 	// Caption: ...
 	if propCtx.CAPTION() != nil {
 		if strCtx := propCtx.StringExprV3(); strCtx != nil {
@@ -1002,12 +1018,11 @@ func buildMicroflowArgV3(ctx parser.IMicroflowArgV3Context) ast.FlowArgV3 {
 	if v := argCtx.VARIABLE(); v != nil {
 		// Microflow-style: $Param = $value
 		arg.Name = strings.TrimPrefix(v.GetText(), "$")
-	} else if id := argCtx.IDENTIFIER(); id != nil {
-		// Widget-style: Param: $value
-		arg.Name = id.GetText()
-	} else if qid := argCtx.QUOTED_IDENTIFIER(); qid != nil {
-		// Widget-style with reserved-word param name: "Param": $value
-		arg.Name = unquoteIdentifier(qid.GetText())
+	} else if iok := argCtx.IdentifierOrKeyword(); iok != nil {
+		// Widget-style: Param: $value. identifierOrKeyword accepts a bare
+		// keyword (View/Source/Item/Page/Entity) or a "quoted" name;
+		// identifierOrKeywordText unquotes as needed.
+		arg.Name = identifierOrKeywordText(iok)
 	}
 	if expr := argCtx.Expression(); expr != nil {
 		arg.Value = expr.GetText()

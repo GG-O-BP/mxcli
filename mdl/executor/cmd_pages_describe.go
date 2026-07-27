@@ -591,6 +591,8 @@ type rawWidget struct {
 	ReadOnlyStyle string // "Inherit", "Control", "Text"
 	ShowLabel     bool   // Whether label is shown (from LabelTemplate visibility)
 	LabelPosition string // "Left", "Top", etc.
+	Placeholder   string // Placeholder hint text (from PlaceholderTemplate)
+	OnChange      string // MDL rendering of the OnChangeAction client action
 	// Filter widget properties
 	FilterAttributes []string // Attributes to filter on
 	FilterExpression string   // Default filter expression (contains, startsWith, etc.)
