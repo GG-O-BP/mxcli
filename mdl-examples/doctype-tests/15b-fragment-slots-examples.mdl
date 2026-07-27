@@ -41,7 +41,11 @@ create persistent entity SlotTest.Order (
  * widgets are spliced in.
  */
 define fragment Card as {
-  container cardWrap (class: 'card', designproperties: ['Card style': on]) {
+  -- Card styling via the Atlas `card` class (works on every Mendix version). The
+  -- v3 `'Card style'` design property is intentionally NOT used here: it doesn't
+  -- exist in the 10.x Atlas (CE6083) and this example is about content slots, not
+  -- design properties — see 12-styling-examples.mdl (gated 11.0+) for those.
+  container cardWrap (class: 'card') {
     container cardBody (class: 'card-body') {
       slot content
     }

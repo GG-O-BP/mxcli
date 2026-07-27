@@ -117,6 +117,55 @@ Launch `run --local` as the **sole** command in its invocation (don't chain a tr
 | `--screenshot-path` / `--screenshot-url` | `.mxcli/run-local.png` / app root | Screenshot output / page (URL or `/path`) |
 | `--screenshot-user` / `--screenshot-password` | — | Log in once, reuse session (pages behind login) |
 | `--runtime-log` | `.mxcli/runtime.log` | Runtime log file: JVM stdout/stderr **and** the application log (microflow `LOG` output + server stack traces, via an attached file log subscriber). `-` disables. |
+| `--debug` | off | Enable the microflow debugger at boot + start a session, so `mxcli debug break/paused/…` works from another terminal (see `debug-microflows.md`). No breakpoints = no behaviour change; disabled on shutdown. |
+| `--debug-pass` | `mxdebug` | Debugger password when `--debug` is set |
+| `--metrics` | off | Register a Prometheus meter registry at boot; the runtime serves metrics at `http://127.0.0.1:<admin-port>/prometheus` |
+| `--trace` | off | Enable OpenTelemetry tracing (bundled agent, console exporter → the runtime log) with default span filters |
+| `--trace-service` | `.mpr` name | `OTEL_SERVICE_NAME` under `--trace` |
+| `--runtime-setting Key=Value` | — | Merge an extra runtime setting into the boot config (Value parsed as JSON when possible). Repeatable. |
+
+## Metrics and OpenTelemetry
+
+**Metrics (`--metrics`):** the Mendix runtime ships Micrometer registries but starts
+with none. `--metrics` registers a **Prometheus** registry at boot, so
+`http://127.0.0.1:8090/prometheus` (the admin port) serves ~70+ metric families
+(`connectionbus_*`, `handler_requests_total`, `sessions_*`, `taskqueue_*`, …). For a
+different registry use `--runtime-setting`, e.g.
+`--runtime-setting 'Metrics.Registries=[{"type":"otlp","settings":{"step":"PT10S"}}]'`
+(also `influx`, `statsd`, `jmx`).
+
+**Why this is a flag, not a post-boot API call:** the admin `update_configuration`
+action **replaces** the whole config (there's no read-back), so a separate call to add
+metrics would wipe the DB/BasePath settings. `--metrics`/`--runtime-setting` merge into
+mxcli's single boot `update_configuration`, which is the only safe way.
+
+**Traces (`--trace`):** the runtime bundles the OpenTelemetry Java agent;
+`--trace` attaches it to the runtime JVM and applies the default span filters:
+
+```bash
+mxcli run --local -p app.mpr --trace                 # spans -> runtime.log
+mxcli run --local -p app.mpr --trace --runtime-log - # spans to console only
+```
+
+Spans (tracer `com.mendix.runtime`, attrs `mx.microflow.name`/`mx.microflow.depth`) go
+to the console exporter → `runtime.log` (so `tail -f .mxcli/runtime.log` shows them).
+`--trace` sets `OTEL_SERVICE_NAME` (default the `.mpr` name, override with
+`--trace-service`) and, unless you set them yourself, `OTEL_TRACES_EXPORTER=console`
+with metrics/logs exporters off.
+
+**Why the default span filters matter:** unfiltered per-activity tracing is
+**~10× slower**, so `--trace` ships `OpenTelemetry._RuntimeSpanFilters` =
+`["CreateOrChangeVariable","Loop","Gateway","RetrieveFromCache"]` by default (keeping
+the microflow-level spans). Override with
+`--runtime-setting 'OpenTelemetry._RuntimeSpanFilters=[…]'`.
+
+**Export to a collector (OTLP) instead of the console:** set the OTEL env yourself
+before running — `--trace` won't override an exporter you've already set:
+
+```bash
+export OTEL_TRACES_EXPORTER=otlp OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+mxcli run --local -p app.mpr --trace
+```
 | `--app-port` / `--admin-port` / `--serve-port` | 8080 / 8090 / 6543 | Ports |
 | `--db-host` / `--db-name` / `--db-user` / `--db-password` | 127.0.0.1:5432 / derived / mendix / mendix | Database |
 
