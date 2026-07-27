@@ -7,6 +7,7 @@ import (
 
 	"github.com/mendixlabs/mxcli/model"
 	"github.com/mendixlabs/mxcli/modelsdk/codec"
+	"github.com/mendixlabs/mxcli/modelsdk/element"
 	"github.com/mendixlabs/mxcli/sdk/microflows"
 )
 
@@ -191,5 +192,61 @@ func TestMicroflowActionToGen_ExecuteDatabaseQuery(t *testing.T) {
 	}
 	if g.TypeName() != "DatabaseConnector$ExecuteDatabaseQueryAction" {
 		t.Errorf("$Type = %q, want DatabaseConnector$ExecuteDatabaseQueryAction", g.TypeName())
+	}
+}
+
+// TestMicroflowActionToGen_JavaScriptActionCall guards finding #11: a
+// `call javascript action` (e.g. NanoflowCommons.OpenURL) must convert to a
+// Microflows$JavaScriptActionCallAction. Before the fix the modelsdk engine had
+// no case for it, so it returned nil → the ActionActivity was written without an
+// Action (`-- Empty action`), failing the build with CE0008 "No action defined."
+// and CE0109 on the now-missing output variable. This affects both microflows
+// and nanoflows (nanoflows reuse microflowActionToGen).
+func TestMicroflowActionToGen_JavaScriptActionCall(t *testing.T) {
+	g := microflowActionToGen(&microflows.JavaScriptActionCallAction{
+		JavaScriptAction:   "NanoflowCommons.OpenURL",
+		OutputVariableName: "Opened",
+		UseReturnVariable:  true,
+		ParameterMappings: []*microflows.JavaScriptActionParameterMapping{
+			{Parameter: "NanoflowCommons.OpenURL.url", Value: &microflows.ExpressionBasedCodeActionParameterValue{Expression: "$Active/Link"}},
+		},
+	})
+	if g == nil {
+		t.Fatal("nil action (CE0008/CE0109 regression — JS action call dropped on write)")
+	}
+	if g.TypeName() != "Microflows$JavaScriptActionCallAction" {
+		t.Errorf("$Type = %q, want Microflows$JavaScriptActionCallAction", g.TypeName())
+	}
+	// The whole subtree must encode cleanly (guards a missing list marker / mistyped property).
+	if _, err := (&codec.Encoder{}).Encode(g); err != nil {
+		t.Errorf("encode: %v", err)
+	}
+	// JS parameter mappings use the "ParameterValue" storage key, not the
+	// Java-style "Value" — the read side and legacy serializer both key off it.
+	var mappings []element.Element
+	for _, p := range g.Properties() {
+		if p.Name() == "ParameterMappings" {
+			if lst, ok := p.(element.ChildListProperty); ok {
+				mappings = lst.ChildElements()
+			}
+		}
+	}
+	if len(mappings) != 1 {
+		t.Fatalf("ParameterMappings = %d, want 1", len(mappings))
+	}
+	var hasParameterValue, hasWrongValueKey bool
+	for _, p := range mappings[0].Properties() {
+		switch p.Name() {
+		case "ParameterValue":
+			hasParameterValue = true
+		case "Value":
+			hasWrongValueKey = true
+		}
+	}
+	if !hasParameterValue {
+		t.Error("mapping missing ParameterValue key (JS uses ParameterValue, not Value)")
+	}
+	if hasWrongValueKey {
+		t.Error("mapping emits the Java-style Value key instead of ParameterValue")
 	}
 }
