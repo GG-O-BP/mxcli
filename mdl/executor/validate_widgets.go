@@ -405,7 +405,8 @@ func objectListMappingSet(def *WidgetDefinition) map[string]*ObjectListMapping {
 var staticWidgetKnownProps = func() map[string]bool {
 	names := []string{
 		// grammar keyword properties (widgetPropertyV3)
-		"DataSource", "Attribute", "Binds", "Action", "OnClick", "Caption", "Label",
+		"DataSource", "Attribute", "Binds", "Action", "OnClick", "OnChange", "Placeholder",
+		"Caption", "Label",
 		"Attr", "Content", "RenderMode", "ContentParams", "CaptionParams", "ButtonStyle",
 		"Class", "Style", "DesktopWidth", "TabletWidth", "PhoneWidth", "Selection",
 		"Snippet", "Params", "Attributes", "FilterType", "DesignProperties", "Width",

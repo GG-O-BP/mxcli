@@ -201,6 +201,19 @@ func (w *WidgetV3) GetAction() *ActionV3 {
 	return nil
 }
 
+// GetOnChange returns the OnChange action (input widgets) or nil.
+func (w *WidgetV3) GetOnChange() *ActionV3 {
+	if v, ok := w.Properties["OnChange"].(*ActionV3); ok {
+		return v
+	}
+	return nil
+}
+
+// GetPlaceholder returns the Placeholder text (input widgets) or empty string.
+func (w *WidgetV3) GetPlaceholder() string {
+	return w.GetStringProp("Placeholder")
+}
+
 // GetAttribute returns the Attribute property (attribute path) or empty string.
 func (w *WidgetV3) GetAttribute() string {
 	return w.GetStringProp("Attribute")

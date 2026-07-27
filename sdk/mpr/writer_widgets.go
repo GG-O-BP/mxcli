@@ -530,6 +530,23 @@ func serializeEmptyPlaceholderTemplate() bson.D {
 	}
 }
 
+// serializePlaceholderTemplate creates a placeholder ClientTemplate from a Text,
+// or an empty one when nil. Same Forms$ClientTemplate shape as the label template.
+func serializePlaceholderTemplate(t *model.Text) bson.D {
+	if t == nil {
+		return serializeEmptyPlaceholderTemplate()
+	}
+	text := ""
+	for _, v := range t.Translations {
+		text = v
+		break
+	}
+	if text == "" {
+		return serializeEmptyPlaceholderTemplate()
+	}
+	return serializeLabelTemplate(text)
+}
+
 // serializeLabelTemplate creates a standard label template for input widgets.
 func serializeLabelTemplate(label string) bson.D {
 	if label == "" {

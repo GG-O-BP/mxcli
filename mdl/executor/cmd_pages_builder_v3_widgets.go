@@ -298,6 +298,26 @@ func (pb *pageBuilder) buildTextBoxV3(w *ast.WidgetV3) (*pages.TextBox, error) {
 		tb.Label = label
 	}
 
+	// Handle Placeholder (input hint text — a ClientTemplate, like the label)
+	if ph := w.GetPlaceholder(); ph != "" {
+		tb.Placeholder = &model.Text{
+			BaseElement: model.BaseElement{
+				ID:       model.ID(types.GenerateID()),
+				TypeName: "Texts$Text",
+			},
+			Translations: map[string]string{"en_US": ph},
+		}
+	}
+
+	// Handle OnChange (the "On change" client action)
+	if action := w.GetOnChange(); action != nil {
+		act, err := pb.buildClientActionV3(action)
+		if err != nil {
+			return nil, err
+		}
+		tb.OnChangeAction = act
+	}
+
 	if err := pb.registerWidgetName(w.Name, tb.ID); err != nil {
 		return nil, err
 	}

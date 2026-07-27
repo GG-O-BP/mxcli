@@ -593,6 +593,22 @@ func parseWidgetPropertyV3(ctx parser.IWidgetPropertyV3Context, widget *ast.Widg
 		return
 	}
 
+	// OnChange: ... (input widgets — the "On change" action)
+	if propCtx.ONCHANGE() != nil {
+		if actCtx := propCtx.ActionExprV3(); actCtx != nil {
+			widget.Properties["OnChange"] = buildActionV3(actCtx)
+		}
+		return
+	}
+
+	// Placeholder: 'text' (input widgets)
+	if propCtx.PLACEHOLDER() != nil {
+		if str := propCtx.STRING_LITERAL(); str != nil {
+			widget.Properties["Placeholder"] = unquoteString(str.GetText())
+		}
+		return
+	}
+
 	// Caption: ...
 	if propCtx.CAPTION() != nil {
 		if strCtx := propCtx.StringExprV3(); strCtx != nil {
