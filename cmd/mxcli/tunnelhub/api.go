@@ -5,6 +5,7 @@ package tunnelhub
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/mendixlabs/mxcli/cmd/mxcli/tunnelhub/audit"
@@ -233,18 +234,33 @@ func (a *API) handleKeys(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleKeyMint validates the caller's GitHub token (Bearer) against GitHub, then
-// issues an opaque hub key bound to that login. The GitHub token is used once and
-// discarded — never stored.
+// handleKeyMint issues an opaque hub key bound to a GitHub login. Two ways to
+// authenticate the mint:
+//
+//  1. A signed-in **browser session** (the /cli page) — the natural path for a
+//     Claude Code web / mobile user, whose container can't reach GitHub's device
+//     endpoints. Cookie auth is CSRF-sensitive, so it additionally requires a
+//     same-origin custom header (a cross-site form can't set one) and, when the
+//     browser sends an Origin, a matching one.
+//  2. An `Authorization: Bearer <github-token>` (CLI `auth hub login --token`,
+//     CI). The token is verified against GitHub once and discarded — never stored.
 func (a *API) handleKeyMint(w http.ResponseWriter, r *http.Request) {
-	token := bearerToken(r)
-	if token == "" {
-		http.Error(w, "missing GitHub token (Authorization: Bearer <token>)", http.StatusUnauthorized)
-		return
-	}
-	login, err := a.opts.Auth.fetchLogin(token)
-	if err != nil || login == "" {
-		http.Error(w, "could not verify GitHub identity", http.StatusUnauthorized)
+	var login string
+	if token := bearerToken(r); token != "" {
+		l, err := a.opts.Auth.fetchLogin(token)
+		if err != nil || l == "" {
+			http.Error(w, "could not verify GitHub identity", http.StatusUnauthorized)
+			return
+		}
+		login = l
+	} else if l := a.opts.Auth.sessionLogin(r); l != "" {
+		if r.Header.Get(mintHeader) == "" || !sameOrigin(r, a.opts.Auth.HubHost) {
+			http.Error(w, "cookie-authenticated mint requires the "+mintHeader+" header and a same-origin request", http.StatusForbidden)
+			return
+		}
+		login = l
+	} else {
+		http.Error(w, "sign in at the hub, or send Authorization: Bearer <github-token>", http.StatusUnauthorized)
 		return
 	}
 	key := a.opts.Keys.Mint(login)
@@ -252,6 +268,24 @@ func (a *API) handleKeyMint(w http.ResponseWriter, r *http.Request) {
 		Event: audit.EventKeyMint, Login: login, IP: clientIP(r), Outcome: "ok",
 	})
 	writeJSON(w, http.StatusOK, KeyResponse{Key: key, Login: login})
+}
+
+// mintHeader is the custom header the /cli page sends on a cookie-authenticated
+// mint; its presence (unsettable by a cross-site form) is the CSRF guard.
+const mintHeader = "X-Hub-Mint"
+
+// sameOrigin reports whether the request's Origin (when present) is the hub host.
+// Absent Origin falls through to the custom-header requirement.
+func sameOrigin(r *http.Request, hubHost string) bool {
+	o := r.Header.Get("Origin")
+	if o == "" {
+		return true
+	}
+	u, err := url.Parse(o)
+	if err != nil {
+		return false
+	}
+	return stripPort(u.Host) == hubHost
 }
 
 // handleKeyRevoke removes the presented key (X-Hub-Key). Idempotent: revoking an

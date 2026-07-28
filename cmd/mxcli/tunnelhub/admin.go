@@ -4,17 +4,22 @@ package tunnelhub
 
 import "net/http"
 
-// NewAdmin returns the handler for the hub's admin overview page. The page is
-// self-contained (inline CSS/JS, no external assets) and refreshes itself from
-// GET /api/backends.
+// NewAdmin returns the handler for the hub's admin pages: the preview overview at
+// "/" and the "get your CLI key" page at "/cli". Both are self-contained (inline
+// CSS/JS, no external assets). When auth is on, the server gates these behind a
+// session before they are reached.
 func NewAdmin(_ *Registry) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
+		switch r.URL.Path {
+		case "/":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(adminHTML))
+		case "/cli":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(cliKeyHTML))
+		default:
 			http.NotFound(w, r)
-			return
 		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte(adminHTML))
 	})
 }
 
@@ -54,6 +59,7 @@ const adminHTML = `<!doctype html>
   <h1>mxcli tunnel-hub</h1>
   <span class="meta" id="count">…</span>
   <span class="who" id="who" style="margin-left:auto"></span>
+  <a class="signout" id="clikey" href="/cli" hidden style="text-decoration:none">Get CLI key</a>
   <button class="signout" id="signout" hidden>Sign out</button>
   <span class="meta" id="updated"></span>
 </header>
@@ -127,12 +133,13 @@ const adminHTML = `<!doctype html>
   }
   function whoami(){
     fetch("/api/whoami").then(function(r){return r.json();}).then(function(j){
-      var who = document.getElementById("who"), btn = document.getElementById("signout");
+      var who = document.getElementById("who"), btn = document.getElementById("signout"),
+          cli = document.getElementById("clikey");
       if(j && j.authEnabled && j.login){
         who.innerHTML = "signed in as <b>"+esc(j.login)+"</b>";
-        btn.hidden = false;
+        btn.hidden = false; cli.hidden = false;
       } else {
-        who.textContent = ""; btn.hidden = true;
+        who.textContent = ""; btn.hidden = true; cli.hidden = true;
       }
     }).catch(function(){});
   }
@@ -143,6 +150,81 @@ const adminHTML = `<!doctype html>
     th.addEventListener("click", function(){ sortKey=th.dataset.k; render(); });
   });
   whoami(); load(); setInterval(load, 5000);
+})();
+</script>
+</body></html>`
+
+// cliKeyHTML is the "get your hub key" page (served at /cli). A signed-in user
+// mints a durable hub key via the session cookie (no PAT, no device flow) and
+// copies it into MXCLI_HUB_KEY. This is the primary key-acquisition path for a
+// Claude Code web/mobile user, whose container cannot reach GitHub's device flow.
+const cliKeyHTML = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mxcli tunnel-hub — CLI key</title>
+<style>
+  :root { color-scheme: light dark; --bg:#fff; --fg:#1a1a2e; --mut:#6b7280; --line:#e5e7eb; --row:#f9fafb; --accent:#3b3bd6; --ok:#22c55e; }
+  @media (prefers-color-scheme: dark){ :root{ --bg:#0f1020; --fg:#e6e6f0; --mut:#9aa0b4; --line:#26283b; --row:#171a2e; --accent:#8f8fff; } }
+  * { box-sizing:border-box; }
+  body { font:15px/1.5 system-ui,sans-serif; margin:0; background:var(--bg); color:var(--fg); }
+  header { padding:1.1rem 1.4rem; border-bottom:1px solid var(--line); display:flex; align-items:baseline; gap:.8rem; }
+  h1 { font-size:1.05rem; margin:0; font-weight:650; }
+  a { color:var(--accent); }
+  .wrap { padding:1.5rem 1.4rem; max-width:44rem; }
+  .who { color:var(--mut); font-size:.9rem; margin-bottom:1rem; }
+  .who b { color:var(--fg); }
+  button { font:inherit; font-weight:600; color:#fff; background:var(--accent); border:0; border-radius:.5rem; padding:.55rem 1rem; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  .key { margin:1.2rem 0; padding:1rem; border:1px solid var(--line); border-radius:.6rem; background:var(--row); }
+  .key code { font-family:ui-monospace,monospace; word-break:break-all; font-size:.95rem; }
+  .copy { margin-left:.6rem; font-size:.8rem; padding:.2rem .6rem; background:none; color:var(--accent); border:1px solid var(--line); }
+  pre { background:var(--row); border:1px solid var(--line); border-radius:.5rem; padding:.8rem 1rem; overflow-x:auto; font-size:.9rem; }
+  .warn { color:var(--mut); font-size:.85rem; }
+  .err { color:#ef4444; }
+  code.inline { font-family:ui-monospace,monospace; background:var(--row); padding:.05rem .35rem; border-radius:.3rem; }
+</style></head>
+<body>
+<header><h1>mxcli tunnel-hub</h1><a href="/">← previews</a></header>
+<div class="wrap">
+  <div class="who" id="who">…</div>
+  <p>Create a durable hub key to let <code class="inline">mxcli run --hub</code> register previews as you.
+     The key does not expire and survives hub restarts — you set it once.</p>
+  <button id="mint">Create a hub key</button>
+  <div id="out"></div>
+</div>
+<script>
+(function(){
+  function esc(s){ var d=document.createElement("div"); d.textContent=s==null?"":s; return d.innerHTML; }
+  fetch("/api/whoami").then(function(r){return r.json();}).then(function(j){
+    var who=document.getElementById("who");
+    if(j && j.login){ who.innerHTML="Signed in as <b>"+esc(j.login)+"</b>."; }
+    else { who.innerHTML="<span class='err'>Not signed in.</span> <a href='/auth/github/login?return="+encodeURIComponent(location.href)+"'>Sign in with GitHub</a>"; document.getElementById("mint").disabled=true; }
+  });
+  document.getElementById("mint").addEventListener("click", function(){
+    var btn=this; btn.disabled=true; btn.textContent="Creating…";
+    fetch("/api/keys", {method:"POST", headers:{"X-Hub-Mint":"1"}}).then(function(r){
+      if(!r.ok) throw new Error("HTTP "+r.status);
+      return r.json();
+    }).then(function(j){
+      var host=location.host;
+      document.getElementById("out").innerHTML =
+        "<div class='key'><code id='k'>"+esc(j.key)+"</code>"+
+        "<button class='copy' id='cp'>Copy</button></div>"+
+        "<p>Set it as an environment variable in your Claude Code environment (repo/environment secret):</p>"+
+        "<pre>export MXCLI_HUB_KEY="+esc(j.key)+"</pre>"+
+        "<p>Then, in any session:</p>"+
+        "<pre>mxcli run --hub https://"+esc(host)+" -p app.mpr</pre>"+
+        "<p class='warn'>Copy it now — it is shown only once. Creating another key does not revoke this one; "+
+        "sign out or use <code class='inline'>mxcli auth hub logout</code> to revoke.</p>";
+      document.getElementById("cp").addEventListener("click", function(){
+        navigator.clipboard.writeText(j.key).then(function(){ this.textContent="Copied"; }.bind(this));
+      });
+      btn.textContent="Create another key"; btn.disabled=false;
+    }).catch(function(e){
+      document.getElementById("out").innerHTML="<p class='err'>Could not create a key ("+esc(e.message)+"). Try signing in again.</p>";
+      btn.textContent="Create a hub key"; btn.disabled=false;
+    });
+  });
 })();
 </script>
 </body></html>`

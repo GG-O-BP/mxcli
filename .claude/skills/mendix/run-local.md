@@ -279,33 +279,25 @@ is all `run --hub` needs. A hub started **with** `--github-oauth-client-id` (see
 only their own previews, and registration needs a **per-user hub API key** instead of the
 shared secret.
 
-```bash
-# once per environment: mint + cache a hub key from your GitHub identity (device flow)
-mxcli auth hub login                 # defaults to https://hub.mxcli.org; --hub for others
-mxcli auth hub status                # show whether a key is configured
-mxcli auth hub logout                # revoke + remove it
+**Get a key from the hub's browser page** (works from any device — desktop, or Claude
+Code web/mobile, whose container can't reach GitHub's device endpoints):
 
-# then run as normal — the key is sent automatically, stamping the preview as yours
-mxcli run --hub https://hub.mxcli.org -p app.mpr
-```
-
-**Where the device flow is blocked** (Claude Code web containers only allow repo-scoped
-GitHub API paths, so `mxcli auth hub login` gets a 403 before printing a code), mint the
-key from a GitHub token directly instead:
+1. Open `https://hub.mxcli.org/cli` in a browser and sign in with GitHub.
+2. Click **Create a hub key** and copy it.
+3. Set it as an environment/repo secret in your Claude Code environment — it's picked up
+   automatically and survives container reaping:
 
 ```bash
-mxcli auth hub login --token <github-pat>   # skips the device flow, mints + caches the key
+export MXCLI_HUB_KEY=<key>
+mxcli run --hub https://hub.mxcli.org -p app.mpr   # registers previews as you
 ```
 
-For an unattended environment (the container is reaped, so any cached login won't persist),
-set the key once as an environment/repo secret; it takes precedence over the stored key:
+The key is **durable** (no expiry, survives hub restarts) — you set it once. It stays valid
+until you revoke it (sign out on the hub, or `mxcli auth hub logout`).
 
-```bash
-export MXCLI_HUB_KEY=<key>            # from `mxcli auth hub login` on a durable machine
-```
-
-The GitHub token never leaves your machine except for the one-time key-mint request to the
-hub; only the opaque hub key is stored (`~/.mxcli/auth.json`, mode 0600, keyed by hub host).
+Headless alternative (CI, or a machine with a GitHub token): `mxcli auth hub login --token
+<github-pat>` mints and caches a key in `~/.mxcli/auth.json` (mode 0600). The GitHub token
+is used once for the mint and never stored.
 
 **Registration failure is non-fatal:** if the hub is unreachable or the key is stale/rejected,
 `run --hub` prints a warning and continues as a normal local run (the app boots on localhost;

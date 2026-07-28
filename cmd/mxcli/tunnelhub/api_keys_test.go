@@ -311,3 +311,74 @@ func TestAPI_SoftModeWithSecretRequiresIt(t *testing.T) {
 		t.Errorf("soft-mode + valid secret: status = %d, want 200", rec.Code)
 	}
 }
+
+// TestAPI_BrowserMint covers the session-cookie mint path (the /cli page): a
+// signed-in browser mints a key with the X-Hub-Mint header; without the header
+// (CSRF) it is refused; a cross-origin Origin is refused.
+func TestAPI_BrowserMint(t *testing.T) {
+	api, buf, done := newAuthedAPI(t, true)
+	defer done()
+
+	// Build a request carrying a valid session cookie for alice.
+	setW := httptest.NewRecorder()
+	api.opts.Auth.setSessionCookie(setW, "alice")
+	cookies := setW.Result().Cookies()
+	withCookie := func(req *http.Request) {
+		for _, c := range cookies {
+			req.AddCookie(c)
+		}
+	}
+	mux := http.NewServeMux()
+	api.Mount(mux)
+
+	// (1) Cookie + X-Hub-Mint header + same-origin → 200, minted for alice.
+	req := httptest.NewRequest(http.MethodPost, "https://hub.mxcli.org/api/keys", nil)
+	req.Header.Set("X-Hub-Mint", "1")
+	req.Header.Set("Origin", "https://hub.mxcli.org")
+	withCookie(req)
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("browser mint status = %d, want 200 (body %s)", rw.Code, rw.Body)
+	}
+	var kr KeyResponse
+	_ = json.Unmarshal(rw.Body.Bytes(), &kr)
+	if kr.Login != "alice" || kr.Key == "" {
+		t.Errorf("mint response = %+v", kr)
+	}
+	if login, ok := api.opts.Keys.Resolve(kr.Key); !ok || login != "alice" {
+		t.Errorf("minted key resolves to %q,%v; want alice", login, ok)
+	}
+	if !strings.Contains(buf.String(), `"event":"key_mint"`) {
+		t.Errorf("expected key_mint audit line")
+	}
+
+	// (2) Cookie but NO X-Hub-Mint header (CSRF) → 403.
+	noHdr := httptest.NewRequest(http.MethodPost, "https://hub.mxcli.org/api/keys", nil)
+	withCookie(noHdr)
+	rw2 := httptest.NewRecorder()
+	mux.ServeHTTP(rw2, noHdr)
+	if rw2.Code != http.StatusForbidden {
+		t.Errorf("no-header cookie mint status = %d, want 403", rw2.Code)
+	}
+
+	// (3) Cookie + header but cross-origin → 403.
+	xorig := httptest.NewRequest(http.MethodPost, "https://hub.mxcli.org/api/keys", nil)
+	xorig.Header.Set("X-Hub-Mint", "1")
+	xorig.Header.Set("Origin", "https://evil.example.com")
+	withCookie(xorig)
+	rw3 := httptest.NewRecorder()
+	mux.ServeHTTP(rw3, xorig)
+	if rw3.Code != http.StatusForbidden {
+		t.Errorf("cross-origin cookie mint status = %d, want 403", rw3.Code)
+	}
+
+	// (4) No cookie, no bearer → 401.
+	anon := httptest.NewRequest(http.MethodPost, "https://hub.mxcli.org/api/keys", nil)
+	anon.Header.Set("X-Hub-Mint", "1")
+	rw4 := httptest.NewRecorder()
+	mux.ServeHTTP(rw4, anon)
+	if rw4.Code != http.StatusUnauthorized {
+		t.Errorf("anon mint status = %d, want 401", rw4.Code)
+	}
+}
