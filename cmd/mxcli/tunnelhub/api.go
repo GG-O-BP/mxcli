@@ -116,8 +116,8 @@ func (a *API) handleWhoami(w http.ResponseWriter, r *http.Request) {
 }
 
 // AuthConfigResponse tells a client whether the hub requires GitHub auth and, if
-// so, which OAuth App client id to use for the device flow. The client id is a
-// public value (it appears in every browser redirect); no secret is exposed.
+// so, the OAuth App client id (a public value that appears in every browser
+// redirect; no secret is exposed) — used to probe whether a hub is authenticated.
 type AuthConfigResponse struct {
 	AuthEnabled    bool   `json:"authEnabled"`
 	RequireAuth    bool   `json:"requireAuth"`

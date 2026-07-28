@@ -12,8 +12,8 @@ import (
 )
 
 // authHubCmd groups the tunnel-hub credential commands under `mxcli auth hub`.
-// A hub API key authorizes `mxcli run --hub` to register a preview as you; it is
-// minted from your GitHub identity via the device flow and stored per hub host.
+// A hub API key authorizes `mxcli run --hub` to register a preview as you; get
+// one from the hub's /cli browser page (or --token for headless use).
 var authHubCmd = &cobra.Command{
 	Use:   "hub",
 	Short: "Manage tunnel-hub API keys (mxcli run --hub)",
@@ -37,7 +37,7 @@ Open self-hosted hubs need no key — 'run --hub' falls back to the shared
 
 var authHubLoginCmd = &cobra.Command{
 	Use:   "login",
-	Short: "Mint and store a hub API key via GitHub device flow",
+	Short: "Get a hub API key (browser page, or --token for headless use)",
 	RunE:  runAuthHubLogin,
 }
 
