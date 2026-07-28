@@ -362,7 +362,7 @@ func TestFuncChecker_FormatDecimal_CorrectArity_OK(t *testing.T) {
 }
 
 func TestFuncReturnKind_DateTimeExtraction(t *testing.T) {
-	intFuncs := []string{"year", "month", "dayOfYear", "dayOfMonth",
+	intFuncs := []string{"dayOfYear", "dayOfMonth",
 		"weekOfYear", "dayOfWeek", "hour", "minute", "second", "millisecond"}
 	for _, name := range intFuncs {
 		k, ok := FuncReturnKind(name)
@@ -372,6 +372,17 @@ func TestFuncReturnKind_DateTimeExtraction(t *testing.T) {
 		}
 		if k != KindInteger {
 			t.Errorf("FuncReturnKind(%q) = %v, want KindInteger", name, k)
+		}
+	}
+}
+
+// TestFuncReturnKind_NoYearMonth guards ledger finding #16: Mendix has no
+// year()/month() built-ins, so they must NOT be in the whitelist (else check
+// passes and the build fails CE0117).
+func TestFuncReturnKind_NoYearMonth(t *testing.T) {
+	for _, name := range []string{"year", "month"} {
+		if _, ok := FuncReturnKind(name); ok {
+			t.Errorf("%q must not be whitelisted — Mendix has no such function", name)
 		}
 	}
 }
