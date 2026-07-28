@@ -162,25 +162,29 @@ func validateDatasourceXPathAssociationEmpty(w *ast.WidgetV3, locationPrefix str
 	return out
 }
 
+// headingRenderModeRe matches the block-level dynamictext render modes H1–H6.
+var headingRenderModeRe = regexp.MustCompile(`(?i)^h[1-6]$`)
+
 // inlineDynamicText reports whether a widget is a dynamictext that renders
-// INLINE — i.e. an `<span>`. Only the default `Text` render mode (or an unset
-// one) is inline; H1–H6 and Paragraph are block-level, so a heading followed by
-// a subtitle does NOT concatenate and must not be flagged. (ledger #27,
-// verification round: heading+subtitle pairs were false-positived.)
+// INLINE — i.e. a `<span>`. Only the heading modes H1–H6 are genuinely
+// block-level (`display: block`); `Text`/unset AND `Paragraph` both render as an
+// inline `<span>` (verified on Mendix 11.12.1 + Atlas), so adjacent ones fuse.
+// A heading followed by a subtitle therefore does NOT concatenate and must not
+// be flagged. (ledger #27; #29 corrected the earlier mis-classification of
+// Paragraph as block-level.)
 func inlineDynamicText(w *ast.WidgetV3) bool {
 	if w == nil || !strings.EqualFold(w.Type, "dynamictext") {
 		return false
 	}
-	rm := w.GetRenderMode()
-	return rm == "" || strings.EqualFold(rm, "Text")
+	return !headingRenderModeRe.MatchString(w.GetRenderMode())
 }
 
 // validateConsecutiveDynamicText emits an advisory (MDL-WIDGET15) when two or
-// more INLINE dynamictext widgets are direct siblings: Mendix renders a Text-mode
-// DynamicText inline (a `<span>`), so adjacent ones concatenate with no separator
-// (`€ 310` + `7/24/2026` → `€ 3107/24/2026`). A block-level render mode (H1–H6,
-// Paragraph) breaks the run. Info severity — it does not fail the build, it warns
-// the author about a layout surprise. (ledger finding #27)
+// more INLINE dynamictext widgets are direct siblings: Mendix renders a Text- or
+// Paragraph-mode DynamicText inline (a `<span>`), so adjacent ones concatenate
+// with no separator (`€ 310` + `7/24/2026` → `€ 3107/24/2026`). Only a heading
+// render mode (H1–H6) is block-level and breaks the run. Info severity — it does
+// not fail the build, it warns the author about a layout surprise. (ledger #27/#29)
 func validateConsecutiveDynamicText(siblings []*ast.WidgetV3, locationPrefix string) []linter.Violation {
 	run := 0
 	for _, w := range siblings {
@@ -196,7 +200,7 @@ func validateConsecutiveDynamicText(siblings []*ast.WidgetV3, locationPrefix str
 				RuleID:   "MDL-WIDGET15",
 				Severity: linter.SeverityInfo,
 				Message: fmt.Sprintf(
-					"%s: adjacent inline dynamictext widgets (RenderMode Text) render as <span>s, so their text concatenates with no separator. Merge them into one dynamictext with multiple content params, wrap each in its own container, or set a block RenderMode (H1–H6/Paragraph).",
+					"%s: adjacent inline dynamictext widgets (RenderMode Text or Paragraph, both <span>) render with no separator, so their text concatenates. Merge them into one dynamictext with multiple content params, wrap each in its own container, or use a heading RenderMode (H1–H6, which is block-level). Note: Paragraph does NOT fix this — it also renders inline.",
 					locationPrefix),
 			}}
 		}

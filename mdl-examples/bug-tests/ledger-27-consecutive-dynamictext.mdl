@@ -8,10 +8,16 @@
 -- concatenate.
 --
 -- After fix: MDL-WIDGET15 (info, non-fatal) warns about the layout surprise and
--- suggests merging into one dynamictext with two content params, or wrapping
--- each in its own container.
+-- suggests merging into one dynamictext with two content params, wrapping each in
+-- its own container, or using a heading RenderMode (H1-H6, which is block-level).
 --
--- Usage (check passes; emits an MDL-WIDGET15 info line):
+-- Finding #29 (verification round): only H1-H6 are block-level. `Paragraph` mode
+-- ALSO renders inline (<span>) on Mendix 11.12.1 + Atlas, so two Paragraph
+-- widgets fuse too and are (correctly) still flagged. A heading + subtitle pair
+-- is NOT flagged. This example shows all three: fused Text pair (flagged), fused
+-- Paragraph pair (flagged), heading + subtitle (not flagged).
+--
+-- Usage (check passes; emits MDL-WIDGET15 info lines for the two fused pairs):
 --   mxcli check mdl-examples/bug-tests/ledger-27-consecutive-dynamictext.mdl
 -- ============================================================================
 
@@ -25,9 +31,20 @@ create or replace page MyModule.SummaryPage
 )
 {
   dataview dv (datasource: $Summary) {
+    -- Text-mode pair fuses → flagged
     container box {
       dynamictext dMonth (content: 'This month: {1}', contentparams: [{1} = $currentObject/Amount])
       dynamictext dImport (content: 'Last import: {1}', contentparams: [{1} = $currentObject/LastImport])
+    }
+    -- Paragraph-mode pair ALSO fuses (renders inline) → flagged (#29)
+    container paras {
+      dynamictext pMonth (content: 'This month: {1}', RenderMode: Paragraph, contentparams: [{1} = $currentObject/Amount])
+      dynamictext pImport (content: 'Last import: {1}', RenderMode: Paragraph, contentparams: [{1} = $currentObject/LastImport])
+    }
+    -- Heading (block-level) + subtitle does NOT fuse → not flagged
+    container heads {
+      dynamictext hTitle (content: 'Summary {1}', RenderMode: H2, contentparams: [{1} = $currentObject/Amount])
+      dynamictext hSub (content: 'as of {1}', contentparams: [{1} = $currentObject/LastImport])
     }
   }
 }

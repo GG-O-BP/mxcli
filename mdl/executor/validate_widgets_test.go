@@ -253,10 +253,12 @@ func TestValidateConsecutiveDynamicText(t *testing.T) {
 		{"separated by another widget", []*ast.WidgetV3{dt("a"), tb("x"), dt("b")}, false},
 		{"single dynamictext", []*ast.WidgetV3{dt("a")}, false},
 		{"no dynamictext", []*ast.WidgetV3{tb("x"), tb("y")}, false},
-		// Heading/Paragraph render block-level, so a heading + subtitle does not
-		// concatenate — must not be flagged (verification-round false positive).
+		// Only headings (H1–H6) are block-level. Paragraph renders inline (<span>)
+		// and fuses, so it IS flagged (#29 corrected treating it as block-level).
+		{"two paragraphs fuse", []*ast.WidgetV3{dtRM("p1", "Paragraph"), dtRM("p2", "Paragraph")}, true},
+		{"paragraph then text fuse", []*ast.WidgetV3{dtRM("p", "Paragraph"), dt("t")}, true},
+		// Headings render block-level, so a heading + subtitle does not concatenate.
 		{"heading then subtitle", []*ast.WidgetV3{dtRM("h", "H2"), dt("sub")}, false},
-		{"paragraph then text", []*ast.WidgetV3{dtRM("p", "Paragraph"), dt("t")}, false},
 		{"two headings", []*ast.WidgetV3{dtRM("h1", "H2"), dtRM("h2", "H3")}, false},
 		{"heading breaks a run of inlines", []*ast.WidgetV3{dt("a"), dtRM("h", "H2"), dt("b")}, false},
 	}
