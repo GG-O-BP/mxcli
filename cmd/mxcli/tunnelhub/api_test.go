@@ -115,7 +115,7 @@ func TestAPI_HeartbeatAndDeregister(t *testing.T) {
 	if dr.Code != http.StatusNoContent {
 		t.Errorf("deregister status = %d, want 204", dr.Code)
 	}
-	if len(reg.List("used")) != 0 {
+	if len(reg.List("used", "")) != 0 {
 		t.Error("backend should be gone after deregister")
 	}
 }

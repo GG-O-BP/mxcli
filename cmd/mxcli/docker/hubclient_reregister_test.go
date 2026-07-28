@@ -42,7 +42,7 @@ func TestHeartbeatReRegistersAfterHubForgets(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	reg, err := RegisterWithHub(srv.URL, "", HubMeta{Project: "p"}, 8080)
+	reg, err := RegisterWithHub(srv.URL, "", "", HubMeta{Project: "p"}, 8080)
 	if err != nil {
 		t.Fatalf("initial register: %v", err)
 	}

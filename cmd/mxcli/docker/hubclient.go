@@ -41,6 +41,7 @@ type HubRegistration struct {
 	// Inputs kept so the heartbeat can re-register if the hub forgets us (e.g. the
 	// hub restarted and lost its in-memory registry — /api/status then 404s).
 	secret  string
+	key     string
 	meta    HubMeta
 	appPort int
 }
@@ -60,7 +61,12 @@ type registerResponse struct {
 // at the hub URL on the default reverse port. The HTTP client uses the standard
 // proxy environment (honouring NO_PROXY), so an external hub goes through the
 // egress proxy.
-func RegisterWithHub(hubURL, secret string, meta HubMeta, appPort int) (*HubRegistration, error) {
+//
+// An authenticated hub (GitHub OAuth) is registered with a per-user X-Hub-Key
+// (from `mxcli auth hub login` / MXCLI_HUB_KEY), which stamps the preview's owner.
+// An open self-hosted hub uses the shared X-Hub-Secret. Both are sent when present
+// so the hub picks the one matching its own mode.
+func RegisterWithHub(hubURL, secret, key string, meta HubMeta, appPort int) (*HubRegistration, error) {
 	body, _ := json.Marshal(map[string]any{
 		"prefix":   meta.Prefix,
 		"project":  meta.Project,
@@ -76,6 +82,9 @@ func RegisterWithHub(hubURL, secret string, meta HubMeta, appPort int) (*HubRegi
 	req.Header.Set("Content-Type", "application/json")
 	if secret != "" {
 		req.Header.Set("X-Hub-Secret", secret)
+	}
+	if key != "" {
+		req.Header.Set("X-Hub-Key", key)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -100,6 +109,7 @@ func RegisterWithHub(hubURL, secret string, meta HubMeta, appPort int) (*HubRegi
 			MultiTenant:       true,
 			hubURL:            hubURL,
 			secret:            secret,
+			key:               key,
 			meta:              meta,
 			appPort:           appPort,
 		}, nil
@@ -112,6 +122,7 @@ func RegisterWithHub(hubURL, secret string, meta HubMeta, appPort int) (*HubRegi
 			TunnelAuth:  secret,
 			MultiTenant: false,
 			hubURL:      hubURL,
+			key:         key,
 		}, nil
 	default:
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -174,7 +185,7 @@ func StartHeartbeat(reg *HubRegistration, onReRegister func(*HubRegistration)) *
 // forgotten this preview, updating the registration in place. Returns whether the
 // assigned reverse port changed (the caller must then restart the tunnel).
 func (reg *HubRegistration) reRegister() (portChanged bool, err error) {
-	fresh, err := RegisterWithHub(reg.hubURL, reg.secret, reg.meta, reg.appPort)
+	fresh, err := RegisterWithHub(reg.hubURL, reg.secret, reg.key, reg.meta, reg.appPort)
 	if err != nil {
 		return false, err
 	}

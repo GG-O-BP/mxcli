@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/mendixlabs/mxcli/cmd/mxcli/docker"
+	"github.com/mendixlabs/mxcli/cmd/mxcli/hubauth"
 	"github.com/spf13/cobra"
 )
 
@@ -69,6 +70,7 @@ Examples:
   mxcli run --local -p app.mpr --app-port 8081 --db-name myapp
   mxcli run --hub https://hub.example.com -p app.mpr            # browser preview
   mxcli run --hub https://hub.example.com --hub-secret u:pass -p app.mpr --watch
+  mxcli auth hub login && mxcli run --hub https://hub.mxcli.org -p app.mpr  # authed hub
 `,
 	Run: func(cmd *cobra.Command, args []string) {
 		local, _ := cmd.Flags().GetBool("local")
@@ -81,8 +83,13 @@ Examples:
 		hubWorktree, _ := cmd.Flags().GetString("hub-worktree")
 		// --hub is a cross-cutting ingress and implies the local serving path (the
 		// only serving mode wired today; a future PAD path will accept --hub too).
+		hubKey := ""
 		if hub != "" {
 			local = true
+			// Present a per-user hub API key to an authenticated hub (MXCLI_HUB_KEY
+			// env → ~/.mxcli/auth.json). Empty for open hubs; the shared --hub-secret
+			// still applies.
+			hubKey = hubauth.ResolveKey(hub)
 		}
 		if !local {
 			fmt.Fprintln(os.Stderr, "Error: only --local is supported for now (use 'mxcli docker run' for the container workflow)")
@@ -131,6 +138,7 @@ Examples:
 			ProjectPath:        projectPath,
 			Hub:                hub,
 			HubSecret:          hubSecret,
+			HubKey:             hubKey,
 			HubPrefix:          hubPrefix,
 			HubProject:         hubProject,
 			HubSolution:        hubSolution,

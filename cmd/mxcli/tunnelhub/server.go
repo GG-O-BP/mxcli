@@ -14,6 +14,8 @@ import (
 
 	chserver "github.com/jpillora/chisel/server"
 	"golang.org/x/crypto/acme/autocert"
+
+	"github.com/mendixlabs/mxcli/cmd/mxcli/tunnelhub/audit"
 )
 
 // ctxKey is the type for request-context values the front handler passes to the
@@ -44,6 +46,14 @@ type ServerOptions struct {
 	// chiselAddr is the internal address the embedded chisel control server binds
 	// (default 127.0.0.1:8100). Not public — the front proxies the WS here.
 	ChiselAddr string
+	// Auth, when enabled, adds the GitHub OAuth viewer plane: /auth/* on the hub
+	// host, a session cookie, backend-list filtering, and (when RequireAuth) an
+	// owner check on preview + admin access. Nil / open mode preserves today's
+	// behaviour.
+	Auth *AuthConfig
+	// Audit receives auth + registration events (login/deny/register/key). Nil →
+	// audit.NoOp(). The same sink is shared with Auth.
+	Audit audit.Sink
 }
 
 // Server is the running multi-tenant hub: one embedded chisel reverse server
@@ -84,11 +94,17 @@ func NewServer(o ServerOptions) (*Server, error) {
 		return nil, fmt.Errorf("chisel server: %w", err)
 	}
 
+	// A shared key store backs /api/keys + X-Hub-Key registration (only reachable
+	// when Auth is enabled; harmless otherwise).
+	keys := NewKeyStore()
 	api := NewAPI(APIOptions{
 		Registry:       o.Registry,
 		ControlURL:     "https://" + o.HubHost,
 		TunnelAuth:     o.TunnelAuth,
 		RegisterSecret: o.RegisterSecret,
+		Auth:           o.Auth,
+		Keys:           keys,
+		Audit:          o.Audit,
 	})
 	apiMux := http.NewServeMux()
 	api.Mount(apiMux)
@@ -175,6 +191,20 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.apiMux.ServeHTTP(w, r)
 			return
 		}
+		// The OAuth login/callback/logout endpoints live on the hub host so the
+		// SSO cookie is issued for the whole cookie domain.
+		if s.opts.Auth.enabled() && strings.HasPrefix(r.URL.Path, "/auth/") {
+			s.opts.Auth.authHandler().ServeHTTP(w, r)
+			return
+		}
+		// The admin overview shows the viewer's own previews — gate it behind a
+		// session so an anonymous visitor is sent to login rather than served a
+		// page whose /api/backends fetch would 401.
+		if s.opts.Auth.enabled() && s.opts.Auth.sessionLogin(r) == "" {
+			ret := "https://" + s.opts.HubHost + r.URL.RequestURI()
+			http.Redirect(w, r, "https://"+s.opts.HubHost+"/auth/github/login?return="+url.QueryEscape(ret), http.StatusFound)
+			return
+		}
 		s.admin.ServeHTTP(w, r)
 	default:
 		sub, ok := s.subOf(host)
@@ -185,6 +215,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		b, found := s.reg.LookupSubdomain(sub)
 		if !found {
 			writeNoSuchPreview(w, host)
+			return
+		}
+		// Enforce the owner check before proxying (no-op in open mode / for an
+		// unowned backend). On deny it has already written 302/403.
+		if !s.opts.Auth.authorizePreview(w, r, b, host) {
 			return
 		}
 		s.reg.TouchUsed(sub)
@@ -223,7 +258,7 @@ func (s *Server) Start(ctx context.Context, httpsAddr, httpAddr string) error {
 			case <-ctx.Done():
 				return
 			case <-reaper.C:
-				s.reg.List("")
+				s.reg.List("", "") // periodic reap; viewer "" = all
 			}
 		}
 	}()
