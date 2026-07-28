@@ -1,0 +1,33 @@
+-- ============================================================================
+-- Ledger finding #27: consecutive dynamictext widgets render inline
+-- ============================================================================
+--
+-- Symptom: two sibling dynamictexts inside a container produced
+--   "This month: € 310Last import: 7/24/2026"  (no separator) — a DynamicText
+-- renders as an inline <span> regardless of RenderMode, so adjacent ones
+-- concatenate.
+--
+-- After fix: MDL-WIDGET15 (info, non-fatal) warns about the layout surprise and
+-- suggests merging into one dynamictext with two content params, or wrapping
+-- each in its own container.
+--
+-- Usage (check passes; emits an MDL-WIDGET15 info line):
+--   mxcli check mdl-examples/bug-tests/ledger-27-consecutive-dynamictext.mdl
+-- ============================================================================
+
+create entity MyModule.Summary ( Amount: Decimal, LastImport: DateTime );
+
+create or replace page MyModule.SummaryPage
+(
+  Title: 'Summary',
+  Layout: Atlas_Core.Atlas_Default,
+  Params: { $Summary: MyModule.Summary }
+)
+{
+  dataview dv (datasource: $Summary) {
+    container box {
+      dynamictext dMonth (content: 'This month: {1}', contentparams: [{1} = $currentObject/Amount])
+      dynamictext dImport (content: 'Last import: {1}', contentparams: [{1} = $currentObject/LastImport])
+    }
+  }
+}

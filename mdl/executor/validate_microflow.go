@@ -4,6 +4,7 @@ package executor
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/mendixlabs/mxcli/mdl/ast"
@@ -100,9 +101,11 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 			v.checkReturn(stmt)
 			v.checkExprFunctions("return", stmt.Value)
 			v.checkDivisionSlash("return", stmt.Value)
+			v.checkDateTimeLiterals("return", stmt.Value)
 		case *ast.IfStmt:
 			v.checkExprFunctions("if condition", stmt.Condition)
 			v.checkDivisionSlash("if condition", stmt.Condition)
+			v.checkDateTimeLiterals("if condition", stmt.Condition)
 			v.walkBody(stmt.ThenBody)
 			v.walkBody(stmt.ElseBody)
 		case *ast.EnumSplitStmt:
@@ -190,6 +193,7 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 			}
 			v.checkExprFunctions(fmt.Sprintf("declare '$%s'", stmt.Variable), stmt.InitialValue)
 			v.checkDivisionSlash(fmt.Sprintf("declare '$%s'", stmt.Variable), stmt.InitialValue)
+			v.checkDateTimeLiterals(fmt.Sprintf("declare '$%s'", stmt.Variable), stmt.InitialValue)
 		case *ast.MfSetStmt:
 			// SET on a plain variable target (not $var/Member = …, which is a
 			// member change). Flag a Decimal value assigned to an Integer/Long var.
@@ -200,9 +204,13 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 			}
 			v.checkExprFunctions(fmt.Sprintf("set '%s'", stmt.Target), stmt.Value)
 			v.checkDivisionSlash(fmt.Sprintf("set '%s'", stmt.Target), stmt.Value)
+			v.checkDateTimeLiterals(fmt.Sprintf("set '%s'", stmt.Target), stmt.Value)
 		case *ast.RetrieveStmt:
 			// RETRIEVE populates a list variable — remove from empty tracking
 			delete(v.emptyListVars, stmt.Variable)
+			if stmt.Where != nil {
+				v.checkXPathAssociationEmpty(stmt.Variable, expressionToXPath(stmt.Where))
+			}
 		case *ast.LoopStmt:
 			// Check: @caption on a loop is silently dropped — Mendix for-loops
 			// have no caption (Microflows$LoopedActivity has no Caption
@@ -354,6 +362,77 @@ func exprHasSlashDivision(expr ast.Expression) bool {
 		return exprHasSlashDivision(e.Condition) || exprHasSlashDivision(e.ThenExpr) || exprHasSlashDivision(e.ElseExpr)
 	case *ast.SourceExpr:
 		return exprHasSlashDivision(e.Expression)
+	}
+	return false
+}
+
+// xpathAssocEmptyRe matches a module-qualified association compared directly to
+// `empty` in an XPath constraint (`Ledger.Transaction_Category = empty`). The
+// leading boundary class excludes a `/` (so an attribute-over-association path
+// like `Assoc/Ledger.Category = empty` is NOT matched — that is a valid
+// attribute nullability test) and a `.`/word char (so it captures the whole
+// qualified name, not the tail of a 3-part enum literal).
+var xpathAssocEmptyRe = regexp.MustCompile(`(^|[^\w./])([A-Za-z_]\w*\.[A-Za-z_]\w*)\s*=\s*empty\b`)
+
+// checkXPathAssociationEmpty flags `[Module.Association = empty]` in a retrieve
+// constraint. Mendix XPath has no `= empty` test for an association — it fails
+// the build with CE0161; the nullability test is `not(Module.Association/Module.Target)`.
+// A bare attribute (`Name = empty`) is valid and is not module-qualified, so it
+// never matches. (ledger finding #25)
+func (v *microflowValidator) checkXPathAssociationEmpty(variable, xpath string) {
+	for _, m := range xpathAssocEmptyRe.FindAllStringSubmatch(xpath, -1) {
+		assoc := m[2]
+		v.addViolation("MDL047", linter.SeverityError,
+			fmt.Sprintf("retrieve '$%s' constraint tests association `%s = empty`, which Mendix XPath does not support "+
+				"(CE0161 \"Error(s) in XPath constraint\") — `= empty` works on attributes, not associations", variable, assoc),
+			fmt.Sprintf("Test for the absence of the associated object with negation: `[not(%s/<Module.TargetEntity>)]`.", assoc))
+	}
+}
+
+// dateTimeLiteralFuncs are the date-construction functions whose arguments
+// Mendix requires to be literal numeric constants — a variable or computed
+// argument fails the build with CE0117.
+var dateTimeLiteralFuncs = map[string]bool{"datetime": true, "datetimeutc": true}
+
+// checkDateTimeLiterals flags a dateTime()/dateTimeUTC() call with a non-literal
+// argument. Mendix builds these from hardcoded numeric constants only; a
+// variable or expression (`dateTime(2026, $Month, $Day)`) is CE0117. (ledger #21)
+func (v *microflowValidator) checkDateTimeLiterals(label string, expr ast.Expression) {
+	if exprHasNonLiteralDateTime(expr) {
+		v.addViolation("MDL046", linter.SeverityError,
+			fmt.Sprintf("%s calls dateTime()/dateTimeUTC() with a non-literal argument, which Mendix rejects "+
+				"(CE0117 \"Error(s) in expression\") — these functions accept only hardcoded numeric constants", label),
+			"Step off a literal anchor date instead: `addDays(addMonths(dateTime(2026,1,1), $Month - 1), $Day - 1)` (addDays/addMonths take variables).")
+	}
+}
+
+// exprHasNonLiteralDateTime reports whether the tree contains a dateTime/
+// dateTimeUTC call any of whose arguments is not a plain numeric literal.
+func exprHasNonLiteralDateTime(expr ast.Expression) bool {
+	switch e := expr.(type) {
+	case *ast.FunctionCallExpr:
+		if dateTimeLiteralFuncs[strings.ToLower(e.Name)] {
+			for _, arg := range e.Arguments {
+				if _, ok := arg.(*ast.LiteralExpr); !ok {
+					return true
+				}
+			}
+		}
+		for _, arg := range e.Arguments {
+			if exprHasNonLiteralDateTime(arg) {
+				return true
+			}
+		}
+	case *ast.BinaryExpr:
+		return exprHasNonLiteralDateTime(e.Left) || exprHasNonLiteralDateTime(e.Right)
+	case *ast.UnaryExpr:
+		return exprHasNonLiteralDateTime(e.Operand)
+	case *ast.ParenExpr:
+		return exprHasNonLiteralDateTime(e.Inner)
+	case *ast.IfThenElseExpr:
+		return exprHasNonLiteralDateTime(e.Condition) || exprHasNonLiteralDateTime(e.ThenExpr) || exprHasNonLiteralDateTime(e.ElseExpr)
+	case *ast.SourceExpr:
+		return exprHasNonLiteralDateTime(e.Expression)
 	}
 	return false
 }

@@ -766,6 +766,21 @@ if $IsActive and $IsValid and $HasStock then
 end if;
 ```
 
+### Date construction
+
+`dateTime(...)` / `dateTimeUTC(...)` build a date from **literal numeric
+constants only** — a variable or computed argument fails the build with CE0117
+(`mxcli check` flags it as **MDL046**). To build a date from variables, step off
+a literal anchor with `addDays()` / `addMonths()` (which *do* take variables):
+
+```mdl
+-- WRONG: variable args to dateTime() (CE0117 / MDL046)
+set $D = dateTime(2026, $Month, $Day);
+
+-- RIGHT: anchor on a literal, then step with addMonths/addDays
+set $D = addDays(addMonths(dateTime(2026, 1, 1), $Month - 1), $Day - 1);
+```
+
 ## Logging
 
 ```mdl

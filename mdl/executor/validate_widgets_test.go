@@ -233,6 +233,33 @@ func TestValidateTemplateParamExpressions(t *testing.T) {
 	}
 }
 
+// TestValidateConsecutiveDynamicText — MDL-WIDGET15 (info) flags two or more
+// adjacent dynamictext siblings, which Mendix renders inline (concatenated with
+// no separator) regardless of RenderMode. (ledger finding #27)
+func TestValidateConsecutiveDynamicText(t *testing.T) {
+	dt := func(name string) *ast.WidgetV3 { return &ast.WidgetV3{Type: "dynamictext", Name: name} }
+	tb := func(name string) *ast.WidgetV3 { return &ast.WidgetV3{Type: "textbox", Name: name} }
+	cases := []struct {
+		name     string
+		siblings []*ast.WidgetV3
+		want     bool
+	}{
+		{"two adjacent dynamictexts", []*ast.WidgetV3{dt("a"), dt("b")}, true},
+		{"three adjacent (warns once)", []*ast.WidgetV3{dt("a"), dt("b"), dt("c")}, true},
+		{"separated by another widget", []*ast.WidgetV3{dt("a"), tb("x"), dt("b")}, false},
+		{"single dynamictext", []*ast.WidgetV3{dt("a")}, false},
+		{"no dynamictext", []*ast.WidgetV3{tb("x"), tb("y")}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := len(validateConsecutiveDynamicText(c.siblings, "page X")) > 0
+			if got != c.want {
+				t.Errorf("MDL-WIDGET15 present = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
 // TestValidateObjectListItemEnums — MDL-WIDGET08 flags an object-list item's
 // enumeration sub-property whose value isn't a declared member key (e.g. a Maps
 // marker LocationType outside {address, latlng}). Studio Pro silently defaults

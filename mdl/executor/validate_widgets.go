@@ -133,7 +133,37 @@ func validateWidgetTreeIn(widgets []*ast.WidgetV3, registry *WidgetRegistry, loc
 			out = append(out, validateWidgetTreeIn(w.Children, registry, locationPrefix, objectListMappingSet(def))...)
 		}
 	}
+	out = append(out, validateConsecutiveDynamicText(widgets, locationPrefix)...)
 	return out
+}
+
+// validateConsecutiveDynamicText emits an advisory (MDL-WIDGET15) when two or
+// more dynamictext widgets are direct siblings: Mendix renders a DynamicText
+// inline (a `<span>`) regardless of its RenderMode, so adjacent ones concatenate
+// with no separator (`€ 310` + `7/24/2026` → `€ 3107/24/2026`). Info severity —
+// it does not fail the build, it warns the author about a layout surprise.
+// (ledger finding #27)
+func validateConsecutiveDynamicText(siblings []*ast.WidgetV3, locationPrefix string) []linter.Violation {
+	run := 0
+	for _, w := range siblings {
+		if w != nil && strings.EqualFold(w.Type, "dynamictext") {
+			run++
+		} else {
+			run = 0
+		}
+		// Emit once, on the second dynamictext of a run, so a group of N only
+		// warns once.
+		if run == 2 {
+			return []linter.Violation{{
+				RuleID:   "MDL-WIDGET15",
+				Severity: linter.SeverityInfo,
+				Message: fmt.Sprintf(
+					"%s: adjacent dynamictext widgets render inline (Mendix emits a <span> regardless of RenderMode), so their text concatenates with no separator. Merge them into one dynamictext with multiple content params, or wrap each in its own container.",
+					locationPrefix),
+			}}
+		}
+	}
+	return nil
 }
 
 // validateWidgetVisibility warns (MDL-WIDGET10) when a property the user set on a
