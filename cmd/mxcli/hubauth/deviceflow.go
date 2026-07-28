@@ -237,6 +237,21 @@ func (c *Client) RevokeHubKey(ctx context.Context, key string) error {
 	return nil
 }
 
+// LoginWithToken mints and stores a hub key directly from a GitHub token (PAT or
+// OAuth token), skipping the device flow. This is the escape hatch for
+// environments whose egress proxy blocks GitHub's device endpoints (e.g. Claude
+// Code web containers, which only permit repo-scoped GitHub paths). (findings #31A)
+func (c *Client) LoginWithToken(ctx context.Context, githubToken string) (login string, err error) {
+	key, login, err := c.MintHubKey(ctx, strings.TrimSpace(githubToken))
+	if err != nil {
+		return "", err
+	}
+	if err := SaveKey(c.HubURL, key); err != nil {
+		return "", fmt.Errorf("saving hub key: %w", err)
+	}
+	return login, nil
+}
+
 // Login runs the full bootstrap: discover the client id, device flow, mint a hub
 // key, and store it. Prompts are written to out. Returns the resolved GitHub
 // login. The GitHub token never leaves this process except for the mint call.

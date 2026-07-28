@@ -266,3 +266,48 @@ func TestAPI_Whoami(t *testing.T) {
 		t.Errorf("session whoami = %+v, want alice", w2)
 	}
 }
+
+// TestAPI_RegisterSecretFallbackWhenAuthOn covers finding #31B: with auth on, a
+// valid X-Hub-Secret registers owner-less (the legacy secret stays a meaningful
+// credential), while a wrong/absent one is refused.
+func TestAPI_RegisterSecretFallbackWhenAuthOn(t *testing.T) {
+	api, buf, done := newAuthedAPI(t, true) // require-auth on
+	defer done()
+	api.opts.RegisterSecret = "s3cret"
+
+	// Valid shared secret, no key → 200, owner-less.
+	ok := doJSON(t, api, http.MethodPost, "/api/register", `{"project":"A","branch":"main"}`,
+		map[string]string{"X-Hub-Secret": "s3cret"})
+	if ok.Code != http.StatusOK {
+		t.Fatalf("secret register status = %d, want 200 (body %s)", ok.Code, ok.Body)
+	}
+	if got := api.opts.Registry.List("project", ""); len(got) != 1 || got[0].Owner != "" {
+		t.Errorf("secret register should be owner-less, got %+v", got)
+	}
+	// Wrong secret, no key → 401 + register_deny.
+	bad := doJSON(t, api, http.MethodPost, "/api/register", `{"project":"B","branch":"main"}`,
+		map[string]string{"X-Hub-Secret": "nope"})
+	if bad.Code != http.StatusUnauthorized {
+		t.Errorf("wrong-secret status = %d, want 401", bad.Code)
+	}
+	if !strings.Contains(buf.String(), `"event":"register_deny"`) {
+		t.Errorf("expected register_deny audit line, got: %s", buf.String())
+	}
+}
+
+// TestAPI_SoftModeWithSecretRequiresIt covers the flip side of #31B: in soft mode
+// (require-auth off) a configured secret still gates — a keyless, secretless
+// registration is refused rather than silently allowed.
+func TestAPI_SoftModeWithSecretRequiresIt(t *testing.T) {
+	api, _, done := newAuthedAPI(t, false) // soft
+	defer done()
+	api.opts.RegisterSecret = "s3cret"
+
+	if rec := doJSON(t, api, http.MethodPost, "/api/register", `{"project":"A"}`, nil); rec.Code != http.StatusUnauthorized {
+		t.Errorf("soft-mode + secret, no creds: status = %d, want 401", rec.Code)
+	}
+	if rec := doJSON(t, api, http.MethodPost, "/api/register", `{"project":"A"}`,
+		map[string]string{"X-Hub-Secret": "s3cret"}); rec.Code != http.StatusOK {
+		t.Errorf("soft-mode + valid secret: status = %d, want 200", rec.Code)
+	}
+}

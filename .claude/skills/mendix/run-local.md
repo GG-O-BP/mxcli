@@ -289,9 +289,16 @@ mxcli auth hub logout                # revoke + remove it
 mxcli run --hub https://hub.mxcli.org -p app.mpr
 ```
 
-For an unattended environment (Claude Code on the web — the container is reaped, so the
-interactive login won't persist), set the key once as an environment/repo secret; it takes
-precedence over the stored key:
+**Where the device flow is blocked** (Claude Code web containers only allow repo-scoped
+GitHub API paths, so `mxcli auth hub login` gets a 403 before printing a code), mint the
+key from a GitHub token directly instead:
+
+```bash
+mxcli auth hub login --token <github-pat>   # skips the device flow, mints + caches the key
+```
+
+For an unattended environment (the container is reaped, so any cached login won't persist),
+set the key once as an environment/repo secret; it takes precedence over the stored key:
 
 ```bash
 export MXCLI_HUB_KEY=<key>            # from `mxcli auth hub login` on a durable machine
@@ -299,6 +306,12 @@ export MXCLI_HUB_KEY=<key>            # from `mxcli auth hub login` on a durable
 
 The GitHub token never leaves your machine except for the one-time key-mint request to the
 hub; only the opaque hub key is stored (`~/.mxcli/auth.json`, mode 0600, keyed by hub host).
+
+**Registration failure is non-fatal:** if the hub is unreachable or the key is stale/rejected,
+`run --hub` prints a warning and continues as a normal local run (the app boots on localhost;
+only the public preview URL is lost). On an authenticated hub the shared `--hub-secret` still
+works as a fallback registration credential — a valid key stamps the preview as yours, a valid
+secret registers it owner-less.
 
 ## Validation checklist
 

@@ -187,19 +187,29 @@ func (a *API) authorizeRegister(w http.ResponseWriter, r *http.Request) (owner s
 		}
 		return "", true
 	}
+	// A valid per-user key stamps an owner.
 	key := strings.TrimSpace(r.Header.Get("X-Hub-Key"))
 	if a.opts.Keys != nil {
 		if login, found := a.opts.Keys.Resolve(key); found {
 			return login, true
 		}
 	}
-	// No valid key. Enforce only when required; soft mode registers anonymously.
-	if a.opts.Auth.RequireAuth {
+	// Fall back to the shared secret: a valid X-Hub-Secret registers owner-less,
+	// even with auth on. This keeps the legacy secret a meaningful registration
+	// credential during a transition (key → owner, secret → owner-less), rather
+	// than being silently ignored once OAuth is enabled. (findings #31B)
+	if a.opts.RegisterSecret != "" && r.Header.Get("X-Hub-Secret") == a.opts.RegisterSecret {
+		return "", true
+	}
+	// No valid credential. Refuse when auth is required or a shared secret is
+	// configured (so a set secret actually gates); otherwise (soft mode, no
+	// secret) register anonymously as before.
+	if a.opts.Auth.RequireAuth || a.opts.RegisterSecret != "" {
 		a.opts.Audit.Log(audit.Event{
 			Event: audit.EventRegisterDeny, IP: clientIP(r), Outcome: "deny",
-			Detail: "missing or invalid X-Hub-Key",
+			Detail: "missing or invalid X-Hub-Key / X-Hub-Secret",
 		})
-		http.Error(w, "missing or invalid X-Hub-Key (run 'mxcli auth hub login')", http.StatusUnauthorized)
+		http.Error(w, "missing or invalid X-Hub-Key (run 'mxcli auth hub login') or X-Hub-Secret", http.StatusUnauthorized)
 		return "", false
 	}
 	return "", true

@@ -149,3 +149,23 @@ func TestLogin_OpenModeHubIsAnError(t *testing.T) {
 		t.Error("Login against an open-mode hub should error (no key needed)")
 	}
 }
+
+func TestLoginWithToken_MintsAndStores(t *testing.T) {
+	withTempStore(t)
+	t.Setenv(EnvHubKey, "")
+
+	hub := fakeHub(t, "cid", "alice")
+	defer hub.Close()
+	c := &Client{HubURL: hub.URL, HTTP: hub.Client()}
+
+	login, err := c.LoginWithToken(context.Background(), "gho_from_device")
+	if err != nil {
+		t.Fatalf("LoginWithToken: %v", err)
+	}
+	if login != "alice" {
+		t.Errorf("login = %q, want alice", login)
+	}
+	if k := ResolveKey(hub.URL); k != "hub_minted_key" {
+		t.Errorf("stored key = %q, want hub_minted_key", k)
+	}
+}

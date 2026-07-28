@@ -54,15 +54,25 @@ func init() {
 	for _, c := range []*cobra.Command{authHubLoginCmd, authHubStatusCmd, authHubLogoutCmd} {
 		c.Flags().String("hub", hubauth.DefaultHubURL, "hub base URL")
 	}
+	authHubLoginCmd.Flags().String("token", "", "GitHub token (PAT) to mint the hub key from directly, skipping the device flow (use where the device flow is blocked, e.g. Claude Code web)")
 	authHubCmd.AddCommand(authHubLoginCmd, authHubStatusCmd, authHubLogoutCmd)
 	authCmd.AddCommand(authHubCmd)
 }
 
 func runAuthHubLogin(cmd *cobra.Command, _ []string) error {
 	hubURL, _ := cmd.Flags().GetString("hub")
+	token, _ := cmd.Flags().GetString("token")
 	client := &hubauth.Client{HubURL: hubURL}
 
-	login, err := client.Login(cmd.Context(), cmd.OutOrStdout())
+	var login string
+	var err error
+	if token != "" {
+		// Direct token → key mint (no device flow). For environments whose egress
+		// proxy blocks GitHub's device endpoints.
+		login, err = client.LoginWithToken(cmd.Context(), token)
+	} else {
+		login, err = client.Login(cmd.Context(), cmd.OutOrStdout())
+	}
 	if err != nil {
 		return err
 	}
