@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -225,5 +226,43 @@ func TestAPI_BackendsRequiresAuthWhenEnabled(t *testing.T) {
 	ok := doJSON(t, api, http.MethodGet, "/api/backends", "", map[string]string{"Cookie": sessionCookieName + "=" + cookie})
 	if ok.Code != http.StatusOK || !strings.Contains(ok.Body.String(), "Secret") {
 		t.Errorf("alice /api/backends = %d body %s, want 200 with her preview", ok.Code, ok.Body)
+	}
+}
+
+func TestAPI_Whoami(t *testing.T) {
+	// Open mode: authEnabled false, no login.
+	open, _ := newTestAPI(t, "")
+	rec := doJSON(t, open, http.MethodGet, "/api/whoami", "", nil)
+	var wo WhoamiResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &wo)
+	if wo.AuthEnabled || wo.Login != "" {
+		t.Errorf("open whoami = %+v, want disabled/empty", wo)
+	}
+
+	// Auth on, no session → authEnabled true, empty login.
+	api, _, done := newAuthedAPI(t, true)
+	defer done()
+	r1 := doJSON(t, api, http.MethodGet, "/api/whoami", "", nil)
+	var w1 WhoamiResponse
+	_ = json.Unmarshal(r1.Body.Bytes(), &w1)
+	if !w1.AuthEnabled || w1.Login != "" {
+		t.Errorf("no-session whoami = %+v, want enabled + empty login", w1)
+	}
+
+	// Auth on, valid session cookie → the login.
+	rec2 := httptest.NewRecorder()
+	api.opts.Auth.setSessionCookie(rec2, "alice")
+	mux := http.NewServeMux()
+	api.Mount(mux)
+	req := httptest.NewRequest(http.MethodGet, "/api/whoami", nil)
+	for _, c := range rec2.Result().Cookies() {
+		req.AddCookie(c)
+	}
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+	var w2 WhoamiResponse
+	_ = json.Unmarshal(rw.Body.Bytes(), &w2)
+	if !w2.AuthEnabled || w2.Login != "alice" {
+		t.Errorf("session whoami = %+v, want alice", w2)
 	}
 }

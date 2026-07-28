@@ -77,6 +77,28 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/api/backends", a.handleBackends)
 	mux.HandleFunc("/api/keys", a.handleKeys)
 	mux.HandleFunc("/api/auth-config", a.handleAuthConfig)
+	mux.HandleFunc("/api/whoami", a.handleWhoami)
+}
+
+// WhoamiResponse tells the admin page who the current session belongs to, so a
+// signed-in viewer can confirm their identity (and see a Sign-out control).
+type WhoamiResponse struct {
+	AuthEnabled bool   `json:"authEnabled"`
+	Login       string `json:"login,omitempty"`
+}
+
+// handleWhoami (GET /api/whoami) returns the authenticated GitHub login for the
+// current session, or an empty login in open mode / when unauthenticated.
+func (a *API) handleWhoami(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	resp := WhoamiResponse{AuthEnabled: a.opts.Auth.enabled()}
+	if resp.AuthEnabled {
+		resp.Login = a.opts.Auth.sessionLogin(r)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // AuthConfigResponse tells a client whether the hub requires GitHub auth and, if

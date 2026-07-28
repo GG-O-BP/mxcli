@@ -44,12 +44,18 @@ const adminHTML = `<!doctype html>
   .sol { color:var(--mut); font-size:.82rem; }
   .empty { color:var(--mut); padding:2rem 0; }
   code { font-family:ui-monospace,monospace; }
+  .who { color:var(--mut); font-size:.85rem; }
+  .who b { color:var(--fg); font-weight:600; }
+  .signout { font:inherit; font-size:.82rem; color:var(--accent); background:none; border:1px solid var(--line); border-radius:.4rem; padding:.15rem .55rem; cursor:pointer; }
+  .signout:hover { border-color:var(--accent); }
 </style></head>
 <body>
 <header>
   <h1>mxcli tunnel-hub</h1>
   <span class="meta" id="count">…</span>
-  <span class="meta" style="margin-left:auto" id="updated"></span>
+  <span class="who" id="who" style="margin-left:auto"></span>
+  <button class="signout" id="signout" hidden>Sign out</button>
+  <span class="meta" id="updated"></span>
 </header>
 <div class="wrap">
   <table>
@@ -119,10 +125,24 @@ const adminHTML = `<!doctype html>
   function load(){
     fetch("/api/backends").then(function(r){return r.json();}).then(function(j){ data=j||[]; render(); }).catch(function(){});
   }
+  function whoami(){
+    fetch("/api/whoami").then(function(r){return r.json();}).then(function(j){
+      var who = document.getElementById("who"), btn = document.getElementById("signout");
+      if(j && j.authEnabled && j.login){
+        who.innerHTML = "signed in as <b>"+esc(j.login)+"</b>";
+        btn.hidden = false;
+      } else {
+        who.textContent = ""; btn.hidden = true;
+      }
+    }).catch(function(){});
+  }
+  document.getElementById("signout").addEventListener("click", function(){
+    fetch("/auth/logout", {method:"POST"}).then(function(){ location.reload(); }).catch(function(){ location.reload(); });
+  });
   document.querySelectorAll("th").forEach(function(th){
     th.addEventListener("click", function(){ sortKey=th.dataset.k; render(); });
   });
-  load(); setInterval(load, 5000);
+  whoami(); load(); setInterval(load, 5000);
 })();
 </script>
 </body></html>`
