@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Package hubauth is the client side of tunnel-hub authentication: it obtains a
-// GitHub identity via the OAuth device flow, exchanges it for a hub-minted API
-// key, and stores/resolves that key per hub host in ~/.mxcli/auth.json.
+// Package hubauth is the client side of tunnel-hub authentication: it stores and
+// resolves the hub API key per hub host in ~/.mxcli/auth.json, and (headless)
+// mints one from a GitHub token.
 //
-// `mxcli auth hub login` runs Login (device flow → mint → store); `mxcli run
-// --hub` calls ResolveKey to attach an X-Hub-Key header. The GitHub token stays
-// on this machine except for the single mint call to the hub.
+// The primary way to obtain a key is the hub's browser page (`https://<hub>/cli`);
+// `mxcli auth hub login --token` covers the headless/CI path. `mxcli run --hub`
+// calls ResolveKey (MXCLI_HUB_KEY env → store) to attach an X-Hub-Key header.
 package hubauth
 
 import (

@@ -4,7 +4,9 @@ package tunnelhub
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/mendixlabs/mxcli/cmd/mxcli/tunnelhub/audit"
@@ -47,6 +49,18 @@ type KeyResponse struct {
 	Login string `json:"login"`
 }
 
+// KeyListResponse is returned by GET /api/keys: how many active keys the caller
+// has (for the /cli page's "you have N keys").
+type KeyListResponse struct {
+	Login string `json:"login"`
+	Count int    `json:"count"`
+}
+
+// KeyRevokeResponse is returned by a session-authed DELETE /api/keys (revoke-all).
+type KeyRevokeResponse struct {
+	Revoked int `json:"revoked"`
+}
+
 // RegisterResponse is returned to `mxcli run --hub` after registration.
 type RegisterResponse struct {
 	Subdomain            string `json:"subdomain"`
@@ -77,11 +91,33 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/api/backends", a.handleBackends)
 	mux.HandleFunc("/api/keys", a.handleKeys)
 	mux.HandleFunc("/api/auth-config", a.handleAuthConfig)
+	mux.HandleFunc("/api/whoami", a.handleWhoami)
+}
+
+// WhoamiResponse tells the admin page who the current session belongs to, so a
+// signed-in viewer can confirm their identity (and see a Sign-out control).
+type WhoamiResponse struct {
+	AuthEnabled bool   `json:"authEnabled"`
+	Login       string `json:"login,omitempty"`
+}
+
+// handleWhoami (GET /api/whoami) returns the authenticated GitHub login for the
+// current session, or an empty login in open mode / when unauthenticated.
+func (a *API) handleWhoami(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	resp := WhoamiResponse{AuthEnabled: a.opts.Auth.enabled()}
+	if resp.AuthEnabled {
+		resp.Login = a.opts.Auth.sessionLogin(r)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // AuthConfigResponse tells a client whether the hub requires GitHub auth and, if
-// so, which OAuth App client id to use for the device flow. The client id is a
-// public value (it appears in every browser redirect); no secret is exposed.
+// so, the OAuth App client id (a public value that appears in every browser
+// redirect; no secret is exposed) — used to probe whether a hub is authenticated.
 type AuthConfigResponse struct {
 	AuthEnabled    bool   `json:"authEnabled"`
 	RequireAuth    bool   `json:"requireAuth"`
@@ -165,19 +201,29 @@ func (a *API) authorizeRegister(w http.ResponseWriter, r *http.Request) (owner s
 		}
 		return "", true
 	}
+	// A valid per-user key stamps an owner.
 	key := strings.TrimSpace(r.Header.Get("X-Hub-Key"))
 	if a.opts.Keys != nil {
 		if login, found := a.opts.Keys.Resolve(key); found {
 			return login, true
 		}
 	}
-	// No valid key. Enforce only when required; soft mode registers anonymously.
-	if a.opts.Auth.RequireAuth {
+	// Fall back to the shared secret: a valid X-Hub-Secret registers owner-less,
+	// even with auth on. This keeps the legacy secret a meaningful registration
+	// credential during a transition (key → owner, secret → owner-less), rather
+	// than being silently ignored once OAuth is enabled. (findings #31B)
+	if a.opts.RegisterSecret != "" && r.Header.Get("X-Hub-Secret") == a.opts.RegisterSecret {
+		return "", true
+	}
+	// No valid credential. Refuse when auth is required or a shared secret is
+	// configured (so a set secret actually gates); otherwise (soft mode, no
+	// secret) register anonymously as before.
+	if a.opts.Auth.RequireAuth || a.opts.RegisterSecret != "" {
 		a.opts.Audit.Log(audit.Event{
 			Event: audit.EventRegisterDeny, IP: clientIP(r), Outcome: "deny",
-			Detail: "missing or invalid X-Hub-Key",
+			Detail: "missing or invalid X-Hub-Key / X-Hub-Secret",
 		})
-		http.Error(w, "missing or invalid X-Hub-Key (run 'mxcli auth hub login')", http.StatusUnauthorized)
+		http.Error(w, "missing or invalid X-Hub-Key (run 'mxcli auth hub login') or X-Hub-Secret", http.StatusUnauthorized)
 		return "", false
 	}
 	return "", true
@@ -192,6 +238,8 @@ func (a *API) handleKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.Method {
+	case http.MethodGet:
+		a.handleKeyList(w, r)
 	case http.MethodPost:
 		a.handleKeyMint(w, r)
 	case http.MethodDelete:
@@ -201,19 +249,57 @@ func (a *API) handleKeys(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleKeyMint validates the caller's GitHub token (Bearer) against GitHub, then
-// issues an opaque hub key bound to that login. The GitHub token is used once and
-// discarded — never stored.
+// keyCaller resolves the login for a key-management request. Two auth methods:
+// an Authorization: Bearer <github-token> (verified against GitHub, no CSRF risk
+// as it isn't ambient), or a hub session cookie. State-changing cookie calls
+// (mint, revoke-all) pass writeCSRF=true so they additionally require the
+// X-Hub-Mint header + a same-origin request; reads (list) pass false. On failure
+// it writes the response and returns ok=false.
+func (a *API) keyCaller(w http.ResponseWriter, r *http.Request, writeCSRF bool) (login string, ok bool) {
+	if token := bearerToken(r); token != "" {
+		l, err := a.opts.Auth.fetchLogin(token)
+		if err != nil || l == "" {
+			http.Error(w, "could not verify GitHub identity", http.StatusUnauthorized)
+			return "", false
+		}
+		return l, true
+	}
+	if l := a.opts.Auth.sessionLogin(r); l != "" {
+		if writeCSRF && (r.Header.Get(mintHeader) == "" || !sameOrigin(r, a.opts.Auth.HubHost)) {
+			http.Error(w, "this request requires the "+mintHeader+" header and a same-origin request", http.StatusForbidden)
+			return "", false
+		}
+		return l, true
+	}
+	http.Error(w, "sign in at the hub, or send Authorization: Bearer <github-token>", http.StatusUnauthorized)
+	return "", false
+}
+
+// handleKeyMint issues an opaque hub key bound to a GitHub login. Two ways to
+// authenticate the mint:
+//
+//  1. A signed-in **browser session** (the /cli page) — the natural path for a
+//     Claude Code web / mobile user, whose container can't reach GitHub's device
+//     endpoints. Cookie auth is CSRF-sensitive, so it additionally requires a
+//     same-origin custom header (a cross-site form can't set one) and, when the
+//     browser sends an Origin, a matching one.
+//  2. An `Authorization: Bearer <github-token>` (CLI `auth hub login --token`,
+//     CI). The token is verified against GitHub once and discarded — never stored.
 func (a *API) handleKeyMint(w http.ResponseWriter, r *http.Request) {
-	token := bearerToken(r)
-	if token == "" {
-		http.Error(w, "missing GitHub token (Authorization: Bearer <token>)", http.StatusUnauthorized)
+	login, ok := a.keyCaller(w, r, true)
+	if !ok {
 		return
 	}
-	login, err := a.opts.Auth.fetchLogin(token)
-	if err != nil || login == "" {
-		http.Error(w, "could not verify GitHub identity", http.StatusUnauthorized)
-		return
+	// By default a new key replaces the caller's existing keys (rotate) so the
+	// store doesn't silently accumulate live credentials; ?replace=false mints an
+	// additional key and keeps the others.
+	if r.URL.Query().Get("replace") != "false" {
+		if n := a.opts.Keys.RevokeLogin(login); n > 0 {
+			a.opts.Audit.Log(audit.Event{
+				Event: audit.EventKeyRevoke, Login: login, IP: clientIP(r), Outcome: "ok",
+				Detail: fmt.Sprintf("rotate: revoked %d", n),
+			})
+		}
 	}
 	key := a.opts.Keys.Mint(login)
 	a.opts.Audit.Log(audit.Event{
@@ -222,16 +308,61 @@ func (a *API) handleKeyMint(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, KeyResponse{Key: key, Login: login})
 }
 
+// handleKeyList (GET /api/keys) reports how many active keys the caller has, so
+// the /cli page can show "you have N keys".
+func (a *API) handleKeyList(w http.ResponseWriter, r *http.Request) {
+	login, ok := a.keyCaller(w, r, false)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, KeyListResponse{Login: login, Count: a.opts.Keys.CountLogin(login)})
+}
+
+// mintHeader is the custom header the /cli page sends on a cookie-authenticated
+// mint; its presence (unsettable by a cross-site form) is the CSRF guard.
+const mintHeader = "X-Hub-Mint"
+
+// sameOrigin reports whether the request's Origin (when present) is the hub host.
+// Absent Origin falls through to the custom-header requirement.
+func sameOrigin(r *http.Request, hubHost string) bool {
+	o := r.Header.Get("Origin")
+	if o == "" {
+		return true
+	}
+	u, err := url.Parse(o)
+	if err != nil {
+		return false
+	}
+	return stripPort(u.Host) == hubHost
+}
+
 // handleKeyRevoke removes the presented key (X-Hub-Key). Idempotent: revoking an
 // unknown key still returns 204.
+// handleKeyRevoke (DELETE /api/keys) revokes either a single key presented as
+// X-Hub-Key (the CLI logout path) or, for a signed-in browser with no X-Hub-Key,
+// all of the caller's keys (leak recovery / cleanup).
 func (a *API) handleKeyRevoke(w http.ResponseWriter, r *http.Request) {
-	key := strings.TrimSpace(r.Header.Get("X-Hub-Key"))
-	if login, ok := a.opts.Keys.Revoke(key); ok {
+	if key := strings.TrimSpace(r.Header.Get("X-Hub-Key")); key != "" {
+		if login, ok := a.opts.Keys.Revoke(key); ok {
+			a.opts.Audit.Log(audit.Event{
+				Event: audit.EventKeyRevoke, Login: login, IP: clientIP(r), Outcome: "ok",
+			})
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	login, ok := a.keyCaller(w, r, true)
+	if !ok {
+		return
+	}
+	n := a.opts.Keys.RevokeLogin(login)
+	if n > 0 {
 		a.opts.Audit.Log(audit.Event{
 			Event: audit.EventKeyRevoke, Login: login, IP: clientIP(r), Outcome: "ok",
+			Detail: fmt.Sprintf("revoke-all: %d", n),
 		})
 	}
-	w.WriteHeader(http.StatusNoContent)
+	writeJSON(w, http.StatusOK, KeyRevokeResponse{Revoked: n})
 }
 
 func (a *API) handleStatus(w http.ResponseWriter, r *http.Request) {

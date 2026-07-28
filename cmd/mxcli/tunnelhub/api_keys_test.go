@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -225,5 +226,212 @@ func TestAPI_BackendsRequiresAuthWhenEnabled(t *testing.T) {
 	ok := doJSON(t, api, http.MethodGet, "/api/backends", "", map[string]string{"Cookie": sessionCookieName + "=" + cookie})
 	if ok.Code != http.StatusOK || !strings.Contains(ok.Body.String(), "Secret") {
 		t.Errorf("alice /api/backends = %d body %s, want 200 with her preview", ok.Code, ok.Body)
+	}
+}
+
+func TestAPI_Whoami(t *testing.T) {
+	// Open mode: authEnabled false, no login.
+	open, _ := newTestAPI(t, "")
+	rec := doJSON(t, open, http.MethodGet, "/api/whoami", "", nil)
+	var wo WhoamiResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &wo)
+	if wo.AuthEnabled || wo.Login != "" {
+		t.Errorf("open whoami = %+v, want disabled/empty", wo)
+	}
+
+	// Auth on, no session → authEnabled true, empty login.
+	api, _, done := newAuthedAPI(t, true)
+	defer done()
+	r1 := doJSON(t, api, http.MethodGet, "/api/whoami", "", nil)
+	var w1 WhoamiResponse
+	_ = json.Unmarshal(r1.Body.Bytes(), &w1)
+	if !w1.AuthEnabled || w1.Login != "" {
+		t.Errorf("no-session whoami = %+v, want enabled + empty login", w1)
+	}
+
+	// Auth on, valid session cookie → the login.
+	rec2 := httptest.NewRecorder()
+	api.opts.Auth.setSessionCookie(rec2, "alice")
+	mux := http.NewServeMux()
+	api.Mount(mux)
+	req := httptest.NewRequest(http.MethodGet, "/api/whoami", nil)
+	for _, c := range rec2.Result().Cookies() {
+		req.AddCookie(c)
+	}
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+	var w2 WhoamiResponse
+	_ = json.Unmarshal(rw.Body.Bytes(), &w2)
+	if !w2.AuthEnabled || w2.Login != "alice" {
+		t.Errorf("session whoami = %+v, want alice", w2)
+	}
+}
+
+// TestAPI_RegisterSecretFallbackWhenAuthOn covers finding #31B: with auth on, a
+// valid X-Hub-Secret registers owner-less (the legacy secret stays a meaningful
+// credential), while a wrong/absent one is refused.
+func TestAPI_RegisterSecretFallbackWhenAuthOn(t *testing.T) {
+	api, buf, done := newAuthedAPI(t, true) // require-auth on
+	defer done()
+	api.opts.RegisterSecret = "s3cret"
+
+	// Valid shared secret, no key → 200, owner-less.
+	ok := doJSON(t, api, http.MethodPost, "/api/register", `{"project":"A","branch":"main"}`,
+		map[string]string{"X-Hub-Secret": "s3cret"})
+	if ok.Code != http.StatusOK {
+		t.Fatalf("secret register status = %d, want 200 (body %s)", ok.Code, ok.Body)
+	}
+	if got := api.opts.Registry.List("project", ""); len(got) != 1 || got[0].Owner != "" {
+		t.Errorf("secret register should be owner-less, got %+v", got)
+	}
+	// Wrong secret, no key → 401 + register_deny.
+	bad := doJSON(t, api, http.MethodPost, "/api/register", `{"project":"B","branch":"main"}`,
+		map[string]string{"X-Hub-Secret": "nope"})
+	if bad.Code != http.StatusUnauthorized {
+		t.Errorf("wrong-secret status = %d, want 401", bad.Code)
+	}
+	if !strings.Contains(buf.String(), `"event":"register_deny"`) {
+		t.Errorf("expected register_deny audit line, got: %s", buf.String())
+	}
+}
+
+// TestAPI_SoftModeWithSecretRequiresIt covers the flip side of #31B: in soft mode
+// (require-auth off) a configured secret still gates — a keyless, secretless
+// registration is refused rather than silently allowed.
+func TestAPI_SoftModeWithSecretRequiresIt(t *testing.T) {
+	api, _, done := newAuthedAPI(t, false) // soft
+	defer done()
+	api.opts.RegisterSecret = "s3cret"
+
+	if rec := doJSON(t, api, http.MethodPost, "/api/register", `{"project":"A"}`, nil); rec.Code != http.StatusUnauthorized {
+		t.Errorf("soft-mode + secret, no creds: status = %d, want 401", rec.Code)
+	}
+	if rec := doJSON(t, api, http.MethodPost, "/api/register", `{"project":"A"}`,
+		map[string]string{"X-Hub-Secret": "s3cret"}); rec.Code != http.StatusOK {
+		t.Errorf("soft-mode + valid secret: status = %d, want 200", rec.Code)
+	}
+}
+
+// TestAPI_BrowserMint covers the session-cookie mint path (the /cli page): a
+// signed-in browser mints a key with the X-Hub-Mint header; without the header
+// (CSRF) it is refused; a cross-origin Origin is refused.
+func TestAPI_BrowserMint(t *testing.T) {
+	api, buf, done := newAuthedAPI(t, true)
+	defer done()
+
+	// Build a request carrying a valid session cookie for alice.
+	setW := httptest.NewRecorder()
+	api.opts.Auth.setSessionCookie(setW, "alice")
+	cookies := setW.Result().Cookies()
+	withCookie := func(req *http.Request) {
+		for _, c := range cookies {
+			req.AddCookie(c)
+		}
+	}
+	mux := http.NewServeMux()
+	api.Mount(mux)
+
+	// (1) Cookie + X-Hub-Mint header + same-origin → 200, minted for alice.
+	req := httptest.NewRequest(http.MethodPost, "https://hub.mxcli.org/api/keys", nil)
+	req.Header.Set("X-Hub-Mint", "1")
+	req.Header.Set("Origin", "https://hub.mxcli.org")
+	withCookie(req)
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("browser mint status = %d, want 200 (body %s)", rw.Code, rw.Body)
+	}
+	var kr KeyResponse
+	_ = json.Unmarshal(rw.Body.Bytes(), &kr)
+	if kr.Login != "alice" || kr.Key == "" {
+		t.Errorf("mint response = %+v", kr)
+	}
+	if login, ok := api.opts.Keys.Resolve(kr.Key); !ok || login != "alice" {
+		t.Errorf("minted key resolves to %q,%v; want alice", login, ok)
+	}
+	if !strings.Contains(buf.String(), `"event":"key_mint"`) {
+		t.Errorf("expected key_mint audit line")
+	}
+
+	// (2) Cookie but NO X-Hub-Mint header (CSRF) → 403.
+	noHdr := httptest.NewRequest(http.MethodPost, "https://hub.mxcli.org/api/keys", nil)
+	withCookie(noHdr)
+	rw2 := httptest.NewRecorder()
+	mux.ServeHTTP(rw2, noHdr)
+	if rw2.Code != http.StatusForbidden {
+		t.Errorf("no-header cookie mint status = %d, want 403", rw2.Code)
+	}
+
+	// (3) Cookie + header but cross-origin → 403.
+	xorig := httptest.NewRequest(http.MethodPost, "https://hub.mxcli.org/api/keys", nil)
+	xorig.Header.Set("X-Hub-Mint", "1")
+	xorig.Header.Set("Origin", "https://evil.example.com")
+	withCookie(xorig)
+	rw3 := httptest.NewRecorder()
+	mux.ServeHTTP(rw3, xorig)
+	if rw3.Code != http.StatusForbidden {
+		t.Errorf("cross-origin cookie mint status = %d, want 403", rw3.Code)
+	}
+
+	// (4) No cookie, no bearer → 401.
+	anon := httptest.NewRequest(http.MethodPost, "https://hub.mxcli.org/api/keys", nil)
+	anon.Header.Set("X-Hub-Mint", "1")
+	rw4 := httptest.NewRecorder()
+	mux.ServeHTTP(rw4, anon)
+	if rw4.Code != http.StatusUnauthorized {
+		t.Errorf("anon mint status = %d, want 401", rw4.Code)
+	}
+}
+
+// TestAPI_KeyRotateCountRevokeAll covers the /cli key-management endpoints:
+// mint rotates by default (old keys revoked), GET reports the count, DELETE by
+// session revokes all, and ?replace=false accumulates.
+func TestAPI_KeyRotateCountRevokeAll(t *testing.T) {
+	api, _, done := newAuthedAPI(t, true)
+	defer done()
+
+	// bearer helper (CI path); simplest way to drive mint without cookies.
+	bearer := map[string]string{"Authorization": "Bearer gho_test"}
+
+	// First mint → 1 key.
+	k1 := mintKey(t, api, "gho_test")
+	if n := api.opts.Keys.CountLogin("alice"); n != 1 {
+		t.Fatalf("count after first mint = %d, want 1", n)
+	}
+	// Second mint rotates (default replace) → still 1, and k1 is dead.
+	k2 := mintKey(t, api, "gho_test")
+	if n := api.opts.Keys.CountLogin("alice"); n != 1 {
+		t.Errorf("count after rotate = %d, want 1", n)
+	}
+	if _, ok := api.opts.Keys.Resolve(k1); ok {
+		t.Error("rotate should have revoked the previous key")
+	}
+	if _, ok := api.opts.Keys.Resolve(k2); !ok {
+		t.Error("newest key should resolve")
+	}
+
+	// GET /api/keys reports the count.
+	gl := doJSON(t, api, http.MethodGet, "/api/keys", "", bearer)
+	var kl KeyListResponse
+	_ = json.Unmarshal(gl.Body.Bytes(), &kl)
+	if kl.Login != "alice" || kl.Count != 1 {
+		t.Errorf("GET keys = %+v, want alice/1", kl)
+	}
+
+	// ?replace=false accumulates → 2.
+	doJSON(t, api, http.MethodPost, "/api/keys?replace=false", "", bearer)
+	if n := api.opts.Keys.CountLogin("alice"); n != 2 {
+		t.Errorf("count after replace=false = %d, want 2", n)
+	}
+
+	// DELETE (bearer, no X-Hub-Key) revokes all.
+	dr := doJSON(t, api, http.MethodDelete, "/api/keys", "", bearer)
+	var krr KeyRevokeResponse
+	_ = json.Unmarshal(dr.Body.Bytes(), &krr)
+	if krr.Revoked != 2 {
+		t.Errorf("revoke-all = %d, want 2", krr.Revoked)
+	}
+	if n := api.opts.Keys.CountLogin("alice"); n != 0 {
+		t.Errorf("count after revoke-all = %d, want 0", n)
 	}
 }

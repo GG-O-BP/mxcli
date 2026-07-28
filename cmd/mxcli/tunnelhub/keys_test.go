@@ -2,7 +2,11 @@
 
 package tunnelhub
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestKeyStore_MintResolveRevoke(t *testing.T) {
 	ks := NewKeyStore()
@@ -65,5 +69,81 @@ func TestKeyStore_StoresHashedNotPlaintext(t *testing.T) {
 	}
 	if _, present := ks.byHash[hashKey(key)]; !present {
 		t.Error("hashed key should be the map key")
+	}
+}
+
+// TestKeyStore_PersistsAcrossRestart is the core of "keys outlive the session":
+// a key minted by one store instance resolves in a fresh instance loaded from the
+// same file (simulating a hub restart), and a revoke is likewise durable.
+func TestKeyStore_PersistsAcrossRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hub-keys.json")
+
+	s1, err := NewKeyStoreFile(path)
+	if err != nil {
+		t.Fatalf("NewKeyStoreFile: %v", err)
+	}
+	key := s1.Mint("alice")
+
+	// A brand-new store (hub restart) loads the same file and still knows the key.
+	s2, err := NewKeyStoreFile(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if login, ok := s2.Resolve(key); !ok || login != "alice" {
+		t.Errorf("after restart Resolve = %q, %v; want alice, true", login, ok)
+	}
+
+	// Revoke through s2, then reopen again — the revoke persisted.
+	s2.Revoke(key)
+	s3, _ := NewKeyStoreFile(path)
+	if _, ok := s3.Resolve(key); ok {
+		t.Error("revoked key must not resolve after restart")
+	}
+}
+
+func TestKeyStore_FileMode0600(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hub-keys.json")
+	s, _ := NewKeyStoreFile(path)
+	s.Mint("alice")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("key file mode = %o, want 600", perm)
+	}
+}
+
+func TestKeyStore_RejectsTooOpenFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hub-keys.json")
+	if err := os.WriteFile(path, []byte(`{"version":1,"keys":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewKeyStoreFile(path); err == nil {
+		t.Error("a world-readable key file should be refused")
+	}
+}
+
+func TestKeyStore_CountAndRevokeLogin(t *testing.T) {
+	ks := NewKeyStore()
+	ks.Mint("alice")
+	ks.Mint("alice")
+	ks.Mint("bob")
+
+	if n := ks.CountLogin("alice"); n != 2 {
+		t.Errorf("alice count = %d, want 2", n)
+	}
+	if n := ks.CountLogin("carol"); n != 0 {
+		t.Errorf("carol count = %d, want 0", n)
+	}
+	// Revoke all of alice's keys; bob's are untouched.
+	if n := ks.RevokeLogin("alice"); n != 2 {
+		t.Errorf("RevokeLogin(alice) = %d, want 2", n)
+	}
+	if n := ks.CountLogin("alice"); n != 0 {
+		t.Errorf("alice count after revoke = %d, want 0", n)
+	}
+	if n := ks.CountLogin("bob"); n != 1 {
+		t.Errorf("bob count = %d, want 1 (unaffected)", n)
 	}
 }

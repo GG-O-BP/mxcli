@@ -20,6 +20,25 @@ and continues that document's slice numbering as **slice 6**.
 **Self-hosted hubs stay open.** Everything here is opt-in via config; a hub started
 without the GitHub flags behaves exactly as it does today.
 
+> **As-built amendments (post slice 4, shipped in PR #50 + #51).** Three things
+> changed from the original design below during live testing on `hub.mxcli.org`;
+> the design narrative is kept for the audit trail, but the shipped behaviour is:
+> - **Key bootstrap is a browser page, not the device flow.** The Claude Code
+>   container's egress proxy blocks GitHub's device endpoints, so the GitHub
+>   **device flow was removed**. Instead the hub serves a signed-in **`/cli`
+>   page** that mints a key from the session cookie (CSRF-guarded); `mxcli auth
+>   hub login --token <pat>` is the headless alternative. `GET /api/whoami` backs
+>   the "signed in as" indicator.
+> - **Keys are durable, not in-memory.** The key store persists to
+>   `--keys-file` (default `~/.mxcli/hub-keys.json`, mode `0600`, hashed), so keys
+>   survive restarts — resolving *Open question* on persistence.
+> - **Keys rotate by default + are manageable.** `POST /api/keys` replaces the
+>   caller's existing keys (opt out with `?replace=false`); `GET /api/keys` counts
+>   them; a session-authed `DELETE /api/keys` revokes all (leak recovery). This
+>   supersedes the "no list/rotate" gap. Keys still do **not** expire, by design
+>   (long-lived so `MXCLI_HUB_KEY` is set once); a per-login mint rate limit
+>   remains optional hardening.
+
 ## Decisions locked (this proposal)
 
 - **Access model: owner-only.** A viewer sees a preview iff their GitHub login is the

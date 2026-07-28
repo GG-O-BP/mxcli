@@ -54,6 +54,9 @@ type ServerOptions struct {
 	// Audit receives auth + registration events (login/deny/register/key). Nil →
 	// audit.NoOp(). The same sink is shared with Auth.
 	Audit audit.Sink
+	// KeysFile persists the hub API-key store so keys survive restarts (empty =
+	// in-memory, keys lost on restart). Only meaningful when Auth is enabled.
+	KeysFile string
 }
 
 // Server is the running multi-tenant hub: one embedded chisel reverse server
@@ -95,8 +98,15 @@ func NewServer(o ServerOptions) (*Server, error) {
 	}
 
 	// A shared key store backs /api/keys + X-Hub-Key registration (only reachable
-	// when Auth is enabled; harmless otherwise).
+	// when Auth is enabled; harmless otherwise). A durable file store keeps keys
+	// valid across restarts so users don't re-configure MXCLI_HUB_KEY.
 	keys := NewKeyStore()
+	if o.KeysFile != "" {
+		keys, err = NewKeyStoreFile(o.KeysFile)
+		if err != nil {
+			return nil, fmt.Errorf("key store: %w", err)
+		}
+	}
 	api := NewAPI(APIOptions{
 		Registry:       o.Registry,
 		ControlURL:     "https://" + o.HubHost,

@@ -110,7 +110,7 @@ Launch `run --local` as the **sole** command in its invocation (don't chain a tr
 | `--local` | — | Required; run without Docker (implied by `--hub`) |
 | `--hub` | — | Expose the app in a browser at a tunnel-hub URL (see below) |
 | `--hub-secret` | — | Shared auth (`user:pass`) matching an **open** hub's `--secret` |
-| *(hub API key)* | — | For an **authenticated** hub: `mxcli auth hub login`, or set `MXCLI_HUB_KEY` (see below) |
+| *(hub API key)* | — | For an **authenticated** hub: get one from `https://<hub>/cli`, set `MXCLI_HUB_KEY` (see below) |
 | `--watch` | off | Rebuild + hot-apply on each change |
 | `--ensure-db` | off | Provision local Postgres + app database if missing |
 | `--setup` | off | Cache MxBuild+runtime + ensure DB, then exit (SessionStart bring-up) |
@@ -279,26 +279,31 @@ is all `run --hub` needs. A hub started **with** `--github-oauth-client-id` (see
 only their own previews, and registration needs a **per-user hub API key** instead of the
 shared secret.
 
-```bash
-# once per environment: mint + cache a hub key from your GitHub identity (device flow)
-mxcli auth hub login                 # defaults to https://hub.mxcli.org; --hub for others
-mxcli auth hub status                # show whether a key is configured
-mxcli auth hub logout                # revoke + remove it
+**Get a key from the hub's browser page** (works from any device — desktop, or Claude
+Code web/mobile, whose container can't reach GitHub's device endpoints):
 
-# then run as normal — the key is sent automatically, stamping the preview as yours
-mxcli run --hub https://hub.mxcli.org -p app.mpr
-```
-
-For an unattended environment (Claude Code on the web — the container is reaped, so the
-interactive login won't persist), set the key once as an environment/repo secret; it takes
-precedence over the stored key:
+1. Open `https://hub.mxcli.org/cli` in a browser and sign in with GitHub.
+2. Click **Create a hub key** and copy it.
+3. Set it as an environment/repo secret in your Claude Code environment — it's picked up
+   automatically and survives container reaping:
 
 ```bash
-export MXCLI_HUB_KEY=<key>            # from `mxcli auth hub login` on a durable machine
+export MXCLI_HUB_KEY=<key>
+mxcli run --hub https://hub.mxcli.org -p app.mpr   # registers previews as you
 ```
 
-The GitHub token never leaves your machine except for the one-time key-mint request to the
-hub; only the opaque hub key is stored (`~/.mxcli/auth.json`, mode 0600, keyed by hub host).
+The key is **durable** (no expiry, survives hub restarts) — you set it once. It stays valid
+until you revoke it (sign out on the hub, or `mxcli auth hub logout`).
+
+Headless alternative (CI, or a machine with a GitHub token): `mxcli auth hub login --token
+<github-pat>` mints and caches a key in `~/.mxcli/auth.json` (mode 0600). The GitHub token
+is used once for the mint and never stored.
+
+**Registration failure is non-fatal:** if the hub is unreachable or the key is stale/rejected,
+`run --hub` prints a warning and continues as a normal local run (the app boots on localhost;
+only the public preview URL is lost). On an authenticated hub the shared `--hub-secret` still
+works as a fallback registration credential — a valid key stamps the preview as yours, a valid
+secret registers it owner-less.
 
 ## Validation checklist
 
