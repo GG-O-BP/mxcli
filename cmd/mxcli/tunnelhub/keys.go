@@ -110,6 +110,38 @@ func (s *KeyStore) Resolve(key string) (login string, ok bool) {
 	return rec.Login, ok
 }
 
+// CountLogin returns how many active keys a login has.
+func (s *KeyStore) CountLogin(login string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	n := 0
+	for _, rec := range s.byHash {
+		if rec.Login == login {
+			n++
+		}
+	}
+	return n
+}
+
+// RevokeLogin removes all of a login's keys and returns how many were removed.
+// Used for "revoke all my keys" (leak recovery / rotate). Persisted when backed
+// by a file.
+func (s *KeyStore) RevokeLogin(login string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for h, rec := range s.byHash {
+		if rec.Login == login {
+			delete(s.byHash, h)
+			n++
+		}
+	}
+	if n > 0 {
+		_ = s.saveLocked()
+	}
+	return n
+}
+
 // Revoke removes a key. It returns the login it was bound to (for auditing) and
 // whether it existed. Persisted when backed by a file.
 func (s *KeyStore) Revoke(key string) (login string, ok bool) {

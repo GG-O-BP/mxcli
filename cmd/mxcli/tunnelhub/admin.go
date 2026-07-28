@@ -182,6 +182,10 @@ const cliKeyHTML = `<!doctype html>
   .warn { color:var(--mut); font-size:.85rem; }
   .err { color:#ef4444; }
   code.inline { font-family:ui-monospace,monospace; background:var(--row); padding:.05rem .35rem; border-radius:.3rem; }
+  .count { color:var(--mut); font-size:.88rem; margin-bottom:.7rem; }
+  .danger { background:none; color:#ef4444; border:1px solid var(--line); margin-left:.6rem; }
+  .danger:hover { border-color:#ef4444; }
+  .keep { display:block; color:var(--mut); font-size:.85rem; margin-top:.8rem; }
 </style></head>
 <body>
 <header><h1>mxcli tunnel-hub</h1><a href="/">← previews</a></header>
@@ -189,20 +193,35 @@ const cliKeyHTML = `<!doctype html>
   <div class="who" id="who">…</div>
   <p>Create a durable hub key to let <code class="inline">mxcli run --hub</code> register previews as you.
      The key does not expire and survives hub restarts — you set it once.</p>
+  <div class="count" id="count"></div>
   <button id="mint">Create a hub key</button>
+  <button id="revoke" class="danger" hidden>Revoke all keys</button>
+  <label class="keep"><input type="checkbox" id="keep"> keep my existing keys (create an additional one)</label>
   <div id="out"></div>
 </div>
 <script>
 (function(){
   function esc(s){ var d=document.createElement("div"); d.textContent=s==null?"":s; return d.innerHTML; }
+  var signedIn=false;
+  function refreshCount(){
+    fetch("/api/keys").then(function(r){ return r.ok?r.json():null; }).then(function(j){
+      var el=document.getElementById("count"), rev=document.getElementById("revoke");
+      if(j){
+        el.textContent = j.count===0 ? "You have no active keys." :
+          "You have "+j.count+" active key"+(j.count===1?"":"s")+".";
+        rev.hidden = j.count===0;
+      }
+    }).catch(function(){});
+  }
   fetch("/api/whoami").then(function(r){return r.json();}).then(function(j){
     var who=document.getElementById("who");
-    if(j && j.login){ who.innerHTML="Signed in as <b>"+esc(j.login)+"</b>."; }
+    if(j && j.login){ who.innerHTML="Signed in as <b>"+esc(j.login)+"</b>."; signedIn=true; refreshCount(); }
     else { who.innerHTML="<span class='err'>Not signed in.</span> <a href='/auth/github/login?return="+encodeURIComponent(location.href)+"'>Sign in with GitHub</a>"; document.getElementById("mint").disabled=true; }
   });
   document.getElementById("mint").addEventListener("click", function(){
     var btn=this; btn.disabled=true; btn.textContent="Creating…";
-    fetch("/api/keys", {method:"POST", headers:{"X-Hub-Mint":"1"}}).then(function(r){
+    var keep=document.getElementById("keep").checked;
+    fetch("/api/keys"+(keep?"?replace=false":""), {method:"POST", headers:{"X-Hub-Mint":"1"}}).then(function(r){
       if(!r.ok) throw new Error("HTTP "+r.status);
       return r.json();
     }).then(function(j){
@@ -214,16 +233,25 @@ const cliKeyHTML = `<!doctype html>
         "<pre>export MXCLI_HUB_KEY="+esc(j.key)+"</pre>"+
         "<p>Then, in any session:</p>"+
         "<pre>mxcli run --hub https://"+esc(host)+" -p app.mpr</pre>"+
-        "<p class='warn'>Copy it now — it is shown only once. Creating another key does not revoke this one; "+
-        "sign out or use <code class='inline'>mxcli auth hub logout</code> to revoke.</p>";
+        "<p class='warn'>Copy it now — it is shown only once."+(keep?"":
+        " Any previous keys were revoked (this replaced them).")+"</p>";
       document.getElementById("cp").addEventListener("click", function(){
         navigator.clipboard.writeText(j.key).then(function(){ this.textContent="Copied"; }.bind(this));
       });
-      btn.textContent="Create another key"; btn.disabled=false;
+      btn.textContent="Create a new key"; btn.disabled=false;
+      refreshCount();
     }).catch(function(e){
       document.getElementById("out").innerHTML="<p class='err'>Could not create a key ("+esc(e.message)+"). Try signing in again.</p>";
       btn.textContent="Create a hub key"; btn.disabled=false;
     });
+  });
+  document.getElementById("revoke").addEventListener("click", function(){
+    if(!confirm("Revoke ALL your hub keys? Any environment using MXCLI_HUB_KEY will stop registering until you set a new key.")) return;
+    var btn=this; btn.disabled=true;
+    fetch("/api/keys", {method:"DELETE", headers:{"X-Hub-Mint":"1"}}).then(function(r){ return r.json(); }).then(function(j){
+      document.getElementById("out").innerHTML="<p>Revoked "+(j&&j.revoked||0)+" key(s). Create a new one when you need it.</p>";
+      btn.disabled=false; refreshCount();
+    }).catch(function(){ btn.disabled=false; });
   });
 })();
 </script>

@@ -382,3 +382,56 @@ func TestAPI_BrowserMint(t *testing.T) {
 		t.Errorf("anon mint status = %d, want 401", rw4.Code)
 	}
 }
+
+// TestAPI_KeyRotateCountRevokeAll covers the /cli key-management endpoints:
+// mint rotates by default (old keys revoked), GET reports the count, DELETE by
+// session revokes all, and ?replace=false accumulates.
+func TestAPI_KeyRotateCountRevokeAll(t *testing.T) {
+	api, _, done := newAuthedAPI(t, true)
+	defer done()
+
+	// bearer helper (CI path); simplest way to drive mint without cookies.
+	bearer := map[string]string{"Authorization": "Bearer gho_test"}
+
+	// First mint → 1 key.
+	k1 := mintKey(t, api, "gho_test")
+	if n := api.opts.Keys.CountLogin("alice"); n != 1 {
+		t.Fatalf("count after first mint = %d, want 1", n)
+	}
+	// Second mint rotates (default replace) → still 1, and k1 is dead.
+	k2 := mintKey(t, api, "gho_test")
+	if n := api.opts.Keys.CountLogin("alice"); n != 1 {
+		t.Errorf("count after rotate = %d, want 1", n)
+	}
+	if _, ok := api.opts.Keys.Resolve(k1); ok {
+		t.Error("rotate should have revoked the previous key")
+	}
+	if _, ok := api.opts.Keys.Resolve(k2); !ok {
+		t.Error("newest key should resolve")
+	}
+
+	// GET /api/keys reports the count.
+	gl := doJSON(t, api, http.MethodGet, "/api/keys", "", bearer)
+	var kl KeyListResponse
+	_ = json.Unmarshal(gl.Body.Bytes(), &kl)
+	if kl.Login != "alice" || kl.Count != 1 {
+		t.Errorf("GET keys = %+v, want alice/1", kl)
+	}
+
+	// ?replace=false accumulates → 2.
+	doJSON(t, api, http.MethodPost, "/api/keys?replace=false", "", bearer)
+	if n := api.opts.Keys.CountLogin("alice"); n != 2 {
+		t.Errorf("count after replace=false = %d, want 2", n)
+	}
+
+	// DELETE (bearer, no X-Hub-Key) revokes all.
+	dr := doJSON(t, api, http.MethodDelete, "/api/keys", "", bearer)
+	var krr KeyRevokeResponse
+	_ = json.Unmarshal(dr.Body.Bytes(), &krr)
+	if krr.Revoked != 2 {
+		t.Errorf("revoke-all = %d, want 2", krr.Revoked)
+	}
+	if n := api.opts.Keys.CountLogin("alice"); n != 0 {
+		t.Errorf("count after revoke-all = %d, want 0", n)
+	}
+}

@@ -4,6 +4,7 @@ package tunnelhub
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -46,6 +47,18 @@ type API struct {
 type KeyResponse struct {
 	Key   string `json:"key"`
 	Login string `json:"login"`
+}
+
+// KeyListResponse is returned by GET /api/keys: how many active keys the caller
+// has (for the /cli page's "you have N keys").
+type KeyListResponse struct {
+	Login string `json:"login"`
+	Count int    `json:"count"`
+}
+
+// KeyRevokeResponse is returned by a session-authed DELETE /api/keys (revoke-all).
+type KeyRevokeResponse struct {
+	Revoked int `json:"revoked"`
 }
 
 // RegisterResponse is returned to `mxcli run --hub` after registration.
@@ -225,6 +238,8 @@ func (a *API) handleKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.Method {
+	case http.MethodGet:
+		a.handleKeyList(w, r)
 	case http.MethodPost:
 		a.handleKeyMint(w, r)
 	case http.MethodDelete:
@@ -232,6 +247,32 @@ func (a *API) handleKeys(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// keyCaller resolves the login for a key-management request. Two auth methods:
+// an Authorization: Bearer <github-token> (verified against GitHub, no CSRF risk
+// as it isn't ambient), or a hub session cookie. State-changing cookie calls
+// (mint, revoke-all) pass writeCSRF=true so they additionally require the
+// X-Hub-Mint header + a same-origin request; reads (list) pass false. On failure
+// it writes the response and returns ok=false.
+func (a *API) keyCaller(w http.ResponseWriter, r *http.Request, writeCSRF bool) (login string, ok bool) {
+	if token := bearerToken(r); token != "" {
+		l, err := a.opts.Auth.fetchLogin(token)
+		if err != nil || l == "" {
+			http.Error(w, "could not verify GitHub identity", http.StatusUnauthorized)
+			return "", false
+		}
+		return l, true
+	}
+	if l := a.opts.Auth.sessionLogin(r); l != "" {
+		if writeCSRF && (r.Header.Get(mintHeader) == "" || !sameOrigin(r, a.opts.Auth.HubHost)) {
+			http.Error(w, "this request requires the "+mintHeader+" header and a same-origin request", http.StatusForbidden)
+			return "", false
+		}
+		return l, true
+	}
+	http.Error(w, "sign in at the hub, or send Authorization: Bearer <github-token>", http.StatusUnauthorized)
+	return "", false
 }
 
 // handleKeyMint issues an opaque hub key bound to a GitHub login. Two ways to
@@ -245,29 +286,36 @@ func (a *API) handleKeys(w http.ResponseWriter, r *http.Request) {
 //  2. An `Authorization: Bearer <github-token>` (CLI `auth hub login --token`,
 //     CI). The token is verified against GitHub once and discarded — never stored.
 func (a *API) handleKeyMint(w http.ResponseWriter, r *http.Request) {
-	var login string
-	if token := bearerToken(r); token != "" {
-		l, err := a.opts.Auth.fetchLogin(token)
-		if err != nil || l == "" {
-			http.Error(w, "could not verify GitHub identity", http.StatusUnauthorized)
-			return
-		}
-		login = l
-	} else if l := a.opts.Auth.sessionLogin(r); l != "" {
-		if r.Header.Get(mintHeader) == "" || !sameOrigin(r, a.opts.Auth.HubHost) {
-			http.Error(w, "cookie-authenticated mint requires the "+mintHeader+" header and a same-origin request", http.StatusForbidden)
-			return
-		}
-		login = l
-	} else {
-		http.Error(w, "sign in at the hub, or send Authorization: Bearer <github-token>", http.StatusUnauthorized)
+	login, ok := a.keyCaller(w, r, true)
+	if !ok {
 		return
+	}
+	// By default a new key replaces the caller's existing keys (rotate) so the
+	// store doesn't silently accumulate live credentials; ?replace=false mints an
+	// additional key and keeps the others.
+	if r.URL.Query().Get("replace") != "false" {
+		if n := a.opts.Keys.RevokeLogin(login); n > 0 {
+			a.opts.Audit.Log(audit.Event{
+				Event: audit.EventKeyRevoke, Login: login, IP: clientIP(r), Outcome: "ok",
+				Detail: fmt.Sprintf("rotate: revoked %d", n),
+			})
+		}
 	}
 	key := a.opts.Keys.Mint(login)
 	a.opts.Audit.Log(audit.Event{
 		Event: audit.EventKeyMint, Login: login, IP: clientIP(r), Outcome: "ok",
 	})
 	writeJSON(w, http.StatusOK, KeyResponse{Key: key, Login: login})
+}
+
+// handleKeyList (GET /api/keys) reports how many active keys the caller has, so
+// the /cli page can show "you have N keys".
+func (a *API) handleKeyList(w http.ResponseWriter, r *http.Request) {
+	login, ok := a.keyCaller(w, r, false)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, KeyListResponse{Login: login, Count: a.opts.Keys.CountLogin(login)})
 }
 
 // mintHeader is the custom header the /cli page sends on a cookie-authenticated
@@ -290,14 +338,31 @@ func sameOrigin(r *http.Request, hubHost string) bool {
 
 // handleKeyRevoke removes the presented key (X-Hub-Key). Idempotent: revoking an
 // unknown key still returns 204.
+// handleKeyRevoke (DELETE /api/keys) revokes either a single key presented as
+// X-Hub-Key (the CLI logout path) or, for a signed-in browser with no X-Hub-Key,
+// all of the caller's keys (leak recovery / cleanup).
 func (a *API) handleKeyRevoke(w http.ResponseWriter, r *http.Request) {
-	key := strings.TrimSpace(r.Header.Get("X-Hub-Key"))
-	if login, ok := a.opts.Keys.Revoke(key); ok {
+	if key := strings.TrimSpace(r.Header.Get("X-Hub-Key")); key != "" {
+		if login, ok := a.opts.Keys.Revoke(key); ok {
+			a.opts.Audit.Log(audit.Event{
+				Event: audit.EventKeyRevoke, Login: login, IP: clientIP(r), Outcome: "ok",
+			})
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	login, ok := a.keyCaller(w, r, true)
+	if !ok {
+		return
+	}
+	n := a.opts.Keys.RevokeLogin(login)
+	if n > 0 {
 		a.opts.Audit.Log(audit.Event{
 			Event: audit.EventKeyRevoke, Login: login, IP: clientIP(r), Outcome: "ok",
+			Detail: fmt.Sprintf("revoke-all: %d", n),
 		})
 	}
-	w.WriteHeader(http.StatusNoContent)
+	writeJSON(w, http.StatusOK, KeyRevokeResponse{Revoked: n})
 }
 
 func (a *API) handleStatus(w http.ResponseWriter, r *http.Request) {

@@ -123,3 +123,27 @@ func TestKeyStore_RejectsTooOpenFile(t *testing.T) {
 		t.Error("a world-readable key file should be refused")
 	}
 }
+
+func TestKeyStore_CountAndRevokeLogin(t *testing.T) {
+	ks := NewKeyStore()
+	ks.Mint("alice")
+	ks.Mint("alice")
+	ks.Mint("bob")
+
+	if n := ks.CountLogin("alice"); n != 2 {
+		t.Errorf("alice count = %d, want 2", n)
+	}
+	if n := ks.CountLogin("carol"); n != 0 {
+		t.Errorf("carol count = %d, want 0", n)
+	}
+	// Revoke all of alice's keys; bob's are untouched.
+	if n := ks.RevokeLogin("alice"); n != 2 {
+		t.Errorf("RevokeLogin(alice) = %d, want 2", n)
+	}
+	if n := ks.CountLogin("alice"); n != 0 {
+		t.Errorf("alice count after revoke = %d, want 0", n)
+	}
+	if n := ks.CountLogin("bob"); n != 1 {
+		t.Errorf("bob count = %d, want 1 (unaffected)", n)
+	}
+}
