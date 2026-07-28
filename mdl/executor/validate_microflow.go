@@ -99,8 +99,10 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 		case *ast.ReturnStmt:
 			v.checkReturn(stmt)
 			v.checkExprFunctions("return", stmt.Value)
+			v.checkDivisionSlash("return", stmt.Value)
 		case *ast.IfStmt:
 			v.checkExprFunctions("if condition", stmt.Condition)
+			v.checkDivisionSlash("if condition", stmt.Condition)
 			v.walkBody(stmt.ThenBody)
 			v.walkBody(stmt.ElseBody)
 		case *ast.EnumSplitStmt:
@@ -187,6 +189,7 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 				}
 			}
 			v.checkExprFunctions(fmt.Sprintf("declare '$%s'", stmt.Variable), stmt.InitialValue)
+			v.checkDivisionSlash(fmt.Sprintf("declare '$%s'", stmt.Variable), stmt.InitialValue)
 		case *ast.MfSetStmt:
 			// SET on a plain variable target (not $var/Member = …, which is a
 			// member change). Flag a Decimal value assigned to an Integer/Long var.
@@ -196,6 +199,7 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 				}
 			}
 			v.checkExprFunctions(fmt.Sprintf("set '%s'", stmt.Target), stmt.Value)
+			v.checkDivisionSlash(fmt.Sprintf("set '%s'", stmt.Target), stmt.Value)
 		case *ast.RetrieveStmt:
 			// RETRIEVE populates a list variable — remove from empty tracking
 			delete(v.emptyListVars, stmt.Variable)
@@ -308,6 +312,50 @@ func (v *microflowValidator) checkExprFunctions(label string, expr ast.Expressio
 				"the build fails CE0117 \"Error(s) in expression\"", label, u.Name),
 			suggestion)
 	}
+}
+
+// checkDivisionSlash flags `/` used as an arithmetic division operator, which
+// Mendix rejects with CE0117 — in a Mendix expression `/` is only the
+// member/association separator (`$obj/Attr`); integer/decimal division is `div`.
+// `$Dec / 2` parses to a BinaryExpr whose operator is literally `/`; the walk
+// finds it wherever it appears (nested in functions, if-then-else, etc.).
+// (The `$a / $b` form degrades to a member-access path and is caught by
+// `check --references` as an unresolvable attribute, so it is not re-flagged here.)
+// (ledger finding #17)
+func (v *microflowValidator) checkDivisionSlash(label string, expr ast.Expression) {
+	if exprHasSlashDivision(expr) {
+		v.addViolation("MDL045", linter.SeverityError,
+			fmt.Sprintf("%s uses '/' as a division operator, which Mendix rejects "+
+				"(CE0117 \"Error(s) in expression\") — '/' navigates associations, it does not divide", label),
+			"Use 'div' for division: `$a div $b` (integer/decimal division is always Decimal — wrap in round()/trunc() for an integer result).")
+	}
+}
+
+// exprHasSlashDivision reports whether the expression tree contains a BinaryExpr
+// whose operator is a literal `/` (an arithmetic-division misuse).
+func exprHasSlashDivision(expr ast.Expression) bool {
+	switch e := expr.(type) {
+	case *ast.BinaryExpr:
+		if strings.TrimSpace(e.Operator) == "/" {
+			return true
+		}
+		return exprHasSlashDivision(e.Left) || exprHasSlashDivision(e.Right)
+	case *ast.UnaryExpr:
+		return exprHasSlashDivision(e.Operand)
+	case *ast.ParenExpr:
+		return exprHasSlashDivision(e.Inner)
+	case *ast.FunctionCallExpr:
+		for _, arg := range e.Arguments {
+			if exprHasSlashDivision(arg) {
+				return true
+			}
+		}
+	case *ast.IfThenElseExpr:
+		return exprHasSlashDivision(e.Condition) || exprHasSlashDivision(e.ThenExpr) || exprHasSlashDivision(e.ElseExpr)
+	case *ast.SourceExpr:
+		return exprHasSlashDivision(e.Expression)
+	}
+	return false
 }
 
 // microflowExprSource returns the Mendix source text of a microflow value

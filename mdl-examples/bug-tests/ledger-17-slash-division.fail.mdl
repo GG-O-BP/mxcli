@@ -1,0 +1,27 @@
+-- ============================================================================
+-- Ledger finding #17: `/` used as a division operator (MDL045)
+-- ============================================================================
+--
+-- Symptom (before fix): `set $R = $Dec / 2;` passed `mxcli check` but `mx check`
+-- reported a generic CE0117 "Error(s) in expression". In a Mendix expression `/`
+-- is only the member/association separator (`$obj/Attr`); arithmetic division is
+-- `div`. mxcli silently wrote the invalid `/` expression.
+--
+-- After fix: MDL045 rejects `/`-as-division at check time and tells the user to
+-- use `div`. (The `$a / $b` bare-variable form degrades to a member-access path
+-- and is caught by `check --references` as an unresolvable attribute instead.)
+--
+-- Usage (expected to FAIL check):
+--   mxcli check mdl-examples/bug-tests/ledger-17-slash-division.fail.mdl
+-- ============================================================================
+
+create microflow MyModule.SlashDivision (
+  $Dec: decimal,
+  $Dec2: decimal
+)
+returns decimal
+begin
+  set $Bad = $Dec / 2;                 -- MDL045: use `div`
+  set $AlsoBad = ($Dec + 1) / $Dec2;   -- MDL045: use `div`
+  return $Bad;
+end

@@ -1455,12 +1455,13 @@ func shouldPreserveExpressionSource(source string) bool {
 		if inString {
 			continue
 		}
-		// Division: the AST re-serializer drops the `$` sigil on the right operand
-		// (`$a / $b` → `$a/b`), producing an unresolvable expression. Preserving the
-		// original source keeps it intact — matching the XPath-where path. (#17)
-		if source[i] == '/' {
-			return true
-		}
+		// NB: `/` is deliberately NOT a preservation trigger. In MDL `/` is the
+		// member-access separator (`$Order/Assoc/Name`), not division (which is
+		// `div`), so preserving on `/` would wrongly source-freeze every
+		// association-navigation path (breaking AttributePathExpr round-trips).
+		// A `/` mistakenly used as division is caught at check time instead
+		// (validateDivisionSlash → MDL045). (#17)
+		//
 		// Decimal literal: the re-serializer truncates a zero fraction (`2.0` → `2`,
 		// which breaks Mendix's Decimal typing) and emits small values in scientific
 		// notation (`0.000001` → `1e-06`, which Mendix rejects). A `.` adjacent to a

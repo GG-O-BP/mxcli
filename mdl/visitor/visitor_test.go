@@ -2296,31 +2296,38 @@ func TestShouldPreserveExpressionSourceIgnoresStringLiteralPunctuation(t *testin
 	}
 }
 
-// TestShouldPreserveExpressionSource_DivisionAndDecimals guards the ledger
-// findings #17–19: the AST re-serializer drops the `$` on a division's right
-// operand and mangles decimal literals, so these must preserve the raw source.
-func TestShouldPreserveExpressionSource_DivisionAndDecimals(t *testing.T) {
+// TestShouldPreserveExpressionSource_Decimals guards ledger findings #18–19: the
+// AST re-serializer truncates a zero-fraction decimal (`2.0`→`2`) and emits small
+// values in scientific notation (`0.000001`→`1e-06`), so a decimal literal must
+// preserve the raw source. A `/` (member-access separator, NOT division) must NOT
+// trigger preservation — that would source-freeze every association path.
+func TestShouldPreserveExpressionSource_Decimals(t *testing.T) {
 	mustPreserve := []string{
-		"$Dec / $Dec2",                 // #17: division drops the RHS $
-		"$Dec / 2.0",                   // #18: 2.0 → 2 on re-serialize
-		"$Dec * $I * $I * 0.000001",    // #19: 0.000001 → 1e-06
-		"2.0",                          // standalone decimal literal
-		"100.0",                        // zero-fraction decimal
-		"round($Dec * $I * 0.001, 2)",  // small decimal in an arg
-		"$currentObject/Amount / 1000", // member access + division
+		"$Dec div 2.0",              // #18: 2.0 → 2 on re-serialize
+		"$Dec * $I * $I * 0.000001", // #19: 0.000001 → 1e-06
+		"2.0",                       // standalone decimal literal
+		"100.0",                     // zero-fraction decimal
+		"round($Dec * $I * 0.001)",  // small decimal in an arg
 	}
 	for _, s := range mustPreserve {
 		if !shouldPreserveExpressionSource(s) {
-			t.Errorf("expected source preservation for %q (division/decimal would be corrupted)", s)
+			t.Errorf("expected source preservation for %q (decimal would be corrupted)", s)
 		}
 	}
-	// A qualified name's dot (letters, not digits) and a plain string with a
-	// slash inside must NOT be forced to preserve on that account.
-	if shouldPreserveExpressionSource("Ledger.Category") {
-		t.Error("a qualified name dot (non-numeric) should not force preservation")
+	// A `/` is the member-access separator in MDL, not division: an association
+	// path must NOT be source-frozen on account of its slashes (that regressed
+	// TestAssociationNavParsing). A qualified name's dot (letters) and a slash
+	// inside a string literal must also not force preservation.
+	mustNotPreserve := []string{
+		"$Order/Module.Assoc/Name", // association navigation path
+		"$currentObject/Amount",    // plain member access
+		"Ledger.Category",          // qualified name dot (non-numeric)
+		"'a/b path'",               // slash inside a string literal
 	}
-	if shouldPreserveExpressionSource("'a/b path'") {
-		t.Error("a slash inside a string literal should not force preservation")
+	for _, s := range mustNotPreserve {
+		if shouldPreserveExpressionSource(s) {
+			t.Errorf("did not expect source preservation for %q", s)
+		}
 	}
 }
 

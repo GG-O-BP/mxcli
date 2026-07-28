@@ -5,13 +5,20 @@
 -- Symptom (before fix): a `set $x = <expr>` whose value was re-serialized from
 -- the AST (rather than kept as source) silently corrupted the stored expression.
 -- `mxcli check` passed; `mx check` reported only a generic CE0117:
---   #17  set $B = $Dec / $Dec2;              stored as  $Dec/Dec2   (RHS $ eaten)
---   #18  set $B = $Dec / 2.0;                stored as  $Dec / 2    (2.0 → 2)
---   #19  set $B = $Dec * $I * 0.000001;      stored as  ... * 1e-06 (sci notation)
+--   #17  set $B = $Dec / 2;        `/` is NOT Mendix division (that is `div`);
+--                                  `/` navigates associations, so this is invalid
+--   #18  set $B = $Dec div 2.0;    stored as  $Dec div 2   (2.0 → 2, breaks typing)
+--   #19  set $B = $Dec * 0.000001; stored as  ... * 1e-06  (scientific notation)
 --
--- After fix: shouldPreserveExpressionSource() keeps the raw source for any
--- expression containing a division `/` or a decimal literal, so the `$`, the
--- `.0`, and small decimals all survive verbatim.
+-- After fix:
+--   #17  `/`-as-division is rejected at check time (MDL045) with a clear message
+--        to use `div` — instead of silently writing a broken expression.
+--   #18/#19  shouldPreserveExpressionSource() keeps the raw source for any
+--        expression containing a decimal literal, so `2.0` and `0.000001`
+--        survive verbatim (no truncation, no scientific notation).
+--
+-- Note: MDL division is `div`, not `/`. This example uses `div` (the correct
+-- form); the `/`-misuse case lives in ledger-17-slash-division.fail.mdl.
 --
 -- Usage (round-trip: exec then describe, compare the set lines):
 --   mxcli exec mdl-examples/bug-tests/ledger-17-19-expression-serialization.mdl -p app.mpr

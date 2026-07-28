@@ -55,6 +55,46 @@ func TestValidateMicroflow_DivIntoInteger(t *testing.T) {
 	}
 }
 
+// TestValidateMicroflow_SlashDivision covers MDL045 (ledger finding #17): `/`
+// used as an arithmetic division operator is CE0117 in Mendix — `/` navigates
+// associations, division is `div`. The `$a / literal` and `(...) / $x` forms
+// parse to a BinaryExpr with operator `/` and must be flagged; a legitimate
+// member/association path (`$obj/Attr`) and correct `div` must not be.
+func TestValidateMicroflow_SlashDivision(t *testing.T) {
+	cases := []struct {
+		name    string
+		params  string
+		body    string
+		wantMDL bool
+	}{
+		{"slash divide by literal", "$Dec: Decimal", "set $R = $Dec / 2;", true},
+		{"slash divide parenthesized", "$Dec: Decimal, $D2: Decimal", "set $R = ($Dec + 1) / $D2;", true},
+		{"slash inside function arg", "$Dec: Decimal", "set $R = round($Dec / 3);", true},
+		{"slash in return", "$Dec: Decimal", "return $Dec / 4;", true},
+		{"div is fine", "$Dec: Decimal, $D2: Decimal", "set $R = $Dec div $D2;", false},
+		{"member path is fine", "$O: M.Order", "set $R = $O/M.Order_Cust/Name;", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "create microflow M.F (" + tc.params + ")\nreturns String\nbegin\n  " + tc.body + "\nend;"
+			prog, errs := visitor.Build(src)
+			if len(errs) > 0 {
+				t.Fatalf("parse errors: %v", errs)
+			}
+			mf := prog.Statements[0].(*ast.CreateMicroflowStmt)
+			var got bool
+			for _, vi := range ValidateMicroflow(mf) {
+				if vi.RuleID == "MDL045" {
+					got = true
+				}
+			}
+			if got != tc.wantMDL {
+				t.Errorf("MDL045 fired=%v, want %v (body: %q)", got, tc.wantMDL, tc.body)
+			}
+		})
+	}
+}
+
 // TestValidateMicroflow_DivMessage checks the diagnostic names the target and
 // the div cause, and suggests the fix.
 func TestValidateMicroflow_DivMessage(t *testing.T) {

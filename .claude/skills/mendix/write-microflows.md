@@ -734,7 +734,11 @@ $Result = $A * $B;      -- Multiplication
 $Result = $A div $B;    -- Division (use 'div', not '/')
 ```
 
-**Important**: Use `div` for division, NOT `/`.
+**Important**: Use `div` for division, NOT `/`. In a Mendix expression `/` is the
+member/association separator (`$obj/Attr`), so `$A / $B` is not division —
+`mxcli check` rejects it as **MDL045** (it would fail the build with CE0117).
+Integer/decimal division always yields a Decimal; wrap it in `round()`/`trunc()`
+for an Integer result (else **MDL041**).
 
 ### Comparison
 
