@@ -110,7 +110,7 @@ Launch `run --local` as the **sole** command in its invocation (don't chain a tr
 | `--local` | — | Required; run without Docker (implied by `--hub`) |
 | `--hub` | — | Expose the app in a browser at a tunnel-hub URL (see below) |
 | `--hub-secret` | — | Shared auth (`user:pass`) matching an **open** hub's `--secret` |
-| *(hub API key)* | — | For an **authenticated** hub: `mxcli auth hub login`, or set `MXCLI_HUB_KEY` (see below) |
+| *(hub API key)* | — | For an **authenticated** hub: get one from `https://<hub>/cli`, set `MXCLI_HUB_KEY` (see below) |
 | `--watch` | off | Rebuild + hot-apply on each change |
 | `--ensure-db` | off | Provision local Postgres + app database if missing |
 | `--setup` | off | Cache MxBuild+runtime + ensure DB, then exit (SessionStart bring-up) |

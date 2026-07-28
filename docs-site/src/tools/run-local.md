@@ -63,7 +63,8 @@ so structural changes need a restart; behavioural changes do not.
 |------|---------|---------|
 | `--local` | — | Required; run without Docker (implied by `--hub`) |
 | `--hub` | — | Expose the running app in a browser at a tunnel-hub URL (see [External browser preview](#external-browser-preview---hub)) |
-| `--hub-secret` | — | Shared auth (`user:pass`) matching the hub's `--secret` |
+| `--hub-secret` | — | Shared auth (`user:pass`) matching an **open** hub's `--secret` |
+| *(hub API key)* | — | For a **GitHub-authenticated** hub: get one from `https://<hub>/cli`, set `MXCLI_HUB_KEY` (see below) |
 | `--watch` | off | Rebuild + hot-apply on every project change |
 | `--ensure-db` | off | Provision local Postgres + the app database if missing (fresh-session bootstrap) |
 | `--setup` | off | Prepare prerequisites (cache MxBuild+runtime, ensure DB) and exit without booting — for a SessionStart hook |
@@ -186,8 +187,37 @@ projects, solutions, branches, and worktrees — with a sortable overview at
 **Hub setup:** a wildcard `*.example.com` A record (and `hub.example.com`) pointed at the
 VPS; inbound 80 + 443 open — a Let's Encrypt cert is issued per subdomain on demand.
 
-**Security:** this version uses a single shared `--secret` with open registration, so keep
-the hub to people you trust and don't expose it publicly (per-tenant auth is a follow-up).
+### Authenticated hub (GitHub)
+
+A hub started **without** the GitHub flags is open — the shared `--secret` gates
+registration, so keep it to people you trust. A hub started **with** GitHub OAuth adds
+per-user isolation: viewers sign in with GitHub and see only their own previews, and each
+preview is owned by whoever registered it.
+
+```bash
+# create a GitHub OAuth App (callback https://hub.example.com/auth/github/callback), then:
+mxcli tunnel-hub --domain example.com --secret alice:s3cret \
+  --github-oauth-client-id <id> --github-oauth-client-secret <secret> \
+  --session-secret "$(openssl rand -hex 32)" --audit-log ~/.mxcli/hub-audit.jsonl
+```
+
+With auth on, `--require-auth` (default) 302s an unauthenticated viewer to GitHub and
+returns a 403 to a non-owner; `--require-auth=false` filters the admin listing but leaves
+previews open. Hub API keys are stored durably (`--keys-file`, default
+`~/.mxcli/hub-keys.json`) so they survive restarts.
+
+**Get a key (any device, including Claude Code web/mobile):** open `https://hub.example.com/cli`,
+sign in with GitHub, click **Create a hub key**, and set it as an environment/repo secret:
+
+```bash
+export MXCLI_HUB_KEY=<key>
+mxcli run --hub https://hub.example.com -p app.mpr   # registers previews as you
+```
+
+The key is durable and does not expire — set it once. Manage it from the same page ("Revoke
+all keys"), or headless with `mxcli auth hub login --token <github-pat>`. If registration
+fails (unreachable hub, stale key), `run --hub` warns and continues as a normal local run
+instead of aborting.
 
 ## The change signal
 
