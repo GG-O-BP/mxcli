@@ -1455,6 +1455,24 @@ func shouldPreserveExpressionSource(source string) bool {
 		if inString {
 			continue
 		}
+		// Division: the AST re-serializer drops the `$` sigil on the right operand
+		// (`$a / $b` → `$a/b`), producing an unresolvable expression. Preserving the
+		// original source keeps it intact — matching the XPath-where path. (#17)
+		if source[i] == '/' {
+			return true
+		}
+		// Decimal literal: the re-serializer truncates a zero fraction (`2.0` → `2`,
+		// which breaks Mendix's Decimal typing) and emits small values in scientific
+		// notation (`0.000001` → `1e-06`, which Mendix rejects). A `.` adjacent to a
+		// digit marks a numeric literal; preserving the source keeps the exact form.
+		// (#18, #19)
+		if source[i] == '.' {
+			prevDigit := i > 0 && source[i-1] >= '0' && source[i-1] <= '9'
+			nextDigit := i+1 < len(source) && source[i+1] >= '0' && source[i+1] <= '9'
+			if prevDigit || nextDigit {
+				return true
+			}
+		}
 		switch source[i] {
 		case '=', '!', '<', '>', '+', '-', '*', ':', ',':
 			if i > 0 && source[i-1] != ' ' && source[i-1] != '\t' {

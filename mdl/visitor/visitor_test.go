@@ -2296,6 +2296,34 @@ func TestShouldPreserveExpressionSourceIgnoresStringLiteralPunctuation(t *testin
 	}
 }
 
+// TestShouldPreserveExpressionSource_DivisionAndDecimals guards the ledger
+// findings #17–19: the AST re-serializer drops the `$` on a division's right
+// operand and mangles decimal literals, so these must preserve the raw source.
+func TestShouldPreserveExpressionSource_DivisionAndDecimals(t *testing.T) {
+	mustPreserve := []string{
+		"$Dec / $Dec2",                 // #17: division drops the RHS $
+		"$Dec / 2.0",                   // #18: 2.0 → 2 on re-serialize
+		"$Dec * $I * $I * 0.000001",    // #19: 0.000001 → 1e-06
+		"2.0",                          // standalone decimal literal
+		"100.0",                        // zero-fraction decimal
+		"round($Dec * $I * 0.001, 2)",  // small decimal in an arg
+		"$currentObject/Amount / 1000", // member access + division
+	}
+	for _, s := range mustPreserve {
+		if !shouldPreserveExpressionSource(s) {
+			t.Errorf("expected source preservation for %q (division/decimal would be corrupted)", s)
+		}
+	}
+	// A qualified name's dot (letters, not digits) and a plain string with a
+	// slash inside must NOT be forced to preserve on that account.
+	if shouldPreserveExpressionSource("Ledger.Category") {
+		t.Error("a qualified name dot (non-numeric) should not force preservation")
+	}
+	if shouldPreserveExpressionSource("'a/b path'") {
+		t.Error("a slash inside a string literal should not force preservation")
+	}
+}
+
 func TestRenameModule_ObjectTypeIsLowercase(t *testing.T) {
 	prog, errs := Build("RENAME MODULE OldMod TO NewMod;")
 	if len(errs) > 0 {

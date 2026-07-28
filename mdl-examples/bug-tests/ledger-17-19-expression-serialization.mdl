@@ -1,0 +1,30 @@
+-- ============================================================================
+-- Ledger findings #17–19: microflow expression serialization corruption
+-- ============================================================================
+--
+-- Symptom (before fix): a `set $x = <expr>` whose value was re-serialized from
+-- the AST (rather than kept as source) silently corrupted the stored expression.
+-- `mxcli check` passed; `mx check` reported only a generic CE0117:
+--   #17  set $B = $Dec / $Dec2;              stored as  $Dec/Dec2   (RHS $ eaten)
+--   #18  set $B = $Dec / 2.0;                stored as  $Dec / 2    (2.0 → 2)
+--   #19  set $B = $Dec * $I * 0.000001;      stored as  ... * 1e-06 (sci notation)
+--
+-- After fix: shouldPreserveExpressionSource() keeps the raw source for any
+-- expression containing a division `/` or a decimal literal, so the `$`, the
+-- `.0`, and small decimals all survive verbatim.
+--
+-- Usage (round-trip: exec then describe, compare the set lines):
+--   mxcli exec mdl-examples/bug-tests/ledger-17-19-expression-serialization.mdl -p app.mpr
+--   mxcli -p app.mpr -c "describe microflow MyModule.LedgerExprBug"
+--   ~/.mxcli/mxbuild/*/modeler/mx check app.mpr   # must be clean (no CE0117)
+
+create or modify microflow MyModule.LedgerExprBug (
+  $Dec: decimal,
+  $Dec2: decimal,
+  $I: integer
+)
+begin
+  set $Ratio = $Dec div $Dec2;             -- #17: MDL division is `div`, not `/`
+  set $Half = $Dec div 2.0;                -- #18: 2.0 must stay 2.0 (not 2)
+  set $Tiny = $Dec * $I * $I * 0.000001;   -- #19: no scientific notation (not 1e-06)
+end
