@@ -651,6 +651,12 @@ func navListItemToGen(item *pages.NavigationListItem) (element.Element, error) {
 		g.SetID(element.ID(item.ID))
 	}
 	assignID(g)
+	// The item MUST carry its name, else Studio Pro rejects the project with
+	// CE7247 "name cannot be empty" (and CE0495 "duplicate name ''" when there is
+	// more than one item). The gen NavigationListItem type has no typed Name
+	// setter, so write it as a raw property (like the legacy writer's Name key).
+	// (ledger finding #24)
+	addStr(&g.Base, "Name", item.Name)
 	g.SetAppearance(newAppearance("", "", "", nil))
 	act, err := clientActionToGen(item.Action)
 	if err != nil {
@@ -660,7 +666,13 @@ func navListItemToGen(item *pages.NavigationListItem) (element.Element, error) {
 
 	widgets := item.Widgets
 	if len(widgets) == 0 && item.Caption != nil {
-		widgets = []pages.Widget{&pages.DynamicText{Content: &pages.ClientTemplate{Template: item.Caption}}}
+		// The caption becomes a DynamicText — which itself needs a name, or it
+		// hits the same empty-name errors. Mirror the legacy writer's `text_<name>`.
+		widgets = []pages.Widget{&pages.DynamicText{
+			BaseWidget: pages.BaseWidget{Name: "text_" + item.Name},
+			Content:    &pages.ClientTemplate{Template: item.Caption},
+			RenderMode: pages.TextRenderModeText,
+		}}
 	}
 	for _, w := range widgets {
 		wg, err := widgetToGen(w)
