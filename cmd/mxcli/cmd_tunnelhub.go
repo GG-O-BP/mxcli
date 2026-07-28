@@ -71,6 +71,7 @@ Then, in each app's environment:
 		cookieDomain, _ := cmd.Flags().GetString("cookie-domain")
 		requireAuth, _ := cmd.Flags().GetBool("require-auth")
 		auditLog, _ := cmd.Flags().GetString("audit-log")
+		keysFile, _ := cmd.Flags().GetString("keys-file")
 
 		if domain == "" {
 			fmt.Fprintln(os.Stderr, "Error: --domain is required (the wildcard base, e.g. example.com)")
@@ -79,6 +80,12 @@ Then, in each app's environment:
 		if certCache == "" {
 			home, _ := os.UserHomeDir()
 			certCache = filepath.Join(home, ".mxcli", "hub-certs")
+		}
+		// Persist keys by default when auth is on, so they survive restarts and
+		// users don't have to re-configure MXCLI_HUB_KEY after every redeploy.
+		if keysFile == "" && ghClientID != "" {
+			home, _ := os.UserHomeDir()
+			keysFile = filepath.Join(home, ".mxcli", "hub-keys.json")
 		}
 		// Env fallbacks so secrets need not appear in the process table.
 		if ghClientSecret == "" {
@@ -106,6 +113,7 @@ Then, in each app's environment:
 			CertCacheDir:   certCache,
 			Auth:           auth,
 			Audit:          auditSink,
+			KeysFile:       keysFile,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: configuring tunnel-hub: %v\n", err)
@@ -117,6 +125,9 @@ Then, in each app's environment:
 				mode = "required (owner check enforced on previews)"
 			}
 			fmt.Printf("  auth: GitHub OAuth enabled, %s\n", mode)
+			if keysFile != "" {
+				fmt.Printf("  keys: durable at %s (survive restarts)\n", keysFile)
+			}
 		}
 
 		host := hubHost
@@ -181,5 +192,6 @@ func init() {
 	tunnelHubCmd.Flags().String("cookie-domain", "", "Session cookie domain for SSO across previews (default .<domain>)")
 	tunnelHubCmd.Flags().Bool("require-auth", true, "Enforce the owner check on previews (deny non-owners); --require-auth=false leaves owned previews open but still filters the listing")
 	tunnelHubCmd.Flags().String("audit-log", "", "Append-only JSONL audit trail path (\"stdout\" for stdout; empty = off)")
+	tunnelHubCmd.Flags().String("keys-file", "", "Durable hub API-key store path (default ~/.mxcli/hub-keys.json when auth is on); keys survive restarts so clients keep their MXCLI_HUB_KEY")
 	rootCmd.AddCommand(tunnelHubCmd)
 }
