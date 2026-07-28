@@ -1,0 +1,38 @@
+-- ============================================================================
+-- contentparams / captionparams reject a client expression (ledger finding #26)
+-- ============================================================================
+--
+-- Symptom (before fix):
+--   A template parameter bound to a function-call expression —
+--     dynamictext dImport (content: 'Last import: {1}',
+--       contentparams: [{1} = formatDateTime($currentObject/LastImport, 'd MMM yyyy')])
+--   passed `mxcli check` but Studio Pro rejected the page with CE1613
+--   "attribute no longer exists": the unquoted value is stored as an ATTRIBUTE
+--   PATH (a data binding), so the whole expression became a bogus attribute name.
+--
+-- After fix:
+--   `mxcli check` rejects it with MDL-WIDGET14 and tells the user to precompute
+--   the value onto the bound entity (e.g. a calculated attribute) and bind that
+--   attribute instead. A quoted string literal ([{1} = 'literal']) is still fine,
+--   and a plain attribute path ([{1} = $obj/Attr]) is still fine.
+--
+-- Usage (expected to FAIL check):
+--   mxcli check mdl-examples/bug-tests/contentparam-expression-rejected.fail.mdl
+-- ============================================================================
+
+create entity MyFirstModule.Report (
+  LastImport: DateTime
+);
+
+create or replace page MyFirstModule.ReportPage
+(
+  Title: 'Report',
+  Layout: Atlas_Core.Atlas_Default,
+  Params: { $Report: MyFirstModule.Report }
+)
+{
+  dataview dv (datasource: $Report) {
+    -- Expression in a data-binding slot → MDL-WIDGET14 (CE1613 in Studio Pro).
+    dynamictext dImport (content: 'Last import: {1}', contentparams: [{1} = formatDateTime($currentObject/LastImport, 'd MMM yyyy')])
+  }
+}

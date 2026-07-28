@@ -566,6 +566,13 @@ func validateStaticWidget(w *ast.WidgetV3, locationPrefix string) []linter.Viola
 	// association legitimately. (findings #4)
 	out = append(out, validateWidgetExpressionAssociations(w, locationPrefix)...)
 
+	// A contentparams/captionparams value is a DATA BINDING (an attribute path),
+	// not a client-side expression: mxcli stores an unquoted value as an attribute
+	// name, so a function call like `formatDateTime($obj/Date, 'd MMM')` is written
+	// as a bogus attribute and Studio Pro rejects the page with CE1613 "attribute
+	// no longer exists". Catch it at check time. (ledger finding #26)
+	out = append(out, validateTemplateParamExpressions(w, locationPrefix)...)
+
 	return out
 }
 
@@ -601,6 +608,49 @@ func validateWidgetExpressionAssociations(w *ast.WidgetV3, locationPrefix string
 			})
 		}
 	}
+	return out
+}
+
+// templateParamExprRe detects a client-side expression where an attribute-path
+// data binding is expected. A binding is a path of identifier segments joined by
+// `/` or `.` (optionally `$`-prefixed): `$obj/Date`, `Order_Customer/Name`. An
+// expression carries a function call `foo(` or an arithmetic/comparison operator,
+// none of which can appear in an attribute path.
+var templateParamExprRe = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*\s*\(|[+\-*<>=!]`)
+
+// validateTemplateParamExpressions flags a client expression supplied to a
+// contentparams/captionparams slot (MDL-WIDGET14). Those slots are DATA BINDINGS:
+// an unquoted value is stored as an attribute path, so an expression like
+// `formatDateTime($obj/Date, 'd MMM')` is written as a bogus attribute name and
+// Studio Pro rejects the page with CE1613. A quoted value is a legal string
+// literal and is left alone.
+func validateTemplateParamExpressions(w *ast.WidgetV3, locationPrefix string) []linter.Violation {
+	var out []linter.Violation
+	check := func(slot string, params []ast.ParamAssignmentV3) {
+		for _, p := range params {
+			val, ok := p.Value.(string)
+			if !ok || val == "" {
+				continue
+			}
+			// A quoted string literal is a valid contentparams value.
+			if strings.HasPrefix(val, "'") || strings.HasPrefix(val, "\"") {
+				continue
+			}
+			if !templateParamExprRe.MatchString(val) {
+				continue
+			}
+			out = append(out, linter.Violation{
+				RuleID:   "MDL-WIDGET14",
+				Severity: linter.SeverityError,
+				Message: fmt.Sprintf(
+					"%s: widget `%s` %s value `%s` is an expression, but a template parameter is a data binding — it accepts an attribute path (`$obj/Attr`) or a quoted string literal, not an expression (CE1613 in Studio Pro). Precompute it onto the bound entity (e.g. a calculated attribute) and bind that attribute instead.",
+					locationPrefix, w.Name, slot, val,
+				),
+			})
+		}
+	}
+	check("contentparams", w.GetContentParams())
+	check("captionparams", w.GetCaptionParams())
 	return out
 }
 

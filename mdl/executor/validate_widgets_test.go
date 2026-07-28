@@ -195,6 +195,44 @@ func TestValidateWidgetExpressionAssociations(t *testing.T) {
 	}
 }
 
+// TestValidateTemplateParamExpressions — MDL-WIDGET14 flags a client expression
+// supplied to a contentparams/captionparams slot (a data binding). An attribute
+// path or quoted string literal is fine. (ledger finding #26)
+func TestValidateTemplateParamExpressions(t *testing.T) {
+	cp := func(vals ...any) *ast.WidgetV3 {
+		params := make([]ast.ParamAssignmentV3, len(vals))
+		for i, v := range vals {
+			params[i] = ast.ParamAssignmentV3{Index: i + 1, Value: v}
+		}
+		return &ast.WidgetV3{Type: "dynamictext", Name: "d", Properties: map[string]any{"ContentParams": params}}
+	}
+	cases := []struct {
+		name   string
+		widget *ast.WidgetV3
+		want   bool // expect an MDL-WIDGET14 violation
+	}{
+		{"function call → rejected", cp("formatDateTime($currentObject/LastImport,'d MMM yyyy')"), true},
+		{"arithmetic expression → rejected", cp("$currentObject/Qty * $currentObject/Price"), true},
+		{"attribute path → ok", cp("$currentObject/Name"), false},
+		{"association-navigated attribute path → ok", cp("MyMod.A_B/Name"), false},
+		{"quoted string literal → ok", cp("'literal text'"), false},
+		{"quoted string with parens → ok", cp("'formatDateTime(x)'"), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := false
+			for _, v := range validateStaticWidget(c.widget, "page X") {
+				if v.RuleID == "MDL-WIDGET14" {
+					got = true
+				}
+			}
+			if got != c.want {
+				t.Errorf("MDL-WIDGET14 present = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
 // TestValidateObjectListItemEnums — MDL-WIDGET08 flags an object-list item's
 // enumeration sub-property whose value isn't a declared member key (e.g. a Maps
 // marker LocationType outside {address, latlng}). Studio Pro silently defaults
