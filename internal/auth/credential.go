@@ -22,6 +22,10 @@ type Scheme string
 const (
 	// SchemePAT uses "Authorization: MxToken <token>" (Content API, marketplace).
 	SchemePAT Scheme = "pat"
+	// SchemeHubKey is an opaque tunnel-hub API key sent as "X-Hub-Key: <token>"
+	// on /api/register. Minted by `mxcli auth hub login`, stored per hub host
+	// under the profile "hub:<host>".
+	SchemeHubKey Scheme = "hubkey"
 )
 
 // ProfileDefault is the profile name used when none is specified.

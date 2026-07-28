@@ -109,7 +109,8 @@ Launch `run --local` as the **sole** command in its invocation (don't chain a tr
 |------|---------|---------|
 | `--local` | — | Required; run without Docker (implied by `--hub`) |
 | `--hub` | — | Expose the app in a browser at a tunnel-hub URL (see below) |
-| `--hub-secret` | — | Shared auth (`user:pass`) matching the hub's `--secret` |
+| `--hub-secret` | — | Shared auth (`user:pass`) matching an **open** hub's `--secret` |
+| *(hub API key)* | — | For an **authenticated** hub: get one from `https://<hub>/cli`, set `MXCLI_HUB_KEY` (see below) |
 | `--watch` | off | Rebuild + hot-apply on each change |
 | `--ensure-db` | off | Provision local Postgres + app database if missing |
 | `--setup` | off | Cache MxBuild+runtime + ensure DB, then exit (SessionStart bring-up) |
@@ -268,9 +269,41 @@ sortable overview at `https://hub.example.com/`. Each `run --hub` self-registers
   with `--watch` for the full loop: edit here → hot-apply → refresh the browser.
 
 **Hub setup:** wildcard `*.example.com` A record (+ `hub.example.com`) → the VPS; inbound
-80+443 open (per-subdomain Let's Encrypt on demand). **Security:** this version uses one
-shared `--secret` and open registration, so keep the hub to people you trust and don't
-expose it publicly (per-tenant auth is a follow-up).
+80+443 open (per-subdomain Let's Encrypt on demand).
+
+### Authenticated hub (GitHub)
+
+A self-hosted hub started **without** the GitHub flags is open — the shared `--hub-secret`
+is all `run --hub` needs. A hub started **with** `--github-oauth-client-id` (see
+`mxcli tunnel-hub --help`) adds per-user isolation: browsers sign in with GitHub and see
+only their own previews, and registration needs a **per-user hub API key** instead of the
+shared secret.
+
+**Get a key from the hub's browser page** (works from any device — desktop, or Claude
+Code web/mobile, whose container can't reach GitHub's device endpoints):
+
+1. Open `https://hub.mxcli.org/cli` in a browser and sign in with GitHub.
+2. Click **Create a hub key** and copy it.
+3. Set it as an environment/repo secret in your Claude Code environment — it's picked up
+   automatically and survives container reaping:
+
+```bash
+export MXCLI_HUB_KEY=<key>
+mxcli run --hub https://hub.mxcli.org -p app.mpr   # registers previews as you
+```
+
+The key is **durable** (no expiry, survives hub restarts) — you set it once. It stays valid
+until you revoke it (sign out on the hub, or `mxcli auth hub logout`).
+
+Headless alternative (CI, or a machine with a GitHub token): `mxcli auth hub login --token
+<github-pat>` mints and caches a key in `~/.mxcli/auth.json` (mode 0600). The GitHub token
+is used once for the mint and never stored.
+
+**Registration failure is non-fatal:** if the hub is unreachable or the key is stale/rejected,
+`run --hub` prints a warning and continues as a normal local run (the app boots on localhost;
+only the public preview URL is lost). On an authenticated hub the shared `--hub-secret` still
+works as a fallback registration credential — a valid key stamps the preview as yours, a valid
+secret registers it owner-less.
 
 ## Validation checklist
 

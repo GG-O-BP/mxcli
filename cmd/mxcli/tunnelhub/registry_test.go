@@ -83,7 +83,7 @@ func TestRegister_SameIdentityIsStable(t *testing.T) {
 	if !b.LastSeenAt.Equal(clk.t) {
 		t.Error("re-register should refresh the heartbeat")
 	}
-	if got := r.List("used"); len(got) != 1 {
+	if got := r.List("used", ""); len(got) != 1 {
 		t.Errorf("want 1 backend after re-register, got %d", len(got))
 	}
 }
@@ -113,16 +113,16 @@ func TestAvailability_StaleAfterNoHeartbeat(t *testing.T) {
 	r := newTestRegistry(clk)
 	b, _ := r.Register(RegisterRequest{Project: "App", Branch: "main"})
 
-	if av := r.List("used")[0].Availability; av != Available {
+	if av := r.List("used", "")[0].Availability; av != Available {
 		t.Errorf("fresh backend = %q, want available", av)
 	}
 	clk.add(60 * time.Second) // past StaleFor (45s), before ExpireFor
-	if av := r.List("used")[0].Availability; av != Stale {
+	if av := r.List("used", "")[0].Availability; av != Stale {
 		t.Errorf("after 60s = %q, want stale", av)
 	}
 	// A heartbeat brings it back.
 	r.Heartbeat(b.ID)
-	if av := r.List("used")[0].Availability; av != Available {
+	if av := r.List("used", "")[0].Availability; av != Available {
 		t.Errorf("after heartbeat = %q, want available", av)
 	}
 }
@@ -134,7 +134,7 @@ func TestReap_RemovesExpiredAndFreesPort(t *testing.T) {
 
 	clk.add(11 * time.Minute) // past ExpireFor
 	// List triggers a reap.
-	if got := r.List("used"); len(got) != 0 {
+	if got := r.List("used", ""); len(got) != 0 {
 		t.Fatalf("expired backend should be reaped, got %d", len(got))
 	}
 	// Its port is freed and reusable.
@@ -156,15 +156,15 @@ func TestList_Sorting(t *testing.T) {
 	r.TouchUsed(b.Subdomain)
 	clk.add(time.Second)
 	r.TouchUsed(a.Subdomain)
-	if got := r.List("used"); got[0].Project != "Beta" {
+	if got := r.List("used", ""); got[0].Project != "Beta" {
 		t.Errorf("used sort: first = %q, want Beta", got[0].Project)
 	}
 	// registered: newest first -> Alpha.
-	if got := r.List("registered"); got[0].Project != "Alpha" {
+	if got := r.List("registered", ""); got[0].Project != "Alpha" {
 		t.Errorf("registered sort: first = %q, want Alpha", got[0].Project)
 	}
 	// project: alphabetical -> Alpha.
-	if got := r.List("project"); got[0].Project != "Alpha" {
+	if got := r.List("project", ""); got[0].Project != "Alpha" {
 		t.Errorf("project sort: first = %q, want Alpha", got[0].Project)
 	}
 }
@@ -180,5 +180,52 @@ func TestPortExhaustion(t *testing.T) {
 	}
 	if _, err := r.Register(RegisterRequest{Project: "C", Branch: "main"}); err == nil {
 		t.Error("expected port-exhaustion error on the 3rd registration")
+	}
+}
+
+// TestList_FiltersByOwner covers slice 1: List filters to the viewer's own
+// backends, while an empty viewer (auth off / self-hosted) sees everything —
+// preserving today's behaviour. Owner is stamped by the auth layer (slice 3);
+// here it is set directly on the stored backends to exercise the filter.
+func TestList_FiltersByOwner(t *testing.T) {
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	r := newTestRegistry(clk)
+
+	a, _ := r.Register(RegisterRequest{Project: "AppA", Branch: "main"})
+	a.Owner = "alice"
+	b, _ := r.Register(RegisterRequest{Project: "AppB", Branch: "main"})
+	b.Owner = "bob"
+	r.Register(RegisterRequest{Project: "AppC", Branch: "main"}) // anonymous (Owner "")
+
+	// Empty viewer sees all three (self-hosted / auth off).
+	if got := r.List("project", ""); len(got) != 3 {
+		t.Fatalf("viewer \"\" should see all 3, got %d", len(got))
+	}
+	// A viewer sees only their own.
+	if got := r.List("project", "alice"); len(got) != 1 || got[0].Project != "AppA" {
+		t.Errorf("viewer alice should see only AppA, got %d results", len(got))
+	}
+	if got := r.List("project", "bob"); len(got) != 1 || got[0].Project != "AppB" {
+		t.Errorf("viewer bob should see only AppB, got %d results", len(got))
+	}
+	// A viewer with no backends sees nothing (not the anonymous one).
+	if got := r.List("project", "carol"); len(got) != 0 {
+		t.Errorf("viewer carol should see nothing, got %d", len(got))
+	}
+}
+
+// TestIdentity_OwnerDisambiguates covers slice 1: two users' identically-named
+// project/branch must map to distinct slots (Owner is first in identity), while
+// two anonymous ("" owner) registrations still share a slot as they do today.
+func TestIdentity_OwnerDisambiguates(t *testing.T) {
+	base := Backend{Project: "App", Branch: "main"}
+	alice, bob := base, base
+	alice.Owner, bob.Owner = "alice", "bob"
+	if alice.identity() == bob.identity() {
+		t.Error("same project/branch under different owners must not collide")
+	}
+	anon1, anon2 := base, base
+	if anon1.identity() != anon2.identity() {
+		t.Error("two anonymous registrations of the same project/branch must share identity")
 	}
 }

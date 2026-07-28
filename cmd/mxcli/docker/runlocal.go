@@ -51,6 +51,10 @@ type LocalRunOptions struct {
 	// HubSecret is the shared auth secret for the hub ("user:pass"), matching the
 	// hub's --secret. Optional but recommended.
 	HubSecret string
+	// HubKey is a per-user tunnel-hub API key (from `mxcli auth hub login` or
+	// MXCLI_HUB_KEY) presented to an authenticated hub as X-Hub-Key; it stamps the
+	// preview's owner. Empty for open self-hosted hubs.
+	HubKey string
 	// Hub identity (multi-tenant hub): these drive the assigned subdomain and the
 	// hub overview grouping. Blank Project/Branch are auto-detected from the .mpr
 	// name and git.
@@ -538,11 +542,21 @@ func RunLocal(opts LocalRunOptions) error {
 			Branch: opts.HubBranch, Worktree: opts.HubWorktree,
 		})
 		fmt.Fprintf(w, "Registering with hub %s...\n", opts.Hub)
-		hubReg, err = RegisterWithHub(opts.Hub, opts.HubSecret, meta, opts.AppPort)
+		hubReg, err = RegisterWithHub(opts.Hub, opts.HubSecret, opts.HubKey, meta, opts.AppPort)
 		if err != nil {
-			return fmt.Errorf("hub registration: %w", err)
+			// A failed registration (unreachable hub, stale/rejected key) must cost
+			// only the public preview URL — not the whole run. Degrade to a normal
+			// local run so the app still boots and is reachable on localhost.
+			// (findings #27, #31C)
+			fmt.Fprintf(stderr, "Warning: hub registration failed (%v); continuing local-only — the app runs on localhost but has no public preview URL.\n", err)
+			if opts.HubKey == "" {
+				fmt.Fprintf(stderr, "  hint: this hub requires auth; set MXCLI_HUB_KEY or run 'mxcli auth hub login'.\n")
+			}
+			hubReg = nil
+			err = nil
+		} else {
+			appRootURL = hubReg.URL
 		}
-		appRootURL = hubReg.URL
 	}
 
 	// 6. Boot the runtime against the fresh deployment. Tee the runtime's own
