@@ -83,3 +83,33 @@ func TestValidateMicroflow_XPathAssociationEmpty(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateDatasourceXPathAssociationEmpty covers the page/widget-datasource
+// arm of MDL047 (ledger #25 verification round): the original check only saw
+// microflow retrieves, so `datagrid (datasource: database ... where [Assoc =
+// empty])` slipped through.
+func TestValidateDatasourceXPathAssociationEmpty(t *testing.T) {
+	dg := func(where string) *ast.WidgetV3 {
+		return &ast.WidgetV3{Type: "datagrid", Name: "dg", Properties: map[string]any{
+			"DataSource": &ast.DataSourceV3{Type: "database", Reference: "Ledger.Transaction", Where: where},
+		}}
+	}
+	cases := []struct {
+		name   string
+		widget *ast.WidgetV3
+		want   bool
+	}{
+		{"association = empty", dg("[Ledger.Transaction_Category = empty]"), true},
+		{"negation is fine", dg("[not(Ledger.Transaction_Category/Ledger.Category)]"), false},
+		{"attribute = empty is fine", dg("[Description = empty]"), false},
+		{"no where clause", dg(""), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := len(validateDatasourceXPathAssociationEmpty(c.widget, "page X")) > 0
+			if got != c.want {
+				t.Errorf("MDL047 present = %v, want %v", got, c.want)
+			}
+		})
+	}
+}

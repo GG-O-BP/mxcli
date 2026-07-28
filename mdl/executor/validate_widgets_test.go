@@ -238,6 +238,9 @@ func TestValidateTemplateParamExpressions(t *testing.T) {
 // no separator) regardless of RenderMode. (ledger finding #27)
 func TestValidateConsecutiveDynamicText(t *testing.T) {
 	dt := func(name string) *ast.WidgetV3 { return &ast.WidgetV3{Type: "dynamictext", Name: name} }
+	dtRM := func(name, rm string) *ast.WidgetV3 {
+		return &ast.WidgetV3{Type: "dynamictext", Name: name, Properties: map[string]any{"RenderMode": rm}}
+	}
 	tb := func(name string) *ast.WidgetV3 { return &ast.WidgetV3{Type: "textbox", Name: name} }
 	cases := []struct {
 		name     string
@@ -246,9 +249,16 @@ func TestValidateConsecutiveDynamicText(t *testing.T) {
 	}{
 		{"two adjacent dynamictexts", []*ast.WidgetV3{dt("a"), dt("b")}, true},
 		{"three adjacent (warns once)", []*ast.WidgetV3{dt("a"), dt("b"), dt("c")}, true},
+		{"explicit Text render mode", []*ast.WidgetV3{dtRM("a", "Text"), dtRM("b", "Text")}, true},
 		{"separated by another widget", []*ast.WidgetV3{dt("a"), tb("x"), dt("b")}, false},
 		{"single dynamictext", []*ast.WidgetV3{dt("a")}, false},
 		{"no dynamictext", []*ast.WidgetV3{tb("x"), tb("y")}, false},
+		// Heading/Paragraph render block-level, so a heading + subtitle does not
+		// concatenate — must not be flagged (verification-round false positive).
+		{"heading then subtitle", []*ast.WidgetV3{dtRM("h", "H2"), dt("sub")}, false},
+		{"paragraph then text", []*ast.WidgetV3{dtRM("p", "Paragraph"), dt("t")}, false},
+		{"two headings", []*ast.WidgetV3{dtRM("h1", "H2"), dtRM("h2", "H3")}, false},
+		{"heading breaks a run of inlines", []*ast.WidgetV3{dt("a"), dtRM("h", "H2"), dt("b")}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

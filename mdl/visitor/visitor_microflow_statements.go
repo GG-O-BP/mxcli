@@ -1455,12 +1455,25 @@ func shouldPreserveExpressionSource(source string) bool {
 		if inString {
 			continue
 		}
-		// NB: `/` is deliberately NOT a preservation trigger. In MDL `/` is the
-		// member-access separator (`$Order/Assoc/Name`), not division (which is
-		// `div`), so preserving on `/` would wrongly source-freeze every
-		// association-navigation path (breaking AttributePathExpr round-trips).
-		// A `/` mistakenly used as division is caught at check time instead
-		// (validateDivisionSlash → MDL045). (#17)
+		// A `/` used as division with a variable right operand (`$a / $b`) parses
+		// as a member-access path (the `$` on the RHS is stripped), so the AST
+		// re-serializes to a bogus `$a/b`. Preserve the raw source ONLY for this
+		// unambiguous misuse — a `/` immediately followed (ignoring spaces) by `$`.
+		// A real association path never has `$` after `/`, so legitimate navigation
+		// (`$Order/Assoc/Name`) is NOT source-frozen. MDL045 then rejects it at
+		// check time using the preserved source. (#17, verification round)
+		if source[i] == '/' {
+			j := i + 1
+			for j < len(source) && (source[j] == ' ' || source[j] == '\t') {
+				j++
+			}
+			if j < len(source) && source[j] == '$' {
+				return true
+			}
+		}
+		// Otherwise `/` is the member-access separator (`$Order/Assoc/Name`), not
+		// division (which is `div`), so it is NOT a preservation trigger — that
+		// would wrongly source-freeze every association-navigation path.
 		//
 		// Decimal literal: the re-serializer truncates a zero fraction (`2.0` → `2`,
 		// which breaks Mendix's Decimal typing) and emits small values in scientific

@@ -119,6 +119,7 @@ func validateWidgetTreeIn(widgets []*ast.WidgetV3, registry *WidgetRegistry, loc
 		out = append(out, validatePluggableWidgetProperties(w, registry, locationPrefix)...)
 		out = append(out, validateWidgetVisibility(w, registry, locationPrefix)...)
 		out = append(out, validateStaticWidget(w, locationPrefix)...)
+		out = append(out, validateDatasourceXPathAssociationEmpty(w, locationPrefix)...)
 		// Unknown-property warning applies only to built-in widgets; pluggable
 		// widgets get the stricter def.json check (MDL-WIDGET01) above, and
 		// object-list items are validated by the object-list engine.
@@ -137,28 +138,65 @@ func validateWidgetTreeIn(widgets []*ast.WidgetV3, registry *WidgetRegistry, loc
 	return out
 }
 
+// validateDatasourceXPathAssociationEmpty flags `[Module.Association = empty]` in
+// a widget's database datasource `where` clause — the page-datasource counterpart
+// of the microflow-retrieve MDL047 check. Mendix XPath has no `= empty` for an
+// association (CE0161); the nullability test is `not(Assoc/Target)`. (ledger #25,
+// verification round: MDL047 originally covered only microflow retrieves.)
+func validateDatasourceXPathAssociationEmpty(w *ast.WidgetV3, locationPrefix string) []linter.Violation {
+	ds := w.GetDataSource()
+	if ds == nil || ds.Where == "" {
+		return nil
+	}
+	var out []linter.Violation
+	for _, assoc := range xpathAssociationEmptyMatches(ds.Where) {
+		out = append(out, linter.Violation{
+			RuleID:   "MDL047",
+			Severity: linter.SeverityError,
+			Message: fmt.Sprintf(
+				"%s: widget `%s` datasource constraint tests association `%s = empty`, which Mendix XPath does not support (CE0161 \"Error(s) in XPath constraint\") — `= empty` works on attributes, not associations",
+				locationPrefix, w.Name, assoc),
+			Suggestion: fmt.Sprintf("Test for the absence of the associated object with negation: `[not(%s/<Module.TargetEntity>)]`.", assoc),
+		})
+	}
+	return out
+}
+
+// inlineDynamicText reports whether a widget is a dynamictext that renders
+// INLINE — i.e. an `<span>`. Only the default `Text` render mode (or an unset
+// one) is inline; H1–H6 and Paragraph are block-level, so a heading followed by
+// a subtitle does NOT concatenate and must not be flagged. (ledger #27,
+// verification round: heading+subtitle pairs were false-positived.)
+func inlineDynamicText(w *ast.WidgetV3) bool {
+	if w == nil || !strings.EqualFold(w.Type, "dynamictext") {
+		return false
+	}
+	rm := w.GetRenderMode()
+	return rm == "" || strings.EqualFold(rm, "Text")
+}
+
 // validateConsecutiveDynamicText emits an advisory (MDL-WIDGET15) when two or
-// more dynamictext widgets are direct siblings: Mendix renders a DynamicText
-// inline (a `<span>`) regardless of its RenderMode, so adjacent ones concatenate
-// with no separator (`€ 310` + `7/24/2026` → `€ 3107/24/2026`). Info severity —
-// it does not fail the build, it warns the author about a layout surprise.
-// (ledger finding #27)
+// more INLINE dynamictext widgets are direct siblings: Mendix renders a Text-mode
+// DynamicText inline (a `<span>`), so adjacent ones concatenate with no separator
+// (`€ 310` + `7/24/2026` → `€ 3107/24/2026`). A block-level render mode (H1–H6,
+// Paragraph) breaks the run. Info severity — it does not fail the build, it warns
+// the author about a layout surprise. (ledger finding #27)
 func validateConsecutiveDynamicText(siblings []*ast.WidgetV3, locationPrefix string) []linter.Violation {
 	run := 0
 	for _, w := range siblings {
-		if w != nil && strings.EqualFold(w.Type, "dynamictext") {
+		if inlineDynamicText(w) {
 			run++
 		} else {
 			run = 0
 		}
-		// Emit once, on the second dynamictext of a run, so a group of N only
-		// warns once.
+		// Emit once, on the second inline dynamictext of a run, so a group of N
+		// only warns once.
 		if run == 2 {
 			return []linter.Violation{{
 				RuleID:   "MDL-WIDGET15",
 				Severity: linter.SeverityInfo,
 				Message: fmt.Sprintf(
-					"%s: adjacent dynamictext widgets render inline (Mendix emits a <span> regardless of RenderMode), so their text concatenates with no separator. Merge them into one dynamictext with multiple content params, or wrap each in its own container.",
+					"%s: adjacent inline dynamictext widgets (RenderMode Text) render as <span>s, so their text concatenates with no separator. Merge them into one dynamictext with multiple content params, wrap each in its own container, or set a block RenderMode (H1–H6/Paragraph).",
 					locationPrefix),
 			}}
 		}

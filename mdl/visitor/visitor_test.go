@@ -2308,6 +2308,8 @@ func TestShouldPreserveExpressionSource_Decimals(t *testing.T) {
 		"2.0",                       // standalone decimal literal
 		"100.0",                     // zero-fraction decimal
 		"round($Dec * $I * 0.001)",  // small decimal in an arg
+		"$Dec / $Dec2",              // #17: `/ $` division misuse (kept so MDL045 sees it)
+		"$Dec/$Dec2",                // #17: no-space division misuse
 	}
 	for _, s := range mustPreserve {
 		if !shouldPreserveExpressionSource(s) {

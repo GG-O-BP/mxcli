@@ -68,11 +68,14 @@ func TestValidateMicroflow_SlashDivision(t *testing.T) {
 		wantMDL bool
 	}{
 		{"slash divide by literal", "$Dec: Decimal", "set $R = $Dec / 2;", true},
+		{"slash divide by variable", "$Dec: Decimal, $D2: Decimal", "set $R = $Dec / $D2;", true},
 		{"slash divide parenthesized", "$Dec: Decimal, $D2: Decimal", "set $R = ($Dec + 1) / $D2;", true},
+		{"slash divide by variable spaced", "$Dec: Decimal, $D2: Decimal", "set $R = $Dec/$D2;", true},
 		{"slash inside function arg", "$Dec: Decimal", "set $R = round($Dec / 3);", true},
 		{"slash in return", "$Dec: Decimal", "return $Dec / 4;", true},
 		{"div is fine", "$Dec: Decimal, $D2: Decimal", "set $R = $Dec div $D2;", false},
 		{"member path is fine", "$O: M.Order", "set $R = $O/M.Order_Cust/Name;", false},
+		{"spaced member path is fine", "$O: M.Order", "set $R = $O / M.Order_Cust / Name;", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

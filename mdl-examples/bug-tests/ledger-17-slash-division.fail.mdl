@@ -8,8 +8,9 @@
 -- `div`. mxcli silently wrote the invalid `/` expression.
 --
 -- After fix: MDL045 rejects `/`-as-division at check time and tells the user to
--- use `div`. (The `$a / $b` bare-variable form degrades to a member-access path
--- and is caught by `check --references` as an unresolvable attribute instead.)
+-- use `div`. Both forms are caught: `/ literal` and `/ (expr)` (a BinaryExpr with
+-- operator `/`), and the variable/variable form `$Dec / $Dec2` (which parses as a
+-- member-access path — the visitor preserves its `/ $` source so MDL045 sees it).
 --
 -- Usage (expected to FAIL check):
 --   mxcli check mdl-examples/bug-tests/ledger-17-slash-division.fail.mdl
@@ -23,5 +24,6 @@ returns decimal
 begin
   set $Bad = $Dec / 2;                 -- MDL045: use `div`
   set $AlsoBad = ($Dec + 1) / $Dec2;   -- MDL045: use `div`
+  set $VarVar = $Dec / $Dec2;          -- MDL045: variable/variable form (finding #17)
   return $Bad;
 end

@@ -331,12 +331,39 @@ func (v *microflowValidator) checkExprFunctions(label string, expr ast.Expressio
 // `check --references` as an unresolvable attribute, so it is not re-flagged here.)
 // (ledger finding #17)
 func (v *microflowValidator) checkDivisionSlash(label string, expr ast.Expression) {
-	if exprHasSlashDivision(expr) {
+	// Two forms of `/`-as-division: a `BinaryExpr` with operator `/` (right operand
+	// is a literal or parenthesized expr, e.g. `$Dec / 2`), and the variable/
+	// variable form (`$Dec / $Dec2`) which parses as a member-access path — the
+	// visitor preserves its raw source (a SourceExpr wrapping an AttributePathExpr)
+	// precisely because the `$` on the right marks it as division, not navigation.
+	if exprHasSlashDivision(expr) || exprIsSlashDollarDivision(expr) {
 		v.addViolation("MDL045", linter.SeverityError,
 			fmt.Sprintf("%s uses '/' as a division operator, which Mendix rejects "+
 				"(CE0117 \"Error(s) in expression\") — '/' navigates associations, it does not divide", label),
 			"Use 'div' for division: `$a div $b` (integer/decimal division is always Decimal — wrap in round()/trunc() for an integer result).")
 	}
+}
+
+// slashDollarDivisionRe matches a `/` used as division with a variable right
+// operand (`$a / $b`): a slash, optional whitespace, then a `$`. A real
+// association path never has `$` after `/`, so this is an unambiguous misuse.
+var slashDollarDivisionRe = regexp.MustCompile(`/\s*\$`)
+
+// exprIsSlashDollarDivision reports the `$a / $b` division-misuse form: a
+// source-preserved AttributePathExpr whose raw source has `/` immediately
+// followed by `$`. The structural guard (inner is AttributePathExpr) avoids a
+// false positive on a `/$` sequence inside a string literal — a string-bearing
+// expression is a FunctionCallExpr, never an AttributePathExpr, and the visitor
+// never source-freezes a `/$` that lies inside a string.
+func exprIsSlashDollarDivision(expr ast.Expression) bool {
+	se, ok := expr.(*ast.SourceExpr)
+	if !ok {
+		return false
+	}
+	if _, ok := se.Expression.(*ast.AttributePathExpr); !ok {
+		return false
+	}
+	return slashDollarDivisionRe.MatchString(se.Source)
 }
 
 // exprHasSlashDivision reports whether the expression tree contains a BinaryExpr
@@ -374,14 +401,25 @@ func exprHasSlashDivision(expr ast.Expression) bool {
 // qualified name, not the tail of a 3-part enum literal).
 var xpathAssocEmptyRe = regexp.MustCompile(`(^|[^\w./])([A-Za-z_]\w*\.[A-Za-z_]\w*)\s*=\s*empty\b`)
 
+// xpathAssociationEmptyMatches returns the module-qualified association names an
+// XPath constraint compares directly to `empty` (`Ledger.Transaction_Category =
+// empty`). Shared by the microflow-retrieve check (MDL047) and the page/widget
+// datasource check. Empty result → nothing to flag.
+func xpathAssociationEmptyMatches(xpath string) []string {
+	var out []string
+	for _, m := range xpathAssocEmptyRe.FindAllStringSubmatch(xpath, -1) {
+		out = append(out, m[2])
+	}
+	return out
+}
+
 // checkXPathAssociationEmpty flags `[Module.Association = empty]` in a retrieve
 // constraint. Mendix XPath has no `= empty` test for an association — it fails
 // the build with CE0161; the nullability test is `not(Module.Association/Module.Target)`.
 // A bare attribute (`Name = empty`) is valid and is not module-qualified, so it
 // never matches. (ledger finding #25)
 func (v *microflowValidator) checkXPathAssociationEmpty(variable, xpath string) {
-	for _, m := range xpathAssocEmptyRe.FindAllStringSubmatch(xpath, -1) {
-		assoc := m[2]
+	for _, assoc := range xpathAssociationEmptyMatches(xpath) {
 		v.addViolation("MDL047", linter.SeverityError,
 			fmt.Sprintf("retrieve '$%s' constraint tests association `%s = empty`, which Mendix XPath does not support "+
 				"(CE0161 \"Error(s) in XPath constraint\") — `= empty` works on attributes, not associations", variable, assoc),
