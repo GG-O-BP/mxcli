@@ -25,5 +25,10 @@ begin
   set $Bad = $Dec / 2;                 -- MDL045: use `div`
   set $AlsoBad = ($Dec + 1) / $Dec2;   -- MDL045: use `div`
   set $VarVar = $Dec / $Dec2;          -- MDL045: variable/variable form (finding #17)
+  -- Embedded division-by-variable — the `$a / $b` part degrades to a member
+  -- path nested in a larger expression, but is still caught (finding #17 round 2):
+  set $Embed1 = $Dec / $Dec2 + 1;      -- MDL045: embedded in an addition
+  set $Embed2 = round($Dec / $Dec2);   -- MDL045: embedded in a function call
+  set $Embed3 = $Dec / $Dec2 * 100;    -- MDL045: embedded in a multiplication
   return $Bad;
 end

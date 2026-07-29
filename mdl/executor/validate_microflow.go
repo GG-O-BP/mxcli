@@ -365,9 +365,12 @@ func (v *microflowValidator) checkDivisionSlash(label string, expr ast.Expressio
 	// Two forms of `/`-as-division: a `BinaryExpr` with operator `/` (right operand
 	// is a literal or parenthesized expr, e.g. `$Dec / 2`), and the variable/
 	// variable form (`$Dec / $Dec2`) which parses as a member-access path — the
-	// visitor preserves its raw source (a SourceExpr wrapping an AttributePathExpr)
-	// precisely because the `$` on the right marks it as division, not navigation.
-	if exprHasSlashDivision(expr) || exprIsSlashDollarDivision(expr) {
+	// visitor preserves its raw source precisely because the `$` on the right
+	// marks it as division, not navigation. The `$a / $b` form is detected from
+	// the preserved source, so it is caught even when EMBEDDED in a larger
+	// expression (`$a / $b + 1`, `round($a / $b)`) where the division degrades to
+	// a member-path AttributePathExpr nested under a BinaryExpr/FunctionCallExpr.
+	if exprHasSlashDivision(expr) || exprHasSlashDollarDivision(expr) {
 		v.addViolation("MDL045", linter.SeverityError,
 			fmt.Sprintf("%s uses '/' as a division operator, which Mendix rejects "+
 				"(CE0117 \"Error(s) in expression\") — '/' navigates associations, it does not divide", label),
@@ -375,26 +378,70 @@ func (v *microflowValidator) checkDivisionSlash(label string, expr ast.Expressio
 	}
 }
 
-// slashDollarDivisionRe matches a `/` used as division with a variable right
-// operand (`$a / $b`): a slash, optional whitespace, then a `$`. A real
-// association path never has `$` after `/`, so this is an unambiguous misuse.
-var slashDollarDivisionRe = regexp.MustCompile(`/\s*\$`)
+// exprHasSlashDollarDivision reports the `$a / $b` division-misuse form: a
+// source-preserved expression whose raw source uses `/` (optionally spaced)
+// immediately before a `$` variable, OUTSIDE any string literal. A real
+// member/association path never writes `/$` — a path segment is a bare or
+// qualified name — so this is an unambiguous division misuse. Scanning the
+// preserved source (rather than requiring the SourceExpr to wrap an
+// AttributePathExpr directly) catches the division even when it is nested in a
+// larger expression: `$a / $b + 1`, `round($a / $b)`, `$a / $b * 100`. The
+// string-literal-aware scan avoids a false positive on a `/$` inside a quoted
+// literal (e.g. `'path/$x'`).
+func exprHasSlashDollarDivision(expr ast.Expression) bool {
+	switch e := expr.(type) {
+	case *ast.SourceExpr:
+		if sourceHasSlashDollarDivision(e.Source) {
+			return true
+		}
+		return exprHasSlashDollarDivision(e.Expression)
+	case *ast.BinaryExpr:
+		return exprHasSlashDollarDivision(e.Left) || exprHasSlashDollarDivision(e.Right)
+	case *ast.UnaryExpr:
+		return exprHasSlashDollarDivision(e.Operand)
+	case *ast.ParenExpr:
+		return exprHasSlashDollarDivision(e.Inner)
+	case *ast.FunctionCallExpr:
+		for _, arg := range e.Arguments {
+			if exprHasSlashDollarDivision(arg) {
+				return true
+			}
+		}
+	case *ast.IfThenElseExpr:
+		return exprHasSlashDollarDivision(e.Condition) ||
+			exprHasSlashDollarDivision(e.ThenExpr) ||
+			exprHasSlashDollarDivision(e.ElseExpr)
+	}
+	return false
+}
 
-// exprIsSlashDollarDivision reports the `$a / $b` division-misuse form: a
-// source-preserved AttributePathExpr whose raw source has `/` immediately
-// followed by `$`. The structural guard (inner is AttributePathExpr) avoids a
-// false positive on a `/$` sequence inside a string literal — a string-bearing
-// expression is a FunctionCallExpr, never an AttributePathExpr, and the visitor
-// never source-freezes a `/$` that lies inside a string.
-func exprIsSlashDollarDivision(expr ast.Expression) bool {
-	se, ok := expr.(*ast.SourceExpr)
-	if !ok {
-		return false
+// sourceHasSlashDollarDivision scans a raw expression source for a `/` used as
+// division with a variable divisor (`… / $x …`) outside any single-quoted
+// string literal. Doubled ” inside a string is a Mendix-escaped quote.
+func sourceHasSlashDollarDivision(source string) bool {
+	inStr := false
+	for i := 0; i < len(source); i++ {
+		c := source[i]
+		if c == '\'' {
+			if inStr && i+1 < len(source) && source[i+1] == '\'' {
+				i++ // skip the escaped quote pair
+				continue
+			}
+			inStr = !inStr
+			continue
+		}
+		if inStr || c != '/' {
+			continue
+		}
+		j := i + 1
+		for j < len(source) && (source[j] == ' ' || source[j] == '\t') {
+			j++
+		}
+		if j < len(source) && source[j] == '$' {
+			return true
+		}
 	}
-	if _, ok := se.Expression.(*ast.AttributePathExpr); !ok {
-		return false
-	}
-	return slashDollarDivisionRe.MatchString(se.Source)
+	return false
 }
 
 // exprHasSlashDivision reports whether the expression tree contains a BinaryExpr

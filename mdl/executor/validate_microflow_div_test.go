@@ -73,9 +73,20 @@ func TestValidateMicroflow_SlashDivision(t *testing.T) {
 		{"slash divide by variable spaced", "$Dec: Decimal, $D2: Decimal", "set $R = $Dec/$D2;", true},
 		{"slash inside function arg", "$Dec: Decimal", "set $R = round($Dec / 3);", true},
 		{"slash in return", "$Dec: Decimal", "return $Dec / 4;", true},
+		// Division-by-variable EMBEDDED in a larger expression (ledger #17 round 2):
+		// `$a / $b` degrades to a member-path AttributePathExpr nested under a
+		// BinaryExpr/FunctionCallExpr, so the structural `/`-BinaryExpr walk misses
+		// it; the source scan catches it.
+		{"embedded div then add", "$Dec: Decimal, $D2: Decimal", "set $R = $Dec / $D2 + 1;", true},
+		{"embedded add then div", "$Dec: Decimal, $D2: Decimal", "set $R = 1 + $Dec / $D2;", true},
+		{"embedded div in function", "$Dec: Decimal, $D2: Decimal", "set $R = round($Dec / $D2);", true},
+		{"embedded div then mul", "$Dec: Decimal, $D2: Decimal", "set $R = $Dec / $D2 * 100;", true},
+		{"embedded div in return", "$Dec: Decimal, $D2: Decimal", "return $Dec / $D2 + 1;", true},
 		{"div is fine", "$Dec: Decimal, $D2: Decimal", "set $R = $Dec div $D2;", false},
 		{"member path is fine", "$O: M.Order", "set $R = $O/M.Order_Cust/Name;", false},
 		{"spaced member path is fine", "$O: M.Order", "set $R = $O / M.Order_Cust / Name;", false},
+		// A `/$` sequence inside a string literal is NOT a division misuse.
+		{"slash-dollar inside string literal is fine", "$x: String", "set $R = 'path/$var here';", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
