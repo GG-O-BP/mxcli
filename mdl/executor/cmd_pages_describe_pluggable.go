@@ -1251,6 +1251,45 @@ func extractCustomWidgetPropertyTextTemplate(ctx *ExecContext, w map[string]any,
 	return ""
 }
 
+// customWidgetPropertyActionMap returns the raw Forms$*ClientAction map stored on
+// a CustomWidget property (e.g. DataGrid2 `onClick`), or nil when unset or a
+// NoAction. Unlike extractCustomWidgetPropertyAction (which formats a one-line
+// summary), this returns the action map so callers can render it with full
+// parameter mappings via renderClientActionMDL — a faithful describe round-trip.
+func customWidgetPropertyActionMap(ctx *ExecContext, w map[string]any, propertyKey string) map[string]any {
+	obj, ok := w["Object"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	// DataGrid2/Gallery keep PropertyTypes at the ObjectType level, so use the
+	// fallback form (same as the widget-slot readers).
+	propTypeKeyMap := buildPropertyTypeKeyMap(w, true)
+	for _, prop := range getBsonArrayElements(obj["Properties"]) {
+		propMap, ok := prop.(map[string]any)
+		if !ok {
+			continue
+		}
+		if propTypeKeyMap[extractBinaryID(propMap["TypePointer"])] != propertyKey {
+			continue
+		}
+		value, ok := propMap["Value"].(map[string]any)
+		if !ok {
+			continue
+		}
+		action, ok := value["Action"].(map[string]any)
+		if !ok || action == nil {
+			return nil
+		}
+		// A default/empty action serializes as NoAction — treat it as unset so the
+		// describe output stays clean.
+		if t := extractString(action["$Type"]); t == "Forms$NoAction" || t == "Pages$NoAction" {
+			return nil
+		}
+		return action
+	}
+	return nil
+}
+
 // extractCustomWidgetPropertyAction extracts an action description from a CustomWidget property.
 // Returns a formatted string like "CALL_MICROFLOW Module.Flow" or "SHOW_PAGE Module.Page".
 func extractCustomWidgetPropertyAction(ctx *ExecContext, w map[string]any, propertyKey string) string {

@@ -473,6 +473,10 @@ func outputWidgetMDLV3(ctx *ExecContext, w rawWidget, indent int) {
 			if w.Selection != "" {
 				props = append(props, fmt.Sprintf("Selection: %s", w.Selection))
 			}
+			// onClick action (ledger #67)
+			if w.OnClick != "" {
+				props = append(props, fmt.Sprintf("onClick: %s", w.OnClick))
+			}
 			// Add paging properties if non-default
 			props = appendDataGridPagingProps(props, w)
 			props = appendAppearanceProps(props, w)
