@@ -36,7 +36,7 @@ func (b *Backend) OpenWorkflowForMutation(unitID model.ID) (backend.WorkflowMuta
 // SerializeWorkflowActivity converts a domain WorkflowActivity to its raw bson.D
 // form via the codec converters (used by the ALTER WORKFLOW insert/replace paths).
 func (b *Backend) SerializeWorkflowActivity(a workflows.WorkflowActivity) (any, error) {
-	d := serializeWorkflowActivityToBSON(a)
+	d := serializeWorkflowActivityToBSON(a, b.useCallMicroflowActivityName())
 	if d == nil {
 		return nil, fmt.Errorf("SerializeWorkflowActivity: unsupported activity %T", a)
 	}
@@ -49,7 +49,7 @@ type codecWorkflowDeps struct{ b *Backend }
 var _ wfmutator.Deps = codecWorkflowDeps{}
 
 func (d codecWorkflowDeps) SerializeWorkflowActivity(a workflows.WorkflowActivity) bson.D {
-	return serializeWorkflowActivityToBSON(a)
+	return serializeWorkflowActivityToBSON(a, d.b.useCallMicroflowActivityName())
 }
 
 func (d codecWorkflowDeps) SaveUnit(unitID string, contents []byte) error {
@@ -60,11 +60,12 @@ func (d codecWorkflowDeps) SaveUnit(unitID string, contents []byte) error {
 // codec (activityToGen → Encode) and decodes the result to bson.D, so the shared
 // wfmutator can splice it into the raw workflow tree. Returns nil for unsupported
 // activity types.
-func serializeWorkflowActivityToBSON(a workflows.WorkflowActivity) bson.D {
+func serializeWorkflowActivityToBSON(a workflows.WorkflowActivity, useActivityName bool) bson.D {
 	el := activityToGen(a)
 	if el == nil {
 		return nil
 	}
+	applyCallMicroflowStorageName(el, useActivityName)
 	raw, err := (&codec.Encoder{}).Encode(el)
 	if err != nil {
 		return nil
