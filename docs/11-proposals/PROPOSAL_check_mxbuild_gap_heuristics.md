@@ -1,15 +1,60 @@
 ---
 title: check heuristics for constructs MxBuild rejects
-status: draft
+status: in-progress
 date: 2026-07-02
 ---
 
 # Proposal: `check` heuristics for constructs MxBuild rejects
 
-**Status:** Draft
-**Date:** 2026-07-02
+**Status:** In progress — Wave 1 shipped; ongoing as a standing programme (see
+[§ Implementation status](#implementation-status))
+**Date:** 2026-07-02 (updated 2026-07-29)
 **Relates to:** `PROPOSAL_expression_type_checking.md` (shares the `ModelResolver`
 resolution core — see [§ Relation to expression type checking](#relation-to-expression-type-checking))
+
+## Implementation status
+
+This proposal has become a **standing programme**: every time a real project
+reports a construct that passes `mxcli check` but `mx check`/MxBuild rejects, a
+static heuristic is added to close the gap (verified against the bundled `mx`
+where feasible). The originally-cataloged six cases:
+
+| Case | Rule | Status |
+|------|------|--------|
+| 2 — user task without a page (CE1834) | `MDL-WF01` | ✅ shipped (`validate_workflow.go`) |
+| 4 — single outcome with nested activities (CE1876) | `MDL-WF02` | ✅ shipped |
+| 1 — free-text decision outcome | `MDL-WF03` | ✅ shipped |
+| 5 — control-bar button `$currentObject` (CE1571) | `MDL-BUTTON01` | ✅ shipped (`validate_page_button_context.go`) |
+| 3 — user-task page context ≠ `System.WorkflowUserTask` (CE7412) | — | ⬜ **not yet** (needs `--references` + page-context resolution) |
+| 6 — dynamictext contentparams/content on enum/date (CE0117) | — | 🟡 **partial** — the non-String→`toString()` write path landed (RSS-reader follow-up); the standalone `--references` warn + a focused fail-open repro remain |
+
+**Ledger-driven catalog expansion (2026-07).** The `ako/mxcli-ledger` project has
+since surfaced ~10 more cases of exactly this class, each implemented on the same
+pattern (rule + `.fail.mdl` repro + `fix-issue.md` CE→rule row):
+
+| Rule | Construct → MxBuild error | Verdict |
+|------|---------------------------|---------|
+| `MDL045` | `/` used as division → CE0117 (`/` is member access; use `div`) | syntax-only |
+| `MDL046` | `dateTime()`/`dateTimeUTC()` with a non-literal arg → CE0117 | syntax-only |
+| `MDL047` | association `= empty` in a retrieve **or** widget datasource → CE0161 | syntax-only |
+| `MDL048` | `[id = <value>]` retrieve (vs the valid `[id != $obj]`) → CE0161 | syntax-only (operand-typed) |
+| `MDL049` | association-object path passed as a call argument → CE0117 | syntax-only |
+| `MDL-WIDGET13` | association traversal in a widget expression prop → CE0117 | syntax-only |
+| `MDL-WIDGET14` | a client expression in `contentparams`/`captionparams` → CE1613 | syntax-only |
+| `MDL-WIDGET15` | adjacent inline (Text/Paragraph) dynamictexts fuse | info (layout) |
+| `MDL031` (pass-through) | view pass-through string column length ≠ source → CE6770 | `--references` |
+| (assoc validate) | `create association` to/from a view entity → CE6771 | `--references` |
+
+Two more ledger cases in this class were closed by **fixing the write path** rather
+than adding a check — the MDL is structurally valid, so `check` can't see it; the
+model was being *written* wrong: navigation-list item names (CE7247/CE0495) and an
+orphaned index left by `create or modify` dropping an indexed attribute (which
+*crashed* `mx check`). These belong to the same "check ↔ build parity" mission but
+are writer fixes, not heuristics.
+
+**Standing policy:** when a new missing check is reported, implement it here (or as
+a write-path fix when the construct is valid MDL). The two remaining originally-
+cataloged gaps are **case 3 (CE7412)** and the standalone **case 6 warn**.
 
 ## Problem Statement
 
