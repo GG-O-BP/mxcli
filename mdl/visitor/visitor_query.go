@@ -708,10 +708,16 @@ func (b *Builder) ExitDescribeStatement(ctx *parser.DescribeStatementContext) {
 		return
 	}
 
-	// Handle DESCRIBE USER ROLE 'Name' (uses STRING_LITERAL)
+	// Handle DESCRIBE USER ROLE 'Name' | Name (quoted or bare — DROP accepts both
+	// too, so the two commands are consistent; FINDINGS #5).
 	if ctx.USER() != nil && ctx.ROLE() != nil {
+		roleName := ""
 		if sl := ctx.STRING_LITERAL(); sl != nil {
-			roleName := unquoteString(sl.GetText())
+			roleName = unquoteString(sl.GetText())
+		} else if iok := ctx.IdentifierOrKeyword(); iok != nil {
+			roleName = identifierOrKeywordText(iok)
+		}
+		if roleName != "" {
 			b.statements = append(b.statements, &ast.DescribeStmt{
 				ObjectType: ast.DescribeUserRole,
 				Name:       ast.QualifiedName{Module: roleName, Name: roleName},

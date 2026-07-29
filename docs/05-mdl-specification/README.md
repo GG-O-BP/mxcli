@@ -30,7 +30,7 @@ describe entity Module.EntityName;
 create persistent entity Module.Name (
   AttrName: type [not null] [unique] [default value]
 );
-alter entity Module.Name add (NewAttr: string(200));
+alter entity Module.Name add attribute NewAttr: string(200);
 drop entity Module.Name;
 
 -- Microflows

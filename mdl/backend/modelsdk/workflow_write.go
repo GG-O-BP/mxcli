@@ -18,7 +18,8 @@ func init() {
 	// for every activity and outcome $Type that can lead such a list.
 	for _, t := range []string{
 		"Workflows$SingleUserTaskActivity", "Workflows$MultiUserTaskActivity",
-		"Workflows$CallMicroflowTask", "Workflows$CallWorkflowActivity",
+		"Workflows$CallMicroflowTask", "Workflows$CallMicroflowActivity",
+		"Workflows$CallWorkflowActivity",
 		"Workflows$ExclusiveSplitActivity", "Workflows$ParallelSplitActivity",
 		"Workflows$JumpToActivity", "Workflows$WaitForTimerActivity",
 		"Workflows$WaitForNotificationActivity", "Workflows$StartWorkflowActivity",
@@ -53,10 +54,14 @@ func init() {
 			NullFields:           []string{"Annotation"},
 		})
 	}
-	codec.RegisterTypeDefaults("Workflows$CallMicroflowTask", codec.TypeDefaults{
-		MandatoryListMarkers: map[string]int32{"Outcomes": 3, "BoundaryEvents": 2, "ParameterMappings": 2},
-		NullFields:           []string{"Annotation"},
-	})
+	// Both the pre-11.9 CallMicroflowTask and the 11.9+ CallMicroflowActivity
+	// storage names share the same shape (see applyCallMicroflowStorageName).
+	for _, t := range []string{"Workflows$CallMicroflowTask", "Workflows$CallMicroflowActivity"} {
+		codec.RegisterTypeDefaults(t, codec.TypeDefaults{
+			MandatoryListMarkers: map[string]int32{"Outcomes": 3, "BoundaryEvents": 2, "ParameterMappings": 2},
+			NullFields:           []string{"Annotation"},
+		})
+	}
 	codec.RegisterTypeDefaults("Workflows$CallWorkflowActivity", codec.TypeDefaults{
 		MandatoryListMarkers: map[string]int32{"BoundaryEvents": 2, "ParameterMappings": 2},
 		NullFields:           []string{"Annotation"},
@@ -87,6 +92,42 @@ func init() {
 	})
 }
 
+// Workflow "call microflow" activity storage names. Mendix 11.9 (WOR-2802) split
+// MicroflowBasedActivity into CallMicroflowActivity + AIAgentTaskActivity, renaming
+// the on-disk $Type from the older CallMicroflowTask. Writing the pre-11.9 name to
+// an 11.9+ project makes the runtime fail to load the *entire* model with
+// "Class 'Workflows$CallMicroflowTask' could not be found" — both checkers pass, so
+// the failure only surfaces at boot (FINDINGS #39). The semantic model uses one
+// activity type; only the emitted $Type differs, so we build with the legacy name
+// and rewrite the tree here when targeting 11.9+.
+const (
+	callMicroflowTaskType     = "Workflows$CallMicroflowTask"
+	callMicroflowActivityType = "Workflows$CallMicroflowActivity"
+)
+
+// useCallMicroflowActivityName reports whether the target project is Mendix 11.9+
+// and therefore expects the CallMicroflowActivity storage name.
+func (b *Backend) useCallMicroflowActivityName() bool {
+	pv := b.ProjectVersion()
+	return pv != nil && pv.IsAtLeast(11, 9)
+}
+
+// applyCallMicroflowStorageName rewrites every CallMicroflowTask $Type in the tree
+// to the 11.9+ CallMicroflowActivity name when useActivity is set. No-op otherwise.
+func applyCallMicroflowStorageName(root element.Element, useActivity bool) {
+	if !useActivity || root == nil {
+		return
+	}
+	element.Walk(root, func(e element.Element) bool {
+		if e.TypeName() == callMicroflowTaskType {
+			if s, ok := e.(interface{ SetTypeName(string) }); ok {
+				s.SetTypeName(callMicroflowActivityType)
+			}
+		}
+		return true
+	})
+}
+
 // CreateWorkflow inserts a new Workflows$Workflow document. Mirrors the legacy
 // serializer field-for-field via direct-build helpers.
 func (b *Backend) CreateWorkflow(wf *workflows.Workflow) error {
@@ -100,7 +141,9 @@ func (b *Backend) CreateWorkflow(wf *workflows.Workflow) error {
 		wf.ID = model.ID(mmpr.GenerateID())
 	}
 	wf.TypeName = "Workflows$Workflow"
-	contents, err := (&codec.Encoder{}).Encode(workflowToGen(wf))
+	g := workflowToGen(wf)
+	applyCallMicroflowStorageName(g, b.useCallMicroflowActivityName())
+	contents, err := (&codec.Encoder{}).Encode(g)
 	if err != nil {
 		return fmt.Errorf("CreateWorkflow: encode: %w", err)
 	}
@@ -116,7 +159,9 @@ func (b *Backend) UpdateWorkflow(wf *workflows.Workflow) error {
 		return fmt.Errorf("UpdateWorkflow: not connected for writing")
 	}
 	wf.TypeName = "Workflows$Workflow"
-	contents, err := (&codec.Encoder{}).Encode(workflowToGen(wf))
+	g := workflowToGen(wf)
+	applyCallMicroflowStorageName(g, b.useCallMicroflowActivityName())
+	contents, err := (&codec.Encoder{}).Encode(g)
 	if err != nil {
 		return fmt.Errorf("UpdateWorkflow: encode: %w", err)
 	}

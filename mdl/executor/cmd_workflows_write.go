@@ -5,6 +5,7 @@ package executor
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"unicode"
 
@@ -12,6 +13,7 @@ import (
 	mdlerrors "github.com/mendixlabs/mxcli/mdl/errors"
 	"github.com/mendixlabs/mxcli/mdl/types"
 	"github.com/mendixlabs/mxcli/model"
+	"github.com/mendixlabs/mxcli/sdk/microflows"
 	"github.com/mendixlabs/mxcli/sdk/workflows"
 )
 
@@ -676,61 +678,86 @@ func autoBindActivitiesInFlow(ctx *ExecContext, activities []workflows.WorkflowA
 }
 
 // autoBindCallMicroflow resolves microflow parameters and auto-generates ParameterMappings.
-// Also ensures a default VoidConditionOutcome exists (required by Mendix runtime — CE6686).
+// Ensures default outcomes that MATCH the target microflow's return type, which the
+// Mendix 11.9+ CallMicroflowActivity requires (CE6686: "outcomes do not match the
+// configured microflow"). The pre-11.9 CallMicroflowTask tolerated a lone
+// VoidConditionOutcome regardless of return type, which is why this used to be
+// hardcoded to Void (FINDINGS #39 regression).
 func autoBindCallMicroflow(ctx *ExecContext, task *workflows.CallMicroflowTask) {
 	// Sanitize name
 	task.Name = sanitizeActivityName(task.Name)
 
-	// Auto-generate Default outcome if no outcomes specified.
-	// This must run regardless of whether parameter mappings exist,
-	// because the Mendix runtime requires a VoidConditionOutcome on
-	// every CallMicroflowTask (CE6686: "outcomes do not match").
+	// Normalize the workflow-context variable in explicit parameter mappings to the
+	// actual context parameter name ("WorkflowContext"). Mendix expressions are
+	// case-sensitive on 11.9+, so a user-written `$workflowContext` is an undefined
+	// variable → CE0117 (FINDINGS #39 regression). The pre-11.9 class did not flag it.
+	for _, pm := range task.ParameterMappings {
+		pm.Expression = normalizeWorkflowContextExpr(pm.Expression)
+	}
+
+	// Look up the target microflow — needed both for return-type-matched outcomes
+	// and for parameter auto-binding.
+	var targetMF *microflows.Microflow
+	if mfs, err := ctx.Backend.ListMicroflows(); err == nil {
+		if h, err := getHierarchy(ctx); err == nil {
+			for _, mf := range mfs {
+				if h.GetModuleName(h.FindModuleID(mf.ContainerID))+"."+mf.Name == task.Microflow {
+					targetMF = mf
+					break
+				}
+			}
+		}
+	}
+
+	// Auto-generate outcomes matching the microflow's return type when none given.
 	if len(task.Outcomes) == 0 {
-		outcome := &workflows.VoidConditionOutcome{
-			Flow: &workflows.Flow{},
-		}
-		outcome.BaseElement.ID = model.ID(types.GenerateID())
-		outcome.Flow.BaseElement.ID = model.ID(types.GenerateID())
-		task.Outcomes = append(task.Outcomes, outcome)
+		task.Outcomes = defaultCallMicroflowOutcomes(targetMF)
 	}
 
-	// Skip parameter auto-binding if already has explicit mappings
-	if len(task.ParameterMappings) > 0 {
-		return
-	}
-
-	// Look up the microflow to get its parameters
-	mfs, err := ctx.Backend.ListMicroflows()
-	if err != nil {
-		return
-	}
-
-	h, err := getHierarchy(ctx)
-	if err != nil {
-		return
-	}
-
-	for _, mf := range mfs {
-		modID := h.FindModuleID(mf.ContainerID)
-		modName := h.GetModuleName(modID)
-		qualifiedName := modName + "." + mf.Name
-		if qualifiedName != task.Microflow {
-			continue
-		}
-
-		// Found the microflow — bind parameters
-		for _, param := range mf.Parameters {
-			paramQualifiedName := qualifiedName + "." + param.Name
+	// Auto-bind parameters (context) if no explicit mappings were given.
+	if len(task.ParameterMappings) == 0 && targetMF != nil {
+		for _, param := range targetMF.Parameters {
 			mapping := &workflows.ParameterMapping{
-				Parameter:  paramQualifiedName,
+				Parameter:  task.Microflow + "." + param.Name,
 				Expression: "$WorkflowContext",
 			}
 			mapping.BaseElement.ID = model.ID(types.GenerateID())
 			task.ParameterMappings = append(task.ParameterMappings, mapping)
 		}
-		break
 	}
 }
+
+// defaultCallMicroflowOutcomes builds the default outcome set for a call-microflow
+// activity based on the target microflow's return type: Boolean → true/false
+// branches; anything else (void, entity, string, …) → a single default outcome.
+// Enumeration returns would need one outcome per value; until that is wired, they
+// fall through to the single-default form (still a Void outcome).
+func defaultCallMicroflowOutcomes(mf *microflows.Microflow) []workflows.ConditionOutcome {
+	newFlow := func() *workflows.Flow {
+		f := &workflows.Flow{}
+		f.BaseElement.ID = model.ID(types.GenerateID())
+		return f
+	}
+	if mf != nil && mf.ReturnType != nil && mf.ReturnType.GetTypeName() == "Boolean" {
+		yes := &workflows.BooleanConditionOutcome{Value: true, Flow: newFlow()}
+		yes.BaseElement.ID = model.ID(types.GenerateID())
+		no := &workflows.BooleanConditionOutcome{Value: false, Flow: newFlow()}
+		no.BaseElement.ID = model.ID(types.GenerateID())
+		return []workflows.ConditionOutcome{yes, no}
+	}
+	o := &workflows.VoidConditionOutcome{Flow: newFlow()}
+	o.BaseElement.ID = model.ID(types.GenerateID())
+	return []workflows.ConditionOutcome{o}
+}
+
+// normalizeWorkflowContextExpr rewrites a case-insensitive `$workflowContext`
+// reference to the exact context parameter name `$WorkflowContext`. In a workflow
+// the only in-scope variable is the context, so this is unambiguous.
+func normalizeWorkflowContextExpr(expr string) string {
+	return workflowContextRe.ReplaceAllString(expr, "$$WorkflowContext")
+}
+
+var workflowContextRe = regexp.MustCompile(`(?i)\$workflowcontext`)
 
 // autoBindCallWorkflow resolves workflow parameters and generates ParameterMappings.
 func autoBindCallWorkflow(ctx *ExecContext, act *workflows.CallWorkflowActivity) {

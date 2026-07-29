@@ -143,7 +143,7 @@ nonListDataType
 // The optional ON reads SQL-like: `INDEX idx_name ON (Col1, Col2)`. The bare
 // form `INDEX idx_name (Col1, Col2)` (and anonymous `INDEX (Col1)`) still parse.
 indexDefinition
-    : IDENTIFIER? ON? LPAREN indexAttributeList RPAREN
+    : (IDENTIFIER | QUOTED_IDENTIFIER)? ON? LPAREN indexAttributeList RPAREN
     ;
 
 indexAttributeList

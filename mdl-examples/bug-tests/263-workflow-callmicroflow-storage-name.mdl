@@ -1,0 +1,59 @@
+-- ============================================================================
+-- FINDINGS #39: workflow "call microflow" activity storage name (Mendix 11.9+)
+-- ============================================================================
+--
+-- Symptom: a workflow whose flow contains a "call microflow" activity was written
+-- with the on-disk $Type `Workflows$CallMicroflowTask`. Both checkers passed
+-- (`mxcli check` ✓, `mx check` → 0 errors), but on an 11.9+ project the runtime
+-- refused to load the ENTIRE model at boot:
+--
+--   Failed to load model: ... No new model classes have arrived within ten
+--   seconds, aborting model initialization
+--   (Class 'Workflows$CallMicroflowTask' could not be found).
+--
+-- Root cause: Mendix 11.9 (WOR-2802) split MicroflowBasedActivity into
+-- CallMicroflowActivity + AIAgentTaskActivity, renaming the on-disk $Type from the
+-- pre-11.9 CallMicroflowTask to CallMicroflowActivity. Evidence: the 11.6.3 modeler
+-- knows only CallMicroflowTask; the 11.10 modeler carries both (the old one marked
+-- "Removed due to code refactoring ... WOR-2802") plus a conversion routine; the
+-- 11.10+ runtime metamodel jars know only CallMicroflowActivity.
+--
+-- After fix: mxcli emits CallMicroflowActivity for projects >= 11.9 and keeps
+-- CallMicroflowTask for older projects (version-gated, mirroring the existing
+-- HasOwner→HasOwnerAttr 11.9 gate). The semantic model is unchanged; only the
+-- emitted $Type differs.
+--
+-- Follow-up regression (retest of the storage-name fix): correcting the $Type to
+-- CallMicroflowActivity exposed that the 11.9+ class also structures OUTCOMES and
+-- the parameter-mapping expression differently from the old class:
+--   * CE6686 — outcomes must MATCH the microflow's return type. A Boolean-returning
+--     microflow needs true/false BooleanConditionOutcomes, not a lone Void outcome.
+--   * CE0117 — the context variable is case-sensitive on 11.9+. The context
+--     parameter is named "WorkflowContext", so a user-written `$workflowContext`
+--     (lowercase) is undefined. mxcli now normalizes it to `$WorkflowContext`.
+--
+-- Verify (on an 11.9+ project, e.g. Mendix 11.12.1) AND on a pre-11.9 project — both
+-- must build 0 errors:
+--   mxcli exec 263-workflow-callmicroflow-storage-name.mdl -p App.mpr
+--   <mxbuild>/modeler/mx check App.mpr        -> 0 errors
+--   mxcli run --local -p App.mpr --ensure-db  -> model loads (previously died)
+-- ============================================================================
+
+create or modify entity "MyFirstModule"."Ctx" (WeekNumber: integer);
+/
+
+-- Boolean-returning microflow with an entity parameter — exercises both CE6686
+-- (return-type-matched outcomes) and CE0117 (context-variable case).
+create or modify microflow "MyFirstModule"."ACT_ApproveStep" ($Ctx: MyFirstModule.Ctx)
+returns boolean as $ok
+begin
+  return true;
+end;
+/
+
+create or modify workflow "MyFirstModule"."WF_CallMicroflowStorageName"
+  parameter $Context: MyFirstModule.Ctx
+begin
+  call microflow "MyFirstModule"."ACT_ApproveStep" with (Ctx = '$workflowContext');
+end workflow;
+/

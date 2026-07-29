@@ -846,6 +846,14 @@ func (b *MprBackend) SerializeDataSource(ds pages.DataSource) (any, error) {
 	return mpr.SerializeCustomWidgetDataSource(ds), nil
 }
 
+// useCallMicroflowActivityName reports whether the target project is Mendix 11.9+
+// and therefore expects the CallMicroflowActivity workflow storage name (see
+// sdk/mpr.renameCallMicroflowTypeBSON and FINDINGS #39).
+func (b *MprBackend) useCallMicroflowActivityName() bool {
+	pv := b.ProjectVersion()
+	return pv != nil && pv.IsAtLeast(11, 9)
+}
+
 func (b *MprBackend) SerializeWorkflowActivity(a workflows.WorkflowActivity) (any, error) {
-	return mpr.SerializeWorkflowActivity(a), nil
+	return mpr.SerializeWorkflowActivity(a, b.useCallMicroflowActivityName()), nil
 }

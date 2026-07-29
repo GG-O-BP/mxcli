@@ -1229,3 +1229,21 @@ func TestAlterWorkflow_SetActivityDueDate(t *testing.T) {
 		t.Errorf("Expected Value 'PT72H', got %q", op.Value)
 	}
 }
+
+// TestBareWorkflowParameterName guards FINDINGS #41: a workflow `with (Name = ...)`
+// param mapping must normalize to the bare, unquoted last segment, because a
+// qualified name writes a null ParameterId (unloadable model) and a quoted name is
+// looked up verbatim (CE1613). Studio Pro uses the bare name.
+func TestBareWorkflowParameterName(t *testing.T) {
+	cases := map[string]string{
+		"Timesheet":                           "Timesheet", // bare — already correct
+		`"Timesheet"`:                         "Timesheet", // quoted — strip quotes
+		"TimeReg.ACT_ApproveWeek.Timesheet":   "Timesheet", // fully qualified — last segment
+		`TimeReg.ACT_ApproveWeek."Timesheet"`: "Timesheet", // qualified + quoted last segment
+	}
+	for in, want := range cases {
+		if got := bareWorkflowParameterName(in); got != want {
+			t.Errorf("bareWorkflowParameterName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

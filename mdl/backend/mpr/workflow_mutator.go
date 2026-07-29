@@ -38,7 +38,7 @@ type mprWorkflowDeps struct{ backend *MprBackend }
 var _ wfmutator.Deps = (*mprWorkflowDeps)(nil)
 
 func (d *mprWorkflowDeps) SerializeWorkflowActivity(a workflows.WorkflowActivity) bson.D {
-	return mpr.SerializeWorkflowActivity(a)
+	return mpr.SerializeWorkflowActivity(a, d.backend.useCallMicroflowActivityName())
 }
 
 func (d *mprWorkflowDeps) SaveUnit(unitID string, contents []byte) error {

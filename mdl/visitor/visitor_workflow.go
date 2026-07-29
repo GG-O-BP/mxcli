@@ -3,6 +3,8 @@
 package visitor
 
 import (
+	"strings"
+
 	"github.com/mendixlabs/mxcli/mdl/ast"
 	"github.com/mendixlabs/mxcli/mdl/grammar/parser"
 )
@@ -562,7 +564,7 @@ func buildWorkflowCallMicroflow(ctx parser.IWorkflowCallMicroflowStmtContext) *a
 	for _, pmCtx := range cmCtx.AllWorkflowParameterMapping() {
 		pmCtx2 := pmCtx.(*parser.WorkflowParameterMappingContext)
 		mapping := ast.WorkflowParameterMappingNode{
-			Parameter:  pmCtx2.QualifiedName().GetText(),
+			Parameter:  bareWorkflowParameterName(pmCtx2.QualifiedName().GetText()),
 			Expression: unquoteString(pmCtx2.STRING_LITERAL().GetText()),
 		}
 		node.ParameterMappings = append(node.ParameterMappings, mapping)
@@ -574,6 +576,20 @@ func buildWorkflowCallMicroflow(ctx parser.IWorkflowCallMicroflowStmtContext) *a
 	}
 
 	return node
+}
+
+// bareWorkflowParameterName normalizes the name in a workflow `with (Name = ...)`
+// mapping to the bare, unquoted last segment. A workflow call-microflow/call-workflow
+// maps to the target's parameter by BARE name: a fully-qualified name
+// (Mod.Flow.Param) writes a null ParameterId and makes the runtime fail to load the
+// model, and a quoted name ("Param") is looked up verbatim → CE1613. Studio Pro uses
+// the bare name, and this is the one place MDL's "always quote identifiers" habit is
+// actively wrong — so accept all three spellings and normalize (FINDINGS #41).
+func bareWorkflowParameterName(raw string) string {
+	if i := strings.LastIndex(raw, "."); i >= 0 {
+		raw = raw[i+1:]
+	}
+	return unquoteIdentifier(strings.TrimSpace(raw))
 }
 
 // buildWorkflowCallWorkflow builds a WorkflowCallWorkflowNode.
@@ -591,7 +607,7 @@ func buildWorkflowCallWorkflow(ctx parser.IWorkflowCallWorkflowStmtContext) *ast
 	for _, pmCtx := range cwCtx.AllWorkflowParameterMapping() {
 		pmCtx2 := pmCtx.(*parser.WorkflowParameterMappingContext)
 		mapping := ast.WorkflowParameterMappingNode{
-			Parameter:  pmCtx2.QualifiedName().GetText(),
+			Parameter:  bareWorkflowParameterName(pmCtx2.QualifiedName().GetText()),
 			Expression: unquoteString(pmCtx2.STRING_LITERAL().GetText()),
 		}
 		node.ParameterMappings = append(node.ParameterMappings, mapping)

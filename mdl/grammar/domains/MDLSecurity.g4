@@ -30,7 +30,7 @@ alterUserRoleStatement
     ;
 
 dropUserRoleStatement
-    : DROP USER ROLE identifierOrKeyword
+    : DROP USER ROLE (identifierOrKeyword | STRING_LITERAL)
     ;
 
 grantEntityAccessStatement

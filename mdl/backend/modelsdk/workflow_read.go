@@ -119,11 +119,13 @@ func workflowActivityFromGen(el element.Element) workflows.WorkflowActivity {
 		t := &workflows.CallMicroflowTask{Microflow: a.MicroflowQualifiedName()}
 		setWfBase(&t.BaseWorkflowActivity, a.ID(), a.Name(), a.Caption(), a.Annotation(), "Workflows$CallMicroflowTask")
 		t.Outcomes = conditionOutcomesFromGen(a.OutcomesItems())
+		t.ParameterMappings = microflowParamMappingsFromGen(a.ParameterMappingsItems())
 		return t
 	case *genWf.CallMicroflowActivity:
 		t := &workflows.CallMicroflowTask{Microflow: a.MicroflowQualifiedName()}
 		setWfBase(&t.BaseWorkflowActivity, a.ID(), a.Name(), a.Caption(), a.Annotation(), "Workflows$CallMicroflowActivity")
 		t.Outcomes = conditionOutcomesFromGen(a.OutcomesItems())
+		t.ParameterMappings = microflowParamMappingsFromGen(a.ParameterMappingsItems())
 		return t
 	case *genWf.CallWorkflowActivity:
 		t := &workflows.CallWorkflowActivity{
@@ -233,6 +235,27 @@ func userTaskOutcomesFromGen(items []element.Element) []*workflows.UserTaskOutco
 
 // conditionOutcomesFromGen converts gen condition outcomes to semantic ones,
 // mirroring the legacy parseConditionOutcomes dispatch.
+// microflowParamMappingsFromGen reads a call-microflow activity's parameter
+// mappings back into the semantic model. Without this, DESCRIBE WORKFLOW dropped
+// the `with (...)` clause even though it was stored — a describe→drop→exec cycle
+// silently lost the mapping (FINDINGS #42).
+func microflowParamMappingsFromGen(items []element.Element) []*workflows.ParameterMapping {
+	var out []*workflows.ParameterMapping
+	for _, el := range items {
+		pm, ok := el.(*genWf.MicroflowCallParameterMapping)
+		if !ok {
+			continue
+		}
+		m := &workflows.ParameterMapping{
+			Parameter:  pm.ParameterQualifiedName(),
+			Expression: pm.Expression(),
+		}
+		m.ID = model.ID(pm.ID())
+		out = append(out, m)
+	}
+	return out
+}
+
 func conditionOutcomesFromGen(items []element.Element) []workflows.ConditionOutcome {
 	var out []workflows.ConditionOutcome
 	for _, el := range items {
