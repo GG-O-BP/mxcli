@@ -14,6 +14,34 @@ import (
 // returned "" for every real query. That made `check --references` both
 // false-positive ("could not parse select clause from OQL query") and silently
 // skip all OQL type validation. Bug 9b.
+// TestPassthroughStringLengthMismatch guards ledger finding #36: a pass-through
+// view-entity string column must declare the SAME length as its source
+// attribute, or Mendix fails the build with CE6770 "View Entity out of sync".
+func TestPassthroughStringLengthMismatch(t *testing.T) {
+	str := func(n int) ast.DataType { return ast.DataType{Kind: ast.TypeString, Length: n} }
+	cases := []struct {
+		name       string
+		declared   ast.DataType
+		inferred   ast.DataType
+		sourceAttr string
+		want       bool
+	}{
+		{"unbounded vs string(100) source", str(0), str(100), "Name", true},
+		{"string(50) vs string(100) source", str(50), str(100), "Name", true},
+		{"string(200) vs string(100) source", str(200), str(100), "Name", true},
+		{"exact match", str(100), str(100), "Name", false},
+		{"not a pass-through (aggregate/derived)", str(0), str(200), "", false},
+		{"non-string pass-through ignored", ast.DataType{Kind: ast.TypeInteger}, ast.DataType{Kind: ast.TypeInteger}, "Age", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := passthroughStringLengthMismatch(c.declared, c.inferred, c.sourceAttr); got != c.want {
+				t.Errorf("passthroughStringLengthMismatch = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
 func TestExtractSelectClause(t *testing.T) {
 	cases := []struct {
 		name string
