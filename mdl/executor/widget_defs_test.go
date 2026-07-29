@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/mendixlabs/mxcli/mdl/backend"
+	"github.com/mendixlabs/mxcli/sdk/pages"
 	"github.com/mendixlabs/mxcli/sdk/widgets/mpk"
 )
 
@@ -672,6 +673,38 @@ func TestApplyColumnHeaderFallback(t *testing.T) {
 	applyColumnHeaderFallback(spec4)
 	if len(spec4.Properties) != 2 || spec4.Properties[1].TextTemplate != "BareName" {
 		t.Errorf("Case 4: fallback for unqualified path = %v", spec4.Properties)
+	}
+
+	// Case 5 (ledger #54): an explicit empty caption (`Caption: ''`) reaches the
+	// engine as a texttemplate header with empty text and no params. Studio Pro
+	// rejects an empty column header with CE0463, so it must be treated like an
+	// absent one — filled IN PLACE with the attribute leaf, not left empty and
+	// not duplicated.
+	spec5 := &backend.ObjectListItemSpec{
+		Properties: []backend.ObjectListItemProperty{
+			{PropertyKey: "header", Operation: "texttemplate", TextTemplate: ""},
+			{PropertyKey: "attribute", Operation: "attribute", AttributePath: "Mod.Ent.Amount"},
+		},
+	}
+	applyColumnHeaderFallback(spec5)
+	if len(spec5.Properties) != 2 {
+		t.Fatalf("Case 5 (empty caption): expected 2 properties (no duplicate), got %d", len(spec5.Properties))
+	}
+	if h := spec5.Properties[0]; h.PropertyKey != "header" || h.Operation != "texttemplate" || h.TextTemplate != "Amount" {
+		t.Errorf("Case 5: empty header not filled in place: %+v, want TextTemplate=Amount", spec5.Properties[0])
+	}
+
+	// Case 6: a template header WITH params (e.g. Caption: '{1}') is NOT empty —
+	// it must be left untouched even though its literal text may be blank.
+	spec6 := &backend.ObjectListItemSpec{
+		Properties: []backend.ObjectListItemProperty{
+			{PropertyKey: "header", Operation: "texttemplate", TextTemplate: "", Parameters: []*pages.ClientTemplateParameter{{}}},
+			{PropertyKey: "attribute", Operation: "attribute", AttributePath: "Mod.Ent.Amount"},
+		},
+	}
+	applyColumnHeaderFallback(spec6)
+	if spec6.Properties[0].TextTemplate != "" {
+		t.Errorf("Case 6: param-bearing header must not be overwritten, got TextTemplate=%q", spec6.Properties[0].TextTemplate)
 	}
 }
 

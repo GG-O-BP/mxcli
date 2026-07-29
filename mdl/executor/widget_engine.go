@@ -1143,17 +1143,26 @@ func (e *PluggableWidgetEngine) buildObjectListItem(mapping *ObjectListMapping, 
 // header slot is genuinely empty, so it's safe to call for any object-list
 // item kind.
 func applyColumnHeaderFallback(spec *backend.ObjectListItemSpec) {
-	var hasHeader bool
+	headerIdx := -1
+	headerEmpty := false
 	var attrPath string
-	for _, p := range spec.Properties {
+	for i, p := range spec.Properties {
 		switch p.PropertyKey {
 		case "header":
-			hasHeader = true
+			headerIdx = i
+			// An explicit `Caption: ''` reaches here as a texttemplate with no
+			// text and no params. Studio Pro rejects an empty column header with
+			// CE0463 "widget definition changed" (ledger #54) — the same failure
+			// an absent header would cause without this fallback. Treat empty as
+			// absent so the attribute-name default applies either way.
+			headerEmpty = p.Operation == "texttemplate" && p.TextTemplate == "" && len(p.Parameters) == 0
 		case "attribute":
 			attrPath = p.AttributePath
 		}
 	}
-	if hasHeader || attrPath == "" {
+	// A non-empty header needs nothing; a header we can't derive (no bound
+	// attribute — e.g. an action/custom-content column) is left untouched.
+	if attrPath == "" || (headerIdx >= 0 && !headerEmpty) {
 		return
 	}
 	// Extract the leaf attribute name from a fully-qualified path
@@ -1161,6 +1170,13 @@ func applyColumnHeaderFallback(spec *backend.ObjectListItemSpec) {
 	attrName := attrPath
 	if idx := strings.LastIndex(attrName, "."); idx >= 0 {
 		attrName = attrName[idx+1:]
+	}
+	if headerIdx >= 0 {
+		// Fill the empty header in place rather than appending a duplicate.
+		spec.Properties[headerIdx].Operation = "texttemplate"
+		spec.Properties[headerIdx].TextTemplate = attrName
+		spec.Properties[headerIdx].EntityContext = ""
+		return
 	}
 	spec.Properties = append(spec.Properties, backend.ObjectListItemProperty{
 		PropertyKey:   "header",
