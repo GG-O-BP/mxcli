@@ -4,6 +4,7 @@ package executor
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -220,6 +221,9 @@ func alterSettings(ctx *ExecContext, stmt *ast.AlterSettingsStmt) error {
 			valStr := settingsValueToString(val)
 			switch key {
 			case "DefaultLanguageCode":
+				if err := validateLanguageCode(ps.Language, valStr); err != nil {
+					return err
+				}
 				ps.Language.DefaultLanguageCode = valStr
 			default:
 				return mdlerrors.NewUnsupported("unknown language setting: " + key)
@@ -265,6 +269,29 @@ func alterSettings(ctx *ExecContext, stmt *ast.AlterSettingsStmt) error {
 
 	fmt.Fprintf(ctx.Output, "Updated %s settings\n", section)
 	return nil
+}
+
+// validateLanguageCode rejects a DefaultLanguageCode that is not one of the
+// project's configured languages. Mendix has no such guard: `alter settings
+// LANGUAGE` would accept e.g. 'nl_NL' on an en_US-only project, the write would
+// report success, and the *next* `mx check` would die with an unhandled
+// NullReferenceException rather than a model error (FINDINGS #6). Skipped when the
+// project's language list is empty (unavailable) to avoid false rejections.
+func validateLanguageCode(ls *model.LanguageSettings, code string) error {
+	if ls == nil || len(ls.Languages) == 0 {
+		return nil
+	}
+	avail := make([]string, 0, len(ls.Languages))
+	for _, l := range ls.Languages {
+		if l.Code == code {
+			return nil
+		}
+		avail = append(avail, l.Code)
+	}
+	sort.Strings(avail)
+	return mdlerrors.NewValidationf(
+		"language %q is not configured in this project (available: %s) — add it in Studio Pro (Project ▸ Settings ▸ Languages) before making it the default",
+		code, strings.Join(avail, ", "))
 }
 
 func alterSettingsConfiguration(ctx *ExecContext, ps *model.ProjectSettings, stmt *ast.AlterSettingsStmt) error {
