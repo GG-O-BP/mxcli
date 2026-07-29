@@ -25,7 +25,7 @@ where feasible). The originally-cataloged six cases:
 | 4 — single outcome with nested activities (CE1876) | `MDL-WF02` | ✅ shipped |
 | 1 — free-text decision outcome | `MDL-WF03` | ✅ shipped |
 | 5 — control-bar button `$currentObject` (CE1571) | `MDL-BUTTON01` | ✅ shipped (`validate_page_button_context.go`) |
-| 3 — user-task page context ≠ `System.WorkflowUserTask` (CE7412) | — | ⬜ **not yet** (needs `--references` + page-context resolution) |
+| 3 — user-task page context ≠ `System.WorkflowUserTask` (CE7412) | — | ⬜ **deferred** — needs `--references` + page-context resolution, and is FP-prone (WorkflowUserTask specializations, snippet/microflow-sourced dataviews). No current test app exercises workflows, so the CE7412 trigger and the FP boundary can't be verified against `mx` yet. Pick up when a workflow app enters the test rotation. |
 | 6 — dynamictext contentparams/content on enum/date (CE0117) | — | 🟡 **partial** — the non-String→`toString()` write path landed (RSS-reader follow-up); the standalone `--references` warn + a focused fail-open repro remain |
 
 **Ledger-driven catalog expansion (2026-07).** The `ako/mxcli-ledger` project has
