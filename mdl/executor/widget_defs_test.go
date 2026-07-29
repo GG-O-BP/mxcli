@@ -140,11 +140,12 @@ func TestGenerateDefJSON_SkipsComplexTypes(t *testing.T) {
 	def := GenerateDefJSON(mpkDef, "COMPLEX")
 
 	// textTemplate now always yields a mapping (so captions like Badge `value`
-	// are authorable); the other complex types (action/expression/icon/non-list
-	// object) are still skipped. So exactly one mapping — the texttemplate — is
-	// expected.
+	// are authorable); expression/icon/non-list object are skipped. An `action`
+	// property only maps when its key is MDL-authorable (onClick/onChange) — here
+	// the key is `myAction`, so it is skipped too. So exactly one mapping — the
+	// texttemplate — is expected.
 	if len(def.PropertyMappings) != 1 {
-		t.Fatalf("PropertyMappings count = %d, want 1 (only the texttemplate maps; action/expression/icon/object skipped)", len(def.PropertyMappings))
+		t.Fatalf("PropertyMappings count = %d, want 1 (only the texttemplate maps; unnamed action/expression/icon/object skipped)", len(def.PropertyMappings))
 	}
 	tt := def.PropertyMappings[0]
 	if tt.PropertyKey != "myTemplate" || tt.Operation != "texttemplate" {
@@ -176,6 +177,33 @@ func TestGenerateDefJSON_TextTemplatesAlwaysMapped(t *testing.T) {
 	}
 	if m.Operation != "texttemplate" || m.Source != "TextTemplate" {
 		t.Errorf("value mapping = {op=%s src=%s}, want {texttemplate TextTemplate}", m.Operation, m.Source)
+	}
+}
+
+// TestGenerateDefJSON_ActionMapping covers ledger #67: an `onClick` action
+// property must yield an `action` PropertyMapping (source OnClick) so the writer
+// serializes the client action instead of silently dropping it. A non-authorable
+// action key (e.g. DataGrid2 `onSelectionChange`) has no MDL surface yet, so no
+// mapping is emitted for it.
+func TestGenerateDefJSON_ActionMapping(t *testing.T) {
+	mpkDef := &mpk.WidgetDefinition{
+		ID:   "com.mendix.widget.web.datagrid.Datagrid",
+		Name: "Datagrid",
+		Properties: []mpk.PropertyDef{
+			{Key: "onClick", Type: "action"},
+			{Key: "onSelectionChange", Type: "action"},
+		},
+	}
+	def := GenerateDefJSON(mpkDef, "DATAGRID")
+	onClick := findMapping(def.PropertyMappings, "onClick")
+	if onClick == nil {
+		t.Fatal("onClick (action) has no mapping — the action would be silently dropped (#67)")
+	}
+	if onClick.Operation != "action" || onClick.Source != "OnClick" {
+		t.Errorf("onClick mapping = {op=%s src=%s}, want {action OnClick}", onClick.Operation, onClick.Source)
+	}
+	if m := findMapping(def.PropertyMappings, "onSelectionChange"); m != nil {
+		t.Errorf("onSelectionChange has no MDL surface yet; expected no mapping, got {op=%s src=%s}", m.Operation, m.Source)
 	}
 }
 

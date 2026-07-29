@@ -70,7 +70,12 @@ const defaultSlotContainer = "template"
 //	    editorConfig-extracted rules instead of overwriting, so compound/ternary
 //	    guards the static extractor skips (e.g. Timeline title/description hidden
 //	    when customVisualization) still null their hidden textTemplates (CE0463).
-const WidgetDefGeneratorVersion = 12
+//	13 — emit an `action` PropertyMapping for `type="action"` properties that MDL
+//	    can author (`onClick`→the widget Action, `onChange`→OnChange). Previously
+//	    no action operation was ever generated, so the writer had no mapping and
+//	    silently dropped a widget-level action (e.g. DataGrid2 `onClick`). Bump
+//	    forces existing projects to regenerate their defs with the action mapping.
+const WidgetDefGeneratorVersion = 13
 
 // WidgetDefinition describes how to construct a pluggable widget from MDL syntax.
 // Loaded from embedded JSON definition files (*.def.json).
@@ -697,6 +702,15 @@ func (e *PluggableWidgetEngine) resolveMapping(mapping PropertyMapping, w *ast.W
 
 	case "OnClick":
 		if action := w.GetAction(); action != nil {
+			act, err := e.pageBuilder.buildClientActionV3(action)
+			if err != nil {
+				return nil, mdlerrors.NewBackend("build action", err)
+			}
+			ctx.Action = act
+		}
+
+	case "OnChange":
+		if action := w.GetOnChange(); action != nil {
 			act, err := e.pageBuilder.buildClientActionV3(action)
 			if err != nil {
 				return nil, mdlerrors.NewBackend("build action", err)
