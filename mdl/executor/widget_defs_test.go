@@ -207,6 +207,39 @@ func TestGenerateDefJSON_ActionMapping(t *testing.T) {
 	}
 }
 
+// TestGenerateDefJSON_KnownPropertiesUnmapped covers the general #67-class guard:
+// every declared property with NO mapping in the generated def is recorded in
+// KnownProperties, so the checker warns "recognized but not persisted" rather
+// than silently dropping it or falsely rejecting it as unknown. A mapped property
+// must NOT appear there.
+func TestGenerateDefJSON_KnownPropertiesUnmapped(t *testing.T) {
+	mpkDef := &mpk.WidgetDefinition{
+		ID:   "com.mendix.widget.web.datagrid.Datagrid",
+		Name: "Datagrid",
+		Properties: []mpk.PropertyDef{
+			{Key: "onClick", Type: "action"},           // mapped (action → OnClick)
+			{Key: "pageSize", Type: "integer"},         // mapped (primitive)
+			{Key: "onSelectionChange", Type: "action"}, // unmapped action slot
+			{Key: "rowClass", Type: "expression"},      // unmapped (expression not handled)
+		},
+	}
+	def := GenerateDefJSON(mpkDef, "DATAGRID")
+	known := make(map[string]bool)
+	for _, k := range def.KnownProperties {
+		known[k] = true
+	}
+	for _, want := range []string{"onSelectionChange", "rowClass"} {
+		if !known[want] {
+			t.Errorf("KnownProperties missing unmapped property %q — the checker can't warn it will be dropped", want)
+		}
+	}
+	for _, notWant := range []string{"onClick", "pageSize"} {
+		if known[notWant] {
+			t.Errorf("KnownProperties should not list mapped property %q", notWant)
+		}
+	}
+}
+
 func TestGenerateDefJSON_AssociationAfterDataSource(t *testing.T) {
 	// Association mappings require entityContext from a prior DataSource mapping.
 	// GenerateDefJSON must order datasource before association regardless of MPK order.

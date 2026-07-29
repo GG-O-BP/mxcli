@@ -342,6 +342,52 @@ func GenerateDefJSON(mpkDef *mpk.WidgetDefinition, mdlName string) *WidgetDefini
 	}
 	def.PropertyMappings = append(def.PropertyMappings, assocMappings...)
 
+	// KnownProperties: every property the widget's definition (.mpk) declares that
+	// has NO mapping in the generated def — i.e. a real property mxcli does not
+	// persist. Computed purely from the two artifacts mxcli already has (the .mpk
+	// property list and the generated mappings), with no per-widget knowledge. The
+	// checker uses this to WARN "recognized but not persisted; the value will be
+	// dropped" instead of silently discarding it or falsely rejecting it as an
+	// unknown property. This is the general guard for the class behind ledger #67
+	// (a type the generator doesn't map — e.g. `expression`, `icon`, or an action
+	// slot with no MDL surface); the specific fix for that finding is the `action`
+	// mapping above.
+	mapped := make(map[string]bool)
+	markMapped := func(key string) {
+		if key != "" {
+			mapped[strings.ToLower(key)] = true
+		}
+	}
+	for _, m := range def.PropertyMappings {
+		markMapped(m.PropertyKey)
+		for _, a := range m.MdlAliases {
+			markMapped(a)
+		}
+	}
+	for _, cs := range def.ChildSlots {
+		markMapped(cs.PropertyKey)
+	}
+	for _, ol := range def.ObjectLists {
+		markMapped(ol.PropertyKey)
+	}
+	for _, m := range def.Modes {
+		for _, pm := range m.PropertyMappings {
+			markMapped(pm.PropertyKey)
+			for _, a := range pm.MdlAliases {
+				markMapped(a)
+			}
+		}
+		for _, cs := range m.ChildSlots {
+			markMapped(cs.PropertyKey)
+		}
+	}
+	for _, p := range mpkDef.Properties {
+		if p.Key == "" || mapped[strings.ToLower(p.Key)] {
+			continue
+		}
+		def.KnownProperties = append(def.KnownProperties, p.Key)
+	}
+
 	def.PropertyVisibility = widgetVisibilityRules[mpkDef.ID]
 
 	return def

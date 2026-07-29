@@ -75,7 +75,11 @@ const defaultSlotContainer = "template"
 //	    no action operation was ever generated, so the writer had no mapping and
 //	    silently dropped a widget-level action (e.g. DataGrid2 `onClick`). Bump
 //	    forces existing projects to regenerate their defs with the action mapping.
-const WidgetDefGeneratorVersion = 13
+//	14 — populate KnownProperties with every declared property that has no mapping
+//	    in the generated def, so the checker warns "recognized but not persisted"
+//	    instead of silently dropping or falsely rejecting it (general guard for the
+//	    ledger #67 class). Bump forces regeneration to carry the new field.
+const WidgetDefGeneratorVersion = 14
 
 // WidgetDefinition describes how to construct a pluggable widget from MDL syntax.
 // Loaded from embedded JSON definition files (*.def.json).
