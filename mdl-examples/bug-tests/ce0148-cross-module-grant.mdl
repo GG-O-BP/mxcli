@@ -24,7 +24,8 @@ create module role Alpha.User    description 'Alpha module user';
 create module role Beta.Manager   description 'Beta module manager';
 
 create page Alpha.Overview (
-  title: 'Overview'
+  title: 'Overview',
+  layout: Atlas_Core.Atlas_Default
 ) {
   layoutgrid g1 {
     row r1 {
