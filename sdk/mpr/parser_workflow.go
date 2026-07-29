@@ -183,6 +183,7 @@ func init() {
 		"Workflows$SingleUserTaskActivity":      func(r map[string]any) workflows.WorkflowActivity { return parseUserTask(r) },
 		"Workflows$MultiUserTaskActivity":       func(r map[string]any) workflows.WorkflowActivity { return parseMultiUserTask(r) },
 		"Workflows$CallMicroflowTask":           func(r map[string]any) workflows.WorkflowActivity { return parseCallMicroflowTask(r) },
+		"Workflows$CallMicroflowActivity":       func(r map[string]any) workflows.WorkflowActivity { return parseCallMicroflowTask(r) },
 		"Workflows$CallWorkflowActivity":        func(r map[string]any) workflows.WorkflowActivity { return parseCallWorkflowActivity(r) },
 		"Workflows$ExclusiveSplitActivity":      func(r map[string]any) workflows.WorkflowActivity { return parseExclusiveSplitActivity(r) },
 		"Workflows$ParallelSplitActivity":       func(r map[string]any) workflows.WorkflowActivity { return parseParallelSplitActivity(r) },
