@@ -1,0 +1,55 @@
+-- ============================================================================
+-- Ledger finding #54 (round 2): custom-content column with empty/absent caption
+-- ============================================================================
+--
+-- Symptom (after the first #54 fix): the attribute-bound column fallback worked,
+-- but a CUSTOM-CONTENT column (a column with child widgets / an actions button
+-- and NO bound attribute) with an empty `Caption: ''` — or no caption at all —
+-- still failed `mx check` with CE0463. A custom-content column requires a
+-- non-empty header, and the first fix had no attribute name to fall back to.
+--
+-- After fix: the header falls back to the COLUMN'S OWN NAME when there is no
+-- bound attribute. The fallback is gated on the item template having a `header`
+-- slot, so header-less object-list items (chart series, accordion groups) are
+-- never given a spurious header.
+--
+-- Verified: `mx check` → 0 errors on Mendix 11.12.1 for both the empty-caption
+-- and no-caption custom-content columns (previously CE0463).
+--
+-- NOTE: requires the project's generated widget defs (`mxcli widget init`), so
+-- this is exercised via exec/mx-check, not just syntax check.
+
+create module L54c;
+
+create entity L54c.Thing (
+  Name: string(100)
+);
+
+create microflow L54c.RowAction (
+  $Thing: L54c.Thing
+)
+returns Boolean
+begin
+  return true;
+end;
+
+create or replace page L54c.Grid (
+  Title: 'Grid',
+  Layout: Atlas_Core.Atlas_Default
+) {
+  pluggablewidget 'com.mendix.widget.web.datagrid.Datagrid' dg (
+    DataSource: database from L54c.Thing
+  ) {
+    column colName (Attribute: Name, Caption: 'Name')
+    -- Custom-content column, empty caption → header falls back to the column name
+    column colActionsEmpty (Caption: '') {
+      actionbutton btnA (Caption: 'Go', Action: microflow L54c.RowAction(Thing: $currentObject))
+    }
+    -- Custom-content column, no caption → header falls back to the column name
+    column colActionsBare {
+      actionbutton btnB (Caption: 'Go2', Action: microflow L54c.RowAction(Thing: $currentObject))
+    }
+  }
+}
+
+grant view on page L54c.Grid to L54c.User;

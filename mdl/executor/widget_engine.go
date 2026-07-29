@@ -1061,12 +1061,21 @@ func (e *PluggableWidgetEngine) buildObjectListItem(mapping *ObjectListMapping, 
 		spec.Properties = append(spec.Properties, prop)
 	}
 
-	// DataGrid column header convention: when the user provides no Caption
-	// but does bind an Attribute, fall back to the attribute name as the
-	// header text. Mirrors buildDataGrid2ColumnObject in datagrid_builder.go
-	// (line 491-494). Without this, an attribute column with no Caption
-	// emits an empty header that Studio Pro flags as definition drift.
-	applyColumnHeaderFallback(&spec)
+	// DataGrid column header convention: when the user provides no Caption,
+	// fall back to the bound attribute name — or, for a custom-content column
+	// with no attribute, the column's own name. Mirrors buildDataGrid2ColumnObject
+	// in datagrid_builder.go. Without this, an empty/absent column header trips
+	// Studio Pro's CE0463 (ledger #54). Only applies to items whose template has
+	// a `header` slot (datagrid columns), never to header-less object-list items
+	// like chart series.
+	hasHeaderSlot := false
+	for _, ip := range mapping.ItemProperties {
+		if strings.EqualFold(ip.PropertyKey, "header") {
+			hasHeaderSlot = true
+			break
+		}
+	}
+	applyColumnHeaderFallback(&spec, child.Name, hasHeaderSlot)
 
 	// DataGrid column sortable convention: attribute-less columns (typical
 	// "Actions" custom-content columns) default to sortable=false, since
@@ -1160,7 +1169,13 @@ func (e *PluggableWidgetEngine) buildObjectListItem(mapping *ObjectListMapping, 
 // in datagrid_builder.go. The check is conservative: only fires when the
 // header slot is genuinely empty, so it's safe to call for any object-list
 // item kind.
-func applyColumnHeaderFallback(spec *backend.ObjectListItemSpec) {
+func applyColumnHeaderFallback(spec *backend.ObjectListItemSpec, columnName string, hasHeaderSlot bool) {
+	// Only items whose template has a `header` slot (datagrid columns) get a
+	// header fallback; header-less object-list items (chart series, accordion
+	// groups) are left untouched.
+	if !hasHeaderSlot {
+		return
+	}
 	headerIdx := -1
 	headerEmpty := false
 	var attrPath string
@@ -1172,34 +1187,42 @@ func applyColumnHeaderFallback(spec *backend.ObjectListItemSpec) {
 			// text and no params. Studio Pro rejects an empty column header with
 			// CE0463 "widget definition changed" (ledger #54) — the same failure
 			// an absent header would cause without this fallback. Treat empty as
-			// absent so the attribute-name default applies either way.
+			// absent so the fallback applies either way.
 			headerEmpty = p.Operation == "texttemplate" && p.TextTemplate == "" && len(p.Parameters) == 0
 		case "attribute":
 			attrPath = p.AttributePath
 		}
 	}
-	// A non-empty header needs nothing; a header we can't derive (no bound
-	// attribute — e.g. an action/custom-content column) is left untouched.
-	if attrPath == "" || (headerIdx >= 0 && !headerEmpty) {
+	// A present, non-empty header needs nothing.
+	if headerIdx >= 0 && !headerEmpty {
 		return
 	}
-	// Extract the leaf attribute name from a fully-qualified path
-	// (Module.Entity.Attr → Attr).
-	attrName := attrPath
-	if idx := strings.LastIndex(attrName, "."); idx >= 0 {
-		attrName = attrName[idx+1:]
+	// Fallback header text: the bound attribute's leaf name (Module.Entity.Attr →
+	// Attr), or — for a custom-content / action column with no attribute — the
+	// column's own name. Every datagrid column needs a NON-empty header; an empty
+	// or absent one is CE0463 (ledger #54), and a custom-content column has no
+	// attribute to derive one from, so the column name is the sensible default.
+	fallback := attrPath
+	if idx := strings.LastIndex(fallback, "."); idx >= 0 {
+		fallback = fallback[idx+1:]
+	}
+	if fallback == "" {
+		fallback = columnName
+	}
+	if fallback == "" {
+		return
 	}
 	if headerIdx >= 0 {
 		// Fill the empty header in place rather than appending a duplicate.
 		spec.Properties[headerIdx].Operation = "texttemplate"
-		spec.Properties[headerIdx].TextTemplate = attrName
+		spec.Properties[headerIdx].TextTemplate = fallback
 		spec.Properties[headerIdx].EntityContext = ""
 		return
 	}
 	spec.Properties = append(spec.Properties, backend.ObjectListItemProperty{
 		PropertyKey:   "header",
 		Operation:     "texttemplate",
-		TextTemplate:  attrName,
+		TextTemplate:  fallback,
 		EntityContext: "", // literal text — no template params to resolve
 	})
 }
