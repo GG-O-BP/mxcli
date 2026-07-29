@@ -707,12 +707,23 @@ func buildSetStatement(ctx parser.ISetStatementContext) ast.MicroflowStatement {
 				InputVariable:  extractVariableName(funcCall.Arguments, 0),
 			}
 		case "FIND":
-			return &ast.ListOperationStmt{
-				OutputVariable: targetVar,
-				Operation:      ast.ListOpFind,
-				InputVariable:  extractVariableName(funcCall.Arguments, 0),
-				Condition:      getArgumentExpression(funcCall.Arguments, 1),
+			// `find` is overloaded: the LIST operation find(list, condition) — which
+			// filters a list by a boolean condition — and the STRING function
+			// find(haystack, needle) → the index of a substring. A STRING-LITERAL
+			// second argument is unambiguously the string function (you never filter
+			// a list by a bare string literal); it must stay a value expression, not
+			// a lossy List operation activity whose output variable collides
+			// (CE0111). Ledger #63. When both arguments are plain variables the kind
+			// is ambiguous here; the flow builder disambiguates String-typed inputs.
+			if !isStringLiteralArg(funcCall.Arguments, 1) {
+				return &ast.ListOperationStmt{
+					OutputVariable: targetVar,
+					Operation:      ast.ListOpFind,
+					InputVariable:  extractVariableName(funcCall.Arguments, 0),
+					Condition:      getArgumentExpression(funcCall.Arguments, 1),
+				}
 			}
+			// Falls through to the default MfSetStmt (string find expression).
 		case "FILTER":
 			return &ast.ListOperationStmt{
 				OutputVariable: targetVar,
@@ -871,6 +882,17 @@ func isPlainVariableArg(args []ast.Expression, index int) bool {
 		return true
 	}
 	return false
+}
+
+// isStringLiteralArg reports whether the argument at the given index is a string
+// literal — used to detect the string form of an overloaded function (e.g.
+// find(haystack, 'needle')) that must not become a list operation.
+func isStringLiteralArg(args []ast.Expression, index int) bool {
+	if index >= len(args) {
+		return false
+	}
+	lit, ok := args[index].(*ast.LiteralExpr)
+	return ok && lit.Kind == ast.LiteralString
 }
 
 // getArgumentExpression returns the expression at the given index, or nil if not present.

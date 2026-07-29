@@ -1066,23 +1066,40 @@ func entityQualifiedNameFromAttribute(attrPath string) string {
 
 // addListOperationAction creates list operations like HEAD, TAIL, FIND, etc.
 func (fb *flowBuilder) addListOperationAction(s *ast.ListOperationStmt) model.ID {
-	// `contains` is overloaded: contains(list, object) is a list operation, but
-	// contains(haystack, needle) over strings is the String function. When the
-	// input is a declared String variable, Mendix requires a Change Variable
-	// action carrying the `contains(...)` expression — a List operation activity
-	// on strings fails the build (CE0023/CE0097/CE0111). Ledger finding #53.
-	if s.Operation == ast.ListOpContains && fb.declaredVars != nil &&
-		fb.declaredVars[s.InputVariable] == "String" {
-		return fb.addChangeVariableAction(&ast.MfSetStmt{
-			Target: s.OutputVariable,
-			Value: &ast.FunctionCallExpr{
-				Name: "contains",
-				Arguments: []ast.Expression{
-					&ast.VariableExpr{Name: s.InputVariable},
-					&ast.VariableExpr{Name: s.SecondVariable},
+	// `contains` and `find` are overloaded: contains(list, object) / find(list,
+	// condition) are list operations, but contains(haystack, needle) and
+	// find(haystack, needle) over strings are String functions. When the input is
+	// a declared String variable, Mendix requires a Change Variable action
+	// carrying the string expression — a List operation activity on strings fails
+	// the build (CE0023/CE0097/CE0111). Ledger findings #53 (contains) and #63 (find).
+	if fb.declaredVars != nil && fb.declaredVars[s.InputVariable] == "String" {
+		switch s.Operation {
+		case ast.ListOpContains:
+			return fb.addChangeVariableAction(&ast.MfSetStmt{
+				Target: s.OutputVariable,
+				Value: &ast.FunctionCallExpr{
+					Name: "contains",
+					Arguments: []ast.Expression{
+						&ast.VariableExpr{Name: s.InputVariable},
+						&ast.VariableExpr{Name: s.SecondVariable},
+					},
 				},
-			},
-		})
+			})
+		case ast.ListOpFind:
+			// The string find's second argument is carried as Condition (the
+			// visitor stores arg1 there); rebuild `find($in, <arg1>)`.
+			second := s.Condition
+			if second == nil {
+				second = &ast.VariableExpr{Name: s.SecondVariable}
+			}
+			return fb.addChangeVariableAction(&ast.MfSetStmt{
+				Target: s.OutputVariable,
+				Value: &ast.FunctionCallExpr{
+					Name:      "find",
+					Arguments: []ast.Expression{&ast.VariableExpr{Name: s.InputVariable}, second},
+				},
+			})
+		}
 	}
 
 	var operation microflows.ListOperation

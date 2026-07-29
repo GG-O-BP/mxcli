@@ -83,4 +83,41 @@ func TestBuildContains_StringVsList(t *testing.T) {
 			t.Error("list contains must emit a List operation activity")
 		}
 	})
+
+	// Ledger #63: the same String-input disambiguation applies to `find`.
+	t.Run("string-input find becomes change variable", func(t *testing.T) {
+		isChangeVar, isListOp := containsActionKind(t,
+			map[string]string{"Hay": "String", "Needle": "String", "At": "Integer"},
+			map[string]string{},
+			&ast.ListOperationStmt{
+				Operation:      ast.ListOpFind,
+				InputVariable:  "Hay",
+				SecondVariable: "Needle",
+				OutputVariable: "At",
+			})
+		if !isChangeVar {
+			t.Error("string find must emit a Change Variable action")
+		}
+		if isListOp {
+			t.Error("string find must NOT emit a List operation activity")
+		}
+	})
+
+	t.Run("list-input find stays a list operation", func(t *testing.T) {
+		isChangeVar, isListOp := containsActionKind(t,
+			map[string]string{},
+			map[string]string{"Items": "List of M.Item"},
+			&ast.ListOperationStmt{
+				Operation:      ast.ListOpFind,
+				InputVariable:  "Items",
+				Condition:      &ast.BinaryExpr{Left: &ast.AttributePathExpr{Path: []string{"Key"}}, Operator: "=", Right: &ast.VariableExpr{Name: "K"}},
+				OutputVariable: "Found",
+			})
+		if isChangeVar {
+			t.Error("list find must NOT emit a Change Variable action")
+		}
+		if !isListOp {
+			t.Error("list find must emit a List operation activity")
+		}
+	})
 }

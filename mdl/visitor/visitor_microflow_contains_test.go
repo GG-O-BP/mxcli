@@ -60,3 +60,52 @@ func TestContainsOverloadParsing(t *testing.T) {
 		})
 	}
 }
+
+// TestFindOverloadParsing covers ledger finding #63: `find` is overloaded as the
+// LIST operation find(list, condition) and the STRING function
+// find(haystack, needle) → index. A string-literal second argument is
+// unambiguously the string function and must parse as a value expression
+// (MfSetStmt), not a lossy List operation activity (whose created output variable
+// collides → CE0111). A boolean condition means the list operation.
+func TestFindOverloadParsing(t *testing.T) {
+	cases := []struct {
+		name       string
+		setExpr    string
+		wantListOp bool
+	}{
+		{"string literal needle is string find", "find($Raw, '\"id\":\"')", false},
+		{"both plain variables stay a list op (ambiguous)", "find($Items, $One)", true},
+		{"condition second arg is a list find", "find($Items, Key = $One)", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "create microflow M.F ($Raw: String, $One: String, $Items: list of M.Item)\n" +
+				"returns Integer\nbegin\n  declare $At Integer = 0;\n  set $At = " + tc.setExpr + ";\n  return $At;\nend;"
+			prog, errs := Build(src)
+			if len(errs) > 0 {
+				t.Fatalf("unexpected parse errors: %v", errs)
+			}
+			mf := prog.Statements[0].(*ast.CreateMicroflowStmt)
+			var stmt ast.MicroflowStatement
+			for _, s := range mf.Body {
+				switch v := s.(type) {
+				case *ast.ListOperationStmt:
+					if v.OutputVariable == "At" {
+						stmt = s
+					}
+				case *ast.MfSetStmt:
+					if v.Target == "At" {
+						stmt = s
+					}
+				}
+			}
+			if stmt == nil {
+				t.Fatalf("no statement assigning $At found")
+			}
+			_, isListOp := stmt.(*ast.ListOperationStmt)
+			if isListOp != tc.wantListOp {
+				t.Errorf("statement type = %T, wantListOp=%v (expr: %q)", stmt, tc.wantListOp, tc.setExpr)
+			}
+		})
+	}
+}
