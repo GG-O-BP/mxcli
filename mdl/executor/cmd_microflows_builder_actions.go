@@ -1066,6 +1066,25 @@ func entityQualifiedNameFromAttribute(attrPath string) string {
 
 // addListOperationAction creates list operations like HEAD, TAIL, FIND, etc.
 func (fb *flowBuilder) addListOperationAction(s *ast.ListOperationStmt) model.ID {
+	// `contains` is overloaded: contains(list, object) is a list operation, but
+	// contains(haystack, needle) over strings is the String function. When the
+	// input is a declared String variable, Mendix requires a Change Variable
+	// action carrying the `contains(...)` expression — a List operation activity
+	// on strings fails the build (CE0023/CE0097/CE0111). Ledger finding #53.
+	if s.Operation == ast.ListOpContains && fb.declaredVars != nil &&
+		fb.declaredVars[s.InputVariable] == "String" {
+		return fb.addChangeVariableAction(&ast.MfSetStmt{
+			Target: s.OutputVariable,
+			Value: &ast.FunctionCallExpr{
+				Name: "contains",
+				Arguments: []ast.Expression{
+					&ast.VariableExpr{Name: s.InputVariable},
+					&ast.VariableExpr{Name: s.SecondVariable},
+				},
+			},
+		})
+	}
+
 	var operation microflows.ListOperation
 
 	switch s.Operation {

@@ -751,12 +751,24 @@ func buildSetStatement(ctx parser.ISetStatementContext) ast.MicroflowStatement {
 				SecondVariable: extractVariableName(funcCall.Arguments, 1),
 			}
 		case "CONTAINS":
-			return &ast.ListOperationStmt{
-				OutputVariable: targetVar,
-				Operation:      ast.ListOpContains,
-				InputVariable:  extractVariableName(funcCall.Arguments, 0),
-				SecondVariable: extractVariableName(funcCall.Arguments, 1),
+			// `contains` is overloaded: the LIST operation contains(list, object)
+			// and the STRING function contains(haystack, needle). A List operation
+			// activity requires two plain list/object variables; if either argument
+			// is a literal or a computed expression it is unambiguously the string
+			// function, which must stay a value expression (a Change Variable
+			// action) — serializing it as a List operation fails the build
+			// (CE0023/CE0097/CE0111). Ledger finding #53. When both arguments are
+			// plain variables the kind is still ambiguous here (no type info); the
+			// flow builder disambiguates String-typed inputs downstream.
+			if isPlainVariableArg(funcCall.Arguments, 0) && isPlainVariableArg(funcCall.Arguments, 1) {
+				return &ast.ListOperationStmt{
+					OutputVariable: targetVar,
+					Operation:      ast.ListOpContains,
+					InputVariable:  extractVariableName(funcCall.Arguments, 0),
+					SecondVariable: extractVariableName(funcCall.Arguments, 1),
+				}
 			}
+			// Falls through to the default MfSetStmt (string contains expression).
 		case "EQUALS":
 			return &ast.ListOperationStmt{
 				OutputVariable: targetVar,
@@ -844,6 +856,21 @@ func extractVariableName(args []ast.Expression, index int) string {
 		return identExpr.Name
 	}
 	return ""
+}
+
+// isPlainVariableArg reports whether the argument at the given index is a bare
+// variable reference (`$x` or an unquoted identifier) rather than a literal or a
+// computed expression. Used to distinguish the list-operation form of an
+// overloaded function (e.g. contains(list, object)) from its string form.
+func isPlainVariableArg(args []ast.Expression, index int) bool {
+	if index >= len(args) {
+		return false
+	}
+	switch args[index].(type) {
+	case *ast.VariableExpr, *ast.IdentifierExpr:
+		return true
+	}
+	return false
 }
 
 // getArgumentExpression returns the expression at the given index, or nil if not present.

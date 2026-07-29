@@ -590,6 +590,21 @@ add head($SourceItems) to $Items;
 
 Use expression-valued `add` only when the expression returns an object compatible with the target list element type.
 
+### `contains` is overloaded — string vs list
+
+`contains(a, b)` is both a **string** function (`contains(haystack, needle)` → substring test) and a **list** operation (`contains(list, object)` → membership test). mxcli picks the right serialization automatically:
+
+```mdl
+-- STRING contains — assign to a PRE-DECLARED Boolean (a Change Variable action)
+declare $HasAt Boolean = false;
+set $HasAt = contains($Email, '@');
+
+-- LIST contains — do NOT pre-declare the output (the list op creates it)
+set $Found = contains($Items, $Item);
+```
+
+The distinction: a **literal or computed** second argument is always the string function. When both arguments are plain variables, the input variable's declared type decides — a **String** input becomes the string function (Change Variable, so declare the Boolean first), anything else stays a list operation (which creates its own output variable, so leave it undeclared). Getting the declare wrong is what triggers `CE0111 "Duplicate variable name"`.
+
 ## Database Operations
 
 ### RETRIEVE Statement

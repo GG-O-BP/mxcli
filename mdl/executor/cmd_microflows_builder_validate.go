@@ -315,6 +315,18 @@ func (fb *flowBuilder) validateStatement(stmt ast.MicroflowStatement) {
 		}
 
 	case *ast.ListOperationStmt:
+		// String contains(haystack, needle) is a value expression assigned to a
+		// pre-declared Boolean, not a list operation that creates a new variable
+		// (ledger #53). Validate it like a SET: the target must already be
+		// declared, and it must not be flagged as a duplicate.
+		if s.Operation == ast.ListOpContains && fb.declaredVars[s.InputVariable] == "String" {
+			if !fb.isVariableDeclared(s.OutputVariable) {
+				fb.addErrorWithExample(
+					fmt.Sprintf("variable '%s' is not declared", s.OutputVariable),
+					errorExampleDeclareVariable(s.OutputVariable))
+			}
+			break
+		}
 		fb.validateOutputVariable(s.OutputVariable, "list operation")
 		if s.OutputVariable != "" {
 			fb.declaredVars[s.OutputVariable] = "Unknown"
