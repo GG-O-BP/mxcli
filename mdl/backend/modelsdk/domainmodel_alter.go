@@ -132,6 +132,19 @@ func (b *Backend) UpdateEntity(domainModelID model.ID, entity *domainmodel.Entit
 		ge.SetRaw(raw)
 	}
 
+	// When the update removes ALL indexes but the stored entity had some, the fresh
+	// (empty) Indexes list on ge is "clean" (untouched), so the codec passes the
+	// raw indexes through unchanged — a dropped indexed attribute would then leave
+	// an orphaned index pointing at a GUID that no longer exists, which crashes
+	// `mx check` with an unhandled AggregateException (ledger #39). Touch the list
+	// (append + remove) to mark it dirty so the codec re-emits it as empty,
+	// clearing the raw. A non-empty new index list is already dirty (entityToGen
+	// appended to it), so this is only needed for the all-removed case.
+	if len(entity.Indexes) == 0 && len(orig.IndexesItems()) > 0 {
+		ge.AddIndexes(genDm.NewIndex())
+		ge.RemoveIndexes(0)
+	}
+
 	// Rebuild the list in place: drop all, re-add in original order swapping the
 	// target. Re-added existing elements stay clean (only the list is dirtied),
 	// so the codec re-emits them byte-faithfully; only ge is built fresh.

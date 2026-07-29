@@ -329,6 +329,21 @@ func validateWithContext(ctx *ExecContext, stmt ast.Statement, sc *scriptContext
 				return mdlerrors.NewNotFoundMsg("module", s.Child.Module, "child entity module not found: "+s.Child.Module)
 			}
 		}
+		// Mendix forbids associations to OR from a view entity (CE6771) — statically
+		// impossible, so catch it here instead of letting it reach mxbuild. Both
+		// endpoints are checked (either direction is rejected). Endpoints created in
+		// the same script are skipped (a view entity created here is validated on its
+		// own statement). (ledger finding #41)
+		for _, ep := range []ast.QualifiedName{s.Parent, s.Child} {
+			if ep.Module == "" || sc.entities[ep.String()] {
+				continue
+			}
+			if ent, err := findEntity(ctx, ep.Module, ep.Name); err == nil && isViewEntity(ent) {
+				return mdlerrors.NewValidationf(
+					"cannot create association %s: %s is a view entity — Mendix does not allow associations to or from view entities (CE6771). Use a non-persistent entity with a real reference to the target instead.",
+					s.Name.String(), ep.String())
+			}
+		}
 	case *ast.CreateImageCollectionStmt:
 		if s.Name.Module != "" && !sc.modules[s.Name.Module] {
 			if _, err := findModule(ctx, s.Name.Module); err != nil {

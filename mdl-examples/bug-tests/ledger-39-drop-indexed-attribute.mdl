@@ -1,0 +1,34 @@
+-- ============================================================================
+-- Ledger finding #39: dropping an indexed attribute left an orphaned index
+-- ============================================================================
+--
+-- Symptom (before fix): a `create or modify entity` that omits (drops) an indexed
+-- attribute left the entity's index behind, orphaned — its column referenced a
+-- GUID that no longer existed. `mxcli` reported only the attribute-drop warning;
+-- `mx check` then CRASHED loading the project with an unhandled
+-- System.AggregateException ("The given key '<guid>' was not present in the
+-- dictionary"), because the index pointed at the removed attribute.
+--
+-- After fix: create-or-modify carries existing indexes forward, pruning any
+-- column that references a dropped attribute and removing indexes left empty (and
+-- the write path clears the index list authoritatively, so the last index is
+-- removed rather than left as an orphaned `index ()`). Verified end-to-end:
+-- `mx check` reports 0 errors on Mendix 11.12.1.
+--
+-- Usage (run the two steps against a project, then mx check):
+--   mxcli exec step1 (create Transaction with index (MonthKey))
+--   mxcli exec step2 (this file — drops MonthKey)
+--   mx check app.mpr   # must not crash
+-- ============================================================================
+
+-- Step 1 (run first): create the indexed attribute.
+create or modify entity Ledger.Transaction (
+  Amount: decimal,
+  MonthKey: string(7)
+)
+index (MonthKey);
+
+-- Step 2: drop MonthKey — its index is pruned, not left orphaned.
+create or modify entity Ledger.Transaction (
+  Amount: decimal
+);
