@@ -317,6 +317,17 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 			v.loopDepth++
 			v.walkBody(stmt.Body)
 			v.loopDepth--
+		case *ast.CreateObjectStmt:
+			// Attribute values in a `create` are expressions too — an aggregate
+			// (sum/count/…) or an unknown function here fails the build with CE0117,
+			// but check previously only inspected return/if/declare/set (FINDINGS #17).
+			for _, ch := range stmt.Changes {
+				v.checkExprFunctions(fmt.Sprintf("create %s attribute '%s'", stmt.EntityType.String(), ch.Attribute), ch.Value)
+			}
+		case *ast.ChangeObjectStmt:
+			for _, ch := range stmt.Changes {
+				v.checkExprFunctions(fmt.Sprintf("change '%s' attribute '%s'", stmt.Variable, ch.Attribute), ch.Value)
+			}
 		}
 		// Check error handling inside loops
 		if eh := stmtErrorHandling(s); eh != nil {
