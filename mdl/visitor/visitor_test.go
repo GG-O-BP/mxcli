@@ -2325,6 +2325,13 @@ func TestShouldPreserveExpressionSource_Decimals(t *testing.T) {
 		"$currentObject/Amount",    // plain member access
 		"Ledger.Category",          // qualified name dot (non-numeric)
 		"'a/b path'",               // slash inside a string literal
+		// ledger #48: a qualified-name segment ending in a digit must NOT be read
+		// as a decimal (that froze the source and skipped association-entity
+		// resolution → CE0117). Modules/entities ending in a digit are common.
+		"$T/L48.Transaction_Account/Name", // module name ends in a digit
+		"$obj/App2.Entity/Attr",           // module 'App2'
+		"$c/Mod.Account2/Name",            // entity name ends in a digit
+		"L48.Transaction",                 // bare qualified name, digit module
 	}
 	for _, s := range mustNotPreserve {
 		if shouldPreserveExpressionSource(s) {

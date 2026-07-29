@@ -1465,6 +1465,32 @@ func buildRetrieveWhereExpression(ctx parser.IExpressionContext) ast.Expression 
 	return expr
 }
 
+func isDigitByte(c byte) bool { return c >= '0' && c <= '9' }
+
+func isIdentByte(c byte) bool {
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || isDigitByte(c)
+}
+
+// dotIsQualifiedNameSeparator reports whether the `.` at index i separates
+// segments of a qualified name (`Module.Entity`, `L48.Transaction`) rather than
+// being a decimal point. The token immediately before the `.` is a name segment
+// (not a number) when it contains a letter or underscore — so a module/entity
+// name that merely ends in a digit (`L48`, `Account2`) is not mistaken for a
+// decimal. Symmetrically, a `.` that directly follows an identifier char and is
+// followed by a name segment (a letter/underscore start) is a separator too.
+func dotIsQualifiedNameSeparator(source string, i int) bool {
+	// Walk back over the run of identifier chars ending at i-1; if any is a
+	// letter or underscore, the preceding token is a name, not a number.
+	s := i
+	for s > 0 && isIdentByte(source[s-1]) {
+		s--
+		if source[s] == '_' || (source[s] >= 'a' && source[s] <= 'z') || (source[s] >= 'A' && source[s] <= 'Z') {
+			return true
+		}
+	}
+	return false
+}
+
 func shouldPreserveExpressionSource(source string) bool {
 	if strings.ContainsAny(source, "\r\n") {
 		return true
@@ -1507,10 +1533,20 @@ func shouldPreserveExpressionSource(source string) bool {
 		// notation (`0.000001` → `1e-06`, which Mendix rejects). A `.` adjacent to a
 		// digit marks a numeric literal; preserving the source keeps the exact form.
 		// (#18, #19)
+		//
+		// BUT a `.` inside a QUALIFIED NAME (`L48.Transaction`, `Account2.Name`)
+		// must NOT be mistaken for a decimal point just because a name segment ends
+		// in a digit — modules/entities ending in a digit are common. Freezing such
+		// an expression bypasses association-target-entity resolution
+		// (`resolveAssociationPaths`), producing `$T/L48.Assoc/Attr` without the
+		// required entity step, which Mendix rejects with CE0117 (ledger #48 root
+		// cause). A decimal point's digit run is a standalone number — not preceded
+		// by an identifier char; a name separator's `.` follows a token that
+		// contains a letter or underscore.
 		if source[i] == '.' {
-			prevDigit := i > 0 && source[i-1] >= '0' && source[i-1] <= '9'
-			nextDigit := i+1 < len(source) && source[i+1] >= '0' && source[i+1] <= '9'
-			if prevDigit || nextDigit {
+			prevDigit := i > 0 && isDigitByte(source[i-1])
+			nextDigit := i+1 < len(source) && isDigitByte(source[i+1])
+			if (prevDigit || nextDigit) && !dotIsQualifiedNameSeparator(source, i) {
 				return true
 			}
 		}
