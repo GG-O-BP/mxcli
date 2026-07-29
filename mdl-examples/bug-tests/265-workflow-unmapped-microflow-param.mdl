@@ -1,0 +1,35 @@
+-- ============================================================================
+-- FINDINGS #40: workflow call-microflow with an unmapped required parameter
+-- ============================================================================
+--
+-- Symptom: a workflow "call microflow" activity that does NOT map a required
+-- parameter of its target microflow passed both `mxcli check --references` and
+-- `mx check`, but Studio Pro flags it (CE6677) and the workflow fails at the
+-- activity. The mapped and unmapped forms were indistinguishable to the checker.
+--
+-- After fix: `mxcli check --references` now reports each unmapped parameter:
+--   call microflow 'Demo.ACT_Need': parameter 'Item' is not mapped — Mendix
+--   requires every parameter of a workflow call-microflow to be mapped ...
+--
+-- Requires a project (-p) — the check introspects the target microflow's params.
+-- Setup (run first, against the project):
+--   create or modify entity "Demo"."Thing" (Code: string(20));
+--   create or modify microflow "Demo"."ACT_Need" ($Item: Demo.Thing) begin return; end;
+--
+-- WF_Ok maps the parameter (passes); WF_Bad omits it (flagged).
+-- ============================================================================
+
+create or modify workflow "Demo"."WF_Ok"
+  parameter $Context: Demo.Thing
+begin
+  call microflow "Demo"."ACT_Need" with (Item = '$workflowContext');
+end workflow;
+/
+
+-- Unmapped required param — flagged by `check --references` (uncomment to verify):
+-- create or modify workflow "Demo"."WF_Bad"
+--   parameter $Context: Demo.Thing
+-- begin
+--   call microflow "Demo"."ACT_Need";
+-- end workflow;
+-- /

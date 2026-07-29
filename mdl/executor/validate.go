@@ -428,6 +428,14 @@ func validateWithContext(ctx *ExecContext, stmt ast.Statement, sc *scriptContext
 			return mdlerrors.NewValidationf("snippet '%s' has context errors:\n  - %s",
 				s.Name.String(), strings.Join(ctxErrors, "\n  - "))
 		}
+	case *ast.CreateWorkflowStmt:
+		// Reference check: every workflow call-microflow must map all of its
+		// target microflow's parameters (FINDINGS #40). Syntax-only workflow checks
+		// (MDL-WF01/02/03) run separately in the no-project phase.
+		if refErrors := validateWorkflowParameterMappings(ctx, s, sc); len(refErrors) > 0 {
+			return mdlerrors.NewValidationf("workflow '%s' has reference errors:\n  - %s",
+				s.Name.String(), strings.Join(refErrors, "\n  - "))
+		}
 	case *ast.CreateViewEntityStmt:
 		if s.Name.Module != "" && !sc.modules[s.Name.Module] {
 			if _, err := findModule(ctx, s.Name.Module); err != nil {
