@@ -158,6 +158,42 @@ func TestValidateMicroflow_AssociationObjectArg(t *testing.T) {
 	}
 }
 
+// TestValidateMicroflow_ConditionalBreak covers MDL051 (ledger #52): a `break`
+// nested inside a conditional within a loop serializes a dangling reference that
+// crashes `mx check` (unloadable model). A break directly in the loop body, or no
+// break, is fine.
+func TestValidateMicroflow_ConditionalBreak(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		wantMDL bool
+	}{
+		{"break inside if in loop", "loop $R in $L begin if $R/Active then break; end if; end loop", true},
+		{"break inside nested if in loop", "loop $R in $L begin if $R/Active then if $R/Active then break; end if; end if; end loop", true},
+		{"break directly in loop is fine", "loop $R in $L begin break; end loop", false},
+		{"no break is fine", "loop $R in $L begin if $R/Active then set $x = 1; end if; end loop", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "create microflow M.F ($L: list of M.R)\nreturns boolean\nbegin\n  " + tc.body + "\n  return true;\nend;"
+			prog, errs := visitor.Build(src)
+			if len(errs) > 0 {
+				t.Fatalf("parse errors: %v", errs)
+			}
+			mf := prog.Statements[0].(*ast.CreateMicroflowStmt)
+			var got bool
+			for _, vi := range ValidateMicroflow(mf) {
+				if vi.RuleID == "MDL051" {
+					got = true
+				}
+			}
+			if got != tc.wantMDL {
+				t.Errorf("MDL051 fired=%v, want %v (body: %q)", got, tc.wantMDL, tc.body)
+			}
+		})
+	}
+}
+
 // TestValidateMicroflow_FormatWithAssociation covers MDL050 (ledger #48,
 // corrected): a render function (formatDateTime/formatDecimal/…) combined with an
 // association navigation fails the build with CE0117. Verified against mx check on
