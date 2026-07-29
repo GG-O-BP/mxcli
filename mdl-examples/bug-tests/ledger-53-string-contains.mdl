@@ -1,0 +1,63 @@
+-- ============================================================================
+-- Ledger finding #53: string `contains()` serialized as a LIST operation
+-- ============================================================================
+--
+-- Symptom (before fix): `set $Match = contains($Hay, $Needle)` on two String
+-- values was always serialized as a List operation activity 'Contains'. Since a
+-- list operation CREATES its output variable, a pre-declared Boolean `$Match`
+-- collided (`[CE0111] "Duplicate variable name 'Match'."`), and a String input
+-- to a list operation is otherwise rejected (CE0023/CE0097). Net effect: the
+-- string `contains(haystack, needle)` function was unavailable from MDL.
+--
+-- Root cause: the visitor unconditionally rewrote `set $x = contains(...)` into
+-- a ListOperationStmt, dropping literal arguments entirely.
+--
+-- After fix (two parts):
+--   1. Visitor — a literal/computed argument means the string function; it stays
+--      a value expression (Change Variable action), not a list operation.
+--   2. Flow builder — when the input variable is a declared String, the ambiguous
+--      both-variables form also becomes a Change Variable carrying `contains(...)`.
+-- The genuine list form (list variable + object variable) is unchanged.
+--
+-- Verified: `mx check` reports 0 errors on a fresh Mendix 11.12.1 project.
+
+create module Ledger53;
+
+create entity Ledger53.Item (
+  Name: String
+);
+
+-- (A) string contains with a literal second argument
+create microflow Ledger53.HasAt (
+  $Email: String
+)
+returns Boolean
+begin
+  declare $Match Boolean = false;
+  set $Match = contains($Email, '@');
+  return $Match;
+end;
+
+-- (B) string contains with two String variables (ambiguous at parse time)
+create microflow Ledger53.StrContains (
+  $Hay: String,
+  $Needle: String
+)
+returns Boolean
+begin
+  declare $Match Boolean = false;
+  set $Match = contains($Hay, $Needle);
+  return $Match;
+end;
+
+-- (C) genuine LIST contains: list variable + object variable.
+-- A list operation creates its output variable, so it is NOT pre-declared.
+create microflow Ledger53.ListContains (
+  $Items: list of Ledger53.Item,
+  $One: Ledger53.Item
+)
+returns Boolean
+begin
+  set $Found = contains($Items, $One);
+  return $Found;
+end;

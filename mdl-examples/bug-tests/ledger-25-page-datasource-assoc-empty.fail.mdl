@@ -1,0 +1,33 @@
+-- ============================================================================
+-- Ledger finding #25 (verification round): association `= empty` in a PAGE
+-- datasource where-clause
+-- ============================================================================
+--
+-- Symptom (before fix): MDL047 only inspected microflow `retrieve` constraints,
+-- so an association `= empty` in a widget datasource where-clause slipped through
+-- `mxcli check` and failed the build with CE0161 "Error(s) in XPath constraint".
+-- The ledger project originally hit this in a page-datasource context.
+--
+-- After fix: MDL047 also inspects `DataSourceV3.Where` on every widget. The
+-- nullability test is the negation form `[not(Assoc/Target)]`.
+--
+-- Usage (expected to FAIL check):
+--   mxcli check mdl-examples/bug-tests/ledger-25-page-datasource-assoc-empty.fail.mdl
+-- ============================================================================
+
+create entity Ledger.Category ( Name: String );
+create entity Ledger.Transaction ( Description: String );
+create association Ledger.Transaction_Category
+  from Ledger.Transaction to Ledger.Category;
+
+create or replace page Ledger.UncategorizedPage
+(
+  Title: 'Uncategorized',
+  Layout: Atlas_Core.Atlas_Default
+)
+{
+  datagrid dgProbe (
+    datasource: database from Ledger.Transaction
+      where [Ledger.Transaction_Category = empty]   -- MDL047 (CE0161 in Studio Pro)
+  )
+}

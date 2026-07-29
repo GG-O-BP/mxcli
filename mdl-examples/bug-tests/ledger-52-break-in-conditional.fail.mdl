@@ -1,0 +1,39 @@
+-- ============================================================================
+-- Ledger finding #52: `break` inside a conditional in a loop → unloadable model
+-- ============================================================================
+--
+-- Symptom (before fix): a `break` nested inside an `if`/`case` within a loop
+-- passed `mxcli check --references` but serialized a DANGLING sequence-flow
+-- reference. `mx check` then CRASHED loading the project with an unhandled
+-- System.AggregateException ("The given key '<guid>' was not present in the
+-- dictionary") — an unrecoverable project-load failure, not a normal error.
+--
+-- A `break` placed DIRECTLY in the loop body serializes fine; only the useful
+-- conditional form (`if <cond> then break`) is affected.
+--
+-- After fix: MDL051 rejects the conditional-break form at check time (a diagnostic
+-- beats a crash) until the flow serialization is fixed. Workaround — a guard
+-- variable (verified clean on mx check):
+--   declare $Done Boolean = false;
+--   loop $R in $Rules begin
+--     if not($Done) then
+--       if <condition> then set $Done = true; end if;
+--     end if;
+--   end loop
+--
+-- Usage (expected to FAIL check):
+--   mxcli check mdl-examples/bug-tests/ledger-52-break-in-conditional.fail.mdl
+-- ============================================================================
+
+create microflow MyModule.FirstActive (
+  $Rules: list of MyModule.Rule
+)
+returns boolean
+begin
+  loop $R in $Rules begin
+    if $R/Active then
+      break;                 -- MDL051: crashes mx check (unloadable model)
+    end if;
+  end loop
+  return true;
+end

@@ -707,12 +707,23 @@ func buildSetStatement(ctx parser.ISetStatementContext) ast.MicroflowStatement {
 				InputVariable:  extractVariableName(funcCall.Arguments, 0),
 			}
 		case "FIND":
-			return &ast.ListOperationStmt{
-				OutputVariable: targetVar,
-				Operation:      ast.ListOpFind,
-				InputVariable:  extractVariableName(funcCall.Arguments, 0),
-				Condition:      getArgumentExpression(funcCall.Arguments, 1),
+			// `find` is overloaded: the LIST operation find(list, condition) — which
+			// filters a list by a boolean condition — and the STRING function
+			// find(haystack, needle) → the index of a substring. A STRING-LITERAL
+			// second argument is unambiguously the string function (you never filter
+			// a list by a bare string literal); it must stay a value expression, not
+			// a lossy List operation activity whose output variable collides
+			// (CE0111). Ledger #63. When both arguments are plain variables the kind
+			// is ambiguous here; the flow builder disambiguates String-typed inputs.
+			if !isStringLiteralArg(funcCall.Arguments, 1) {
+				return &ast.ListOperationStmt{
+					OutputVariable: targetVar,
+					Operation:      ast.ListOpFind,
+					InputVariable:  extractVariableName(funcCall.Arguments, 0),
+					Condition:      getArgumentExpression(funcCall.Arguments, 1),
+				}
 			}
+			// Falls through to the default MfSetStmt (string find expression).
 		case "FILTER":
 			return &ast.ListOperationStmt{
 				OutputVariable: targetVar,
@@ -751,12 +762,24 @@ func buildSetStatement(ctx parser.ISetStatementContext) ast.MicroflowStatement {
 				SecondVariable: extractVariableName(funcCall.Arguments, 1),
 			}
 		case "CONTAINS":
-			return &ast.ListOperationStmt{
-				OutputVariable: targetVar,
-				Operation:      ast.ListOpContains,
-				InputVariable:  extractVariableName(funcCall.Arguments, 0),
-				SecondVariable: extractVariableName(funcCall.Arguments, 1),
+			// `contains` is overloaded: the LIST operation contains(list, object)
+			// and the STRING function contains(haystack, needle). A List operation
+			// activity requires two plain list/object variables; if either argument
+			// is a literal or a computed expression it is unambiguously the string
+			// function, which must stay a value expression (a Change Variable
+			// action) — serializing it as a List operation fails the build
+			// (CE0023/CE0097/CE0111). Ledger finding #53. When both arguments are
+			// plain variables the kind is still ambiguous here (no type info); the
+			// flow builder disambiguates String-typed inputs downstream.
+			if isPlainVariableArg(funcCall.Arguments, 0) && isPlainVariableArg(funcCall.Arguments, 1) {
+				return &ast.ListOperationStmt{
+					OutputVariable: targetVar,
+					Operation:      ast.ListOpContains,
+					InputVariable:  extractVariableName(funcCall.Arguments, 0),
+					SecondVariable: extractVariableName(funcCall.Arguments, 1),
+				}
 			}
+			// Falls through to the default MfSetStmt (string contains expression).
 		case "EQUALS":
 			return &ast.ListOperationStmt{
 				OutputVariable: targetVar,
@@ -844,6 +867,32 @@ func extractVariableName(args []ast.Expression, index int) string {
 		return identExpr.Name
 	}
 	return ""
+}
+
+// isPlainVariableArg reports whether the argument at the given index is a bare
+// variable reference (`$x` or an unquoted identifier) rather than a literal or a
+// computed expression. Used to distinguish the list-operation form of an
+// overloaded function (e.g. contains(list, object)) from its string form.
+func isPlainVariableArg(args []ast.Expression, index int) bool {
+	if index >= len(args) {
+		return false
+	}
+	switch args[index].(type) {
+	case *ast.VariableExpr, *ast.IdentifierExpr:
+		return true
+	}
+	return false
+}
+
+// isStringLiteralArg reports whether the argument at the given index is a string
+// literal — used to detect the string form of an overloaded function (e.g.
+// find(haystack, 'needle')) that must not become a list operation.
+func isStringLiteralArg(args []ast.Expression, index int) bool {
+	if index >= len(args) {
+		return false
+	}
+	lit, ok := args[index].(*ast.LiteralExpr)
+	return ok && lit.Kind == ast.LiteralString
 }
 
 // getArgumentExpression returns the expression at the given index, or nil if not present.
@@ -1438,6 +1487,32 @@ func buildRetrieveWhereExpression(ctx parser.IExpressionContext) ast.Expression 
 	return expr
 }
 
+func isDigitByte(c byte) bool { return c >= '0' && c <= '9' }
+
+func isIdentByte(c byte) bool {
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || isDigitByte(c)
+}
+
+// dotIsQualifiedNameSeparator reports whether the `.` at index i separates
+// segments of a qualified name (`Module.Entity`, `L48.Transaction`) rather than
+// being a decimal point. The token immediately before the `.` is a name segment
+// (not a number) when it contains a letter or underscore — so a module/entity
+// name that merely ends in a digit (`L48`, `Account2`) is not mistaken for a
+// decimal. Symmetrically, a `.` that directly follows an identifier char and is
+// followed by a name segment (a letter/underscore start) is a separator too.
+func dotIsQualifiedNameSeparator(source string, i int) bool {
+	// Walk back over the run of identifier chars ending at i-1; if any is a
+	// letter or underscore, the preceding token is a name, not a number.
+	s := i
+	for s > 0 && isIdentByte(source[s-1]) {
+		s--
+		if source[s] == '_' || (source[s] >= 'a' && source[s] <= 'z') || (source[s] >= 'A' && source[s] <= 'Z') {
+			return true
+		}
+	}
+	return false
+}
+
 func shouldPreserveExpressionSource(source string) bool {
 	if strings.ContainsAny(source, "\r\n") {
 		return true
@@ -1454,6 +1529,48 @@ func shouldPreserveExpressionSource(source string) bool {
 		}
 		if inString {
 			continue
+		}
+		// A `/` used as division with a variable right operand (`$a / $b`) parses
+		// as a member-access path (the `$` on the RHS is stripped), so the AST
+		// re-serializes to a bogus `$a/b`. Preserve the raw source ONLY for this
+		// unambiguous misuse — a `/` immediately followed (ignoring spaces) by `$`.
+		// A real association path never has `$` after `/`, so legitimate navigation
+		// (`$Order/Assoc/Name`) is NOT source-frozen. MDL045 then rejects it at
+		// check time using the preserved source. (#17, verification round)
+		if source[i] == '/' {
+			j := i + 1
+			for j < len(source) && (source[j] == ' ' || source[j] == '\t') {
+				j++
+			}
+			if j < len(source) && source[j] == '$' {
+				return true
+			}
+		}
+		// Otherwise `/` is the member-access separator (`$Order/Assoc/Name`), not
+		// division (which is `div`), so it is NOT a preservation trigger — that
+		// would wrongly source-freeze every association-navigation path.
+		//
+		// Decimal literal: the re-serializer truncates a zero fraction (`2.0` → `2`,
+		// which breaks Mendix's Decimal typing) and emits small values in scientific
+		// notation (`0.000001` → `1e-06`, which Mendix rejects). A `.` adjacent to a
+		// digit marks a numeric literal; preserving the source keeps the exact form.
+		// (#18, #19)
+		//
+		// BUT a `.` inside a QUALIFIED NAME (`L48.Transaction`, `Account2.Name`)
+		// must NOT be mistaken for a decimal point just because a name segment ends
+		// in a digit — modules/entities ending in a digit are common. Freezing such
+		// an expression bypasses association-target-entity resolution
+		// (`resolveAssociationPaths`), producing `$T/L48.Assoc/Attr` without the
+		// required entity step, which Mendix rejects with CE0117 (ledger #48 root
+		// cause). A decimal point's digit run is a standalone number — not preceded
+		// by an identifier char; a name separator's `.` follows a token that
+		// contains a letter or underscore.
+		if source[i] == '.' {
+			prevDigit := i > 0 && isDigitByte(source[i-1])
+			nextDigit := i+1 < len(source) && isDigitByte(source[i+1])
+			if (prevDigit || nextDigit) && !dotIsQualifiedNameSeparator(source, i) {
+				return true
+			}
 		}
 		switch source[i] {
 		case '=', '!', '<', '>', '+', '-', '*', ':', ',':

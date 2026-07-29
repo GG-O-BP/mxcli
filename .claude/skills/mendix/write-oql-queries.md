@@ -46,34 +46,65 @@ create view entity Finance.CashFlowProjection (
 );
 ```
 
-**RULE 2: NEVER use ORDER BY or LIMIT in VIEW entity OQL**
+**RULE 2: `ORDER BY` requires a `LIMIT` — prefer letting the consuming query sort**
 
-The UI component or microflow using the view will handle sorting and pagination:
+`ORDER BY` **alone** is rejected (`mxcli check` → **MDL030**; `mx check` → CE0174).
+`ORDER BY` **with** a `LIMIT` is valid and builds clean — that is exactly how you
+express a top-N view. As a default, prefer *no* `ORDER BY`/`LIMIT` so the UI
+component or microflow can sort and paginate the same view differently; reach for
+`ORDER BY … LIMIT` only when the view is intrinsically a top-N.
 
 ```sql
--- ❌ WRONG - Hardcoded sorting and limits
+-- ❌ WRONG - ORDER BY without LIMIT (MDL030 / CE0174)
 create view entity Finance.TopCustomers (...) as (
   select c.Name as CustomerName, sum(o.Amount) as TotalSpent
   from Finance.Customer as c
   inner join Finance.Order_Customer/Finance.Order as o
   GROUP by c.Name
-  ORDER by TotalSpent desc        -- Remove this
-  limit 100                       -- Remove this
+  ORDER by TotalSpent desc        -- needs a LIMIT
 );
 
--- ✅ CORRECT - No ORDER BY or LIMIT
+-- ✅ CORRECT (preferred) - let the consuming page/microflow sort
+create view entity Finance.CustomerTotals (...) as (
+  select c.Name as CustomerName, sum(o.Amount) as TotalSpent
+  from Finance.Customer as c
+  inner join Finance.Order_Customer/Finance.Order as o
+  GROUP by c.Name
+);
+
+-- ✅ ALSO VALID - an intrinsic top-N view (ORDER BY paired with LIMIT)
 create view entity Finance.TopCustomers (...) as (
   select c.Name as CustomerName, sum(o.Amount) as TotalSpent
   from Finance.Customer as c
   inner join Finance.Order_Customer/Finance.Order as o
   GROUP by c.Name
-  -- Let the UI component handle sorting and limits
+  ORDER by TotalSpent desc
+  LIMIT 100
 );
 ```
 
 **Why these rules matter:**
 - **Explicit aliases**: Required for proper OQL-to-entity attribute mapping in Mendix
-- **No ORDER BY/LIMIT**: Provides flexibility - different pages/microflows can sort and paginate the same view differently
+- **ORDER BY/LIMIT**: Omitting both keeps the view flexible (each page/microflow sorts and paginates as it needs); when you *do* sort, `ORDER BY` must be paired with `LIMIT` (MDL030)
+
+**`UNION` / `UNION ALL` are supported** in view-entity OQL and round-trip cleanly —
+use them to combine multiple row kinds in one view (e.g. category rows plus group
+subtotals). Column count and types must line up across branches; `ORDER BY` (with
+its `LIMIT`) applies to the whole unioned result, not a single branch.
+
+```sql
+create or modify view entity Ledger.CategoryAndSubtotals (
+  Label: string(100), Amount: decimal
+) as (
+  select c.Name as Label, sum(t.Amount) as Amount
+  from Ledger.Category as c
+  left join Ledger.Transaction_Category/Ledger.Transaction as t
+  group by c.Name
+  union all
+  select 'TOTAL' as Label, sum(t.Amount) as Amount
+  from Ledger.Transaction as t
+);
+```
 
 ### 1. Aggregate Functions (MUST BE LOWERCASE)
 ```sql
@@ -431,7 +462,7 @@ create view entity Shop.ProductCurrentPrice (
 **Key points:**
 - Use `pr/Shop.Price_Product = p.ID` (association path with `.ID`)
 - Never use bare alias: `pr/Shop.Price_Product = p` will fail
-- ORDER BY and LIMIT are valid inside correlated subqueries (just not at the view level)
+- ORDER BY and LIMIT are valid inside correlated subqueries; at the view level, ORDER BY is allowed only when paired with LIMIT (MDL030)
 
 ### Pattern 10: JOIN with ON Clause (Non-Association)
 ```sql
@@ -509,8 +540,8 @@ mxcli check view.mdl -p app.mpr --references
 This catches type mismatches (e.g., declaring `long` for a `count()` column that returns `integer`), missing module references, and OQL syntax errors — before they become MxBuild errors like CE6770 ("View Entity is out of sync with the OQL Query").
 
 ### Step 9: Final Check
-- Remove any ORDER BY, LIMIT, or OFFSET clauses
-- These should be handled by the UI component or microflow
+- Prefer no ORDER BY/LIMIT/OFFSET — let the UI component or microflow sort and paginate
+- If the view is intrinsically a top-N, ORDER BY is allowed **only when paired with a LIMIT** (MDL030 / CE0174)
 
 ## Common Mistakes to Avoid
 
@@ -583,19 +614,25 @@ where pr/Shop.Price_Product = p
 where pr/Shop.Price_Product = p.ID
 ```
 
-### ❌ Mistake 8: Using ORDER BY or LIMIT in VIEW
+### ❌ Mistake 8: ORDER BY without a LIMIT in a VIEW
 ```sql
--- WRONG - Hardcoded in view
+-- WRONG - ORDER BY alone (MDL030 / CE0174)
+create view entity Finance.TopItems (...) as (
+  select ...
+  ORDER by Amount desc          -- needs a LIMIT
+);
+
+-- CORRECT (preferred) - let the UI sort/paginate
+create view entity Finance.ItemTotals (...) as (
+  select ...
+  -- no ORDER BY / LIMIT
+);
+
+-- ALSO VALID - an intrinsic top-N view
 create view entity Finance.TopItems (...) as (
   select ...
   ORDER by Amount desc
-  limit 100
-);
-
--- CORRECT - Let UI handle it
-create view entity Finance.TopItems (...) as (
-  select ...
-  -- No ORDER BY or LIMIT
+  LIMIT 100
 );
 ```
 
@@ -640,7 +677,7 @@ create view entity Shop.MonthlyRevenue (
 3. ✅ Proper COUNT: `count(o.OrderId)` not `count(*)`
 4. ✅ Comma syntax for DATEPART: `datepart(YEAR, o.OrderDate)`
 5. ✅ GROUP BY matches SELECT non-aggregated expressions
-6. ✅ No ORDER BY or LIMIT (UI will handle sorting)
+6. ✅ ORDER BY omitted (UI sorts) — or, for a top-N view, paired with a LIMIT (MDL030)
 
 ## Testing OQL Queries
 
@@ -707,7 +744,7 @@ When writing OQL queries for VIEW entities, always verify:
 
 - [ ] **CRITICAL**: Entity has @Position annotation (e.g., @Position(300, 500))
 - [ ] **CRITICAL**: All SELECT columns have explicit AS aliases matching entity attributes
-- [ ] **CRITICAL**: No ORDER BY, LIMIT, or OFFSET clauses (let UI handle sorting)
+- [ ] ORDER BY omitted so the UI sorts — or, for a top-N view, ORDER BY paired with a LIMIT (MDL030 rejects ORDER BY without LIMIT)
 - [ ] Aggregate functions are lowercase (`sum`, `avg`, `count`, `max`, `min`)
 - [ ] Using `count(entity.ID)` not `count(*)`
 - [ ] DATEPART uses comma syntax: `datepart(YEAR, field)`

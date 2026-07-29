@@ -4,6 +4,7 @@ package executor
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/mendixlabs/mxcli/mdl/ast"
@@ -83,6 +84,54 @@ func (v *microflowValidator) validate(body []ast.MicroflowStatement) {
 
 	// Check 3: variable scope — detect variables declared inside branches but used after
 	v.checkBranchScoping(body)
+
+	// Duplicate loop iterator names — a Mendix loop variable is scoped to the whole
+	// microflow, so reusing a name across loops is CE0111 at build time.
+	v.checkDuplicateLoopVariables(body)
+}
+
+// checkDuplicateLoopVariables flags a loop iterator name used by more than one
+// loop in the same microflow. A Mendix loop variable is scoped to the WHOLE
+// microflow (not to its loop), so two `loop $R in …` — even sequential ones, or a
+// nested loop reusing an outer name — build as CE0111 "Duplicate variable name".
+// (ledger finding #64). Fix for the user: give each loop a distinct iterator.
+func (v *microflowValidator) checkDuplicateLoopVariables(body []ast.MicroflowStatement) {
+	seen := map[string]bool{}
+	var walk func([]ast.MicroflowStatement)
+	walk = func(stmts []ast.MicroflowStatement) {
+		for _, s := range stmts {
+			switch st := s.(type) {
+			case *ast.LoopStmt:
+				if name := st.LoopVariable; name != "" {
+					if seen[name] {
+						v.addViolation("MDL052", linter.SeverityError,
+							fmt.Sprintf("loop iterator '$%s' is reused by another loop in this microflow; "+
+								"a Mendix loop variable is scoped to the whole microflow, so this builds as "+
+								"CE0111 \"Duplicate variable name\"", name),
+							fmt.Sprintf("Give each loop a distinct iterator name (e.g. rename one '$%s' to '$%s2')", name, name))
+					}
+					seen[name] = true
+				}
+				walk(st.Body)
+			case *ast.IfStmt:
+				walk(st.ThenBody)
+				walk(st.ElseBody)
+			case *ast.WhileStmt:
+				walk(st.Body)
+			case *ast.EnumSplitStmt:
+				for _, c := range st.Cases {
+					walk(c.Body)
+				}
+				walk(st.ElseBody)
+			case *ast.InheritanceSplitStmt:
+				for _, c := range st.Cases {
+					walk(c.Body)
+				}
+				walk(st.ElseBody)
+			}
+		}
+	}
+	walk(body)
 }
 
 // walkBody recursively walks microflow body statements looking for per-statement issues.
@@ -99,8 +148,12 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 		case *ast.ReturnStmt:
 			v.checkReturn(stmt)
 			v.checkExprFunctions("return", stmt.Value)
+			v.checkDivisionSlash("return", stmt.Value)
+			v.checkDateTimeLiterals("return", stmt.Value)
 		case *ast.IfStmt:
 			v.checkExprFunctions("if condition", stmt.Condition)
+			v.checkDivisionSlash("if condition", stmt.Condition)
+			v.checkDateTimeLiterals("if condition", stmt.Condition)
 			v.walkBody(stmt.ThenBody)
 			v.walkBody(stmt.ElseBody)
 		case *ast.EnumSplitStmt:
@@ -187,6 +240,8 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 				}
 			}
 			v.checkExprFunctions(fmt.Sprintf("declare '$%s'", stmt.Variable), stmt.InitialValue)
+			v.checkDivisionSlash(fmt.Sprintf("declare '$%s'", stmt.Variable), stmt.InitialValue)
+			v.checkDateTimeLiterals(fmt.Sprintf("declare '$%s'", stmt.Variable), stmt.InitialValue)
 		case *ast.MfSetStmt:
 			// SET on a plain variable target (not $var/Member = …, which is a
 			// member change). Flag a Decimal value assigned to an Integer/Long var.
@@ -196,9 +251,20 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 				}
 			}
 			v.checkExprFunctions(fmt.Sprintf("set '%s'", stmt.Target), stmt.Value)
+			v.checkDivisionSlash(fmt.Sprintf("set '%s'", stmt.Target), stmt.Value)
+			v.checkDateTimeLiterals(fmt.Sprintf("set '%s'", stmt.Target), stmt.Value)
 		case *ast.RetrieveStmt:
 			// RETRIEVE populates a list variable — remove from empty tracking
 			delete(v.emptyListVars, stmt.Variable)
+			if stmt.Where != nil {
+				xp := expressionToXPath(stmt.Where)
+				v.checkXPathAssociationEmpty(stmt.Variable, xp)
+				v.checkXPathIdConstraint(stmt.Variable, xp)
+			}
+		case *ast.CallMicroflowStmt:
+			v.checkAssociationObjectArgs("microflow "+stmt.MicroflowName.String(), stmt.Arguments)
+		case *ast.CallNanoflowStmt:
+			v.checkAssociationObjectArgs("nanoflow "+stmt.NanoflowName.String(), stmt.Arguments)
 		case *ast.LoopStmt:
 			// Check: @caption on a loop is silently dropped — Mendix for-loops
 			// have no caption (Microflows$LoopedActivity has no Caption
@@ -211,12 +277,19 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 						"Use @annotation to attach a note to the loop instead.",
 					"Replace @caption with @annotation to label the loop")
 			}
-			// Check: nested loop anti-pattern
+			// Check: nested loop anti-pattern. This is a heuristic — a nested loop is
+			// only wasteful when the inner loop is a key LOOKUP (find one matching
+			// item). Intentional aggregation that must visit every element (group ×
+			// category × month totals) is O(N*M) by nature and correct as written, so
+			// the message flags the lookup case without asserting the loop is wrong.
 			if v.loopDepth > 0 {
 				v.addViolation("MDL001", linter.SeverityWarning,
-					"nested loop detected (loop inside a loop). "+
-						"Use FIND($List, <condition>) for in-memory list matching instead of an inner loop (O(N) vs O(N^2)).",
-					"Replace the inner loop with $Match = FIND($List, key = $item/key) (a plain retrieve ... where cannot filter a list variable)")
+					"nested loop detected (loop inside a loop). If the inner loop is a "+
+						"key LOOKUP (finding one matching item), replace it with "+
+						"FIND($List, <condition>) for an in-memory match (O(N) vs O(N^2)). "+
+						"If it is intentional aggregation that must visit every element "+
+						"(e.g. totals over group x category x month), this is correct — ignore this hint.",
+					"For a lookup: $Match = FIND($List, key = $item/key). For genuine aggregation over all elements, no change is needed (a plain retrieve ... where cannot filter a list variable).")
 			}
 			// Check: loop over empty declared list
 			if v.emptyListVars[stmt.ListVariable] {
@@ -225,6 +298,21 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 						"Pass the list as a microflow parameter instead of creating an empty variable.",
 						stmt.ListVariable),
 					"Pass the list as a microflow parameter instead of creating an empty variable")
+			}
+			// Check: a `break` nested inside a conditional within a loop currently
+			// serializes a dangling sequence-flow reference, producing an UNLOADABLE
+			// .mpr — `mx check` crashes with an unhandled AggregateException
+			// ("key … not present in the dictionary") rather than an error. A break
+			// that is a direct child of the loop body serializes fine, but the useful
+			// form (`if <cond> then break`) is the broken one. Reject it with the
+			// guard-variable workaround until the flow serialization is fixed. (#52)
+			if loopBodyHasConditionalBreak(stmt.Body) {
+				v.addViolation("MDL051", linter.SeverityError,
+					"a `break` inside an if/case within a loop currently produces an unloadable model — "+
+						"`mx check` crashes with an unhandled exception (a dangling sequence-flow reference), "+
+						"not a normal error. (A break placed directly in the loop body serializes fine.)",
+					"Until the serialization is fixed, use a guard variable: "+
+						"`declare $Done Boolean = false;` then `loop … if not($Done) then … set $Done = true; end if; end loop`.")
 			}
 			v.loopDepth++
 			v.walkBody(stmt.Body)
@@ -308,6 +396,344 @@ func (v *microflowValidator) checkExprFunctions(label string, expr ast.Expressio
 				"the build fails CE0117 \"Error(s) in expression\"", label, u.Name),
 			suggestion)
 	}
+}
+
+// checkDivisionSlash flags `/` used as an arithmetic division operator, which
+// Mendix rejects with CE0117 — in a Mendix expression `/` is only the
+// member/association separator (`$obj/Attr`); integer/decimal division is `div`.
+// `$Dec / 2` parses to a BinaryExpr whose operator is literally `/`; the walk
+// finds it wherever it appears (nested in functions, if-then-else, etc.).
+// (The `$a / $b` form degrades to a member-access path and is caught by
+// `check --references` as an unresolvable attribute, so it is not re-flagged here.)
+// (ledger finding #17)
+func (v *microflowValidator) checkDivisionSlash(label string, expr ast.Expression) {
+	// Two forms of `/`-as-division: a `BinaryExpr` with operator `/` (right operand
+	// is a literal or parenthesized expr, e.g. `$Dec / 2`), and the variable/
+	// variable form (`$Dec / $Dec2`) which parses as a member-access path — the
+	// visitor preserves its raw source precisely because the `$` on the right
+	// marks it as division, not navigation. The `$a / $b` form is detected from
+	// the preserved source, so it is caught even when EMBEDDED in a larger
+	// expression (`$a / $b + 1`, `round($a / $b)`) where the division degrades to
+	// a member-path AttributePathExpr nested under a BinaryExpr/FunctionCallExpr.
+	if exprHasSlashDivision(expr) || exprHasSlashDollarDivision(expr) {
+		v.addViolation("MDL045", linter.SeverityError,
+			fmt.Sprintf("%s uses '/' as a division operator, which Mendix rejects "+
+				"(CE0117 \"Error(s) in expression\") — '/' navigates associations, it does not divide", label),
+			"Use 'div' for division: `$a div $b` (integer/decimal division is always Decimal — wrap in round()/trunc() for an integer result).")
+	}
+}
+
+// exprHasSlashDollarDivision reports the `$a / $b` division-misuse form: a
+// source-preserved expression whose raw source uses `/` (optionally spaced)
+// immediately before a `$` variable, OUTSIDE any string literal. A real
+// member/association path never writes `/$` — a path segment is a bare or
+// qualified name — so this is an unambiguous division misuse. Scanning the
+// preserved source (rather than requiring the SourceExpr to wrap an
+// AttributePathExpr directly) catches the division even when it is nested in a
+// larger expression: `$a / $b + 1`, `round($a / $b)`, `$a / $b * 100`. The
+// string-literal-aware scan avoids a false positive on a `/$` inside a quoted
+// literal (e.g. `'path/$x'`).
+func exprHasSlashDollarDivision(expr ast.Expression) bool {
+	switch e := expr.(type) {
+	case *ast.SourceExpr:
+		if sourceHasSlashDollarDivision(e.Source) {
+			return true
+		}
+		return exprHasSlashDollarDivision(e.Expression)
+	case *ast.BinaryExpr:
+		return exprHasSlashDollarDivision(e.Left) || exprHasSlashDollarDivision(e.Right)
+	case *ast.UnaryExpr:
+		return exprHasSlashDollarDivision(e.Operand)
+	case *ast.ParenExpr:
+		return exprHasSlashDollarDivision(e.Inner)
+	case *ast.FunctionCallExpr:
+		for _, arg := range e.Arguments {
+			if exprHasSlashDollarDivision(arg) {
+				return true
+			}
+		}
+	case *ast.IfThenElseExpr:
+		return exprHasSlashDollarDivision(e.Condition) ||
+			exprHasSlashDollarDivision(e.ThenExpr) ||
+			exprHasSlashDollarDivision(e.ElseExpr)
+	}
+	return false
+}
+
+// sourceHasSlashDollarDivision scans a raw expression source for a `/` used as
+// division with a variable divisor (`… / $x …`) outside any single-quoted
+// string literal. Doubled ” inside a string is a Mendix-escaped quote.
+func sourceHasSlashDollarDivision(source string) bool {
+	inStr := false
+	for i := 0; i < len(source); i++ {
+		c := source[i]
+		if c == '\'' {
+			if inStr && i+1 < len(source) && source[i+1] == '\'' {
+				i++ // skip the escaped quote pair
+				continue
+			}
+			inStr = !inStr
+			continue
+		}
+		if inStr || c != '/' {
+			continue
+		}
+		j := i + 1
+		for j < len(source) && (source[j] == ' ' || source[j] == '\t') {
+			j++
+		}
+		if j < len(source) && source[j] == '$' {
+			return true
+		}
+	}
+	return false
+}
+
+// exprHasSlashDivision reports whether the expression tree contains a BinaryExpr
+// whose operator is a literal `/` (an arithmetic-division misuse).
+func exprHasSlashDivision(expr ast.Expression) bool {
+	switch e := expr.(type) {
+	case *ast.BinaryExpr:
+		if strings.TrimSpace(e.Operator) == "/" {
+			return true
+		}
+		return exprHasSlashDivision(e.Left) || exprHasSlashDivision(e.Right)
+	case *ast.UnaryExpr:
+		return exprHasSlashDivision(e.Operand)
+	case *ast.ParenExpr:
+		return exprHasSlashDivision(e.Inner)
+	case *ast.FunctionCallExpr:
+		for _, arg := range e.Arguments {
+			if exprHasSlashDivision(arg) {
+				return true
+			}
+		}
+	case *ast.IfThenElseExpr:
+		return exprHasSlashDivision(e.Condition) || exprHasSlashDivision(e.ThenExpr) || exprHasSlashDivision(e.ElseExpr)
+	case *ast.SourceExpr:
+		return exprHasSlashDivision(e.Expression)
+	}
+	return false
+}
+
+// xpathAssocEmptyRe matches a module-qualified association compared directly to
+// `empty` in an XPath constraint (`Ledger.Transaction_Category = empty`). The
+// leading boundary class excludes a `/` (so an attribute-over-association path
+// like `Assoc/Ledger.Category = empty` is NOT matched — that is a valid
+// attribute nullability test) and a `.`/word char (so it captures the whole
+// qualified name, not the tail of a 3-part enum literal).
+var xpathAssocEmptyRe = regexp.MustCompile(`(^|[^\w./])([A-Za-z_]\w*\.[A-Za-z_]\w*)\s*=\s*empty\b`)
+
+// xpathAssociationEmptyMatches returns the module-qualified association names an
+// XPath constraint compares directly to `empty` (`Ledger.Transaction_Category =
+// empty`). Shared by the microflow-retrieve check (MDL047) and the page/widget
+// datasource check. Empty result → nothing to flag.
+func xpathAssociationEmptyMatches(xpath string) []string {
+	var out []string
+	for _, m := range xpathAssocEmptyRe.FindAllStringSubmatch(xpath, -1) {
+		out = append(out, m[2])
+	}
+	return out
+}
+
+// checkXPathAssociationEmpty flags `[Module.Association = empty]` in a retrieve
+// constraint. Mendix XPath has no `= empty` test for an association — it fails
+// the build with CE0161; the nullability test is `not(Module.Association/Module.Target)`.
+// A bare attribute (`Name = empty`) is valid and is not module-qualified, so it
+// never matches. (ledger finding #25)
+func (v *microflowValidator) checkXPathAssociationEmpty(variable, xpath string) {
+	for _, assoc := range xpathAssociationEmptyMatches(xpath) {
+		v.addViolation("MDL047", linter.SeverityError,
+			fmt.Sprintf("retrieve '$%s' constraint tests association `%s = empty`, which Mendix XPath does not support "+
+				"(CE0161 \"Error(s) in XPath constraint\") — `= empty` works on attributes, not associations", variable, assoc),
+			fmt.Sprintf("Test for the absence of the associated object with negation: `[not(%s/<Module.TargetEntity>)]`.", assoc))
+	}
+}
+
+// xpathIdConstraintRe matches a constraint comparing the object id against a VALUE
+// (`id = $strVar`, `id = '123'`, `id != 5`). It captures the right-hand operand.
+// Comparing `id` against an OBJECT variable (`[id != $ExistingOrder]` — the valid
+// "exclude self" pattern) is intentionally NOT matched here: the operand filter in
+// checkXPathIdConstraint requires a primitive value, and an object variable is not
+// one. `id` is a Mendix reserved member, so a bare `id` in identifier position is
+// always the system id.
+var xpathIdConstraintRe = regexp.MustCompile(`(?:^|[^\w./])(?i:id)\s*(?:=|!=|<|>)\s*(\$\w+|'[^']*'|-?\d+)`)
+
+// checkXPathIdConstraint flags a retrieve that constrains the object id against a
+// stored id VALUE (`where [id = $Id]` with `$Id` a String/Long, or a literal).
+// Mendix XPath has no id operator reachable from a microflow expression, so this
+// fails the build with CE0161. Comparing `id` to an OBJECT variable is a valid
+// identity test and is left alone (its operand is not a primitive). (ledger #42)
+func (v *microflowValidator) checkXPathIdConstraint(variable, xpath string) {
+	for _, m := range xpathIdConstraintRe.FindAllStringSubmatch(xpath, -1) {
+		operand := m[1]
+		if strings.HasPrefix(operand, "$") {
+			// A $-variable operand: flag only when it is a primitive VALUE (a stored
+			// id — String/Long/Integer). An object variable is not in varKinds, so an
+			// identity comparison (`id != $obj`) is correctly not flagged.
+			if _, isPrimitive := v.varKinds[operand[1:]]; !isPrimitive {
+				continue
+			}
+		}
+		v.addViolation("MDL048", linter.SeverityError,
+			fmt.Sprintf("retrieve '$%s' constrains the object id against a value (`[id = %s]`), which Mendix XPath does not support "+
+				"(CE0161 \"Error(s) in XPath constraint\") — there is no id operator reachable from a microflow expression", variable, operand),
+			"Retrieve by GUID with a marketplace action (NanoflowCommons GetObjectByGuid / CommunityCommons), "+
+				"or expose the id as a String on a view entity (`cast(id as string) as ObjectId`) and constrain on that String column. "+
+				"(Comparing id against an OBJECT variable — `[id != $obj]` — IS valid and is not flagged.)")
+		return
+	}
+}
+
+// checkAssociationObjectArgs flags a call argument bound to an association-object
+// path (`$obj/Module.Assoc`, which yields the associated OBJECT). Mendix rejects
+// an association path used as a value with CE0117 — it must be materialized first
+// (`retrieve $x from $obj/Module.Assoc;`). An attribute value over an association
+// (`$obj/Module.Assoc/Attr`) is a legal value and is NOT flagged. (ledger #43/#44)
+func (v *microflowValidator) checkAssociationObjectArgs(callee string, args []ast.CallArgument) {
+	for _, a := range args {
+		if exprIsAssociationObjectPath(a.Value) {
+			v.addViolation("MDL049", linter.SeverityError,
+				fmt.Sprintf("call %s: argument '%s' passes an association path (an object reached over an association), "+
+					"which Mendix rejects as a value (CE0117 \"Error(s) in expression\")", callee, a.Name),
+				fmt.Sprintf("Materialize the object first, then pass the variable: `retrieve $%s from %s;` then `%s = $%s`.",
+					a.Name, microflowExprSource(a.Value), a.Name, a.Name))
+		}
+	}
+}
+
+// loopBodyHasConditionalBreak reports whether a `break` appears inside a
+// conditional (if / case / inheritance split) directly within this loop body — the
+// pattern that serializes a dangling reference and crashes `mx check` (#52). A
+// break that is a *direct* statement of the loop body is not flagged (it
+// serializes fine). Nested loops are not descended into: a break there belongs to
+// that loop and is validated when it is walked.
+func loopBodyHasConditionalBreak(stmts []ast.MicroflowStatement) bool {
+	for _, s := range stmts {
+		switch n := s.(type) {
+		case *ast.IfStmt:
+			if stmtsContainBreak(n.ThenBody) || stmtsContainBreak(n.ElseBody) {
+				return true
+			}
+		case *ast.EnumSplitStmt:
+			for _, c := range n.Cases {
+				if stmtsContainBreak(c.Body) {
+					return true
+				}
+			}
+			if stmtsContainBreak(n.ElseBody) {
+				return true
+			}
+		case *ast.InheritanceSplitStmt:
+			for _, c := range n.Cases {
+				if stmtsContainBreak(c.Body) {
+					return true
+				}
+			}
+			if stmtsContainBreak(n.ElseBody) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// stmtsContainBreak reports whether a `break` belonging to the enclosing loop
+// appears anywhere in these statements. Descends into conditionals but NOT into
+// nested loops (a nested loop traps its own break).
+func stmtsContainBreak(stmts []ast.MicroflowStatement) bool {
+	for _, s := range stmts {
+		switch n := s.(type) {
+		case *ast.BreakStmt:
+			return true
+		case *ast.IfStmt:
+			if stmtsContainBreak(n.ThenBody) || stmtsContainBreak(n.ElseBody) {
+				return true
+			}
+		case *ast.EnumSplitStmt:
+			for _, c := range n.Cases {
+				if stmtsContainBreak(c.Body) {
+					return true
+				}
+			}
+			if stmtsContainBreak(n.ElseBody) {
+				return true
+			}
+		case *ast.InheritanceSplitStmt:
+			for _, c := range n.Cases {
+				if stmtsContainBreak(c.Body) {
+					return true
+				}
+			}
+			if stmtsContainBreak(n.ElseBody) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// exprIsAssociationObjectPath reports whether an expression is an attribute path
+// whose FINAL segment is a module-qualified association (`$obj/Module.Assoc`) —
+// i.e. it resolves to an associated OBJECT, not an attribute value. A final bare
+// segment (`$obj/Module.Assoc/Attr` → `Attr`) is an attribute and returns false.
+func exprIsAssociationObjectPath(expr ast.Expression) bool {
+	if se, ok := expr.(*ast.SourceExpr); ok {
+		expr = se.Expression
+	}
+	ap, ok := expr.(*ast.AttributePathExpr)
+	if !ok || len(ap.Path) == 0 {
+		return false
+	}
+	return strings.Contains(ap.Path[len(ap.Path)-1], ".")
+}
+
+// dateTimeLiteralFuncs are the date-construction functions whose arguments
+// Mendix requires to be literal numeric constants — a variable or computed
+// argument fails the build with CE0117.
+var dateTimeLiteralFuncs = map[string]bool{"datetime": true, "datetimeutc": true}
+
+// checkDateTimeLiterals flags a dateTime()/dateTimeUTC() call with a non-literal
+// argument. Mendix builds these from hardcoded numeric constants only; a
+// variable or expression (`dateTime(2026, $Month, $Day)`) is CE0117. (ledger #21)
+func (v *microflowValidator) checkDateTimeLiterals(label string, expr ast.Expression) {
+	if exprHasNonLiteralDateTime(expr) {
+		v.addViolation("MDL046", linter.SeverityError,
+			fmt.Sprintf("%s calls dateTime()/dateTimeUTC() with a non-literal argument, which Mendix rejects "+
+				"(CE0117 \"Error(s) in expression\") — these functions accept only hardcoded numeric constants", label),
+			"Step off a literal anchor date instead: `addDays(addMonths(dateTime(2026,1,1), $Month - 1), $Day - 1)` (addDays/addMonths take variables).")
+	}
+}
+
+// exprHasNonLiteralDateTime reports whether the tree contains a dateTime/
+// dateTimeUTC call any of whose arguments is not a plain numeric literal.
+func exprHasNonLiteralDateTime(expr ast.Expression) bool {
+	switch e := expr.(type) {
+	case *ast.FunctionCallExpr:
+		if dateTimeLiteralFuncs[strings.ToLower(e.Name)] {
+			for _, arg := range e.Arguments {
+				if _, ok := arg.(*ast.LiteralExpr); !ok {
+					return true
+				}
+			}
+		}
+		for _, arg := range e.Arguments {
+			if exprHasNonLiteralDateTime(arg) {
+				return true
+			}
+		}
+	case *ast.BinaryExpr:
+		return exprHasNonLiteralDateTime(e.Left) || exprHasNonLiteralDateTime(e.Right)
+	case *ast.UnaryExpr:
+		return exprHasNonLiteralDateTime(e.Operand)
+	case *ast.ParenExpr:
+		return exprHasNonLiteralDateTime(e.Inner)
+	case *ast.IfThenElseExpr:
+		return exprHasNonLiteralDateTime(e.Condition) || exprHasNonLiteralDateTime(e.ThenExpr) || exprHasNonLiteralDateTime(e.ElseExpr)
+	case *ast.SourceExpr:
+		return exprHasNonLiteralDateTime(e.Expression)
+	}
+	return false
 }
 
 // microflowExprSource returns the Mendix source text of a microflow value

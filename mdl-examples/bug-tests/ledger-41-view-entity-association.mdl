@@ -1,0 +1,25 @@
+-- ============================================================================
+-- Ledger finding #41: associations to/from a view entity are impossible (CE6771)
+-- ============================================================================
+--
+-- Symptom (before fix): `create association ... from/to <ViewEntity>` passed
+-- `mxcli check --references` and `mxcli exec` created it silently, but `mx check`
+-- rejected it with CE6771 "It is not possible to create associations to/from
+-- View Entities." Both directions are invalid.
+--
+-- After fix: `mxcli check --references` rejects it, naming the view entity. Use a
+-- non-persistent entity carrying a real reference to the target instead.
+--
+-- Usage (the association is rejected in references mode, against a project that
+-- already has the view entity):
+--   mxcli exec 'create entity Ledger.Category (Name: string(100));' -p app.mpr
+--   mxcli exec 'create or modify view entity Ledger.VCat (CatName: string(100))
+--     as (select c.Name as CatName from Ledger.Category as c);' -p app.mpr
+--   mxcli check mdl-examples/bug-tests/ledger-41-view-entity-association.mdl -p app.mpr --references
+-- ============================================================================
+
+-- Rejected: Ledger.VCat is a view entity (CE6771). The reverse direction
+-- (from Ledger.Category to Ledger.VCat) is rejected the same way.
+create association Ledger.VCat_Category
+  from Ledger.VCat
+  to Ledger.Category;

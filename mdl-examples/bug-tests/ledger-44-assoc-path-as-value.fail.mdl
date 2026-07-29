@@ -1,0 +1,29 @@
+-- ============================================================================
+-- Ledger finding #43/#44: an association path is not a value
+-- ============================================================================
+--
+-- Symptom (before fix): passing an association-object path as a call argument —
+--   $R = call microflow MyModule.Consume(B = $Edit/MyModule.Edit_Budget)
+-- passed `mxcli check` but failed the build with CE0117 "Error(s) in expression."
+-- Mendix does not treat an association path (an object reached over an
+-- association) as a value; it must be materialized first.
+--
+-- After fix: MDL049 rejects it at check time. Fix for the user: retrieve the
+-- object into a variable first, then pass the variable:
+--   retrieve $B from $Edit/MyModule.Edit_Budget;
+--   $R = call microflow MyModule.Consume(B = $B);
+-- An attribute value over an association ($Edit/MyModule.Edit_Budget/Name) is a
+-- legal value and is NOT flagged.
+--
+-- Usage (expected to FAIL check):
+--   mxcli check mdl-examples/bug-tests/ledger-44-assoc-path-as-value.fail.mdl
+-- ============================================================================
+
+create microflow MyModule.PassAssoc (
+  $Edit: MyModule.Edit
+)
+returns boolean
+begin
+  $R = call microflow MyModule.Consume(B = $Edit/MyModule.Edit_Budget);   -- MDL049 (CE0117)
+  return $R;
+end

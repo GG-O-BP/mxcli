@@ -593,6 +593,7 @@ type rawWidget struct {
 	LabelPosition string // "Left", "Top", etc.
 	Placeholder   string // Placeholder hint text (from PlaceholderTemplate)
 	OnChange      string // MDL rendering of the OnChangeAction client action
+	OnClick       string // MDL rendering of a pluggable widget's onClick action (e.g. DataGrid2)
 	// Filter widget properties
 	FilterAttributes []string // Attributes to filter on
 	FilterExpression string   // Default filter expression (contains, startsWith, etc.)

@@ -1,0 +1,32 @@
+-- ============================================================================
+-- Ledger finding #36: view-entity pass-through string column length must match
+-- the source attribute exactly
+-- ============================================================================
+--
+-- Trap: a PASS-THROUGH column (a bare source-attribute reference like `c.Name`)
+-- inherits the source attribute's length verbatim. Declaring the view column with
+-- a DIFFERENT length — including an unbounded `string` against a `string(100)`
+-- source — passes plain `mxcli check` but fails the build with CE6770
+-- "View Entity out of sync with OQL Query".
+--
+--   -- WRONG: unbounded string against a string(100) source (CE6770)
+--   create or modify view entity Ledger.VCategory ( CategoryName: string ) as (
+--     select c.Name as CategoryName from Ledger.Category as c
+--   );
+--
+-- After fix: `mxcli check ... --references` resolves the source attribute and
+-- flags the mismatch pre-build (extends the view-entity length check — which
+-- previously covered only DERIVED columns like cast/case — to pass-through
+-- columns). The correct form below matches the source length exactly.
+--
+-- Usage (the mismatch is caught in references mode, against a project):
+--   mxcli check mdl-examples/bug-tests/ledger-36-view-passthrough-length.mdl -p app.mpr --references
+-- ============================================================================
+
+create entity Ledger.Category ( Name: string(100) );
+
+-- CORRECT: declared length matches the source attribute (string(100)).
+create or modify view entity Ledger.VCategory ( CategoryName: string(100) ) as (
+  select c.Name as CategoryName
+  from Ledger.Category as c
+);

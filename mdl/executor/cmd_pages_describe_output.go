@@ -473,6 +473,10 @@ func outputWidgetMDLV3(ctx *ExecContext, w rawWidget, indent int) {
 			if w.Selection != "" {
 				props = append(props, fmt.Sprintf("Selection: %s", w.Selection))
 			}
+			// onClick action (ledger #67)
+			if w.OnClick != "" {
+				props = append(props, fmt.Sprintf("onClick: %s", w.OnClick))
+			}
 			// Add paging properties if non-default
 			props = appendDataGridPagingProps(props, w)
 			props = appendAppearanceProps(props, w)
@@ -605,9 +609,9 @@ func outputWidgetMDLV3(ctx *ExecContext, w rawWidget, indent int) {
 			props = appendConditionalProps(props, w)
 			props = appendAppearanceProps(props, w)
 			formatWidgetProps(ctx.Output, prefix, header, props, "\n")
-		} else if (len(w.ExplicitProperties) > 0 || len(w.ObjectLists) > 0) && w.WidgetID != "" {
-			// Generic pluggable widget with explicit properties and/or object-list
-			// child blocks (chart series/lines/scaleColors).
+		} else if (len(w.ExplicitProperties) > 0 || len(w.ObjectLists) > 0 || w.OnClick != "") && w.WidgetID != "" {
+			// Generic pluggable widget with explicit properties, object-list child
+			// blocks (chart series/lines/scaleColors), and/or an onClick action.
 			header := fmt.Sprintf("pluggablewidget '%s' %s", w.WidgetID, mdlIdent(w.Name))
 			props := []string{}
 			if w.Caption != "" {
@@ -615,6 +619,10 @@ func outputWidgetMDLV3(ctx *ExecContext, w rawWidget, indent int) {
 			}
 			for _, ep := range w.ExplicitProperties {
 				props = append(props, fmt.Sprintf("%s: %s", ep.Key, ep.Value))
+			}
+			// onClick action (ledger #67 — reported on CustomChart)
+			if w.OnClick != "" {
+				props = append(props, fmt.Sprintf("onClick: %s", w.OnClick))
 			}
 			props = appendAppearanceProps(props, w)
 			if len(w.ObjectLists) == 0 {

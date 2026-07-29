@@ -70,7 +70,16 @@ const defaultSlotContainer = "template"
 //	    editorConfig-extracted rules instead of overwriting, so compound/ternary
 //	    guards the static extractor skips (e.g. Timeline title/description hidden
 //	    when customVisualization) still null their hidden textTemplates (CE0463).
-const WidgetDefGeneratorVersion = 12
+//	13 — emit an `action` PropertyMapping for `type="action"` properties that MDL
+//	    can author (`onClick`→the widget Action, `onChange`→OnChange). Previously
+//	    no action operation was ever generated, so the writer had no mapping and
+//	    silently dropped a widget-level action (e.g. DataGrid2 `onClick`). Bump
+//	    forces existing projects to regenerate their defs with the action mapping.
+//	14 — populate KnownProperties with every declared property that has no mapping
+//	    in the generated def, so the checker warns "recognized but not persisted"
+//	    instead of silently dropping or falsely rejecting it (general guard for the
+//	    ledger #67 class). Bump forces regeneration to carry the new field.
+const WidgetDefGeneratorVersion = 14
 
 // WidgetDefinition describes how to construct a pluggable widget from MDL syntax.
 // Loaded from embedded JSON definition files (*.def.json).
@@ -704,6 +713,15 @@ func (e *PluggableWidgetEngine) resolveMapping(mapping PropertyMapping, w *ast.W
 			ctx.Action = act
 		}
 
+	case "OnChange":
+		if action := w.GetOnChange(); action != nil {
+			act, err := e.pageBuilder.buildClientActionV3(action)
+			if err != nil {
+				return nil, mdlerrors.NewBackend("build action", err)
+			}
+			ctx.Action = act
+		}
+
 	default:
 		val := w.GetStringProp(source)
 		if val == "" {
@@ -1043,12 +1061,21 @@ func (e *PluggableWidgetEngine) buildObjectListItem(mapping *ObjectListMapping, 
 		spec.Properties = append(spec.Properties, prop)
 	}
 
-	// DataGrid column header convention: when the user provides no Caption
-	// but does bind an Attribute, fall back to the attribute name as the
-	// header text. Mirrors buildDataGrid2ColumnObject in datagrid_builder.go
-	// (line 491-494). Without this, an attribute column with no Caption
-	// emits an empty header that Studio Pro flags as definition drift.
-	applyColumnHeaderFallback(&spec)
+	// DataGrid column header convention: when the user provides no Caption,
+	// fall back to the bound attribute name — or, for a custom-content column
+	// with no attribute, the column's own name. Mirrors buildDataGrid2ColumnObject
+	// in datagrid_builder.go. Without this, an empty/absent column header trips
+	// Studio Pro's CE0463 (ledger #54). Only applies to items whose template has
+	// a `header` slot (datagrid columns), never to header-less object-list items
+	// like chart series.
+	hasHeaderSlot := false
+	for _, ip := range mapping.ItemProperties {
+		if strings.EqualFold(ip.PropertyKey, "header") {
+			hasHeaderSlot = true
+			break
+		}
+	}
+	applyColumnHeaderFallback(&spec, child.Name, hasHeaderSlot)
 
 	// DataGrid column sortable convention: attribute-less columns (typical
 	// "Actions" custom-content columns) default to sortable=false, since
@@ -1142,30 +1169,60 @@ func (e *PluggableWidgetEngine) buildObjectListItem(mapping *ObjectListMapping, 
 // in datagrid_builder.go. The check is conservative: only fires when the
 // header slot is genuinely empty, so it's safe to call for any object-list
 // item kind.
-func applyColumnHeaderFallback(spec *backend.ObjectListItemSpec) {
-	var hasHeader bool
+func applyColumnHeaderFallback(spec *backend.ObjectListItemSpec, columnName string, hasHeaderSlot bool) {
+	// Only items whose template has a `header` slot (datagrid columns) get a
+	// header fallback; header-less object-list items (chart series, accordion
+	// groups) are left untouched.
+	if !hasHeaderSlot {
+		return
+	}
+	headerIdx := -1
+	headerEmpty := false
 	var attrPath string
-	for _, p := range spec.Properties {
+	for i, p := range spec.Properties {
 		switch p.PropertyKey {
 		case "header":
-			hasHeader = true
+			headerIdx = i
+			// An explicit `Caption: ''` reaches here as a texttemplate with no
+			// text and no params. Studio Pro rejects an empty column header with
+			// CE0463 "widget definition changed" (ledger #54) — the same failure
+			// an absent header would cause without this fallback. Treat empty as
+			// absent so the fallback applies either way.
+			headerEmpty = p.Operation == "texttemplate" && p.TextTemplate == "" && len(p.Parameters) == 0
 		case "attribute":
 			attrPath = p.AttributePath
 		}
 	}
-	if hasHeader || attrPath == "" {
+	// A present, non-empty header needs nothing.
+	if headerIdx >= 0 && !headerEmpty {
 		return
 	}
-	// Extract the leaf attribute name from a fully-qualified path
-	// (Module.Entity.Attr → Attr).
-	attrName := attrPath
-	if idx := strings.LastIndex(attrName, "."); idx >= 0 {
-		attrName = attrName[idx+1:]
+	// Fallback header text: the bound attribute's leaf name (Module.Entity.Attr →
+	// Attr), or — for a custom-content / action column with no attribute — the
+	// column's own name. Every datagrid column needs a NON-empty header; an empty
+	// or absent one is CE0463 (ledger #54), and a custom-content column has no
+	// attribute to derive one from, so the column name is the sensible default.
+	fallback := attrPath
+	if idx := strings.LastIndex(fallback, "."); idx >= 0 {
+		fallback = fallback[idx+1:]
+	}
+	if fallback == "" {
+		fallback = columnName
+	}
+	if fallback == "" {
+		return
+	}
+	if headerIdx >= 0 {
+		// Fill the empty header in place rather than appending a duplicate.
+		spec.Properties[headerIdx].Operation = "texttemplate"
+		spec.Properties[headerIdx].TextTemplate = fallback
+		spec.Properties[headerIdx].EntityContext = ""
+		return
 	}
 	spec.Properties = append(spec.Properties, backend.ObjectListItemProperty{
 		PropertyKey:   "header",
 		Operation:     "texttemplate",
-		TextTemplate:  attrName,
+		TextTemplate:  fallback,
 		EntityContext: "", // literal text — no template params to resolve
 	})
 }

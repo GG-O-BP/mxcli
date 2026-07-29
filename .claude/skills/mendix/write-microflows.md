@@ -571,6 +571,8 @@ commit $Product with events refresh;
 
 **Best Practice**: Use `with events` when you want before/after commit event handlers to execute. Use `refresh` when the committed object is displayed in the client and you want the UI to update immediately.
 
+> **Re-sorting a database-datasource grid needs `refresh`.** A plain `commit $Obj;` updates the committed attribute *values* in the grid, but a grid backed by a **database** datasource does **not** re-run its sort — so after changing a sort key (e.g. a reorder that rewrites a `SequenceNumber`), the row stays in its old position until you `commit $Obj refresh;`. The `refresh` re-queries the datasource, which re-applies the sort. (Ledger #57.)
+
 > **Binding a microflow to an entity event is MDL — you do NOT need to map it manually in Studio Pro.** After writing a handler microflow (e.g. a `BeforeCommit` validation), wire it directly:
 > ```mdl
 > alter entity Sales.Order
@@ -589,6 +591,21 @@ add head($SourceItems) to $Items;
 ```
 
 Use expression-valued `add` only when the expression returns an object compatible with the target list element type.
+
+### `contains` is overloaded — string vs list
+
+`contains(a, b)` is both a **string** function (`contains(haystack, needle)` → substring test) and a **list** operation (`contains(list, object)` → membership test). mxcli picks the right serialization automatically:
+
+```mdl
+-- STRING contains — assign to a PRE-DECLARED Boolean (a Change Variable action)
+declare $HasAt Boolean = false;
+set $HasAt = contains($Email, '@');
+
+-- LIST contains — do NOT pre-declare the output (the list op creates it)
+set $Found = contains($Items, $Item);
+```
+
+The distinction: a **literal or computed** second argument is always the string function. When both arguments are plain variables, the input variable's declared type decides — a **String** input becomes the string function (Change Variable, so declare the Boolean first), anything else stays a list operation (which creates its own output variable, so leave it undeclared). Getting the declare wrong is what triggers `CE0111 "Duplicate variable name"`.
 
 ## Database Operations
 
@@ -734,7 +751,11 @@ $Result = $A * $B;      -- Multiplication
 $Result = $A div $B;    -- Division (use 'div', not '/')
 ```
 
-**Important**: Use `div` for division, NOT `/`.
+**Important**: Use `div` for division, NOT `/`. In a Mendix expression `/` is the
+member/association separator (`$obj/Attr`), so `$A / $B` is not division —
+`mxcli check` rejects it as **MDL045** (it would fail the build with CE0117).
+Integer/decimal division always yields a Decimal; wrap it in `round()`/`trunc()`
+for an Integer result (else **MDL041**).
 
 ### Comparison
 
@@ -760,6 +781,21 @@ $Result = not $A;       -- Logical NOT
 if $IsActive and $IsValid and $HasStock then
   set $CanProcess = true;
 end if;
+```
+
+### Date construction
+
+`dateTime(...)` / `dateTimeUTC(...)` build a date from **literal numeric
+constants only** — a variable or computed argument fails the build with CE0117
+(`mxcli check` flags it as **MDL046**). To build a date from variables, step off
+a literal anchor with `addDays()` / `addMonths()` (which *do* take variables):
+
+```mdl
+-- WRONG: variable args to dateTime() (CE0117 / MDL046)
+set $D = dateTime(2026, $Month, $Day);
+
+-- RIGHT: anchor on a literal, then step with addMonths/addDays
+set $D = addDays(addMonths(dateTime(2026, 1, 1), $Month - 1), $Day - 1);
 ```
 
 ## Logging
@@ -986,6 +1022,29 @@ retrieve $Items from Module.Entity where Active = true;
 ```
 
 **Note**: `returns type as $Var` in the microflow signature does NOT create an activity variable — it only names the return value. So `$Var = call java action ...` after `returns as $Var` is fine (one creation).
+
+**Variables are scoped to the branch that creates them.** A variable first created
+inside an `if`/`else` arm (including by `$Var = call ...`) is not visible outside
+that arm. To use one value after a conditional, `declare` it *before* the
+conditional and assign in every branch:
+
+```mdl
+-- WRONG: $GTotalText is created only in the `then` arm → not declared in `else`
+if $HasVariance then
+  $GTotalText = call microflow Module.FMT_Variance($v);   -- created here only
+else
+  set $GTotalText = 'n/a';                                 -- error: not declared
+end if;
+
+-- CORRECT: declare before, then set in each branch (call into a temp, then set)
+declare $GTotalText string = '';
+if $HasVariance then
+  $Tmp = call microflow Module.FMT_Variance($v);
+  set $GTotalText = $Tmp;
+else
+  set $GTotalText = 'n/a';
+end if;
+```
 
 **Fallback chains reuse the same name = CE0111.** Because each `$Var = call microflow …` (or retrieve/create) is a *fresh* variable creation, the natural "try A, else try B" shape is invalid — even when the retry is inside an `if`:
 

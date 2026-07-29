@@ -1,0 +1,38 @@
+-- ============================================================================
+-- Ledger finding #64: a loop variable is scoped to the microflow, not the loop
+-- ============================================================================
+--
+-- Symptom (before fix): two loops in the same microflow reusing the same iterator
+-- name (`loop $R in … end loop; loop $R in … end loop`) passed `mxcli check` but
+-- `mx check` failed with [CE0111] "Duplicate variable name 'R'." at Loop. A
+-- Mendix loop variable is scoped to the WHOLE microflow, so the second loop
+-- re-creates an existing variable.
+--
+-- After fix: MDL052 rejects a reused loop iterator at check time and tells the
+-- user to give each loop a distinct name. A nested loop reusing an outer
+-- iterator is caught too; distinct iterators (and the same name across different
+-- microflows) are fine.
+--
+-- Usage (expected to FAIL check):
+--   mxcli check mdl-examples/bug-tests/ledger-64-duplicate-loop-variable.fail.mdl
+-- ============================================================================
+
+create module L64;
+
+create entity L64.Row (
+  Name: string(50)
+);
+
+create microflow L64.TwoLoops (
+  $Rows: list of L64.Row
+)
+returns Boolean
+begin
+  loop $R in $Rows begin
+    set $x = $R/Name;                  -- first use of $R
+  end loop;
+  loop $R in $Rows begin               -- MDL052: '$R' reused (CE0111)
+    set $y = $R/Name;
+  end loop;
+  return true;
+end

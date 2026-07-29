@@ -171,9 +171,14 @@ var funcTable = map[string]funcSig{
 	"dateTimeToEpoch": {args: []TypeKind{KindDateTime}, ret: KindLong},
 	"epochToDateTime": {args: []TypeKind{KindLong}, ret: KindDateTime},
 
-	// DateTime — extraction → Integer
-	"year":        {args: []TypeKind{KindDateTime}, ret: KindInteger},
-	"month":       {args: []TypeKind{KindDateTime}, ret: KindInteger},
+	// DateTime — extraction → Integer.
+	// NOTE: `year(...)` and `month(...)` were previously listed here but Mendix
+	// has no such built-ins — `mxcli check` passed and the build then failed with
+	// CE0117 (ledger finding #16). The correct approach is date formatting/parsing
+	// (`parseInteger(formatDateTime($d, 'yyyy'))`). The sibling extraction names
+	// below are UNVERIFIED against a real Mendix build and are likely invalid too;
+	// remove any that a build rejects (do not add more without confirming against
+	// Studio Pro — this whole family looks speculative).
 	"dayOfYear":   {args: []TypeKind{KindDateTime}, ret: KindInteger},
 	"dayOfMonth":  {args: []TypeKind{KindDateTime}, ret: KindInteger},
 	"weekOfYear":  {args: []TypeKind{KindDateTime}, ret: KindInteger},

@@ -42,7 +42,7 @@ boolean, both, business, by, call, cancel, caption, cascade,
 catalog, change, CHILD, close, column, combobox, commit, connect,
 configuration, connector, constant, constraint, container, create,
 CRUD, datagrid, dataview, date, datetime, declare, default, delete,
-delete_behavior, DELETE_BUT_KEEP_REFERENCES, DELETE_CASCADE, demo,
+delete_behavior, DELETE_BUT_KEEP_REFERENCES, CASCADE, demo,
 depth, desc, DESCENDING, describe, DIFF, disconnect, drop, else,
 empty, end, entity, enumeration, error, event, events, execute,
 exec, EXIT, export, extends, external, false, folder, footer,
@@ -585,16 +585,17 @@ create association <qualified-name>
 - `Parent` - Parent owns the association
 - `Child` - Child owns the association
 
-**Delete Behavior:**
+**Delete Behavior:** one of `DELETE_BUT_KEEP_REFERENCES`, `CASCADE`,
+`DELETE_IF_NO_REFERENCES`, `DELETE_AND_REFERENCES`, `PREVENT`
 - `DELETE_BUT_KEEP_REFERENCES` - Delete object but keep references
-- `DELETE_CASCADE` - Delete associated objects
+- `CASCADE` - Delete associated objects too (there is **no** `DELETE_CASCADE` keyword)
 
 **Example:**
 ```sql
-/** Links orders to customers */
+/** Links orders to customers (Order owns the FK → from Order to Customer) */
 create association Sales.Order_Customer
-  from Sales.Customer
-  to Sales.Order
+  from Sales.Order
+  to Sales.Customer
   type reference
   owner default
   delete_behavior DELETE_BUT_KEEP_REFERENCES;

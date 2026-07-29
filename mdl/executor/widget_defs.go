@@ -311,6 +311,23 @@ func GenerateDefJSON(mpkDef *mpk.WidgetDefinition, mdlName string) *WidgetDefini
 				Default:     p.DefaultValue,
 				Description: p.Description,
 			})
+		case "action":
+			// Action-typed properties (e.g. DataGrid2 `onClick`, filter `onChange`)
+			// were silently skipped — no `action` operation was ever emitted, so the
+			// writer had no mapping and dropped the action with no error or warning
+			// (ledger #67). Emit an action mapping so the engine's applyOperation
+			// "action" writes the client action. Only the slots MDL can currently
+			// author (onClick → the widget's Action property, onChange → OnChange)
+			// are wired; other action slots have no MDL surface yet, so emitting a
+			// mapping for them would resolve to nothing.
+			if src := actionSourceForKey(p.Key); src != "" {
+				def.PropertyMappings = append(def.PropertyMappings, PropertyMapping{
+					PropertyKey: p.Key,
+					Source:      src,
+					Operation:   "action",
+					Description: p.Description,
+				})
+			}
 		case "boolean", "integer", "decimal", "string", "enumeration":
 			m := PropertyMapping{
 				PropertyKey: p.Key,
@@ -324,6 +341,52 @@ func GenerateDefJSON(mpkDef *mpk.WidgetDefinition, mdlName string) *WidgetDefini
 		}
 	}
 	def.PropertyMappings = append(def.PropertyMappings, assocMappings...)
+
+	// KnownProperties: every property the widget's definition (.mpk) declares that
+	// has NO mapping in the generated def — i.e. a real property mxcli does not
+	// persist. Computed purely from the two artifacts mxcli already has (the .mpk
+	// property list and the generated mappings), with no per-widget knowledge. The
+	// checker uses this to WARN "recognized but not persisted; the value will be
+	// dropped" instead of silently discarding it or falsely rejecting it as an
+	// unknown property. This is the general guard for the class behind ledger #67
+	// (a type the generator doesn't map — e.g. `expression`, `icon`, or an action
+	// slot with no MDL surface); the specific fix for that finding is the `action`
+	// mapping above.
+	mapped := make(map[string]bool)
+	markMapped := func(key string) {
+		if key != "" {
+			mapped[strings.ToLower(key)] = true
+		}
+	}
+	for _, m := range def.PropertyMappings {
+		markMapped(m.PropertyKey)
+		for _, a := range m.MdlAliases {
+			markMapped(a)
+		}
+	}
+	for _, cs := range def.ChildSlots {
+		markMapped(cs.PropertyKey)
+	}
+	for _, ol := range def.ObjectLists {
+		markMapped(ol.PropertyKey)
+	}
+	for _, m := range def.Modes {
+		for _, pm := range m.PropertyMappings {
+			markMapped(pm.PropertyKey)
+			for _, a := range pm.MdlAliases {
+				markMapped(a)
+			}
+		}
+		for _, cs := range m.ChildSlots {
+			markMapped(cs.PropertyKey)
+		}
+	}
+	for _, p := range mpkDef.Properties {
+		if p.Key == "" || mapped[strings.ToLower(p.Key)] {
+			continue
+		}
+		def.KnownProperties = append(def.KnownProperties, p.Key)
+	}
 
 	def.PropertyVisibility = widgetVisibilityRules[mpkDef.ID]
 
@@ -343,6 +406,7 @@ func GenerateDefJSON(mpkDef *mpk.WidgetDefinition, mdlName string) *WidgetDefini
 //	  "expression"===e.type && hidePropertiesIn(["videoUrl","posterUrl"])
 //	Timeline (editorConfig.js):
 //	  e.customVisualization ? hidePropertiesIn(["title","description","icon","timeIndication",...]) : ...
+//
 // mergeVisibilityRules returns the extracted rules plus any hand-authored fallback
 // rules whose PropertyKey the extractor did not cover. Extracted rules are
 // version-specific (lifted from the installed .mpk's editorConfig.js) and win on
@@ -495,6 +559,21 @@ var propertyAliases = map[string]map[string][]string{
 // `groups`) into an ObjectListMapping. The MDL keyword is the singular form of
 // the property key (groups → GROUP, basicItems → ITEM, series → SERIES,
 // markers → MARKER).
+// actionSourceForKey maps an action-typed property key to the BuildContext
+// resolution source the engine understands. Only the action slots MDL can author
+// today are wired: `onClick` → the widget's Action property, `onChange` →
+// OnChange. Other action slots (e.g. DataGrid2 `onSelectionChange`) have no MDL
+// surface yet, so they return "" and no mapping is emitted.
+func actionSourceForKey(key string) string {
+	switch strings.ToLower(key) {
+	case "onclick":
+		return "OnClick"
+	case "onchange":
+		return "OnChange"
+	}
+	return ""
+}
+
 func makeObjectListMapping(widgetID string, p mpk.PropertyDef) ObjectListMapping {
 	mapping := ObjectListMapping{
 		PropertyKey:  p.Key,
