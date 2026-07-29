@@ -1,0 +1,42 @@
+-- ============================================================================
+-- Ledger finding #54: empty datagrid column caption → CE0463
+-- ============================================================================
+--
+-- Symptom (before fix): a datagrid column with an explicit empty caption
+-- (`Caption: ''`) passed `mxcli check` but `mx check` rejected the page with
+-- CE0463 "The definition of this widget has changed" on the Data grid 2 — the
+-- error pointed at the widget version, not the caption field. Omitting the
+-- caption entirely, or giving it a non-empty string, both built cleanly.
+--
+-- Root cause: the pluggable widget engine's column-header fallback
+-- (applyColumnHeaderFallback) treated a PRESENT-but-EMPTY header property as
+-- "has header" and skipped the attribute-name default — so an explicit
+-- `Caption: ''` emitted an empty header that Studio Pro rejects, while an
+-- ABSENT caption got the fallback. The keyword datagrid path already handled
+-- this (`if caption == "" { caption = col.Attribute }`).
+--
+-- After fix: an empty column caption is treated like an absent one — the header
+-- falls back to the bound attribute's leaf name (here "Amount"), matching the
+-- omitted-caption behaviour. Verified: `mx check` → 0 errors on Mendix 11.12.1.
+
+create module L54;
+
+create entity L54.Thing (
+  Name: string(100),
+  Amount: integer
+);
+
+create or replace page L54.Overview (
+  Title: 'Overview',
+  Layout: Atlas_Core.Atlas_Default
+) {
+  pluggablewidget 'com.mendix.widget.web.datagrid.Datagrid' dg (
+    DataSource: database from L54.Thing
+  ) {
+    column colName (Attribute: Name, Caption: 'Name')
+    -- Empty caption: falls back to the attribute name ("Amount") as the header
+    column colAmount (Attribute: Amount, Caption: '')
+  }
+}
+
+grant view on page L54.Overview to L54.User;

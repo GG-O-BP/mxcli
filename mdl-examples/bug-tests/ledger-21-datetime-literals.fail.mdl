@@ -1,0 +1,26 @@
+-- ============================================================================
+-- Ledger finding #21: dateTime()/dateTimeUTC() accept only literal constants
+-- ============================================================================
+--
+-- Symptom (before fix): `dateTime(2026, $Month, $Day)` passed `mxcli check` but
+-- failed the build with CE0117 "Error(s) in expression" — Mendix builds these
+-- date functions from hardcoded numeric constants only; a variable or computed
+-- argument is rejected.
+--
+-- After fix: MDL046 rejects a non-literal dateTime()/dateTimeUTC() argument at
+-- check time and points to the addDays()/addMonths() workaround (those DO take
+-- variables — step off a literal anchor date).
+--
+-- Usage (expected to FAIL check):
+--   mxcli check mdl-examples/bug-tests/ledger-21-datetime-literals.fail.mdl
+-- ============================================================================
+
+create microflow MyModule.DateTimeLiterals (
+  $Month: integer,
+  $Day: integer
+)
+returns dateTime
+begin
+  set $Bad = dateTime(2026, $Month, $Day);   -- MDL046: variable args
+  return $Bad;
+end

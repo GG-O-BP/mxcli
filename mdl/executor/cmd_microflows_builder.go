@@ -472,11 +472,24 @@ func (fb *flowBuilder) resolveAssociationPaths(expr ast.Expression) ast.Expressi
 		}
 	case *ast.SourceExpr:
 		if e.Source != "" {
-			// Non-empty Source is the exact expression text to write back.
-			// Rebuilding it here would defeat the whitespace-preservation
-			// purpose of SourceExpr, so keep the parsed tree only for callers
-			// that need semantic inspection.
-			return e
+			// Non-empty Source is the exact expression text to write back (kept
+			// for decimal/whitespace fidelity, #17-19). But an association
+			// navigation inside that source still needs its target-entity step
+			// inserted (`$T/Mod.Assoc/attr` → `$T/Mod.Assoc/Mod.Entity/attr`) or
+			// Mendix rejects the whole expression with CE0117 — e.g. a decimal
+			// literal co-occurring with an association nav (`$T/Mod.Assoc/Bal + 2.0`)
+			// froze the source and skipped resolution (ledger #48). Rewrite each
+			// association path within the source while preserving everything else.
+			resolvedInner := fb.resolveAssociationPaths(e.Expression)
+			fixed := e.Source
+			for _, orig := range collectAttributePaths(e.Expression) {
+				o := expressionToString(orig)
+				r := expressionToString(fb.resolveAssociationPaths(orig))
+				if o != r {
+					fixed = strings.ReplaceAll(fixed, o, r)
+				}
+			}
+			return &ast.SourceExpr{Expression: resolvedInner, Source: fixed}
 		}
 		return fb.resolveAssociationPaths(e.Expression)
 	default:
@@ -520,6 +533,38 @@ func (fb *flowBuilder) resolvePathSegments(path []string) []string {
 		}
 	}
 	return resolved
+}
+
+// collectAttributePaths returns every AttributePathExpr in an expression tree,
+// used to rewrite association navigations inside a source-preserved expression.
+func collectAttributePaths(expr ast.Expression) []*ast.AttributePathExpr {
+	var out []*ast.AttributePathExpr
+	var walk func(ast.Expression)
+	walk = func(e ast.Expression) {
+		switch v := e.(type) {
+		case *ast.AttributePathExpr:
+			out = append(out, v)
+		case *ast.BinaryExpr:
+			walk(v.Left)
+			walk(v.Right)
+		case *ast.UnaryExpr:
+			walk(v.Operand)
+		case *ast.ParenExpr:
+			walk(v.Inner)
+		case *ast.FunctionCallExpr:
+			for _, a := range v.Arguments {
+				walk(a)
+			}
+		case *ast.IfThenElseExpr:
+			walk(v.Condition)
+			walk(v.ThenExpr)
+			walk(v.ElseExpr)
+		case *ast.SourceExpr:
+			walk(v.Expression)
+		}
+	}
+	walk(expr)
+	return out
 }
 
 // buildSplitCondition constructs the right SplitCondition variant for an IF

@@ -1,0 +1,74 @@
+-- ============================================================================
+-- Ledger finding #48 (root cause): association navigation in a microflow
+-- expression dropped its target-entity step → CE0117
+-- ============================================================================
+--
+-- Symptom (before fix): a microflow expression navigating an association to read
+-- an attribute (`$T/Mod.Assoc/Attr` in a Change Variable / if-condition) passed
+-- `mxcli check` but `mx check` reported CE0117 "Error(s) in expression". Mendix
+-- expression syntax needs the target-entity step in the path
+-- (`$T/Mod.Assoc/Mod.Entity/Attr`); mxcli's builder inserts it via
+-- resolveAssociationPaths.
+--
+-- Root cause: shouldPreserveExpressionSource treated a `.` preceded by a digit as
+-- a DECIMAL literal. A module or entity whose name ends in a digit (`L48.`,
+-- `Account2.` — very common) therefore froze the whole expression's source, which
+-- bypassed the target-entity insertion and wrote `$T/L48.Assoc/Attr` (no entity).
+-- A second path: a real decimal literal co-occurring with an association nav
+-- (`$T/L48.Assoc/Bal + 2.0`) froze the source for a legitimate reason and skipped
+-- resolution too.
+--
+-- After fix: (1) a `.` inside a qualified name (segment contains a letter/_) is no
+-- longer mistaken for a decimal point; (2) association paths are rewritten inside
+-- a preserved source, so decimal + association-nav in one expression also resolves.
+-- Verified: `mx check` → 0 errors on Mendix 11.12.1.
+
+create module L48;
+
+create enumeration L48.GroupType ( Income, Expense );
+
+create entity L48.Account (
+  Name: string(100),
+  Bal: decimal
+);
+
+create entity L48.CategoryGroup (
+  GroupType: enum L48.GroupType
+);
+
+create entity L48.Transaction (
+  Amount: decimal
+);
+create association L48.Transaction_Account from L48.Transaction to L48.Account;
+
+create entity L48.Category (
+  Name: string(100)
+);
+create association L48.Category_CategoryGroup from L48.Category to L48.CategoryGroup;
+
+-- Plain attribute-over-association navigation (digit-ending module)
+create microflow L48.ReadName ($T: L48.Transaction)
+returns String
+begin
+  declare $S String = '';
+  set $S = $T/L48.Transaction_Account/Name;
+  return $S;
+end;
+
+-- Association navigation co-occurring with a real decimal literal
+create microflow L48.Mix ($T: L48.Transaction)
+returns Decimal
+begin
+  declare $D Decimal = 0;
+  set $D = $T/L48.Transaction_Account/Bal + 2.0;
+  return $D;
+end;
+
+-- Enum-over-association compared to an enum literal inside an if-then-else
+create microflow L48.Fav ($Cat: L48.Category, $Actual: Decimal, $Budget: Decimal)
+returns Decimal
+begin
+  declare $F Decimal = 0;
+  set $F = if $Cat/L48.Category_CategoryGroup/GroupType = L48.GroupType.Income then $Actual - $Budget else $Budget - $Actual;
+  return $F;
+end;

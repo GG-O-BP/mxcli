@@ -318,6 +318,9 @@ func parseRawWidget(ctx *ExecContext, w map[string]any, parentEntityContext ...s
 			}
 			widget.DataGridColumns = extractDataGrid2Columns(ctx, w, widget.EntityContext)
 			widget.ControlBar = extractDataGrid2ControlBar(ctx, w)
+			// onClick action (ledger #67): read the client action back with full
+			// parameter mappings so a describe round-trip re-emits the onClick.
+			widget.OnClick = renderClientActionMDL(ctx, customWidgetPropertyActionMap(ctx, w, "onClick"))
 		}
 		// For Gallery, extract datasource, content widgets, filter widgets, and selection mode
 		if widget.RenderMode == "gallery" {
@@ -348,6 +351,10 @@ func parseRawWidget(ctx *ExecContext, w map[string]any, parentEntityContext ...s
 		if !isKnownCustomWidgetType(widget.RenderMode) {
 			widget.ExplicitProperties = extractExplicitProperties(ctx, w)
 			widget.ObjectLists = extractObjectLists(ctx, w)
+			// onClick action (ledger #67 — reported on CustomChart): read the client
+			// action back with full parameter mappings so a describe round-trip
+			// re-emits it (the finding's original widget goes through this path).
+			widget.OnClick = renderClientActionMDL(ctx, customWidgetPropertyActionMap(ctx, w, "onClick"))
 		}
 		return []rawWidget{widget}
 

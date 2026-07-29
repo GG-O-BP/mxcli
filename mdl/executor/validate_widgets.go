@@ -119,6 +119,7 @@ func validateWidgetTreeIn(widgets []*ast.WidgetV3, registry *WidgetRegistry, loc
 		out = append(out, validatePluggableWidgetProperties(w, registry, locationPrefix)...)
 		out = append(out, validateWidgetVisibility(w, registry, locationPrefix)...)
 		out = append(out, validateStaticWidget(w, locationPrefix)...)
+		out = append(out, validateDatasourceXPathAssociationEmpty(w, locationPrefix)...)
 		// Unknown-property warning applies only to built-in widgets; pluggable
 		// widgets get the stricter def.json check (MDL-WIDGET01) above, and
 		// object-list items are validated by the object-list engine.
@@ -133,7 +134,78 @@ func validateWidgetTreeIn(widgets []*ast.WidgetV3, registry *WidgetRegistry, loc
 			out = append(out, validateWidgetTreeIn(w.Children, registry, locationPrefix, objectListMappingSet(def))...)
 		}
 	}
+	out = append(out, validateConsecutiveDynamicText(widgets, locationPrefix)...)
 	return out
+}
+
+// validateDatasourceXPathAssociationEmpty flags `[Module.Association = empty]` in
+// a widget's database datasource `where` clause — the page-datasource counterpart
+// of the microflow-retrieve MDL047 check. Mendix XPath has no `= empty` for an
+// association (CE0161); the nullability test is `not(Assoc/Target)`. (ledger #25,
+// verification round: MDL047 originally covered only microflow retrieves.)
+func validateDatasourceXPathAssociationEmpty(w *ast.WidgetV3, locationPrefix string) []linter.Violation {
+	ds := w.GetDataSource()
+	if ds == nil || ds.Where == "" {
+		return nil
+	}
+	var out []linter.Violation
+	for _, assoc := range xpathAssociationEmptyMatches(ds.Where) {
+		out = append(out, linter.Violation{
+			RuleID:   "MDL047",
+			Severity: linter.SeverityError,
+			Message: fmt.Sprintf(
+				"%s: widget `%s` datasource constraint tests association `%s = empty`, which Mendix XPath does not support (CE0161 \"Error(s) in XPath constraint\") — `= empty` works on attributes, not associations",
+				locationPrefix, w.Name, assoc),
+			Suggestion: fmt.Sprintf("Test for the absence of the associated object with negation: `[not(%s/<Module.TargetEntity>)]`.", assoc),
+		})
+	}
+	return out
+}
+
+// headingRenderModeRe matches the block-level dynamictext render modes H1–H6.
+var headingRenderModeRe = regexp.MustCompile(`(?i)^h[1-6]$`)
+
+// inlineDynamicText reports whether a widget is a dynamictext that renders
+// INLINE — i.e. a `<span>`. Only the heading modes H1–H6 are genuinely
+// block-level (`display: block`); `Text`/unset AND `Paragraph` both render as an
+// inline `<span>` (verified on Mendix 11.12.1 + Atlas), so adjacent ones fuse.
+// A heading followed by a subtitle therefore does NOT concatenate and must not
+// be flagged. (ledger #27; #29 corrected the earlier mis-classification of
+// Paragraph as block-level.)
+func inlineDynamicText(w *ast.WidgetV3) bool {
+	if w == nil || !strings.EqualFold(w.Type, "dynamictext") {
+		return false
+	}
+	return !headingRenderModeRe.MatchString(w.GetRenderMode())
+}
+
+// validateConsecutiveDynamicText emits an advisory (MDL-WIDGET15) when two or
+// more INLINE dynamictext widgets are direct siblings: Mendix renders a Text- or
+// Paragraph-mode DynamicText inline (a `<span>`), so adjacent ones concatenate
+// with no separator (`€ 310` + `7/24/2026` → `€ 3107/24/2026`). Only a heading
+// render mode (H1–H6) is block-level and breaks the run. Info severity — it does
+// not fail the build, it warns the author about a layout surprise. (ledger #27/#29)
+func validateConsecutiveDynamicText(siblings []*ast.WidgetV3, locationPrefix string) []linter.Violation {
+	run := 0
+	for _, w := range siblings {
+		if inlineDynamicText(w) {
+			run++
+		} else {
+			run = 0
+		}
+		// Emit once, on the second inline dynamictext of a run, so a group of N
+		// only warns once.
+		if run == 2 {
+			return []linter.Violation{{
+				RuleID:   "MDL-WIDGET15",
+				Severity: linter.SeverityInfo,
+				Message: fmt.Sprintf(
+					"%s: adjacent inline dynamictext widgets (RenderMode Text or Paragraph, both <span>) render with no separator, so their text concatenates. Merge them into one dynamictext with multiple content params, wrap each in its own container, or use a heading RenderMode (H1–H6, which is block-level). Note: Paragraph does NOT fix this — it also renders inline.",
+					locationPrefix),
+			}}
+		}
+	}
+	return nil
 }
 
 // validateWidgetVisibility warns (MDL-WIDGET10) when a property the user set on a
@@ -566,6 +638,13 @@ func validateStaticWidget(w *ast.WidgetV3, locationPrefix string) []linter.Viola
 	// association legitimately. (findings #4)
 	out = append(out, validateWidgetExpressionAssociations(w, locationPrefix)...)
 
+	// A contentparams/captionparams value is a DATA BINDING (an attribute path),
+	// not a client-side expression: mxcli stores an unquoted value as an attribute
+	// name, so a function call like `formatDateTime($obj/Date, 'd MMM')` is written
+	// as a bogus attribute and Studio Pro rejects the page with CE1613 "attribute
+	// no longer exists". Catch it at check time. (ledger finding #26)
+	out = append(out, validateTemplateParamExpressions(w, locationPrefix)...)
+
 	return out
 }
 
@@ -601,6 +680,49 @@ func validateWidgetExpressionAssociations(w *ast.WidgetV3, locationPrefix string
 			})
 		}
 	}
+	return out
+}
+
+// templateParamExprRe detects a client-side expression where an attribute-path
+// data binding is expected. A binding is a path of identifier segments joined by
+// `/` or `.` (optionally `$`-prefixed): `$obj/Date`, `Order_Customer/Name`. An
+// expression carries a function call `foo(` or an arithmetic/comparison operator,
+// none of which can appear in an attribute path.
+var templateParamExprRe = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*\s*\(|[+\-*<>=!]`)
+
+// validateTemplateParamExpressions flags a client expression supplied to a
+// contentparams/captionparams slot (MDL-WIDGET14). Those slots are DATA BINDINGS:
+// an unquoted value is stored as an attribute path, so an expression like
+// `formatDateTime($obj/Date, 'd MMM')` is written as a bogus attribute name and
+// Studio Pro rejects the page with CE1613. A quoted value is a legal string
+// literal and is left alone.
+func validateTemplateParamExpressions(w *ast.WidgetV3, locationPrefix string) []linter.Violation {
+	var out []linter.Violation
+	check := func(slot string, params []ast.ParamAssignmentV3) {
+		for _, p := range params {
+			val, ok := p.Value.(string)
+			if !ok || val == "" {
+				continue
+			}
+			// A quoted string literal is a valid contentparams value.
+			if strings.HasPrefix(val, "'") || strings.HasPrefix(val, "\"") {
+				continue
+			}
+			if !templateParamExprRe.MatchString(val) {
+				continue
+			}
+			out = append(out, linter.Violation{
+				RuleID:   "MDL-WIDGET14",
+				Severity: linter.SeverityError,
+				Message: fmt.Sprintf(
+					"%s: widget `%s` %s value `%s` is an expression, but a template parameter is a data binding — it accepts an attribute path (`$obj/Attr`) or a quoted string literal, not an expression (CE1613 in Studio Pro). Precompute it onto the bound entity (e.g. a calculated attribute) and bind that attribute instead.",
+					locationPrefix, w.Name, slot, val,
+				),
+			})
+		}
+	}
+	check("contentparams", w.GetContentParams())
+	check("captionparams", w.GetCaptionParams())
 	return out
 }
 

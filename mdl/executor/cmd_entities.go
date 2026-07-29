@@ -350,6 +350,12 @@ func execCreateEntity(ctx *ExecContext, s *ast.CreateEntityStmt) error {
 			fmt.Fprintf(ctx.Output,
 				"  To add attributes without disturbing the rest, use: alter entity %s add attribute <name>: <type>;\n", s.Name)
 		}
+		// Carry forward (and prune) indexes so a dropped indexed attribute doesn't
+		// leave an orphaned index that crashes `mx check` (finding #39).
+		if droppedIdx := reconcileDroppedIndexes(entity, existingEntity); droppedIdx > 0 {
+			fmt.Fprintf(ctx.Output,
+				"  Dropped %d index(es) that referenced removed attribute(s).\n", droppedIdx)
+		}
 		// Update existing entity
 		entity.ID = existingEntity.ID
 		if err := ctx.Backend.UpdateEntity(dm.ID, entity); err != nil {
@@ -372,6 +378,64 @@ func execCreateEntity(ctx *ExecContext, s *ast.CreateEntityStmt) error {
 
 	ctx.trackModifiedDomainModel(module.ID, module.Name)
 	return nil
+}
+
+// reconcileDroppedIndexes fixes ledger finding #39: when CREATE OR MODIFY drops
+// an indexed attribute, the entity's index for it is left orphaned (its column
+// references a GUID that no longer exists), which crashes `mx check` with an
+// unhandled AggregateException. When the statement lists NO index clause of its
+// own (so `entity.Indexes` is empty), carry the existing entity's indexes forward
+// but prune any column referencing an attribute the new entity no longer has, and
+// drop indexes left with no columns. A statement that DOES list indexes replaces
+// wholesale (unchanged). Attribute IDs survive by name across CREATE OR MODIFY
+// (findings #13), so a surviving attribute keeps the ID its index references.
+// Returns the number of indexes dropped, for the drop warning.
+func reconcileDroppedIndexes(entity, existing *domainmodel.Entity) int {
+	if entity == nil || existing == nil || len(entity.Indexes) > 0 {
+		return 0
+	}
+	valid := make(map[model.ID]bool, len(entity.Attributes))
+	for _, a := range entity.Attributes {
+		valid[a.ID] = true
+	}
+	var kept []*domainmodel.Index
+	dropped := 0
+	for _, idx := range existing.Indexes {
+		var attrs []*domainmodel.IndexAttribute
+		for _, ia := range idx.Attributes {
+			if valid[ia.AttributeID] {
+				attrs = append(attrs, ia)
+			}
+		}
+		var ids []model.ID
+		for _, id := range idx.AttributeIDs {
+			if valid[id] {
+				ids = append(ids, id)
+			}
+		}
+		if len(attrs) > 0 || len(ids) > 0 {
+			idx.Attributes = attrs
+			idx.AttributeIDs = ids
+			kept = append(kept, idx)
+		} else {
+			dropped++
+		}
+	}
+	entity.Indexes = kept
+	return dropped
+}
+
+// isViewEntity reports whether an entity is an OQL view entity. View entities
+// cannot participate in associations (CE6771) and behave differently from
+// persistent entities in several checks. The canonical marker is the
+// DomainModels$OqlViewEntitySource source type; OqlQuery / SourceDocumentRef are
+// belt-and-suspenders fallbacks for read paths that populate one but not the other.
+func isViewEntity(e *domainmodel.Entity) bool {
+	if e == nil {
+		return false
+	}
+	return e.Source == "DomainModels$OqlViewEntitySource" ||
+		e.OqlQuery != "" || e.SourceDocumentRef != ""
 }
 
 // droppedEntityMembers reports the members present on existing but absent from

@@ -321,6 +321,34 @@ alter page MyModule.Customer_Edit {
 | SET on non-existent widget | Widget names are case-sensitive; check with DESCRIBE |
 | Missing semicolons between operations | Each operation inside `{ }` ends with `;` |
 
+## Limitations — prefer binding at page creation (ledger finding #45)
+
+`ALTER PAGE` is best for *content* edits (add/remove/retitle widgets). Three things
+it cannot do; when you hit them, define the referenced microflows **before** the
+page and bind the buttons at creation time instead of rewiring afterwards:
+
+1. **`SET` cannot rewire a button's action.** `set` accepts a fixed property list
+   (`caption`, `class`, `visible`, …) — `action` is not on it, so
+   `set Action = microflow … on btnSave` is a parse error. Set the button's action
+   when the button is created (or `REPLACE` the button subtree).
+
+2. **`REPLACE` cannot reuse a widget name that lives inside the subtree being
+   replaced.** The replacement is *built* (registering its widget names) before the
+   old subtree is removed, so reusing e.g. `btnSave` collides with the still-present
+   old `btnSave` ("duplicate widget name 'btnSave'"). Give the replacement widgets
+   fresh names, or rebuild the whole page with `create or replace page`.
+
+3. **A footer is not addressable by its author-given name.** A `footer myName { … }`
+   is a *marker*: its children are hoisted into the data view's footer and the
+   footer itself is serialized as `footer1`, so `drop widget myName` (and even
+   `drop widget footer1`) report "not found". To change footer contents, edit the
+   children by their own names, or `create or replace page`.
+
+**Recommended pattern**: put save/reset microflows in a file that runs *before* the
+page definition, and bind the popup/footer buttons to them at creation. The
+apparent "page needs microflow, microflow needs page" cycle usually exists only
+between *different* microflows, not within the page itself.
+
 ## Validation Checklist
 
 1. **Get widget names first**: Run `describe page Module.PageName` to see all widget names

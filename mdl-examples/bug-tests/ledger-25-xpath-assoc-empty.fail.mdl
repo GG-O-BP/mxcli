@@ -1,0 +1,28 @@
+-- ============================================================================
+-- Ledger finding #25: XPath has no `= empty` for associations
+-- ============================================================================
+--
+-- Symptom (before fix): `where [Ledger.Transaction_Category = empty]` passed
+-- `mxcli check` but failed the build with CE0161 "Error(s) in XPath constraint"
+-- — `= empty` tests attribute nullability, not association nullability.
+--
+-- After fix: MDL047 rejects `[Module.Association = empty]` at check time and
+-- points to the negation form `[not(Assoc/Target)]`. A bare attribute
+-- (`[Description = empty]`) and an attribute-over-association
+-- (`[Assoc/Attr = empty]`) stay valid and are not flagged.
+--
+-- Usage (expected to FAIL check):
+--   mxcli check mdl-examples/bug-tests/ledger-25-xpath-assoc-empty.fail.mdl
+-- ============================================================================
+
+create entity Ledger.Category ( Name: String );
+create entity Ledger.Transaction ( Description: String );
+create association Ledger.Transaction_Category
+  from Ledger.Transaction to Ledger.Category;
+
+create microflow MyModule.UncategorizedTransactions ()
+returns list of Ledger.Transaction
+begin
+  retrieve $t from Ledger.Transaction where [Ledger.Transaction_Category = empty];  -- MDL047
+  return $t;
+end

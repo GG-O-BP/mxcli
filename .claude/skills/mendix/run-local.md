@@ -86,6 +86,21 @@ does nothing until you restart `run --local` (or re-run with `--watch`). `mxbuil
 changes, so **never** `rm -rf theme-cache/ .mendix-cache/ deployment/` — clearing
 caches is a red herring.
 
+A **theme compile error fails the build step, before the runtime starts** — the
+error text is in the serve `/build` output (printed by `run --local`), not a
+runtime problem. A common Dart Sass trap: `rgba()` needs a real color, so a
+comma-list variable is rejected —
+
+```scss
+// WRONG: Dart Sass reports "$color: 168, 50, 30 is not a color"
+$cf-over: 168, 50, 30;
+background-color: rgba($cf-over, 0.1);
+
+// RIGHT: make the variable a color, then adjust alpha
+$cf-over: rgb(168, 50, 30);
+background-color: rgba($cf-over, 0.1);
+```
+
 ## "My edit didn't show up" — stale process, not stale cache
 
 `run --local` refuses to boot when its ports (8080/8090/6543) are already answering,

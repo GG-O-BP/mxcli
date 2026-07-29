@@ -1,0 +1,61 @@
+-- ============================================================================
+-- Ledger finding #67 (as originally reported): a CustomChart onClick action was
+-- silently dropped on write, and omitted by DESCRIBE
+-- ============================================================================
+--
+-- The finding was reported on the Charts CustomChart widget:
+--   pluggablewidget 'com.mendix.widget.web.customchart.CustomChart' … (
+--     onClick: microflow Ledger.ACT_SunburstClick(Context: $currentObject) )
+-- The action passed mxcli check --references and mx check, built and ran, but was
+-- silently discarded — DESCRIBE omitted it and the model round-tripped without it.
+--
+-- Root cause + fix: see ledger-67-pluggable-widget-action.mdl (DataGrid2). The
+-- .def.json generator now emits an `action` mapping for `type="action"`
+-- properties (onClick → the widget Action / OnClick source), so the engine
+-- serializes the client action; and DESCRIBE reads it back through the generic
+-- `pluggablewidget '…'` path (where CustomChart is described), rendering the full
+-- action with its parameter mapping.
+--
+-- Verified end-to-end on Mendix 11.12.1: mx check → 0 errors; the CustomChart
+-- persists the onClick microflow action with its `Data: $currentObject` mapping;
+-- and describe → re-exec round-trips the onClick.
+--
+-- NOTE: requires the project's generated widget defs (`mxcli widget init`), so
+-- this is exercised via exec/mx-check, not just syntax check.
+
+create module CCm;
+
+create entity CCm.Data (
+  ChartData: string(2000),
+  ChartLayout: string(2000)
+);
+
+create microflow CCm.OnPointClick (
+  $Data: CCm.Data
+)
+returns Boolean
+begin
+  return true;
+end;
+
+create microflow CCm.ChartSource ()
+returns CCm.Data
+begin
+  $New = create CCm.Data;
+  return $New;
+end;
+
+create or replace page CCm.Chart (
+  Title: 'Chart',
+  Layout: Atlas_Core.Atlas_Default
+) {
+  dataview dv (datasource: microflow CCm.ChartSource) {
+    pluggablewidget 'com.mendix.widget.web.customchart.CustomChart' chart (
+      dataAttribute: ChartData,
+      layoutAttribute: ChartLayout,
+      onClick: microflow CCm.OnPointClick(Data: $currentObject)
+    )
+  }
+}
+
+grant view on page CCm.Chart to CCm.User;

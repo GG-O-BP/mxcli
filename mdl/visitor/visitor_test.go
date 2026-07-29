@@ -2296,6 +2296,50 @@ func TestShouldPreserveExpressionSourceIgnoresStringLiteralPunctuation(t *testin
 	}
 }
 
+// TestShouldPreserveExpressionSource_Decimals guards ledger findings #18–19: the
+// AST re-serializer truncates a zero-fraction decimal (`2.0`→`2`) and emits small
+// values in scientific notation (`0.000001`→`1e-06`), so a decimal literal must
+// preserve the raw source. A `/` (member-access separator, NOT division) must NOT
+// trigger preservation — that would source-freeze every association path.
+func TestShouldPreserveExpressionSource_Decimals(t *testing.T) {
+	mustPreserve := []string{
+		"$Dec div 2.0",              // #18: 2.0 → 2 on re-serialize
+		"$Dec * $I * $I * 0.000001", // #19: 0.000001 → 1e-06
+		"2.0",                       // standalone decimal literal
+		"100.0",                     // zero-fraction decimal
+		"round($Dec * $I * 0.001)",  // small decimal in an arg
+		"$Dec / $Dec2",              // #17: `/ $` division misuse (kept so MDL045 sees it)
+		"$Dec/$Dec2",                // #17: no-space division misuse
+	}
+	for _, s := range mustPreserve {
+		if !shouldPreserveExpressionSource(s) {
+			t.Errorf("expected source preservation for %q (decimal would be corrupted)", s)
+		}
+	}
+	// A `/` is the member-access separator in MDL, not division: an association
+	// path must NOT be source-frozen on account of its slashes (that regressed
+	// TestAssociationNavParsing). A qualified name's dot (letters) and a slash
+	// inside a string literal must also not force preservation.
+	mustNotPreserve := []string{
+		"$Order/Module.Assoc/Name", // association navigation path
+		"$currentObject/Amount",    // plain member access
+		"Ledger.Category",          // qualified name dot (non-numeric)
+		"'a/b path'",               // slash inside a string literal
+		// ledger #48: a qualified-name segment ending in a digit must NOT be read
+		// as a decimal (that froze the source and skipped association-entity
+		// resolution → CE0117). Modules/entities ending in a digit are common.
+		"$T/L48.Transaction_Account/Name", // module name ends in a digit
+		"$obj/App2.Entity/Attr",           // module 'App2'
+		"$c/Mod.Account2/Name",            // entity name ends in a digit
+		"L48.Transaction",                 // bare qualified name, digit module
+	}
+	for _, s := range mustNotPreserve {
+		if shouldPreserveExpressionSource(s) {
+			t.Errorf("did not expect source preservation for %q", s)
+		}
+	}
+}
+
 func TestRenameModule_ObjectTypeIsLowercase(t *testing.T) {
 	prog, errs := Build("RENAME MODULE OldMod TO NewMod;")
 	if len(errs) > 0 {

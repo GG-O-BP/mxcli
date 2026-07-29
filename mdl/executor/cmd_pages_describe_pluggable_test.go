@@ -11,6 +11,7 @@
 package executor
 
 import (
+	"context"
 	"testing"
 )
 
@@ -156,5 +157,59 @@ func TestExtractCustomWidgetPropertyAssociation_DoesNotReturnCaptionAttribute(t 
 
 	if got == "Name" {
 		t.Errorf("extractCustomWidgetPropertyAssociation returned CaptionAttribute value %q; this is the original bug (Issue #21)", got)
+	}
+}
+
+// buildDataGridOnClickWidget builds a mock DataGrid2 CustomWidget map with an
+// onClick property carrying the given action ($Type). Mirrors the BSON the
+// pluggable engine writes (property resolved via TypePointer → PropertyKey).
+func buildDataGridOnClickWidget(actionType, microflow string) map[string]any {
+	const idOnClick = "type-id-onclick"
+	widgetType := map[string]any{
+		"WidgetId": "com.mendix.widget.web.datagrid.Datagrid",
+		"ObjectType": map[string]any{
+			"PropertyTypes": []any{
+				map[string]any{"$ID": idOnClick, "PropertyKey": "onClick"},
+			},
+		},
+	}
+	action := map[string]any{"$Type": actionType}
+	if microflow != "" {
+		action["MicroflowSettings"] = map[string]any{
+			"$Type":     "Forms$MicroflowSettings",
+			"Microflow": microflow,
+		}
+	}
+	return map[string]any{
+		"Type": widgetType,
+		"Object": map[string]any{
+			"Properties": []any{
+				map[string]any{"TypePointer": idOnClick, "Value": map[string]any{"Action": action}},
+			},
+		},
+	}
+}
+
+// TestCustomWidgetPropertyActionMap covers the ledger #67 DESCRIBE read gap: a
+// pluggable widget's onClick action is read back so a describe round-trip
+// re-emits it. A NoAction (the default) reads as unset.
+func TestCustomWidgetPropertyActionMap(t *testing.T) {
+	ex := &Executor{}
+	ctx := ex.newExecContext(context.Background())
+
+	// Microflow action → returned, with the microflow reachable for rendering.
+	w := buildDataGridOnClickWidget("Forms$MicroflowClientAction", "L67.OnRowClick")
+	got := customWidgetPropertyActionMap(ctx, w, "onClick")
+	if got == nil {
+		t.Fatal("onClick microflow action not read back — DESCRIBE would drop it (#67)")
+	}
+	if extractString(got["$Type"]) != "Forms$MicroflowClientAction" {
+		t.Errorf("action $Type = %q, want Forms$MicroflowClientAction", extractString(got["$Type"]))
+	}
+
+	// A default NoAction reads as unset (nil) so DESCRIBE stays clean.
+	wNo := buildDataGridOnClickWidget("Forms$NoAction", "")
+	if customWidgetPropertyActionMap(ctx, wNo, "onClick") != nil {
+		t.Error("NoAction should read as unset (nil)")
 	}
 }

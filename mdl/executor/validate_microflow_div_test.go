@@ -55,6 +55,60 @@ func TestValidateMicroflow_DivIntoInteger(t *testing.T) {
 	}
 }
 
+// TestValidateMicroflow_SlashDivision covers MDL045 (ledger finding #17): `/`
+// used as an arithmetic division operator is CE0117 in Mendix — `/` navigates
+// associations, division is `div`. The `$a / literal` and `(...) / $x` forms
+// parse to a BinaryExpr with operator `/` and must be flagged; a legitimate
+// member/association path (`$obj/Attr`) and correct `div` must not be.
+func TestValidateMicroflow_SlashDivision(t *testing.T) {
+	cases := []struct {
+		name    string
+		params  string
+		body    string
+		wantMDL bool
+	}{
+		{"slash divide by literal", "$Dec: Decimal", "set $R = $Dec / 2;", true},
+		{"slash divide by variable", "$Dec: Decimal, $D2: Decimal", "set $R = $Dec / $D2;", true},
+		{"slash divide parenthesized", "$Dec: Decimal, $D2: Decimal", "set $R = ($Dec + 1) / $D2;", true},
+		{"slash divide by variable spaced", "$Dec: Decimal, $D2: Decimal", "set $R = $Dec/$D2;", true},
+		{"slash inside function arg", "$Dec: Decimal", "set $R = round($Dec / 3);", true},
+		{"slash in return", "$Dec: Decimal", "return $Dec / 4;", true},
+		// Division-by-variable EMBEDDED in a larger expression (ledger #17 round 2):
+		// `$a / $b` degrades to a member-path AttributePathExpr nested under a
+		// BinaryExpr/FunctionCallExpr, so the structural `/`-BinaryExpr walk misses
+		// it; the source scan catches it.
+		{"embedded div then add", "$Dec: Decimal, $D2: Decimal", "set $R = $Dec / $D2 + 1;", true},
+		{"embedded add then div", "$Dec: Decimal, $D2: Decimal", "set $R = 1 + $Dec / $D2;", true},
+		{"embedded div in function", "$Dec: Decimal, $D2: Decimal", "set $R = round($Dec / $D2);", true},
+		{"embedded div then mul", "$Dec: Decimal, $D2: Decimal", "set $R = $Dec / $D2 * 100;", true},
+		{"embedded div in return", "$Dec: Decimal, $D2: Decimal", "return $Dec / $D2 + 1;", true},
+		{"div is fine", "$Dec: Decimal, $D2: Decimal", "set $R = $Dec div $D2;", false},
+		{"member path is fine", "$O: M.Order", "set $R = $O/M.Order_Cust/Name;", false},
+		{"spaced member path is fine", "$O: M.Order", "set $R = $O / M.Order_Cust / Name;", false},
+		// A `/$` sequence inside a string literal is NOT a division misuse.
+		{"slash-dollar inside string literal is fine", "$x: String", "set $R = 'path/$var here';", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "create microflow M.F (" + tc.params + ")\nreturns String\nbegin\n  " + tc.body + "\nend;"
+			prog, errs := visitor.Build(src)
+			if len(errs) > 0 {
+				t.Fatalf("parse errors: %v", errs)
+			}
+			mf := prog.Statements[0].(*ast.CreateMicroflowStmt)
+			var got bool
+			for _, vi := range ValidateMicroflow(mf) {
+				if vi.RuleID == "MDL045" {
+					got = true
+				}
+			}
+			if got != tc.wantMDL {
+				t.Errorf("MDL045 fired=%v, want %v (body: %q)", got, tc.wantMDL, tc.body)
+			}
+		})
+	}
+}
+
 // TestValidateMicroflow_DivMessage checks the diagnostic names the target and
 // the div cause, and suggests the fix.
 func TestValidateMicroflow_DivMessage(t *testing.T) {

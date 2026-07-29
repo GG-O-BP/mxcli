@@ -1,0 +1,54 @@
+-- ============================================================================
+-- Ledger finding #67: a pluggable widget's action property was silently dropped
+-- ============================================================================
+--
+-- Symptom (before fix): supplying an action property on a pluggable widget —
+-- e.g. `onClick: microflow …` on a DataGrid2 — passed `mxcli check --references`,
+-- passed `mx check`, and built/ran, but the action was silently discarded:
+-- DESCRIBE PAGE omitted it and the model round-tripped minus the action, with no
+-- error or warning.
+--
+-- Root cause: the .def.json GENERATOR never emitted an `action` operation for
+-- `type="action"` properties (across 42 widget defs, no action operation existed
+-- at all). The writer reads only propertyMappings from the def, so with no action
+-- mapping it had nothing to write. The .mpk correctly declares the action slot.
+--
+-- After fix: the generator emits an `action` PropertyMapping for the action slots
+-- MDL can author (`onClick` → the widget's Action property; filter `onChange` →
+-- OnChange). The engine's existing applyOperation "action" → SetAction path then
+-- serializes the client action (with its parameter mapping). WidgetDefGeneratorVersion
+-- bumped so existing projects regenerate their defs.
+--
+-- Verified: `mx check` → 0 errors on Mendix 11.12.1, and the DataGrid2 widget
+-- persists the onClick microflow action (with `Thing: $currentObject` mapping).
+--
+-- NOTE: requires the project's generated widget defs (`mxcli widget init`), so
+-- this is exercised via exec/mx-check, not just syntax check.
+
+create module L67;
+
+create entity L67.Thing (
+  Name: string(100)
+);
+
+create microflow L67.OnRowClick (
+  $Thing: L67.Thing
+)
+returns Boolean
+begin
+  return true;
+end;
+
+create or replace page L67.Grid (
+  Title: 'Grid',
+  Layout: Atlas_Core.Atlas_Default
+) {
+  pluggablewidget 'com.mendix.widget.web.datagrid.Datagrid' dg (
+    DataSource: database from L67.Thing,
+    onClick: microflow L67.OnRowClick(Thing: $currentObject)
+  ) {
+    column c1 (Attribute: Name, Caption: 'Name')
+  }
+}
+
+grant view on page L67.Grid to L67.User;

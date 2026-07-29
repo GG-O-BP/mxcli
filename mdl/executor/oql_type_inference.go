@@ -330,6 +330,20 @@ func inferCaseType(expr string) ast.DataType {
 	return ast.DataType{Kind: ast.TypeUnknown}
 }
 
+// passthroughStringLengthMismatch reports whether a PASS-THROUGH view-entity
+// column (a bare source-attribute reference, so sourceAttr is set) declares a
+// string length different from the source attribute's inherited length. Mendix's
+// view-entity sync requires an exact match — a mismatch (including declaring an
+// unbounded `string`, Length 0, against a `string(100)` source) fails the build
+// with CE6770. This is stricter than typesCompatible's >= truncation guard, so
+// pass-through strings are checked separately. sourceAttr is empty for aggregates
+// and derived expressions, which this correctly ignores. (ledger finding #36)
+func passthroughStringLengthMismatch(declared, inferred ast.DataType, sourceAttr string) bool {
+	return sourceAttr != "" &&
+		declared.Kind == ast.TypeString && inferred.Kind == ast.TypeString &&
+		declared.Length != inferred.Length
+}
+
 // validateViewEntityTypes validates that declared attribute types match inferred OQL types.
 func validateViewEntityTypes(ctx *ExecContext, stmt *ast.CreateViewEntityStmt) []string {
 	var errors []string
@@ -358,6 +372,28 @@ func validateViewEntityTypes(ctx *ExecContext, stmt *ast.CreateViewEntityStmt) [
 
 		// Skip if we couldn't infer the type
 		if col.InferredType.Kind == ast.TypeUnknown {
+			continue
+		}
+
+		// A PASS-THROUGH string column (a bare source-attribute reference, e.g.
+		// `c.Name`) inherits the source attribute's length verbatim, and Mendix's
+		// view-entity sync requires the declared length to match it EXACTLY —
+		// declaring `string` (unbounded) or a different `string(N)` against a
+		// `string(100)` source fails the build with CE6770 "View Entity out of sync".
+		// This is stricter than typesCompatible's >= rule (which only guards
+		// truncation), so pass-through strings are validated here. col.SourceAttr is
+		// set only for direct attribute references, never for aggregates/derived
+		// expressions. (ledger finding #36)
+		if passthroughStringLengthMismatch(attr.Type, col.InferredType, col.SourceAttr) {
+			errors = append(errors, fmt.Sprintf(
+				"attribute '%s': declared as %s but pass-through column '%s' inherits length %d from source attribute %s.%s — Mendix requires an exact length match (CE6770 \"View Entity out of sync\"). Fix: change to '%s: %s'",
+				attr.Name,
+				formatDataTypeForError(attr.Type),
+				col.Expression,
+				col.InferredType.Length,
+				col.SourceEntity, col.SourceAttr,
+				attr.Name,
+				formatDataTypeForMDL(col.InferredType)))
 			continue
 		}
 

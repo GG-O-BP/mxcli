@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/mendixlabs/mxcli/mdl/backend"
+	"github.com/mendixlabs/mxcli/sdk/pages"
 	"github.com/mendixlabs/mxcli/sdk/widgets/mpk"
 )
 
@@ -139,11 +140,12 @@ func TestGenerateDefJSON_SkipsComplexTypes(t *testing.T) {
 	def := GenerateDefJSON(mpkDef, "COMPLEX")
 
 	// textTemplate now always yields a mapping (so captions like Badge `value`
-	// are authorable); the other complex types (action/expression/icon/non-list
-	// object) are still skipped. So exactly one mapping — the texttemplate — is
-	// expected.
+	// are authorable); expression/icon/non-list object are skipped. An `action`
+	// property only maps when its key is MDL-authorable (onClick/onChange) — here
+	// the key is `myAction`, so it is skipped too. So exactly one mapping — the
+	// texttemplate — is expected.
 	if len(def.PropertyMappings) != 1 {
-		t.Fatalf("PropertyMappings count = %d, want 1 (only the texttemplate maps; action/expression/icon/object skipped)", len(def.PropertyMappings))
+		t.Fatalf("PropertyMappings count = %d, want 1 (only the texttemplate maps; unnamed action/expression/icon/object skipped)", len(def.PropertyMappings))
 	}
 	tt := def.PropertyMappings[0]
 	if tt.PropertyKey != "myTemplate" || tt.Operation != "texttemplate" {
@@ -175,6 +177,66 @@ func TestGenerateDefJSON_TextTemplatesAlwaysMapped(t *testing.T) {
 	}
 	if m.Operation != "texttemplate" || m.Source != "TextTemplate" {
 		t.Errorf("value mapping = {op=%s src=%s}, want {texttemplate TextTemplate}", m.Operation, m.Source)
+	}
+}
+
+// TestGenerateDefJSON_ActionMapping covers ledger #67: an `onClick` action
+// property must yield an `action` PropertyMapping (source OnClick) so the writer
+// serializes the client action instead of silently dropping it. A non-authorable
+// action key (e.g. DataGrid2 `onSelectionChange`) has no MDL surface yet, so no
+// mapping is emitted for it.
+func TestGenerateDefJSON_ActionMapping(t *testing.T) {
+	mpkDef := &mpk.WidgetDefinition{
+		ID:   "com.mendix.widget.web.datagrid.Datagrid",
+		Name: "Datagrid",
+		Properties: []mpk.PropertyDef{
+			{Key: "onClick", Type: "action"},
+			{Key: "onSelectionChange", Type: "action"},
+		},
+	}
+	def := GenerateDefJSON(mpkDef, "DATAGRID")
+	onClick := findMapping(def.PropertyMappings, "onClick")
+	if onClick == nil {
+		t.Fatal("onClick (action) has no mapping — the action would be silently dropped (#67)")
+	}
+	if onClick.Operation != "action" || onClick.Source != "OnClick" {
+		t.Errorf("onClick mapping = {op=%s src=%s}, want {action OnClick}", onClick.Operation, onClick.Source)
+	}
+	if m := findMapping(def.PropertyMappings, "onSelectionChange"); m != nil {
+		t.Errorf("onSelectionChange has no MDL surface yet; expected no mapping, got {op=%s src=%s}", m.Operation, m.Source)
+	}
+}
+
+// TestGenerateDefJSON_KnownPropertiesUnmapped covers the general #67-class guard:
+// every declared property with NO mapping in the generated def is recorded in
+// KnownProperties, so the checker warns "recognized but not persisted" rather
+// than silently dropping it or falsely rejecting it as unknown. A mapped property
+// must NOT appear there.
+func TestGenerateDefJSON_KnownPropertiesUnmapped(t *testing.T) {
+	mpkDef := &mpk.WidgetDefinition{
+		ID:   "com.mendix.widget.web.datagrid.Datagrid",
+		Name: "Datagrid",
+		Properties: []mpk.PropertyDef{
+			{Key: "onClick", Type: "action"},           // mapped (action → OnClick)
+			{Key: "pageSize", Type: "integer"},         // mapped (primitive)
+			{Key: "onSelectionChange", Type: "action"}, // unmapped action slot
+			{Key: "rowClass", Type: "expression"},      // unmapped (expression not handled)
+		},
+	}
+	def := GenerateDefJSON(mpkDef, "DATAGRID")
+	known := make(map[string]bool)
+	for _, k := range def.KnownProperties {
+		known[k] = true
+	}
+	for _, want := range []string{"onSelectionChange", "rowClass"} {
+		if !known[want] {
+			t.Errorf("KnownProperties missing unmapped property %q — the checker can't warn it will be dropped", want)
+		}
+	}
+	for _, notWant := range []string{"onClick", "pageSize"} {
+		if known[notWant] {
+			t.Errorf("KnownProperties should not list mapped property %q", notWant)
+		}
 	}
 }
 
@@ -632,20 +694,21 @@ func TestApplyColumnHeaderFallback(t *testing.T) {
 			{PropertyKey: "attribute", Operation: "attribute", AttributePath: "Mod.Ent.Foo"},
 		},
 	}
-	applyColumnHeaderFallback(spec1)
+	applyColumnHeaderFallback(spec1, "col1", true)
 	if len(spec1.Properties) != 2 {
 		t.Errorf("Case 1 (header present): expected 2 properties, got %d", len(spec1.Properties))
 	}
 
-	// Case 2: no header, no attribute → no change
+	// Case 2: no header slot (a header-less object-list item like a chart series)
+	// → never touched, even with no attribute.
 	spec2 := &backend.ObjectListItemSpec{
 		Properties: []backend.ObjectListItemProperty{
-			{PropertyKey: "showContentAs", Operation: "primitive", PrimitiveVal: "attribute"},
+			{PropertyKey: "staticName", Operation: "primitive", PrimitiveVal: "x"},
 		},
 	}
-	applyColumnHeaderFallback(spec2)
+	applyColumnHeaderFallback(spec2, "series1", false)
 	if len(spec2.Properties) != 1 {
-		t.Errorf("Case 2 (no attribute): expected 1 property, got %d", len(spec2.Properties))
+		t.Errorf("Case 2 (no header slot): expected 1 property, got %d", len(spec2.Properties))
 	}
 
 	// Case 3: no header, attribute set → synthesize header from attribute leaf
@@ -654,7 +717,7 @@ func TestApplyColumnHeaderFallback(t *testing.T) {
 			{PropertyKey: "attribute", Operation: "attribute", AttributePath: "Mod.Ent.OrderNumber"},
 		},
 	}
-	applyColumnHeaderFallback(spec3)
+	applyColumnHeaderFallback(spec3, "col3", true)
 	if len(spec3.Properties) != 2 {
 		t.Fatalf("Case 3 (fallback): expected 2 properties, got %d", len(spec3.Properties))
 	}
@@ -669,9 +732,70 @@ func TestApplyColumnHeaderFallback(t *testing.T) {
 			{PropertyKey: "attribute", Operation: "attribute", AttributePath: "BareName"},
 		},
 	}
-	applyColumnHeaderFallback(spec4)
+	applyColumnHeaderFallback(spec4, "col4", true)
 	if len(spec4.Properties) != 2 || spec4.Properties[1].TextTemplate != "BareName" {
 		t.Errorf("Case 4: fallback for unqualified path = %v", spec4.Properties)
+	}
+
+	// Case 5 (ledger #54): an explicit empty caption (`Caption: ''`) reaches the
+	// engine as a texttemplate header with empty text and no params. Studio Pro
+	// rejects an empty column header with CE0463, so it must be treated like an
+	// absent one — filled IN PLACE with the attribute leaf, not left empty and
+	// not duplicated.
+	spec5 := &backend.ObjectListItemSpec{
+		Properties: []backend.ObjectListItemProperty{
+			{PropertyKey: "header", Operation: "texttemplate", TextTemplate: ""},
+			{PropertyKey: "attribute", Operation: "attribute", AttributePath: "Mod.Ent.Amount"},
+		},
+	}
+	applyColumnHeaderFallback(spec5, "col5", true)
+	if len(spec5.Properties) != 2 {
+		t.Fatalf("Case 5 (empty caption): expected 2 properties (no duplicate), got %d", len(spec5.Properties))
+	}
+	if h := spec5.Properties[0]; h.PropertyKey != "header" || h.Operation != "texttemplate" || h.TextTemplate != "Amount" {
+		t.Errorf("Case 5: empty header not filled in place: %+v, want TextTemplate=Amount", spec5.Properties[0])
+	}
+
+	// Case 6: a template header WITH params (e.g. Caption: '{1}') is NOT empty —
+	// it must be left untouched even though its literal text may be blank.
+	spec6 := &backend.ObjectListItemSpec{
+		Properties: []backend.ObjectListItemProperty{
+			{PropertyKey: "header", Operation: "texttemplate", TextTemplate: "", Parameters: []*pages.ClientTemplateParameter{{}}},
+			{PropertyKey: "attribute", Operation: "attribute", AttributePath: "Mod.Ent.Amount"},
+		},
+	}
+	applyColumnHeaderFallback(spec6, "col6", true)
+	if spec6.Properties[0].TextTemplate != "" {
+		t.Errorf("Case 6: param-bearing header must not be overwritten, got TextTemplate=%q", spec6.Properties[0].TextTemplate)
+	}
+
+	// Case 7 (ledger #54, custom-content column): no attribute, empty header —
+	// fall back to the COLUMN NAME in place (a custom-content column has nothing
+	// to derive a header from, and an empty header is CE0463).
+	spec7 := &backend.ObjectListItemSpec{
+		Properties: []backend.ObjectListItemProperty{
+			{PropertyKey: "header", Operation: "texttemplate", TextTemplate: ""},
+			{PropertyKey: "showContentAs", Operation: "primitive", PrimitiveVal: "customContent"},
+		},
+	}
+	applyColumnHeaderFallback(spec7, "colActions", true)
+	if h := spec7.Properties[0]; h.PropertyKey != "header" || h.TextTemplate != "colActions" {
+		t.Errorf("Case 7: empty custom-content header not filled with column name: %+v", spec7.Properties[0])
+	}
+
+	// Case 8 (ledger #54): custom-content column with NO header prop at all —
+	// append a header carrying the column name (absent header is CE0463 too).
+	spec8 := &backend.ObjectListItemSpec{
+		Properties: []backend.ObjectListItemProperty{
+			{PropertyKey: "showContentAs", Operation: "primitive", PrimitiveVal: "customContent"},
+		},
+	}
+	applyColumnHeaderFallback(spec8, "colActions", true)
+	if len(spec8.Properties) != 2 {
+		t.Fatalf("Case 8 (absent custom-content header): expected 2 properties, got %d", len(spec8.Properties))
+	}
+	if h := spec8.Properties[1]; h.PropertyKey != "header" || h.TextTemplate != "colActions" {
+		t.Errorf("Case 8: appended header = %+v, want TextTemplate=colActions", spec8.Properties[1])
 	}
 }
 

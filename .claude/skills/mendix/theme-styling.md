@@ -90,6 +90,31 @@ container ctn (style: 'color: red;') {
 
 This also applies to `alter styling` and `alter page set style` — never target a DYNAMICTEXT widget with Style.
 
+### DataGrid2 Renders ARIA `<div>`s, Not a `<table>` — and `Size` Is a Flex Weight
+
+Two surprises when styling a **DataGrid2** matrix/pivot (ledger finding #46):
+
+1. **It is not a `<table>`.** DataGrid2 emits `role="grid"` / `role="row"` /
+   `role="gridcell"` **`<div>`s**, so `th, td { … }` selectors match nothing. A
+   `td { white-space: nowrap }` intended to keep `€ 5,200` on one line does not
+   apply, and amounts wrap. Target the ARIA roles instead:
+
+   ```scss
+   .ledger-matrix [role='gridcell'] { white-space: nowrap; }
+   ```
+
+   Playwright/tests see the same DOM: assert on `[role="row"]`, not `tr`.
+
+2. **`Size` is a flex weight, not pixels.** On a column, `ColumnWidth: manual,
+   Size: 132` does **not** set a 132px width — it divides available width by the
+   weights across all columns. To give a wide matrix room, set a min-width on the
+   grid and let it scroll:
+
+   ```scss
+   .ledger-matrix [role='grid'] { min-width: 1320px; }
+   .ledger-matrix { overflow-x: auto; }
+   ```
+
 ### Design Property Keys Are Case-Sensitive
 
 Keys must match the `name` field in `design-properties.json` exactly:

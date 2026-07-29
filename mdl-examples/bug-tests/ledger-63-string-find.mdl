@@ -1,0 +1,62 @@
+-- ============================================================================
+-- Ledger finding #63: string `find()` serialized as a LIST operation
+-- ============================================================================
+--
+-- Symptom (before fix): `set $At = find($Raw, '"id":"')` — the string function
+-- find(haystack, needle) returning an index — was serialized as a List operation
+-- activity 'Find by expression'. Since a list operation CREATES its output
+-- variable, a pre-declared `$At` collided: `mx check` reported
+-- [CE0111] "Duplicate variable name 'At'.". Net effect: string find was
+-- unusable from MDL.
+--
+-- Root cause: the visitor unconditionally rewrote `set $x = find(...)` into a
+-- ListOperationStmt (list find), dropping the string-function interpretation.
+--
+-- After fix (mirrors #53 contains):
+--   1. Visitor — a string-literal second argument means the string function; it
+--      stays a value expression (Change Variable), not a list operation.
+--   2. Flow builder — when the input variable is a declared String, the ambiguous
+--      both-variables form also becomes a Change Variable carrying `find(...)`.
+-- The genuine list form find(list, condition) is unchanged.
+--
+-- Verified: `mx check` → 0 errors on Mendix 11.12.1.
+
+create module L63;
+
+create entity L63.Item (
+  Key: string(50)
+);
+
+-- (A) string find with a string-literal needle
+create microflow L63.FindAt (
+  $Raw: String
+)
+returns Integer
+begin
+  declare $At Integer = 0;
+  set $At = find($Raw, '"id":"');
+  return $At;
+end;
+
+-- (B) string find with two String variables
+create microflow L63.FindVar (
+  $Hay: String,
+  $Needle: String
+)
+returns Integer
+begin
+  declare $At Integer = 0;
+  set $At = find($Hay, $Needle);
+  return $At;
+end;
+
+-- (C) genuine LIST find: list + boolean condition (output not pre-declared)
+create microflow L63.ListFind (
+  $Items: list of L63.Item,
+  $K: String
+)
+returns L63.Item
+begin
+  set $Found = find($Items, Key = $K);
+  return $Found;
+end;

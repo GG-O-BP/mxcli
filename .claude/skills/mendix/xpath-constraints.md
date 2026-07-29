@@ -97,6 +97,12 @@ where [not(Module.Order_Customer/Module.Customer)]
 
 **Rule**: Always use the fully qualified association name (`Module.AssociationName`).
 
+> **`= empty` does not work on associations (CE0161 / MDL047).** `= empty` tests
+> *attribute* nullability only. To test whether an object *has no* associated
+> object, use negated existence: `[not(Module.Order_Customer/Module.Customer)]` —
+> **not** `[Module.Order_Customer = empty]`. `mxcli check` flags the association
+> `= empty` form as **MDL047** before the build does.
+
 ### Variable Paths
 
 ```mdl

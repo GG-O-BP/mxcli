@@ -1,0 +1,26 @@
+-- ============================================================================
+-- Ledger finding #42: retrieving by object id is not expressible in XPath
+-- ============================================================================
+--
+-- Symptom (before fix): `retrieve $B from ... where [id = $Var]` passed
+-- `mxcli check` but failed the build with CE0161 "Error(s) in XPath constraint"
+-- (whether $Var is String or Long). Mendix XPath has no id operator reachable
+-- from a microflow expression.
+--
+-- After fix: MDL048 rejects it at check time and points at the two real options:
+--   1. a marketplace GUID action (NanoflowCommons GetObjectByGuid / CommunityCommons)
+--   2. expose the id as a String on a VIEW ENTITY — `cast(id as string) as ObjectId`
+--      in the OQL — and constrain on that String column instead
+--
+-- Usage (expected to FAIL check):
+--   mxcli check mdl-examples/bug-tests/ledger-42-retrieve-by-id.fail.mdl
+-- ============================================================================
+
+create microflow MyModule.FindById (
+  $Id: string
+)
+returns list of MyModule.Budget
+begin
+  retrieve $B from MyModule.Budget where [id = $Id];   -- MDL048 (CE0161)
+  return $B;
+end
