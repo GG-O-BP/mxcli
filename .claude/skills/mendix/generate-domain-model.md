@@ -388,6 +388,17 @@ delete_behavior DELETE_BUT_KEEP_REFERENCES
 comment 'Additional documentation';
 ```
 
+**Idempotency**: plain `create association` is **not** idempotent — re-running it
+errors with `association already exists`, which aborts the rest of the script (and
+any associations defined *after* it are never created). Write **`create or modify
+association`** from the first draft — same clauses, but re-running is a no-op:
+
+```sql
+create or modify association Module.Child_Parent
+from Module.Child to Module.Parent
+type reference;
+```
+
 **Association Types**:
 - `reference` - One-to-one or many-to-one (foreign key on FROM entity)
 - `ReferenceSet` - One-to-many or many-to-many (collection)

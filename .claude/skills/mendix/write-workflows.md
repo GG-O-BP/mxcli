@@ -152,6 +152,29 @@ Studio-Pro-authored workflow, and `describe → drop → exec` reproduces a work
 that builds. (The implicit start/end activities are omitted, as they are
 re-synthesised on create.)
 
+## Microflow statements for workflow tasks
+
+These run **inside a microflow** (not in the workflow body) and drive a running
+workflow / its tasks. They are easy to miss — there is no `complete task`:
+
+- `set task outcome $Task 'Approve';` — completes a `System.WorkflowUserTask` with a
+  named outcome. This is how a microflow (e.g. a task page's button) finishes a task
+  and does the domain work; the outcome branches still record which one was chosen.
+- `open user task $Task`, `notify workflow $Wf`, `lock workflow $Wf`, and
+  `workflow operation abort|pause|restart|retry|continue $Wf` are also statements.
+
+A common shape: the task page's buttons call a microflow that does the change and
+then `set task outcome $Task '<Outcome>'`, leaving the workflow's outcome branch
+bodies empty.
+
+## System-module documents are read from the runtime, not the .mpr
+
+`describe enumeration System.WorkflowUserTaskState` and `show enumerations in System`
+return nothing — the System module's **enumerations** are not in the project file, so
+mxcli cannot resolve them. Constrain on an attribute instead (`[EndTime = empty]`
+selects open tasks) rather than naming a System enum value. System **entities** are
+documented in `system-module.md`.
+
 ## Platform rules
 
 - A user task needs a **task page** to be useful; without one Mendix flags the
