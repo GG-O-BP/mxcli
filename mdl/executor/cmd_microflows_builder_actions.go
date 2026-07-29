@@ -1594,11 +1594,23 @@ func (fb *flowBuilder) resolveMemberChange(mc *microflows.MemberChange, memberNa
 						return
 					}
 				}
-				// Not an association in the authored module — if the author
-				// qualified it (e.g. `Module.Attr`) the qualification is an
-				// error we must preserve rather than silently dropping; the
-				// writer will surface it during mx check.
+				// Not an association in the authored module. A single-qualifier
+				// name (`Module.Name`) can ONLY be an association — attributes are
+				// bare or `Module.Entity.Attribute` (two qualifiers). So a one-dot
+				// member that isn't a known association is a reference to an
+				// association that does not exist. Writing it as an Attribute
+				// produces an *unloadable* .mpr (StorageLoadException "... is not a
+				// valid AttributeIdentifier") rather than a clean CE error — reject
+				// it here instead (FINDINGS #51). Associations created earlier in the
+				// same script are visible via GetDomainModel, so this does not
+				// false-positive on same-script associations.
+				if strings.Count(memberName, ".") == 1 {
+					fb.addError("member %q on entity %s is not a known association (and a one-qualifier name cannot be an attribute) — create the association first (`create or modify association %s from ... to ...`) or fix the name", memberName, entityQN, memberName)
+					return
+				}
 				if strings.Contains(memberName, ".") {
+					// Two-or-more-dot qualified attribute (Module.Entity.Attribute):
+					// preserve the authored qualification; mx check surfaces a wrong one.
 					mc.AttributeQualifiedName = memberName
 				} else if attrQN, ok := fb.resolveAttributeInEntityHierarchy(entityQN, memberName); ok {
 					mc.AttributeQualifiedName = attrQN
