@@ -223,3 +223,38 @@ func TestValidateDatasourceXPathAssociationEmpty(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateMicroflow_DuplicateLoopVariable covers MDL052 (ledger #64): a loop
+// iterator is scoped to the whole microflow, so reusing a name across loops
+// builds as CE0111. Distinct names — and a single loop — are fine.
+func TestValidateMicroflow_DuplicateLoopVariable(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		wantMDL bool
+	}{
+		{"two loops same iterator", "loop $R in $L begin set $x = 1; end loop loop $R in $L begin set $y = 1; end loop", true},
+		{"nested loop reuses outer iterator", "loop $R in $L begin loop $R in $L begin set $x = 1; end loop end loop", true},
+		{"distinct iterators are fine", "loop $R in $L begin set $x = 1; end loop loop $C in $L begin set $y = 1; end loop", false},
+		{"single loop is fine", "loop $R in $L begin set $x = 1; end loop", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "create microflow M.F ($L: list of M.R)\nreturns Boolean\nbegin\n  " + tc.body + "\n  return true;\nend;"
+			prog, errs := visitor.Build(src)
+			if len(errs) > 0 {
+				t.Fatalf("parse errors: %v", errs)
+			}
+			mf := prog.Statements[0].(*ast.CreateMicroflowStmt)
+			var got bool
+			for _, vi := range ValidateMicroflow(mf) {
+				if vi.RuleID == "MDL052" {
+					got = true
+				}
+			}
+			if got != tc.wantMDL {
+				t.Errorf("MDL052 fired=%v, want %v (body: %q)", got, tc.wantMDL, tc.body)
+			}
+		})
+	}
+}

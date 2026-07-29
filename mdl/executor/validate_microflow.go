@@ -84,6 +84,54 @@ func (v *microflowValidator) validate(body []ast.MicroflowStatement) {
 
 	// Check 3: variable scope — detect variables declared inside branches but used after
 	v.checkBranchScoping(body)
+
+	// Duplicate loop iterator names — a Mendix loop variable is scoped to the whole
+	// microflow, so reusing a name across loops is CE0111 at build time.
+	v.checkDuplicateLoopVariables(body)
+}
+
+// checkDuplicateLoopVariables flags a loop iterator name used by more than one
+// loop in the same microflow. A Mendix loop variable is scoped to the WHOLE
+// microflow (not to its loop), so two `loop $R in …` — even sequential ones, or a
+// nested loop reusing an outer name — build as CE0111 "Duplicate variable name".
+// (ledger finding #64). Fix for the user: give each loop a distinct iterator.
+func (v *microflowValidator) checkDuplicateLoopVariables(body []ast.MicroflowStatement) {
+	seen := map[string]bool{}
+	var walk func([]ast.MicroflowStatement)
+	walk = func(stmts []ast.MicroflowStatement) {
+		for _, s := range stmts {
+			switch st := s.(type) {
+			case *ast.LoopStmt:
+				if name := st.LoopVariable; name != "" {
+					if seen[name] {
+						v.addViolation("MDL052", linter.SeverityError,
+							fmt.Sprintf("loop iterator '$%s' is reused by another loop in this microflow; "+
+								"a Mendix loop variable is scoped to the whole microflow, so this builds as "+
+								"CE0111 \"Duplicate variable name\"", name),
+							fmt.Sprintf("Give each loop a distinct iterator name (e.g. rename one '$%s' to '$%s2')", name, name))
+					}
+					seen[name] = true
+				}
+				walk(st.Body)
+			case *ast.IfStmt:
+				walk(st.ThenBody)
+				walk(st.ElseBody)
+			case *ast.WhileStmt:
+				walk(st.Body)
+			case *ast.EnumSplitStmt:
+				for _, c := range st.Cases {
+					walk(c.Body)
+				}
+				walk(st.ElseBody)
+			case *ast.InheritanceSplitStmt:
+				for _, c := range st.Cases {
+					walk(c.Body)
+				}
+				walk(st.ElseBody)
+			}
+		}
+	}
+	walk(body)
 }
 
 // walkBody recursively walks microflow body statements looking for per-statement issues.
