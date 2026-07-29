@@ -209,8 +209,14 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 			// RETRIEVE populates a list variable — remove from empty tracking
 			delete(v.emptyListVars, stmt.Variable)
 			if stmt.Where != nil {
-				v.checkXPathAssociationEmpty(stmt.Variable, expressionToXPath(stmt.Where))
+				xp := expressionToXPath(stmt.Where)
+				v.checkXPathAssociationEmpty(stmt.Variable, xp)
+				v.checkXPathIdConstraint(stmt.Variable, xp)
 			}
+		case *ast.CallMicroflowStmt:
+			v.checkAssociationObjectArgs("microflow "+stmt.MicroflowName.String(), stmt.Arguments)
+		case *ast.CallNanoflowStmt:
+			v.checkAssociationObjectArgs("nanoflow "+stmt.NanoflowName.String(), stmt.Arguments)
 		case *ast.LoopStmt:
 			// Check: @caption on a loop is silently dropped — Mendix for-loops
 			// have no caption (Microflows$LoopedActivity has no Caption
@@ -432,6 +438,73 @@ func (v *microflowValidator) checkXPathAssociationEmpty(variable, xpath string) 
 				"(CE0161 \"Error(s) in XPath constraint\") — `= empty` works on attributes, not associations", variable, assoc),
 			fmt.Sprintf("Test for the absence of the associated object with negation: `[not(%s/<Module.TargetEntity>)]`.", assoc))
 	}
+}
+
+// xpathIdConstraintRe matches a constraint comparing the object id against a VALUE
+// (`id = $strVar`, `id = '123'`, `id != 5`). It captures the right-hand operand.
+// Comparing `id` against an OBJECT variable (`[id != $ExistingOrder]` — the valid
+// "exclude self" pattern) is intentionally NOT matched here: the operand filter in
+// checkXPathIdConstraint requires a primitive value, and an object variable is not
+// one. `id` is a Mendix reserved member, so a bare `id` in identifier position is
+// always the system id.
+var xpathIdConstraintRe = regexp.MustCompile(`(?:^|[^\w./])(?i:id)\s*(?:=|!=|<|>)\s*(\$\w+|'[^']*'|-?\d+)`)
+
+// checkXPathIdConstraint flags a retrieve that constrains the object id against a
+// stored id VALUE (`where [id = $Id]` with `$Id` a String/Long, or a literal).
+// Mendix XPath has no id operator reachable from a microflow expression, so this
+// fails the build with CE0161. Comparing `id` to an OBJECT variable is a valid
+// identity test and is left alone (its operand is not a primitive). (ledger #42)
+func (v *microflowValidator) checkXPathIdConstraint(variable, xpath string) {
+	for _, m := range xpathIdConstraintRe.FindAllStringSubmatch(xpath, -1) {
+		operand := m[1]
+		if strings.HasPrefix(operand, "$") {
+			// A $-variable operand: flag only when it is a primitive VALUE (a stored
+			// id — String/Long/Integer). An object variable is not in varKinds, so an
+			// identity comparison (`id != $obj`) is correctly not flagged.
+			if _, isPrimitive := v.varKinds[operand[1:]]; !isPrimitive {
+				continue
+			}
+		}
+		v.addViolation("MDL048", linter.SeverityError,
+			fmt.Sprintf("retrieve '$%s' constrains the object id against a value (`[id = %s]`), which Mendix XPath does not support "+
+				"(CE0161 \"Error(s) in XPath constraint\") — there is no id operator reachable from a microflow expression", variable, operand),
+			"Retrieve by GUID with a marketplace action (NanoflowCommons GetObjectByGuid / CommunityCommons), "+
+				"or expose the id as a String on a view entity (`cast(id as string) as ObjectId`) and constrain on that String column. "+
+				"(Comparing id against an OBJECT variable — `[id != $obj]` — IS valid and is not flagged.)")
+		return
+	}
+}
+
+// checkAssociationObjectArgs flags a call argument bound to an association-object
+// path (`$obj/Module.Assoc`, which yields the associated OBJECT). Mendix rejects
+// an association path used as a value with CE0117 — it must be materialized first
+// (`retrieve $x from $obj/Module.Assoc;`). An attribute value over an association
+// (`$obj/Module.Assoc/Attr`) is a legal value and is NOT flagged. (ledger #43/#44)
+func (v *microflowValidator) checkAssociationObjectArgs(callee string, args []ast.CallArgument) {
+	for _, a := range args {
+		if exprIsAssociationObjectPath(a.Value) {
+			v.addViolation("MDL049", linter.SeverityError,
+				fmt.Sprintf("call %s: argument '%s' passes an association path (an object reached over an association), "+
+					"which Mendix rejects as a value (CE0117 \"Error(s) in expression\")", callee, a.Name),
+				fmt.Sprintf("Materialize the object first, then pass the variable: `retrieve $%s from %s;` then `%s = $%s`.",
+					a.Name, microflowExprSource(a.Value), a.Name, a.Name))
+		}
+	}
+}
+
+// exprIsAssociationObjectPath reports whether an expression is an attribute path
+// whose FINAL segment is a module-qualified association (`$obj/Module.Assoc`) —
+// i.e. it resolves to an associated OBJECT, not an attribute value. A final bare
+// segment (`$obj/Module.Assoc/Attr` → `Attr`) is an attribute and returns false.
+func exprIsAssociationObjectPath(expr ast.Expression) bool {
+	if se, ok := expr.(*ast.SourceExpr); ok {
+		expr = se.Expression
+	}
+	ap, ok := expr.(*ast.AttributePathExpr)
+	if !ok || len(ap.Path) == 0 {
+		return false
+	}
+	return strings.Contains(ap.Path[len(ap.Path)-1], ".")
 }
 
 // dateTimeLiteralFuncs are the date-construction functions whose arguments

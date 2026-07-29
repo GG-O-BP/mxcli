@@ -84,6 +84,80 @@ func TestValidateMicroflow_XPathAssociationEmpty(t *testing.T) {
 	}
 }
 
+// TestValidateMicroflow_XPathIdConstraint covers MDL048 (ledger #42): a retrieve
+// that constrains on the object id (`[id = $x]`) fails the build with CE0161.
+func TestValidateMicroflow_XPathIdConstraint(t *testing.T) {
+	cases := []struct {
+		name    string
+		where   string
+		wantMDL bool
+	}{
+		{"id equals a String value var", "[id = $Id]", true},
+		{"ID case-insensitive against value var", "[ID = $Id]", true},
+		{"id equals a string literal", "[id = '123']", true},
+		{"id in boolean clause", "[Active = true and id = $Id]", true},
+		// Comparing id to an OBJECT variable is the valid "exclude self" pattern.
+		{"id not-equals an object var is fine", "[id != $This]", false},
+		{"attribute containing id is fine", "[Valid = true]", false},
+		{"paidstatus is fine", "[PaidStatus = $x]", false},
+		{"plain attribute is fine", "[Name = $n]", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "create microflow M.F ($Id: String, $x: String, $n: String, $This: M.B)\nreturns list of M.B\nbegin\n  retrieve $B from M.B where " + tc.where + ";\n  return $B;\nend;"
+			prog, errs := visitor.Build(src)
+			if len(errs) > 0 {
+				t.Fatalf("parse errors: %v", errs)
+			}
+			mf := prog.Statements[0].(*ast.CreateMicroflowStmt)
+			var got bool
+			for _, vi := range ValidateMicroflow(mf) {
+				if vi.RuleID == "MDL048" {
+					got = true
+				}
+			}
+			if got != tc.wantMDL {
+				t.Errorf("MDL048 fired=%v, want %v (where: %q)", got, tc.wantMDL, tc.where)
+			}
+		})
+	}
+}
+
+// TestValidateMicroflow_AssociationObjectArg covers MDL049 (ledger #43/#44): a
+// call argument bound to an association-object path (`$obj/Module.Assoc`) fails
+// the build with CE0117 — it must be materialized first.
+func TestValidateMicroflow_AssociationObjectArg(t *testing.T) {
+	cases := []struct {
+		name    string
+		arg     string
+		wantMDL bool
+	}{
+		{"association object path", "B = $E/M.Edit_Budget", true},
+		{"attribute over association is fine", "Name = $E/M.Edit_Budget/Label", false},
+		{"plain attribute is fine", "Name = $E/Note", false},
+		{"variable is fine", "B = $E", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "create microflow M.F ($E: M.Edit)\nreturns boolean\nbegin\n  $R = call microflow M.Consume(" + tc.arg + ");\n  return $R;\nend;"
+			prog, errs := visitor.Build(src)
+			if len(errs) > 0 {
+				t.Fatalf("parse errors: %v", errs)
+			}
+			mf := prog.Statements[0].(*ast.CreateMicroflowStmt)
+			var got bool
+			for _, vi := range ValidateMicroflow(mf) {
+				if vi.RuleID == "MDL049" {
+					got = true
+				}
+			}
+			if got != tc.wantMDL {
+				t.Errorf("MDL049 fired=%v, want %v (arg: %q)", got, tc.wantMDL, tc.arg)
+			}
+		})
+	}
+}
+
 // TestValidateDatasourceXPathAssociationEmpty covers the page/widget-datasource
 // arm of MDL047 (ledger #25 verification round): the original check only saw
 // microflow retrieves, so `datagrid (datasource: database ... where [Assoc =
