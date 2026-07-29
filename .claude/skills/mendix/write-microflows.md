@@ -571,6 +571,8 @@ commit $Product with events refresh;
 
 **Best Practice**: Use `with events` when you want before/after commit event handlers to execute. Use `refresh` when the committed object is displayed in the client and you want the UI to update immediately.
 
+> **Re-sorting a database-datasource grid needs `refresh`.** A plain `commit $Obj;` updates the committed attribute *values* in the grid, but a grid backed by a **database** datasource does **not** re-run its sort — so after changing a sort key (e.g. a reorder that rewrites a `SequenceNumber`), the row stays in its old position until you `commit $Obj refresh;`. The `refresh` re-queries the datasource, which re-applies the sort. (Ledger #57.)
+
 > **Binding a microflow to an entity event is MDL — you do NOT need to map it manually in Studio Pro.** After writing a handler microflow (e.g. a `BeforeCommit` validation), wire it directly:
 > ```mdl
 > alter entity Sales.Order
