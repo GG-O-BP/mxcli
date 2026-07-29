@@ -158,6 +158,46 @@ func TestValidateMicroflow_AssociationObjectArg(t *testing.T) {
 	}
 }
 
+// TestValidateMicroflow_FormatWithAssociation covers MDL050 (ledger #48,
+// corrected): a render function (formatDateTime/formatDecimal/…) combined with an
+// association navigation fails the build with CE0117. Verified against mx check on
+// 11.12.1. Plain member access, literals, toString, and a bare association
+// navigation are all fine.
+func TestValidateMicroflow_FormatWithAssociation(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		wantMDL bool
+	}{
+		{"format of association date", "set $M = formatDateTime($T/M.Transaction_Account/Opened, 'd MMM');", true},
+		{"format + association concat", "set $M = formatDateTime($T/TxDate, 'd MMM') + $T/M.Transaction_Account/Name;", true},
+		{"formatDecimal + association", "set $M = formatDecimal($T/M.Transaction_Account/Bal, 2) + $T/M.Transaction_Account/Name;", true},
+		{"format of plain member access is fine", "set $M = formatDateTime($T/TxDate, 'd MMM');", false},
+		{"literal + association is fine", "set $M = 'x' + $T/M.Transaction_Account/Name;", false},
+		{"toString + association is fine", "set $M = toString($T/TxDate) + $T/M.Transaction_Account/Name;", false},
+		{"bare association navigation is fine", "set $M = $T/M.Transaction_Account/Name;", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "create microflow M.F ($T: M.Transaction)\nreturns string\nbegin\n  declare $M String = '';\n  " + tc.body + "\n  return $M;\nend;"
+			prog, errs := visitor.Build(src)
+			if len(errs) > 0 {
+				t.Fatalf("parse errors: %v", errs)
+			}
+			mf := prog.Statements[0].(*ast.CreateMicroflowStmt)
+			var got bool
+			for _, vi := range ValidateMicroflow(mf) {
+				if vi.RuleID == "MDL050" {
+					got = true
+				}
+			}
+			if got != tc.wantMDL {
+				t.Errorf("MDL050 fired=%v, want %v (body: %q)", got, tc.wantMDL, tc.body)
+			}
+		})
+	}
+}
+
 // TestValidateDatasourceXPathAssociationEmpty covers the page/widget-datasource
 // arm of MDL047 (ledger #25 verification round): the original check only saw
 // microflow retrieves, so `datagrid (datasource: database ... where [Assoc =

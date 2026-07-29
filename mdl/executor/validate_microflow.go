@@ -102,6 +102,7 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 			v.checkExprFunctions("return", stmt.Value)
 			v.checkDivisionSlash("return", stmt.Value)
 			v.checkDateTimeLiterals("return", stmt.Value)
+			v.checkFormatWithAssociation("return", stmt.Value)
 		case *ast.IfStmt:
 			v.checkExprFunctions("if condition", stmt.Condition)
 			v.checkDivisionSlash("if condition", stmt.Condition)
@@ -194,6 +195,7 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 			v.checkExprFunctions(fmt.Sprintf("declare '$%s'", stmt.Variable), stmt.InitialValue)
 			v.checkDivisionSlash(fmt.Sprintf("declare '$%s'", stmt.Variable), stmt.InitialValue)
 			v.checkDateTimeLiterals(fmt.Sprintf("declare '$%s'", stmt.Variable), stmt.InitialValue)
+			v.checkFormatWithAssociation(fmt.Sprintf("declare '$%s'", stmt.Variable), stmt.InitialValue)
 		case *ast.MfSetStmt:
 			// SET on a plain variable target (not $var/Member = …, which is a
 			// member change). Flag a Decimal value assigned to an Integer/Long var.
@@ -205,6 +207,7 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 			v.checkExprFunctions(fmt.Sprintf("set '%s'", stmt.Target), stmt.Value)
 			v.checkDivisionSlash(fmt.Sprintf("set '%s'", stmt.Target), stmt.Value)
 			v.checkDateTimeLiterals(fmt.Sprintf("set '%s'", stmt.Target), stmt.Value)
+			v.checkFormatWithAssociation(fmt.Sprintf("set '%s'", stmt.Target), stmt.Value)
 		case *ast.RetrieveStmt:
 			// RETRIEVE populates a list variable — remove from empty tracking
 			delete(v.emptyListVars, stmt.Variable)
@@ -505,6 +508,92 @@ func exprIsAssociationObjectPath(expr ast.Expression) bool {
 		return false
 	}
 	return strings.Contains(ap.Path[len(ap.Path)-1], ".")
+}
+
+// renderFuncsIncompatibleWithAssoc are Mendix "render" functions that reject an
+// association-navigated value anywhere in the same expression — verified against
+// `mx check` on 11.12.1: `formatDateTime($obj/Mod.Assoc/Date, …)` and
+// `formatDecimal(…) + $obj/Mod.Assoc/Attr` both fail CE0117, while `toString` /
+// `length` / literals / a bare association navigation are all fine. Materialize
+// the association value into a variable first, then pass the variable.
+var renderFuncsIncompatibleWithAssoc = map[string]bool{
+	"formatdatetime": true, "formatdatetimeutc": true,
+	"formatdecimal": true, "formatfloat": true, "formatboolean": true,
+}
+
+// checkFormatWithAssociation flags a microflow value expression that combines a
+// render function (formatDateTime/formatDecimal/…) with an association
+// navigation — Mendix rejects it with CE0117. (ledger finding #48, corrected:
+// the trigger is render-function + association navigation, NOT "association nav
+// must be the whole RHS" as originally reported.)
+func (v *microflowValidator) checkFormatWithAssociation(label string, expr ast.Expression) {
+	if exprHasRenderFunc(expr) && exprHasAssociationNav(expr) {
+		v.addViolation("MDL050", linter.SeverityError,
+			fmt.Sprintf("%s combines a format function (formatDateTime/formatDecimal/…) with an "+
+				"association navigation, which Mendix rejects (CE0117 \"Error(s) in expression\") — "+
+				"a render function cannot take or co-occur with a value reached over an association", label),
+			"Materialize the associated value into its own variable first, then pass it: "+
+				"`set $v = $obj/Module.Assoc/Attr;` then use `$v` in the format call.")
+	}
+}
+
+// exprHasRenderFunc reports whether the tree calls a render function that is
+// incompatible with association navigation.
+func exprHasRenderFunc(expr ast.Expression) bool {
+	switch e := expr.(type) {
+	case *ast.FunctionCallExpr:
+		if renderFuncsIncompatibleWithAssoc[strings.ToLower(e.Name)] {
+			return true
+		}
+		for _, arg := range e.Arguments {
+			if exprHasRenderFunc(arg) {
+				return true
+			}
+		}
+	case *ast.BinaryExpr:
+		return exprHasRenderFunc(e.Left) || exprHasRenderFunc(e.Right)
+	case *ast.UnaryExpr:
+		return exprHasRenderFunc(e.Operand)
+	case *ast.ParenExpr:
+		return exprHasRenderFunc(e.Inner)
+	case *ast.IfThenElseExpr:
+		return exprHasRenderFunc(e.Condition) || exprHasRenderFunc(e.ThenExpr) || exprHasRenderFunc(e.ElseExpr)
+	case *ast.SourceExpr:
+		return exprHasRenderFunc(e.Expression)
+	}
+	return false
+}
+
+// exprHasAssociationNav reports whether the tree contains an association
+// navigation — an AttributePathExpr with a module-qualified (dotted) path segment
+// (`$obj/Module.Assoc/…`). A plain attribute path (`$obj/Attr`) has no dotted
+// segment and is not association navigation.
+func exprHasAssociationNav(expr ast.Expression) bool {
+	switch e := expr.(type) {
+	case *ast.AttributePathExpr:
+		for _, seg := range e.Path {
+			if strings.Contains(seg, ".") {
+				return true
+			}
+		}
+	case *ast.FunctionCallExpr:
+		for _, arg := range e.Arguments {
+			if exprHasAssociationNav(arg) {
+				return true
+			}
+		}
+	case *ast.BinaryExpr:
+		return exprHasAssociationNav(e.Left) || exprHasAssociationNav(e.Right)
+	case *ast.UnaryExpr:
+		return exprHasAssociationNav(e.Operand)
+	case *ast.ParenExpr:
+		return exprHasAssociationNav(e.Inner)
+	case *ast.IfThenElseExpr:
+		return exprHasAssociationNav(e.Condition) || exprHasAssociationNav(e.ThenExpr) || exprHasAssociationNav(e.ElseExpr)
+	case *ast.SourceExpr:
+		return exprHasAssociationNav(e.Expression)
+	}
+	return false
 }
 
 // dateTimeLiteralFuncs are the date-construction functions whose arguments
