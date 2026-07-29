@@ -1006,6 +1006,29 @@ retrieve $Items from Module.Entity where Active = true;
 
 **Note**: `returns type as $Var` in the microflow signature does NOT create an activity variable — it only names the return value. So `$Var = call java action ...` after `returns as $Var` is fine (one creation).
 
+**Variables are scoped to the branch that creates them.** A variable first created
+inside an `if`/`else` arm (including by `$Var = call ...`) is not visible outside
+that arm. To use one value after a conditional, `declare` it *before* the
+conditional and assign in every branch:
+
+```mdl
+-- WRONG: $GTotalText is created only in the `then` arm → not declared in `else`
+if $HasVariance then
+  $GTotalText = call microflow Module.FMT_Variance($v);   -- created here only
+else
+  set $GTotalText = 'n/a';                                 -- error: not declared
+end if;
+
+-- CORRECT: declare before, then set in each branch (call into a temp, then set)
+declare $GTotalText string = '';
+if $HasVariance then
+  $Tmp = call microflow Module.FMT_Variance($v);
+  set $GTotalText = $Tmp;
+else
+  set $GTotalText = 'n/a';
+end if;
+```
+
 **Fallback chains reuse the same name = CE0111.** Because each `$Var = call microflow …` (or retrieve/create) is a *fresh* variable creation, the natural "try A, else try B" shape is invalid — even when the retry is inside an `if`:
 
 ```mdl

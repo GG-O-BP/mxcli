@@ -223,12 +223,19 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 						"Use @annotation to attach a note to the loop instead.",
 					"Replace @caption with @annotation to label the loop")
 			}
-			// Check: nested loop anti-pattern
+			// Check: nested loop anti-pattern. This is a heuristic — a nested loop is
+			// only wasteful when the inner loop is a key LOOKUP (find one matching
+			// item). Intentional aggregation that must visit every element (group ×
+			// category × month totals) is O(N*M) by nature and correct as written, so
+			// the message flags the lookup case without asserting the loop is wrong.
 			if v.loopDepth > 0 {
 				v.addViolation("MDL001", linter.SeverityWarning,
-					"nested loop detected (loop inside a loop). "+
-						"Use FIND($List, <condition>) for in-memory list matching instead of an inner loop (O(N) vs O(N^2)).",
-					"Replace the inner loop with $Match = FIND($List, key = $item/key) (a plain retrieve ... where cannot filter a list variable)")
+					"nested loop detected (loop inside a loop). If the inner loop is a "+
+						"key LOOKUP (finding one matching item), replace it with "+
+						"FIND($List, <condition>) for an in-memory match (O(N) vs O(N^2)). "+
+						"If it is intentional aggregation that must visit every element "+
+						"(e.g. totals over group x category x month), this is correct — ignore this hint.",
+					"For a lookup: $Match = FIND($List, key = $item/key). For genuine aggregation over all elements, no change is needed (a plain retrieve ... where cannot filter a list variable).")
 			}
 			// Check: loop over empty declared list
 			if v.emptyListVars[stmt.ListVariable] {
