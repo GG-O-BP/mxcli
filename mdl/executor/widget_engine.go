@@ -696,7 +696,16 @@ func (e *PluggableWidgetEngine) resolveMapping(mapping PropertyMapping, w *ast.W
 		}
 
 	case "Association":
-		if attr := w.GetAttribute(); attr != "" {
+		// Accept either the explicit `Association:` keyword or the generic
+		// `attribute:` keyword for the reference the widget binds (e.g. a ComboBox
+		// in association mode). Before this, only `attribute:` was read, so a
+		// natural `combobox (Association: Mod.A_B, …)` silently dropped the binding
+		// and failed the build with CE0642. (traceops #23)
+		attr := w.GetStringProp("Association")
+		if attr == "" {
+			attr = w.GetAttribute()
+		}
+		if attr != "" {
 			ctx.AssocPath = e.pageBuilder.resolveAssociationPath(attr)
 		}
 		ctx.EntityName = e.pageBuilder.entityContext

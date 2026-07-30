@@ -194,11 +194,32 @@ func enhanceErrorMessage(msg, offendingLine string) string {
 		}
 	}
 
+	// `alter entity … add <name>: <type>` without the `attribute` keyword. The raw
+	// error is an unhelpful "no viable alternative at input 'add<Name>'"; key off
+	// the source line, which unambiguously shows `add <name>:` with a non-clause
+	// word. (traceops #16)
+	if m := addMissingAttributeRe.FindStringSubmatch(offendingLine); m != nil && strings.Contains(msg, "no viable alternative") {
+		switch strings.ToLower(m[1]) {
+		case "attribute", "column", "index", "event", "association", "value", "role", "handler":
+			// a real clause keyword — not the missing-keyword mistake
+		default:
+			return fmt.Sprintf("%s\n\n  ALTER ENTITY needs the `attribute` keyword before a new attribute:\n"+
+				"    alter entity Module.Entity add attribute %s: <type>;   (correct)\n"+
+				"    alter entity Module.Entity add %s: <type>;             (wrong)", msg, m[1], m[1])
+		}
+	}
+
 	// Nothing matched a specific pattern — the location is precise but the fix
 	// isn't spelled out. Point at the syntax reference so the correct form is one
 	// command away. (Kept to one line since it can repeat across cascading errors.)
 	return msg + "  [see: mxcli syntax <topic>, e.g. entity | microflow | page]"
 }
+
+// addMissingAttributeRe matches `add <name>:` on a source line — the shape of an
+// ALTER ENTITY add-attribute clause missing its `attribute` keyword. The captured
+// word is checked against the real clause keywords in enhanceErrorMessage so a
+// valid `add index`/`add event handler`/etc. is not mis-hinted. (traceops #16)
+var addMissingAttributeRe = regexp.MustCompile(`(?i)\badd\s+([A-Za-z_]\w*)\s*:`)
 
 // bareNotRe matches a bare `not $…` (not followed by `(`) on a source line — the
 // exact shape of the unparenthesized-negation mistake. Scoped to `not $var` to

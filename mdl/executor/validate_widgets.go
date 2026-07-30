@@ -120,6 +120,7 @@ func validateWidgetTreeIn(widgets []*ast.WidgetV3, registry *WidgetRegistry, loc
 		out = append(out, validateWidgetVisibility(w, registry, locationPrefix)...)
 		out = append(out, validateStaticWidget(w, locationPrefix)...)
 		out = append(out, validateDatasourceXPathAssociationEmpty(w, locationPrefix)...)
+		out = append(out, validateComboBoxAssociation(w, locationPrefix)...)
 		// Unknown-property warning applies only to built-in widgets; pluggable
 		// widgets get the stricter def.json check (MDL-WIDGET01) above, and
 		// object-list items are validated by the object-list engine.
@@ -160,6 +161,33 @@ func validateDatasourceXPathAssociationEmpty(w *ast.WidgetV3, locationPrefix str
 		})
 	}
 	return out
+}
+
+// validateComboBoxAssociation flags an incomplete association-mode ComboBox.
+// A ComboBox that binds an association (`Association:`) needs an options
+// datasource (`DataSource:`, the entity whose objects populate the dropdown) and
+// a caption attribute (`CaptionAttribute:`) — without a datasource the writer
+// falls back to enumeration mode and drops the association, so the build fails
+// CE0642 ("Property 'Attribute' is required"). Flag it at check time with the
+// full, working syntax instead. (traceops #23)
+func validateComboBoxAssociation(w *ast.WidgetV3, locationPrefix string) []linter.Violation {
+	if w == nil || !strings.EqualFold(w.Type, "combobox") {
+		return nil
+	}
+	if w.GetStringProp("Association") == "" {
+		return nil
+	}
+	if w.GetDataSource() != nil {
+		return nil // has an options datasource — association mode is complete enough
+	}
+	return []linter.Violation{{
+		RuleID:   "MDL-WIDGET16",
+		Severity: linter.SeverityError,
+		Message: fmt.Sprintf(
+			"%s: combobox `%s` binds an association (`Association:`) but has no `datasource:` — Mendix drops the binding and fails the build with CE0642 (\"Property 'Attribute' is required\")",
+			locationPrefix, w.Name),
+		Suggestion: "Association mode needs the option list and a caption: `combobox " + w.Name + " (Association: Module.Ref, datasource: database Module.TargetEntity, CaptionAttribute: Name)`.",
+	}}
 }
 
 // headingRenderModeRe matches the block-level dynamictext render modes H1–H6.
