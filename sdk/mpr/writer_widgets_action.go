@@ -82,9 +82,12 @@ func serializeClientAction(action pages.ClientAction) bson.D {
 	case *pages.PageClientAction:
 		// Studio Pro stores ParameterMappings as an empty initialized array [2] and
 		// infers $currentObject from the enclosing widget context (DataGrid, DataView, etc.).
-		// Storing explicit inline Forms$PageParameterMapping objects uses an invalid type
-		// indicator (len instead of 2/3), causing Studio Pro to read 0 mappings and
-		// report CE0115 "parameter not passed" even when mappings are present (issue #296).
+		// Storing explicit inline Forms$PageParameterMapping objects with an Argument of
+		// "$currentObject" makes Studio Pro report CE0115 "parameters do not match" — a
+		// widget's current-row object is represented by an inferred WidgetValue, not an
+		// Argument expression (issue #296; re-confirmed against mxbuild 11.12.1 for
+		// FINDINGS #56 — DESCRIBE recovers the implicit $currentObject instead, see
+		// renderClientActionMDL).
 		formSettings := bson.D{
 			{Key: "$ID", Value: idToBsonBinary(generateUUID())},
 			{Key: "$Type", Value: "Forms$FormSettings"},
