@@ -1,0 +1,27 @@
+-- ============================================================================
+-- FINDINGS #51: `create association` is not idempotent — re-running errors
+-- ============================================================================
+--
+-- Symptom: re-running `create association X …` failed with "association already
+-- exists" and aborted the script, leaving later statements unexecuted. (The
+-- downstream cascade — a member ref to the now-missing association corrupting
+-- the project — was already fixed under FINDINGS #51 first half / #90.)
+--
+-- Resolution: `create association` erroring on an existing association is
+-- correct, SQL-shaped semantics (like `CREATE TABLE`). The idempotent form is
+-- `create or modify association`, which updates in place. The "already exists"
+-- error now names that form (and `drop association …`) so the fix is
+-- discoverable. This file demonstrates the idempotent form is re-runnable.
+-- ============================================================================
+
+create entity TimeReg.ClientReport ( Name: String );
+create entity TimeReg.Period ( Name: String );
+/
+
+-- Idempotent: safe to run repeatedly (unlike plain `create association`).
+create or modify association TimeReg.ClientReport_Period
+  from TimeReg.ClientReport to TimeReg.Period;
+/
+create or modify association TimeReg.ClientReport_Period
+  from TimeReg.ClientReport to TimeReg.Period;
+/

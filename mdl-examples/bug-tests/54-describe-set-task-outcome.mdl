@@ -1,0 +1,36 @@
+-- ============================================================================
+-- FINDINGS #54: `describe microflow` rendered `set task outcome` as
+-- "-- Empty action" under the default (modelsdk) engine
+-- ============================================================================
+--
+-- Symptom: a microflow containing `set task outcome $UserTask 'Approve';`
+-- executed correctly, but DESCRIBE (default engine) omitted the statement and
+-- printed `-- Empty action`. A describe→drop→exec round-trip (e.g. to
+-- regenerate documentation) therefore silently LOST the outcome-completion
+-- statement — the same class of read gap as finding #42 (describe workflow
+-- dropping `with (…)`). The legacy engine described it fine.
+--
+-- Root cause: the modelsdk read path (actionFromGen) had no case for the
+-- workflow microflow actions, so SetTaskOutcome (and OpenUserTask,
+-- NotifyWorkflow) fell through to nil → "-- Empty action". The WRITE path and
+-- the DESCRIBE formatter already handled them; only the modelsdk read case was
+-- missing.
+--
+-- Fix: actionFromGen (mdl/backend/modelsdk/microflow_read_actions.go) now
+-- reconstructs SetTaskOutcomeAction / OpenUserTaskAction / NotifyWorkflowAction,
+-- mirroring the legacy parsers.
+--
+-- Verify: exec against an 11.x project, then
+--   describe microflow MyFirstModule.BT_SetOutcome
+-- must emit `set task outcome $UserTask 'Approve';`, not `-- Empty action`.
+-- ============================================================================
+
+create or modify microflow MyFirstModule.BT_SetOutcome
+  ( $UserTask: System.WorkflowUserTask ) returns nothing
+begin
+  set task outcome $UserTask 'Approve';
+  return;
+end;
+/
+
+describe microflow MyFirstModule.BT_SetOutcome;
