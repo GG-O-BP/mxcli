@@ -2551,3 +2551,69 @@ func TestEnhanceErrorMessage_XPathArithmetic(t *testing.T) {
 		t.Errorf("did not expect XPath hint for a non-constraint arithmetic error:\n%s", got)
 	}
 }
+
+// TestKeywordWidgetName guards traceops #12: an MDL keyword (body, content,
+// search, as) used unquoted as a widget name must parse and keep the name,
+// instead of being rejected ("mismatched input 'body'") or silently dropped.
+func TestKeywordWidgetName(t *testing.T) {
+	prog, errs := Build(`create page M.P ( Title: 'P', Layout: Atlas_Core.Atlas_Default ) {
+  container body {
+    dynamictext content (Content: 'x')
+  }
+}`)
+	if len(errs) > 0 {
+		t.Fatalf("parse error: %v", errs[0])
+	}
+	page := prog.Statements[0].(*ast.CreatePageStmtV3)
+	if len(page.Widgets) != 1 || page.Widgets[0].Name != "body" {
+		t.Fatalf("outer widget name = %q, want body", widgetName(page.Widgets))
+	}
+	inner := page.Widgets[0].Children
+	if len(inner) != 1 || inner[0].Name != "content" {
+		t.Errorf("inner widget name = %q, want content", widgetName(inner))
+	}
+}
+
+func widgetName(ws []*ast.WidgetV3) string {
+	if len(ws) == 0 {
+		return "<none>"
+	}
+	return ws[0].Name
+}
+
+// TestMultiLineStringLiteral guards traceops #11: a single-quoted string literal
+// may span lines. Before this the newline terminated the token ("missing END").
+func TestMultiLineStringLiteral(t *testing.T) {
+	prog, errs := Build("create microflow M.T () returns String as $out\nbegin\n  declare $S String = 'line one\nline two';\n  return $S;\nend;")
+	if len(errs) > 0 {
+		t.Fatalf("parse error: %v", errs[0])
+	}
+	if len(prog.Statements) != 1 {
+		t.Fatalf("expected 1 statement, got %d", len(prog.Statements))
+	}
+}
+
+// TestAlterEntityMissingAttributeKeywordHint guards traceops #16: the parse
+// error for `alter entity … add <name>: <type>` (missing the `attribute`
+// keyword) carries an actionable hint, and a real clause (`add index …`) does not.
+func TestAlterEntityMissingAttributeKeywordHint(t *testing.T) {
+	_, errs := Build(`alter entity M.E add Name: string(20);`)
+	if len(errs) == 0 {
+		t.Fatal("expected a parse error for the missing `attribute` keyword")
+	}
+	var joined string
+	for _, e := range errs {
+		joined += e.Error() + "\n"
+	}
+	if !strings.Contains(joined, "needs the `attribute` keyword") {
+		t.Errorf("error missing the attribute-keyword hint:\n%s", joined)
+	}
+
+	// A valid `add index` clause must NOT be mis-hinted.
+	_, errs2 := Build(`alter entity M.E add index idx (Name);`)
+	for _, e := range errs2 {
+		if strings.Contains(e.Error(), "needs the `attribute` keyword") {
+			t.Errorf("add index wrongly hinted: %v", e)
+		}
+	}
+}

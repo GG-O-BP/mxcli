@@ -260,9 +260,9 @@ blockOverride
 // after a reserved keyword (e.g. "List", "Column") can be expressed. DESCRIBE
 // emits the quoted form for such names so its output re-parses. See issue #619.
 widgetV3
-    : widgetTypeV3 (IDENTIFIER | QUOTED_IDENTIFIER) widgetPropertiesV3? widgetBodyV3?
-    | PLUGGABLEWIDGET STRING_LITERAL (IDENTIFIER | QUOTED_IDENTIFIER) widgetPropertiesV3? widgetBodyV3?  // PLUGGABLEWIDGET 'widget.id' name
-    | CUSTOMWIDGET STRING_LITERAL (IDENTIFIER | QUOTED_IDENTIFIER) widgetPropertiesV3? widgetBodyV3?     // CUSTOMWIDGET 'widget.id' name (legacy)
+    : widgetTypeV3 (IDENTIFIER | QUOTED_IDENTIFIER | keyword) widgetPropertiesV3? widgetBodyV3?
+    | PLUGGABLEWIDGET STRING_LITERAL (IDENTIFIER | QUOTED_IDENTIFIER | keyword) widgetPropertiesV3? widgetBodyV3?  // PLUGGABLEWIDGET 'widget.id' name
+    | CUSTOMWIDGET STRING_LITERAL (IDENTIFIER | QUOTED_IDENTIFIER | keyword) widgetPropertiesV3? widgetBodyV3?     // CUSTOMWIDGET 'widget.id' name (legacy)
     ;
 
 // V3 Widget types (same as V2)
