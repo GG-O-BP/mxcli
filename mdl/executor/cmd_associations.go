@@ -144,12 +144,14 @@ func execCreateAssociation(ctx *ExecContext, s *ast.CreateAssociationStmt) error
 		if !s.CreateOrModify {
 			for _, ca := range dm.CrossAssociations {
 				if ca.Name == s.Name.Name {
-					return mdlerrors.NewAlreadyExists("association", s.Name.String())
+					return mdlerrors.NewAlreadyExistsMsg("association", s.Name.String(),
+						fmt.Sprintf("association '%s' already exists — use 'create or modify association ...' to update it in place, or 'drop association %s' first", s.Name.String(), s.Name.String()))
 				}
 			}
 			for _, assoc := range dm.Associations {
 				if assoc.Name == s.Name.Name {
-					return mdlerrors.NewAlreadyExists("association", s.Name.String())
+					return mdlerrors.NewAlreadyExistsMsg("association", s.Name.String(),
+						fmt.Sprintf("association '%s' already exists — use 'create or modify association ...' to update it in place, or 'drop association %s' first", s.Name.String(), s.Name.String()))
 				}
 			}
 		}
@@ -173,12 +175,14 @@ func execCreateAssociation(ctx *ExecContext, s *ast.CreateAssociationStmt) error
 		if !s.CreateOrModify {
 			for _, assoc := range dm.Associations {
 				if assoc.Name == s.Name.Name {
-					return mdlerrors.NewAlreadyExists("association", s.Name.String())
+					return mdlerrors.NewAlreadyExistsMsg("association", s.Name.String(),
+						fmt.Sprintf("association '%s' already exists — use 'create or modify association ...' to update it in place, or 'drop association %s' first", s.Name.String(), s.Name.String()))
 				}
 			}
 			for _, ca := range dm.CrossAssociations {
 				if ca.Name == s.Name.Name {
-					return mdlerrors.NewAlreadyExists("association", s.Name.String())
+					return mdlerrors.NewAlreadyExistsMsg("association", s.Name.String(),
+						fmt.Sprintf("association '%s' already exists — use 'create or modify association ...' to update it in place, or 'drop association %s' first", s.Name.String(), s.Name.String()))
 				}
 			}
 		}

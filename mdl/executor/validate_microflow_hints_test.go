@@ -98,6 +98,9 @@ func TestValidateMicroflow_XPathIdConstraint(t *testing.T) {
 		{"id in boolean clause", "[Active = true and id = $Id]", true},
 		// Comparing id to an OBJECT variable is the valid "exclude self" pattern.
 		{"id not-equals an object var is fine", "[id != $This]", false},
+		// The `[%CurrentUser%]` server token is the standard, build-clean idiom for
+		// the signed-in user's id — Mendix resolves it to a GUID (FINDINGS #53).
+		{"id equals CurrentUser token is fine", "[id = '[%CurrentUser%]']", false},
 		{"attribute containing id is fine", "[Valid = true]", false},
 		{"paidstatus is fine", "[PaidStatus = $x]", false},
 		{"plain attribute is fine", "[Name = $n]", false},

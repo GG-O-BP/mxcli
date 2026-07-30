@@ -1,0 +1,53 @@
+-- ============================================================================
+-- FINDINGS #56: `describe page` omits a show_page action's `$currentObject`
+-- argument — investigated; the write is correct and the round-trip is
+-- functionally lossless.
+-- ============================================================================
+--
+-- Symptom: `describe page` renders an action button whose action is
+--   show_page Mod.EditEntry($Entry = $currentObject)
+-- as just `Action: show_page Mod.EditEntry` — the `($Entry = $currentObject)`
+-- argument is not shown.
+--
+-- Investigation (verified against mxbuild 11.12.1):
+--   * A widget button's `show_page` stores its FormSettings.ParameterMappings as
+--     an EMPTY list `[2]`; Mendix INFERS the current-row object for each unmapped
+--     page parameter (a list/dataview button's current object is represented by
+--     an inferred WidgetValue, not an Argument expression).
+--   * Storing an explicit `Argument: "$currentObject"` mapping makes Studio Pro /
+--     mxbuild report CE0115 "arguments … do not match … need to be refreshed"
+--     (this is the original issue #296, re-confirmed here). So the empty-mapping
+--     write is REQUIRED for a building app — it is not a bug.
+--   * Because of this, `show_page X` (no args) and `show_page X($p = $currentObject)`
+--     serialize to IDENTICAL BSON. A describe → drop → exec round-trip therefore
+--     re-produces a byte-identical, valid page; only the redundant `$currentObject`
+--     annotation is not echoed back. The round-trip is functionally lossless.
+--
+-- Known boundary (NOT covered here): expressing a NON-$currentObject page-parameter
+-- argument on a widget button (e.g. binding a page param through) needs the
+-- Studio-Pro `WidgetValue`-vs-`Argument` representation, which requires a
+-- known-good Studio Pro reference to encode safely (see .claude/skills/debug-bson.md).
+--
+-- The MICROFLOW-side `show page` (in a microflow, not a widget) DOES round-trip
+-- its arguments — see 02-microflow-examples — because a microflow has no
+-- current-object inference and stores an explicit Argument.
+--
+-- This script builds clean (`mx check` → 0 errors); the show_page button binds
+-- $Entry to the list's current row by inference.
+-- ============================================================================
+
+create entity MyFirstModule.Entry ( Label: String );
+/
+create or replace page MyFirstModule.EditEntry
+( Title: 'Edit', Layout: Atlas_Core.Atlas_Default, Params: { $Entry: MyFirstModule.Entry } )
+{
+  dataview dv (datasource: $Entry) { dynamictext t (content: 'Edit') }
+}
+/
+create or replace page MyFirstModule.EntryList ( Title: 'List', Layout: Atlas_Core.Atlas_Default )
+{
+  listview lv (datasource: database MyFirstModule.Entry) {
+    actionbutton weEdit (caption: 'Edit', action: show_page MyFirstModule.EditEntry($Entry = $currentObject))
+  }
+}
+/

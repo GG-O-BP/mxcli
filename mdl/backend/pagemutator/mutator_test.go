@@ -1301,3 +1301,124 @@ func TestSetWidgetProperty_EditableIf_Unsupported(t *testing.T) {
 		t.Fatal("expected error setting EditableIf on a container, got nil")
 	}
 }
+
+// makeAssociationListView builds a ListView bound to an association source
+// (Forms$AssociationSource → IndirectEntityRef → EntityRefStep) whose
+// destination entity is destEntity, containing the given children. This mirrors
+// the BSON that serializeAssociationSource emits for `from association`.
+func makeAssociationListView(name, assoc, destEntity string, children ...bson.D) bson.D {
+	childArr := bson.A{int32(2)}
+	for _, c := range children {
+		childArr = append(childArr, c)
+	}
+	return bson.D{
+		{Key: "$Type", Value: "Forms$ListView"},
+		{Key: "Name", Value: name},
+		{Key: "Widgets", Value: childArr},
+		{Key: "DataSource", Value: bson.D{
+			{Key: "$Type", Value: "Forms$AssociationSource"},
+			{Key: "EntityRef", Value: bson.D{
+				{Key: "$Type", Value: "DomainModels$IndirectEntityRef"},
+				{Key: "Steps", Value: bson.A{
+					int32(2),
+					bson.D{
+						{Key: "$Type", Value: "DomainModels$EntityRefStep"},
+						{Key: "Association", Value: assoc},
+						{Key: "DestinationEntity", Value: destEntity},
+					},
+				}},
+			}},
+		}},
+	}
+}
+
+// TestEnclosingEntity_AssociationSource is the regression for FINDINGS #55:
+// ALTER PAGE INSERT/REPLACE into a list bound `from association` dropped the
+// inserted widget's attribute binding because the enclosing entity was read
+// from DataSource.EntityRef.Entity, which is empty for an association source
+// (the destination lives on the last EntityRefStep). The bare attribute then
+// resolved against the wrong (outer) entity — CE1613 at build.
+func TestEnclosingEntity_AssociationSource(t *testing.T) {
+	inner := makeWidget("wrTotal", "Forms$DynamicText")
+	lv := makeAssociationListView("lvRows", "MyFirstModule.WeekRow_Week", "MyFirstModule.WeekRow", inner)
+	// Nest the association list inside a DataView bound to the outer entity so
+	// the walker has a wrong candidate (Week) to fall through to on failure.
+	dvChildren := bson.A{int32(2), lv}
+	dv := bson.D{
+		{Key: "$Type", Value: "Forms$DataView"},
+		{Key: "Name", Value: "dvWeek"},
+		{Key: "Widgets", Value: dvChildren},
+		{Key: "DataSource", Value: bson.D{
+			{Key: "$Type", Value: "Forms$DataViewSource"},
+			{Key: "EntityRef", Value: bson.D{
+				{Key: "$Type", Value: "DomainModels$DirectEntityRef"},
+				{Key: "Entity", Value: "MyFirstModule.Week"},
+			}},
+		}},
+	}
+	rawData := makeRawPage(dv)
+	m := &Mutator{rawData: rawData, widgetFinder: findBsonWidget}
+
+	// Sibling insert after wrTotal → context is wrTotal's enclosing entity,
+	// which must be the association destination WeekRow, NOT the outer Week.
+	if got := m.EnclosingEntity("wrTotal"); got != "MyFirstModule.WeekRow" {
+		t.Errorf("EnclosingEntity(wrTotal) = %q, want MyFirstModule.WeekRow", got)
+	}
+	// INSERT INTO the list → children also take the association destination.
+	if got := m.EnclosingEntityForChildren("lvRows"); got != "MyFirstModule.WeekRow" {
+		t.Errorf("EnclosingEntityForChildren(lvRows) = %q, want MyFirstModule.WeekRow", got)
+	}
+}
+
+// makeMicroflowListView builds a ListView bound to a microflow datasource
+// (Forms$MicroflowSource → MicroflowSettings.Microflow), mirroring what the
+// writer emits for `datasource: microflow …`.
+func makeMicroflowListView(name, microflowQN string, children ...bson.D) bson.D {
+	childArr := bson.A{int32(2)}
+	for _, c := range children {
+		childArr = append(childArr, c)
+	}
+	return bson.D{
+		{Key: "$Type", Value: "Forms$ListView"},
+		{Key: "Name", Value: name},
+		{Key: "Widgets", Value: childArr},
+		{Key: "DataSource", Value: bson.D{
+			{Key: "$Type", Value: "Forms$MicroflowSource"},
+			{Key: "MicroflowSettings", Value: bson.D{
+				{Key: "$Type", Value: "Forms$MicroflowSettings"},
+				{Key: "Microflow", Value: microflowQN},
+			}},
+		}},
+	}
+}
+
+// TestEnclosingDataSourceFlow guards the microflow-datasource half of FINDINGS
+// #55: a widget inside a list bound to a microflow datasource must report that
+// microflow's qualified name (so the executor can resolve its return entity),
+// and a nearer NON-flow (association/database) source must shadow an outer flow.
+func TestEnclosingDataSourceFlow(t *testing.T) {
+	// Flat: microflow-sourced list at page top level.
+	inner := makeWidget("wrTotal", "Forms$DynamicText")
+	lv := makeMicroflowListView("lvRows", "MyFirstModule.DS_Rows", inner)
+	m := &Mutator{rawData: makeRawPage(lv), widgetFinder: findBsonWidget}
+
+	// Sibling insert after wrTotal → nearest enclosing datasource is the microflow.
+	if mf, nf := m.EnclosingDataSourceFlow("wrTotal", false); mf != "MyFirstModule.DS_Rows" || nf != "" {
+		t.Errorf("EnclosingDataSourceFlow(wrTotal) = (%q,%q), want (MyFirstModule.DS_Rows, )", mf, nf)
+	}
+	// INSERT INTO the list → the list's OWN datasource is the microflow.
+	if mf, _ := m.EnclosingDataSourceFlow("lvRows", true); mf != "MyFirstModule.DS_Rows" {
+		t.Errorf("EnclosingDataSourceFlow(lvRows, forChildren) = %q, want MyFirstModule.DS_Rows", mf)
+	}
+
+	// A nearer association source must SHADOW an outer microflow: microflow list
+	// contains an association-bound list; a widget in the inner list reports NO
+	// flow (its nearest source is the association).
+	innerAssoc := makeWidget("leaf", "Forms$DynamicText")
+	assocLV := makeAssociationListView("lvInner", "MyFirstModule.A_B", "MyFirstModule.B", innerAssoc)
+	outerMf := makeMicroflowListView("lvOuter", "MyFirstModule.DS_Rows", assocLV)
+	m2 := &Mutator{rawData: makeRawPage(outerMf), widgetFinder: findBsonWidget}
+	if mf, nf := m2.EnclosingDataSourceFlow("leaf", false); mf != "" || nf != "" {
+		t.Errorf("nearer association source should shadow outer microflow: got (%q,%q), want empty", mf, nf)
+	}
+}

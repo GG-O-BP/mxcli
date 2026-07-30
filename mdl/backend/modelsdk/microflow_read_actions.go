@@ -436,6 +436,38 @@ func actionFromGen(el element.Element) microflows.MicroflowAction {
 		}
 		return out
 
+	case *genMf.SetTaskOutcomeAction:
+		// SET TASK OUTCOME $UserTask 'Outcome'. Without this case the workflow
+		// completion action renders "-- Empty action", so a describe→drop→exec
+		// round-trip silently loses it (FINDINGS #54). Mirrors legacy
+		// parseSetTaskOutcomeAction.
+		out := &microflows.SetTaskOutcomeAction{
+			ErrorHandlingType:    microflows.ErrorHandlingType(a.ErrorHandlingType()),
+			OutcomeValue:         a.OutcomeValue(),
+			WorkflowTaskVariable: a.WorkflowTaskVariable(),
+		}
+		out.ID = model.ID(a.ID())
+		return out
+
+	case *genMf.OpenUserTaskAction:
+		// OPEN USER TASK $UserTask. Mirrors legacy parseOpenUserTaskAction.
+		out := &microflows.OpenUserTaskAction{
+			ErrorHandlingType: microflows.ErrorHandlingType(a.ErrorHandlingType()),
+			UserTaskVariable:  a.UserTaskVariable(),
+		}
+		out.ID = model.ID(a.ID())
+		return out
+
+	case *genMf.NotifyWorkflowAction:
+		// NOTIFY WORKFLOW $Workflow. Mirrors legacy parseNotifyWorkflowAction.
+		out := &microflows.NotifyWorkflowAction{
+			ErrorHandlingType:  microflows.ErrorHandlingType(a.ErrorHandlingType()),
+			OutputVariableName: a.OutputVariableName(),
+			WorkflowVariable:   a.WorkflowVariable(),
+		}
+		out.ID = model.ID(a.ID())
+		return out
+
 	default:
 		return nil
 	}

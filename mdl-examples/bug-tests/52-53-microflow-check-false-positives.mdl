@@ -1,0 +1,43 @@
+-- ============================================================================
+-- FINDINGS #52 & #53: two microflow-check false positives that blocked valid,
+-- build-clean Mendix expressions
+-- ============================================================================
+--
+-- #53 — MDL048 rejected `[id = '[%CurrentUser%]']`, the standard idiom for the
+-- signed-in user's id. MDL048 targets constraining `id` against a STORED value
+-- (a String/Long variable or plain literal), which Mendix XPath cannot do; but
+-- `[%CurrentUser%]` is a server token Mendix resolves to a GUID, so the build is
+-- clean. Fix: checkXPathIdConstraint skips a `'[%…%]'` token operand.
+--
+-- #52 — MDL045 rejected division whose divisor is an association-attribute path,
+-- e.g. `round($matterHours div $matter/BudgetHours * 100)`. The MDL grammar
+-- parses `div`/`*`/`/` at one precedence level, so `$a div $obj/Attr` mis-nests
+-- as `($a div $obj) / Attr`, and MDL045 saw the `/ Attr` as a division misuse.
+-- But `Attr` is a bare member name — Mendix has no `/` division operator, so it
+-- re-parses the raw `$obj/Attr` as a path and the expression builds clean
+-- (verified with mxbuild 11.12.1). Fix: exprHasSlashDivision ignores a `/` whose
+-- right operand is a bare IdentifierExpr (member navigation).
+--
+-- Both microflows below pass `mxcli check` (previously errored) AND `mx check`.
+-- ============================================================================
+
+create entity MyFirstModule.Matter ( BudgetHours: Decimal );
+/
+
+-- #53: current-user id token — must NOT trip MDL048.
+create or modify microflow MyFirstModule.BT_CurrentUser () returns String as $out
+begin
+  retrieve $me from System.User where [id = '[%CurrentUser%]'] limit 1;
+  return 'ok';
+end;
+/
+
+-- #52: division by an association-attribute path — must NOT trip MDL045.
+create or modify microflow MyFirstModule.BT_DivByAssocAttr
+  ( $matterHours: Decimal, $matter: MyFirstModule.Matter ) returns Decimal as $out
+begin
+  declare $budgetPct Decimal = 0;
+  set $budgetPct = round($matterHours div $matter/BudgetHours * 100);
+  return $budgetPct;
+end;
+/

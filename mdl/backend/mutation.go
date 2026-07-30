@@ -158,6 +158,16 @@ type PageMutator interface {
 	// surrounding enclosing entity. Used for column inserts/replaces.
 	EnclosingEntityForChildren(widgetRef string) string
 
+	// EnclosingDataSourceFlow returns the microflow/nanoflow qualified name of the
+	// datasource governing widgetRef's context, or "","" when that source is not a
+	// flow (database/association, which EnclosingEntity[ForChildren] already
+	// resolve). A microflow/nanoflow datasource's entity is its RETURN type, which
+	// lives in the flow document, not the datasource BSON — so the caller resolves
+	// the returned qualified name to an entity via the model. forChildren consults
+	// the widget's OWN datasource (INSERT INTO / column inserts); otherwise the
+	// nearest ENCLOSING datasource (sibling INSERT BEFORE/AFTER, REPLACE).
+	EnclosingDataSourceFlow(widgetRef string, forChildren bool) (microflow, nanoflow string)
+
 	// WidgetScope returns a map of widget name → unit ID for all widgets in the tree.
 	WidgetScope() map[string]model.ID
 
