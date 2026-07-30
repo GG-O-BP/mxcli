@@ -84,10 +84,16 @@ func (b *Builder) ExitAlterUserRoleStatement(ctx *parser.AlterUserRoleStatementC
 
 // ExitDropUserRoleStatement handles DROP USER ROLE Name
 func (b *Builder) ExitDropUserRoleStatement(ctx *parser.DropUserRoleStatementContext) {
+	name := ""
 	if iok := ctx.IdentifierOrKeyword(); iok != nil {
-		b.statements = append(b.statements, &ast.DropUserRoleStmt{
-			Name: identifierOrKeywordText(iok),
-		})
+		name = identifierOrKeywordText(iok)
+	} else if sl := ctx.STRING_LITERAL(); sl != nil {
+		// Quoted form (FINDINGS #5): DROP USER ROLE 'User' — matches DESCRIBE, which
+		// also accepts quotes. Bare and quoted are now consistent across both.
+		name = unquoteString(sl.GetText())
+	}
+	if name != "" {
+		b.statements = append(b.statements, &ast.DropUserRoleStmt{Name: name})
 	}
 }
 

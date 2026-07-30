@@ -5,6 +5,7 @@ package mpr
 import (
 	"fmt"
 
+	"github.com/mendixlabs/mxcli/mdl/settingsoverlay"
 	"github.com/mendixlabs/mxcli/model"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -30,6 +31,14 @@ func (w *Writer) UpdateProjectSettings(ps *model.ProjectSettings) error {
 // It uses the RawParts for round-trip fidelity, updating only the parts
 // that have been parsed and modified.
 func (w *Writer) serializeProjectSettings(ps *model.ProjectSettings) ([]byte, error) {
+	// Without the raw parts there is nothing to overlay onto, and writing the
+	// document anyway would replace every settings part with an empty array — the
+	// whole Project Settings dialog silently reset. Refuse instead.
+	if len(ps.RawParts) == 0 {
+		return nil, fmt.Errorf("no raw settings parts captured on read; " +
+			"refusing to write a settings document that would drop every part")
+	}
+
 	doc := bson.D{
 		{Key: "$ID", Value: idToBsonBinary(string(ps.ID))},
 		{Key: "$Type", Value: "Settings$ProjectSettings"},
@@ -95,64 +104,11 @@ func serializeModelSettings(ms *model.ModelSettings, raw map[string]any) map[str
 	return raw
 }
 
-// serializeConfigurationSettings updates the raw BSON map with modified configuration settings.
+// serializeConfigurationSettings overlays the modified configuration settings onto
+// the raw BSON part. The overlay is shared with the codec engine so the two write
+// paths cannot drift (see mdl/settingsoverlay and mendixlabs/mxcli#801).
 func serializeConfigurationSettings(cs *model.ConfigurationSettings, raw map[string]any) map[string]any {
-	configs := bson.A{int32(2)} // versioned array prefix
-	for _, cfg := range cs.Configurations {
-		configs = append(configs, serializeServerConfiguration(cfg))
-	}
-	raw["Configurations"] = configs
-	return raw
-}
-
-func serializeServerConfiguration(cfg *model.ServerConfiguration) bson.D {
-	id := string(cfg.ID)
-	if id == "" {
-		id = generateUUID()
-	}
-
-	// Serialize ConstantValues
-	cvArr := bson.A{int32(2)} // versioned array prefix
-	for _, cv := range cfg.ConstantValues {
-		cvArr = append(cvArr, serializeConstantValue(cv))
-	}
-
-	cfgDoc := bson.D{
-		{Key: "$ID", Value: idToBsonBinary(id)},
-		{Key: "$Type", Value: "Settings$ServerConfiguration"},
-		{Key: "Name", Value: cfg.Name},
-		{Key: "DatabaseType", Value: cfg.DatabaseType},
-		{Key: "DatabaseUrl", Value: cfg.DatabaseUrl},
-		{Key: "DatabaseName", Value: cfg.DatabaseName},
-		{Key: "DatabaseUserName", Value: cfg.DatabaseUserName},
-		{Key: "DatabasePassword", Value: cfg.DatabasePassword},
-		{Key: "DatabaseUseIntegratedSecurity", Value: cfg.DatabaseUseIntegratedSecurity},
-		{Key: "HttpPortNumber", Value: safeInt64(cfg.HttpPortNumber)},
-		{Key: "ServerPortNumber", Value: safeInt64(cfg.ServerPortNumber)},
-		{Key: "ApplicationRootUrl", Value: cfg.ApplicationRootUrl},
-		{Key: "MaxJavaHeapSize", Value: safeInt64(cfg.MaxJavaHeapSize)},
-		{Key: "ExtraJvmParameters", Value: cfg.ExtraJvmParameters},
-		{Key: "OpenAdminPort", Value: cfg.OpenAdminPort},
-		{Key: "OpenHttpPort", Value: cfg.OpenHttpPort},
-		{Key: "CustomSettings", Value: bson.A{int32(2)}},
-		{Key: "Tracing", Value: nil},
-		{Key: "ConstantValues", Value: cvArr},
-	}
-
-	return cfgDoc
-}
-
-func serializeConstantValue(cv *model.ConstantValue) bson.D {
-	id := string(cv.ID)
-	if id == "" {
-		id = generateUUID()
-	}
-	return bson.D{
-		{Key: "$ID", Value: idToBsonBinary(id)},
-		{Key: "$Type", Value: "Settings$ConstantValue"},
-		{Key: "ConstantId", Value: cv.ConstantId},
-		{Key: "Value", Value: cv.Value},
-	}
+	return settingsoverlay.Configurations(cs, raw)
 }
 
 // serializeLanguageSettings updates the raw BSON map with modified language settings.

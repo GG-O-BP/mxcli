@@ -5,6 +5,8 @@ package modelsdkbackend
 import (
 	"testing"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
+
 	"github.com/mendixlabs/mxcli/model"
 	"github.com/mendixlabs/mxcli/modelsdk/codec"
 	"github.com/mendixlabs/mxcli/modelsdk/element"
@@ -248,5 +250,53 @@ func TestMicroflowActionToGen_JavaScriptActionCall(t *testing.T) {
 	}
 	if hasWrongValueKey {
 		t.Error("mapping emits the Java-style Value key instead of ParameterValue")
+	}
+}
+
+// TestActionFromGen_WorkflowActions guards FINDINGS #54: the modelsdk read path
+// had no case for the workflow microflow actions (SET TASK OUTCOME / OPEN USER
+// TASK / NOTIFY WORKFLOW), so DESCRIBE rendered them as "-- Empty action" and a
+// describe→drop→exec round-trip silently dropped them. Each must survive a
+// write→encode→decode→read round-trip (the real describe path) with its fields
+// intact.
+func TestActionFromGen_WorkflowActions(t *testing.T) {
+	// readBack encodes the write-path gen element to BSON and decodes it through
+	// the codec registry — the concrete *genMf.* type the read path sees — then
+	// runs actionFromGen, exactly as DESCRIBE does.
+	readBack := func(t *testing.T, action microflows.MicroflowAction) microflows.MicroflowAction {
+		t.Helper()
+		raw, err := (&codec.Encoder{}).Encode(microflowActionToGen(action))
+		if err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		el, err := codec.NewDecoder(codec.DefaultRegistry).Decode(bson.Raw(raw))
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return actionFromGen(el)
+	}
+
+	setOutcome := &microflows.SetTaskOutcomeAction{OutcomeValue: "Approve", WorkflowTaskVariable: "UserTask"}
+	setOutcome.ID = "id-set"
+	if got, ok := readBack(t, setOutcome).(*microflows.SetTaskOutcomeAction); !ok {
+		t.Fatalf("SetTaskOutcome read back as %T (Empty-action regression)", readBack(t, setOutcome))
+	} else if got.OutcomeValue != "Approve" || got.WorkflowTaskVariable != "UserTask" {
+		t.Errorf("SetTaskOutcome fields lost: %+v", got)
+	}
+
+	openTask := &microflows.OpenUserTaskAction{UserTaskVariable: "UserTask"}
+	openTask.ID = "id-open"
+	if got, ok := readBack(t, openTask).(*microflows.OpenUserTaskAction); !ok {
+		t.Fatalf("OpenUserTask read back as %T", readBack(t, openTask))
+	} else if got.UserTaskVariable != "UserTask" {
+		t.Errorf("OpenUserTask field lost: %+v", got)
+	}
+
+	notify := &microflows.NotifyWorkflowAction{WorkflowVariable: "Wf"}
+	notify.ID = "id-notify"
+	if got, ok := readBack(t, notify).(*microflows.NotifyWorkflowAction); !ok {
+		t.Fatalf("NotifyWorkflow read back as %T (Empty-action regression)", readBack(t, notify))
+	} else if got.WorkflowVariable != "Wf" {
+		t.Errorf("NotifyWorkflow WorkflowVariable lost: %+v", got)
 	}
 }

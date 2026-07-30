@@ -29,7 +29,39 @@ func validatePageContextTree(params []ast.PageParameter, widgets []*ast.WidgetV3
 
 	// Walk the widget tree with context tracking
 	var errors []string
+	errors = append(errors, checkDuplicateWidgetNames(widgets)...)
 	walkWidgetsWithContext(widgets, paramNames, widgetNames, false, &errors)
+	return errors
+}
+
+// checkDuplicateWidgetNames flags any widget name that appears more than once on a
+// page. Mendix requires widget names to be unique per page and rejects duplicates
+// with CE0495 "Duplicate name" — which mxcli check otherwise passed (FINDINGS #15).
+// Each duplicate name is reported once, in first-seen order.
+func checkDuplicateWidgetNames(widgets []*ast.WidgetV3) []string {
+	counts := make(map[string]int)
+	var order []string
+	var walk func(ws []*ast.WidgetV3)
+	walk = func(ws []*ast.WidgetV3) {
+		for _, w := range ws {
+			if w.Name != "" {
+				if counts[w.Name] == 0 {
+					order = append(order, w.Name)
+				}
+				counts[w.Name]++
+			}
+			walk(w.Children)
+		}
+	}
+	walk(widgets)
+
+	var errors []string
+	for _, name := range order {
+		if counts[name] > 1 {
+			errors = append(errors,
+				fmt.Sprintf("duplicate widget name '%s' (used %d times) — Mendix requires unique widget names per page (CE0495)", name, counts[name]))
+		}
+	}
 	return errors
 }
 

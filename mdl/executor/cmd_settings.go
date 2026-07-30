@@ -4,6 +4,7 @@ package executor
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -196,15 +197,21 @@ func alterSettings(ctx *ExecContext, stmt *ast.AlterSettingsStmt) error {
 			case "HashAlgorithm":
 				ps.Model.HashAlgorithm = valStr
 			case "BcryptCost":
-				if v, err := strconv.Atoi(valStr); err == nil {
-					ps.Model.BcryptCost = v
+				v, err := settingsInt(key, valStr)
+				if err != nil {
+					return err
 				}
+				ps.Model.BcryptCost = v
 			case "JavaVersion":
 				ps.Model.JavaVersion = valStr
 			case "RoundingMode":
 				ps.Model.RoundingMode = valStr
 			case "AllowUserMultipleSessions":
-				ps.Model.AllowUserMultipleSessions = valStr == "true"
+				v, err := settingsBool(key, valStr)
+				if err != nil {
+					return err
+				}
+				ps.Model.AllowUserMultipleSessions = v
 			case "ScheduledEventTimeZoneCode":
 				ps.Model.ScheduledEventTimeZoneCode = valStr
 			default:
@@ -220,6 +227,9 @@ func alterSettings(ctx *ExecContext, stmt *ast.AlterSettingsStmt) error {
 			valStr := settingsValueToString(val)
 			switch key {
 			case "DefaultLanguageCode":
+				if err := validateLanguageCode(ps.Language, valStr); err != nil {
+					return err
+				}
 				ps.Language.DefaultLanguageCode = valStr
 			default:
 				return mdlerrors.NewUnsupported("unknown language setting: " + key)
@@ -236,13 +246,17 @@ func alterSettings(ctx *ExecContext, stmt *ast.AlterSettingsStmt) error {
 			case "UserEntity":
 				ps.Workflows.UserEntity = valStr
 			case "DefaultTaskParallelism":
-				if v, err := strconv.Atoi(valStr); err == nil {
-					ps.Workflows.DefaultTaskParallelism = v
+				v, err := settingsInt(key, valStr)
+				if err != nil {
+					return err
 				}
+				ps.Workflows.DefaultTaskParallelism = v
 			case "WorkflowEngineParallelism":
-				if v, err := strconv.Atoi(valStr); err == nil {
-					ps.Workflows.WorkflowEngineParallelism = v
+				v, err := settingsInt(key, valStr)
+				if err != nil {
+					return err
 				}
+				ps.Workflows.WorkflowEngineParallelism = v
 			default:
 				return mdlerrors.NewUnsupported("unknown workflow setting: " + key)
 			}
@@ -265,6 +279,29 @@ func alterSettings(ctx *ExecContext, stmt *ast.AlterSettingsStmt) error {
 
 	fmt.Fprintf(ctx.Output, "Updated %s settings\n", section)
 	return nil
+}
+
+// validateLanguageCode rejects a DefaultLanguageCode that is not one of the
+// project's configured languages. Mendix has no such guard: `alter settings
+// LANGUAGE` would accept e.g. 'nl_NL' on an en_US-only project, the write would
+// report success, and the *next* `mx check` would die with an unhandled
+// NullReferenceException rather than a model error (FINDINGS #6). Skipped when the
+// project's language list is empty (unavailable) to avoid false rejections.
+func validateLanguageCode(ls *model.LanguageSettings, code string) error {
+	if ls == nil || len(ls.Languages) == 0 {
+		return nil
+	}
+	avail := make([]string, 0, len(ls.Languages))
+	for _, l := range ls.Languages {
+		if l.Code == code {
+			return nil
+		}
+		avail = append(avail, l.Code)
+	}
+	sort.Strings(avail)
+	return mdlerrors.NewValidationf(
+		"language %q is not configured in this project (available: %s) — add it in Studio Pro (Project ▸ Settings ▸ Languages) before making it the default",
+		code, strings.Join(avail, ", "))
 }
 
 func alterSettingsConfiguration(ctx *ExecContext, ps *model.ProjectSettings, stmt *ast.AlterSettingsStmt) error {
@@ -298,13 +335,17 @@ func alterSettingsConfiguration(ctx *ExecContext, ps *model.ProjectSettings, stm
 		case "DatabasePassword":
 			cfg.DatabasePassword = valStr
 		case "HttpPortNumber":
-			if v, err := strconv.Atoi(valStr); err == nil {
-				cfg.HttpPortNumber = v
+			v, err := settingsInt(key, valStr)
+			if err != nil {
+				return err
 			}
+			cfg.HttpPortNumber = v
 		case "ServerPortNumber":
-			if v, err := strconv.Atoi(valStr); err == nil {
-				cfg.ServerPortNumber = v
+			v, err := settingsInt(key, valStr)
+			if err != nil {
+				return err
 			}
+			cfg.ServerPortNumber = v
 		case "ApplicationRootUrl":
 			cfg.ApplicationRootUrl = valStr
 		default:
@@ -435,13 +476,17 @@ func createConfiguration(ctx *ExecContext, stmt *ast.CreateConfigurationStmt) er
 		case "DatabasePassword":
 			newCfg.DatabasePassword = valStr
 		case "HttpPortNumber":
-			if v, err := strconv.Atoi(valStr); err == nil {
-				newCfg.HttpPortNumber = v
+			v, err := settingsInt(key, valStr)
+			if err != nil {
+				return err
 			}
+			newCfg.HttpPortNumber = v
 		case "ServerPortNumber":
-			if v, err := strconv.Atoi(valStr); err == nil {
-				newCfg.ServerPortNumber = v
+			v, err := settingsInt(key, valStr)
+			if err != nil {
+				return err
 			}
+			newCfg.ServerPortNumber = v
 		case "ApplicationRootUrl":
 			newCfg.ApplicationRootUrl = valStr
 		default:
@@ -489,6 +534,31 @@ func dropConfiguration(ctx *ExecContext, stmt *ast.DropConfigurationStmt) error 
 	}
 
 	return mdlerrors.NewNotFound("configuration", stmt.Name)
+}
+
+// settingsInt parses an Integer-typed settings value. The error used to be
+// discarded (`if v, err := strconv.Atoi(...); err == nil`), so a non-numeric value
+// skipped the assignment while the handler still printed its success line — the
+// field silently kept its old value (#805).
+func settingsInt(key, valStr string) (int, error) {
+	v, err := strconv.Atoi(strings.TrimSpace(valStr))
+	if err != nil {
+		return 0, mdlerrors.NewValidationf("%s must be an integer, got %q", key, valStr)
+	}
+	return v, nil
+}
+
+// settingsBool parses a Boolean-typed settings value. Comparing against "true"
+// turned every other spelling — a typo, or a plausible value like 'yes' — into
+// false while still reporting success, the same silent no-op as settingsInt.
+func settingsBool(key, valStr string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(valStr)) {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	}
+	return false, mdlerrors.NewValidationf("%s must be true or false, got %q", key, valStr)
 }
 
 // settingsValueToString converts an AST settings value to string.

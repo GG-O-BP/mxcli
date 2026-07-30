@@ -148,7 +148,7 @@ describeStatement
     | DESCRIBE JAVASCRIPT ACTION qualifiedName
     | DESCRIBE MODULE identifierOrKeyword (WITH ALL)?  // DESCRIBE MODULE Name [WITH ALL] - optionally include all objects
     | DESCRIBE MODULE ROLE qualifiedName        // DESCRIBE MODULE ROLE Module.RoleName
-    | DESCRIBE USER ROLE STRING_LITERAL          // DESCRIBE USER ROLE 'Administrator'
+    | DESCRIBE USER ROLE (STRING_LITERAL | identifierOrKeyword)  // DESCRIBE USER ROLE 'Administrator' | Administrator
     | DESCRIBE DEMO USER STRING_LITERAL          // DESCRIBE DEMO USER 'demo_admin'
     | DESCRIBE ODATA CLIENT qualifiedName       // DESCRIBE ODATA CLIENT Module.ServiceName
     | DESCRIBE ODATA SERVICE qualifiedName      // DESCRIBE ODATA SERVICE Module.ServiceName

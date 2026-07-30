@@ -1315,11 +1315,15 @@ func buildSortColumnMicroflow(ctx parser.ISortColumnContext) *ast.SortColumnDef 
 		Order: "ASC", // Default to ASC
 	}
 
-	// Get attribute name from QualifiedName or IDENTIFIER
+	// Get attribute name from QualifiedName or IDENTIFIER. Strip quotes from each
+	// segment: `sort by "Mod"."Entity"."Code"` must store the bare dotted form —
+	// keeping the quotes produced a nonsense reference that only failed on write
+	// ("attribute does not belong to entity"), unlike everywhere else where quoting
+	// is safe (FINDINGS #13).
 	if qn := colCtx.QualifiedName(); qn != nil {
-		col.Attribute = qn.GetText()
+		col.Attribute = unquoteQualifiedName(qn.GetText())
 	} else if id := colCtx.IDENTIFIER(); id != nil {
-		col.Attribute = id.GetText()
+		col.Attribute = unquoteIdentifier(id.GetText())
 	}
 
 	// Get sort order

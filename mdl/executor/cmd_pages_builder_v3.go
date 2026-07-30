@@ -150,6 +150,23 @@ func (pb *pageBuilder) buildPageV3(s *ast.CreatePageStmtV3) (*pages.Page, error)
 		pb.localVariables[v.Name] = true
 	}
 
+	// A page's widget tree is built into the LayoutCall's placeholder arguments
+	// below — so without a LayoutCall the widgets have nowhere to go and are
+	// silently dropped, and Mendix rejects the layout-less page at build time
+	// (CE1613, "layout … no longer exists"). This happens when the `Layout:` clause
+	// is omitted, or names a layout that does not exist. Reject it with an
+	// actionable error instead of producing a broken page that lost its widgets.
+	if page.LayoutCall == nil && (len(s.Widgets) > 0 || len(s.Placeholders) > 0) {
+		if s.Layout == "" {
+			return nil, mdlerrors.NewValidationf(
+				"page '%s' has widgets but no Layout: clause — a Mendix page requires a layout to place its widgets (without one they are dropped and the build fails CE1613). Add a layout, e.g. `Layout: Atlas_Core.Atlas_Default`.",
+				s.Name.String())
+		}
+		return nil, mdlerrors.NewValidationf(
+			"page '%s' references layout '%s', which was not found — its widgets would be dropped. Use an existing layout (list them with `show catalog table layouts`).",
+			s.Name.String(), s.Layout)
+	}
+
 	// Build one FormCallArgument per layout placeholder (issue #532). Bare body
 	// widgets bind to Main; a `placeholder <Name> { … }` block binds to that
 	// named placeholder. The Main argument is always emitted (possibly empty) to

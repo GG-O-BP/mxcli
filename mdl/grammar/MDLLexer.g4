@@ -640,7 +640,6 @@ WITHOUT: W I T H O U T;
 DRY: D R Y;
 RUN: R U N;
 WIDGETTYPE: W I D G E T T Y P E;
-V3: V '3';  // Syntax version V3
 
 // =============================================================================
 // BUSINESS EVENTS / SETTINGS KEYWORDS

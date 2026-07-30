@@ -85,6 +85,12 @@ func TestValidateMicroflow_SlashDivision(t *testing.T) {
 		{"div is fine", "$Dec: Decimal, $D2: Decimal", "set $R = $Dec div $D2;", false},
 		{"member path is fine", "$O: M.Order", "set $R = $O/M.Order_Cust/Name;", false},
 		{"spaced member path is fine", "$O: M.Order", "set $R = $O / M.Order_Cust / Name;", false},
+		// `div` divisor is an association-attribute path: `$a div $obj/Attr` mis-nests
+		// under arithmetic precedence as `($a div $obj) / Attr`, but the `/ Attr` is
+		// member navigation (bare identifier divisor), not division. Mendix re-parses
+		// the raw `$obj/Attr` as a path and the expression builds clean (FINDINGS #52).
+		{"div by association attribute is fine", "$mh: Decimal, $matter: M.Matter", "set $R = round($mh div $matter/BudgetHours * 100);", false},
+		{"div by association attribute no round is fine", "$mh: Decimal, $matter: M.Matter", "set $R = $mh div $matter/BudgetHours;", false},
 		// A `/$` sequence inside a string literal is NOT a division misuse.
 		{"slash-dollar inside string literal is fine", "$x: String", "set $R = 'path/$var here';", false},
 	}

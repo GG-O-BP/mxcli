@@ -1,0 +1,52 @@
+-- Bug #801: ALTER SETTINGS silently corrupted every server configuration
+--
+-- Symptom: any ALTER SETTINGS — not just the CONFIGURATION section — rebuilt each
+-- Settings$ServerConfiguration from the semantic model, which carries only the
+-- fields mxcli understands. Everything else in the stored document was deleted:
+--
+--   * CustomSettings   → emptied
+--   * Tracing          → null
+--   * OpenAdminPort /
+--     OpenHttpPort     → false (never read into the model, so always the zero value)
+--   * list markers     → downgraded from 3 to a hardcoded 2
+--   * constant overrides → rewritten with a flat "Value", the shape Studio Pro and
+--     mxbuild ignore, so after one ALTER SETTINGS every override looked empty in
+--     Studio Pro and Integer/Long constants failed the build
+--
+-- Fix: the configurations are overlaid onto the raw document they were read from
+-- (mdl/settingsoverlay, shared by both write engines). Only fields the read path
+-- populates are written, each list keeps its stored marker, and a constant override
+-- is updated in the slot it already occupies.
+--
+-- Manual verification (needs a project, so it is not part of `make check-mdl`'s
+-- syntax pass):
+--
+--   1. In Studio Pro, add a custom setting and set a constant override on the
+--      Default configuration, then save and close.
+--   2. Run this script:  mxcli exec 801-alter-settings-preserves-configuration.mdl -p app.mpr
+--   3. Reopen in Studio Pro: the custom setting and the override are still there,
+--      and the override still shows its value.
+--   4. `mx check app.mpr` reports no new errors.
+--
+-- Before the fix, step 3 showed an empty Custom settings tab and a blank override.
+
+create module Issue801;
+create module role Issue801.User;
+
+create constant Issue801.ApiBaseUrl
+  type string
+  default 'https://example.invalid';
+
+-- Set an override, then touch an unrelated section. Before the fix the second
+-- statement was enough on its own to flatten the override written by the first.
+alter settings constant 'Issue801.ApiBaseUrl' value 'https://acceptance.example.invalid'
+  in configuration 'Default';
+
+alter settings configuration 'Default'
+  HttpPortNumber = 8080;
+
+alter settings model
+  BcryptCost = 10;
+
+-- The override survives both writes and still reports its value.
+describe settings;

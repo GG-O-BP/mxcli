@@ -194,6 +194,14 @@ func (m *mcpPageMutator) EnclosingEntityForChildren(widgetRef string) string {
 	return widgetEntity(w)
 }
 
+// EnclosingDataSourceFlow is a no-op for the MCP/PED backend: its model resolves
+// datasource entities directly via widgetEntity, so there is no flow-return
+// indirection to unwind. Returns "","" so the executor keeps the entity that
+// EnclosingEntity[ForChildren] already produced.
+func (m *mcpPageMutator) EnclosingDataSourceFlow(widgetRef string, forChildren bool) (string, string) {
+	return "", ""
+}
+
 // EnclosingEntity returns the entity context that surrounds a widget — the source
 // entity of the nearest data-bearing ancestor.
 func (m *mcpPageMutator) EnclosingEntity(widgetRef string) string {

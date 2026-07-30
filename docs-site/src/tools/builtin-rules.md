@@ -55,11 +55,13 @@ mxcli lint -p app.mpr --exclude System --exclude Administration
 
 ## Check-time Rules (`mxcli check`)
 
-These rules run with `mxcli check` (and the LSP, for real-time diagnostics) rather than `mxcli lint`. They focus on pluggable-widget authoring.
+These rules run with `mxcli check` (and the LSP, for real-time diagnostics) rather than `mxcli lint`. They cover pluggable-widget authoring and typed project-settings values.
 
 | Rule | Where it fires | Description |
 |------|----------------|-------------|
 | **MDL-WIDGET01** | `mxcli check` + LSP | Unknown property key on a pluggable widget. The property is not in the widget's `.def.json`. Catches typos like `optionsSourcType` (missing `e`) before MxBuild does. Suggests the nearest known key. |
 | **MDL-WIDGET02** | `mxcli check --post-migration` | Legacy native widget found on a project that has a pluggable replacement available. Reports each occurrence with the qualified document name, widget instance name, and the recommended pluggable widget. |
+| **MDL-SET01** | `mxcli check` + LSP | Non-integer value for an Integer-typed project setting (`HttpPortNumber`, `ServerPortNumber`, `BcryptCost`, `DefaultTaskParallelism`, `WorkflowEngineParallelism`). These used to be skipped silently while the statement still reported success. |
+| **MDL-SET02** | `mxcli check` + LSP | Value other than `true` / `false` for a Boolean-typed project setting (`AllowUserMultipleSessions`). Anything else was silently stored as `false`. |
 
 Run `mxcli check --help` for usage. See [Error Messages → MDL-WIDGET01 / MDL-WIDGET02](../appendixes/error-messages.md#mdl-widget01-unknown-pluggable-widget-property) for cause-and-solution detail.

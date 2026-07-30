@@ -1,0 +1,50 @@
+-- ============================================================================
+-- FINDINGS #51: create/change member referencing a non-existent association
+-- ============================================================================
+--
+-- Symptom: a `create` (or `change`) activity that assigns a one-qualifier member
+-- `Module.Name` which is NOT an existing association was written as an *attribute*
+-- reference. A one-qualifier name can never be a valid attribute (attributes are
+-- bare or `Module.Entity.Attribute`), so the result was an invalid AttributeIdentifier
+-- and the next `mx check` could not even LOAD the project:
+--
+--   Mendix.Modeler.Storage.StorageLoadException: ... 'Module.TimelinessBand_Period'
+--   is not a valid AttributeIdentifier.
+--
+-- This bit hard because it usually followed a `create association` that had failed
+-- earlier in a script (non-idempotent, see #23/#51), leaving the association absent
+-- while a later `create` still referenced it — a green exec into an unloadable .mpr.
+--
+-- After fix: mxcli rejects the member at exec time with an actionable error naming
+-- the missing association, instead of corrupting the .mpr. Associations created
+-- earlier in the SAME script are still resolved correctly (no false positive).
+--
+-- The commented-out ACT_Bad below is the repro (uncomment to see the rejection):
+--   member "Demo.Missing_Assoc" on entity Demo.Child is not a known association ...
+-- ACT_Good demonstrates the correct pattern (association created first).
+-- ============================================================================
+
+create or modify entity "Demo"."Parent" (Code: string(20));
+/
+create or modify entity "Demo"."Child" (Code: string(20));
+/
+create or modify association "Demo"."Child_Parent"
+from "Demo"."Child" to "Demo"."Parent"
+type reference;
+/
+
+-- Correct: the association exists (created above), so the member resolves.
+create or modify microflow "Demo"."ACT_Good" ($P: Demo.Parent)
+begin
+  $c = create "Demo"."Child" (Code = 'x', "Demo"."Child_Parent" = $P);
+  return;
+end;
+/
+
+-- Repro (rejected at exec — uncomment to verify):
+-- create or modify microflow "Demo"."ACT_Bad" ()
+-- begin
+--   $c = create "Demo"."Child" (Code = 'x', "Demo"."Missing_Assoc" = empty);
+--   return;
+-- end;
+-- /

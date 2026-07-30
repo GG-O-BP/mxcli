@@ -317,6 +317,17 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 			v.loopDepth++
 			v.walkBody(stmt.Body)
 			v.loopDepth--
+		case *ast.CreateObjectStmt:
+			// Attribute values in a `create` are expressions too — an aggregate
+			// (sum/count/…) or an unknown function here fails the build with CE0117,
+			// but check previously only inspected return/if/declare/set (FINDINGS #17).
+			for _, ch := range stmt.Changes {
+				v.checkExprFunctions(fmt.Sprintf("create %s attribute '%s'", stmt.EntityType.String(), ch.Attribute), ch.Value)
+			}
+		case *ast.ChangeObjectStmt:
+			for _, ch := range stmt.Changes {
+				v.checkExprFunctions(fmt.Sprintf("change '%s' attribute '%s'", stmt.Variable, ch.Attribute), ch.Value)
+			}
 		}
 		// Check error handling inside loops
 		if eh := stmtErrorHandling(s); eh != nil {
@@ -495,7 +506,17 @@ func exprHasSlashDivision(expr ast.Expression) bool {
 	switch e := expr.(type) {
 	case *ast.BinaryExpr:
 		if strings.TrimSpace(e.Operator) == "/" {
-			return true
+			// A `/` whose RIGHT operand is a bare member name is association/member
+			// navigation, not division. The MDL grammar parses `div`/`*`/`/` at one
+			// precedence level, so `$a div $obj/Attr` mis-nests as `($a div $obj) / Attr`
+			// with `Attr` a bare IdentifierExpr. Mendix has no `/` division operator, so
+			// it re-parses the raw `$obj/Attr` as a path and the expression builds clean
+			// (verified with mxbuild). Only a numeric/parenthesized/variable divisor is a
+			// real division misuse — those are caught here (right operand is not an
+			// IdentifierExpr) or by the source `/ $var` scan. (FINDINGS #52)
+			if _, isMemberName := e.Right.(*ast.IdentifierExpr); !isMemberName {
+				return true
+			}
 		}
 		return exprHasSlashDivision(e.Left) || exprHasSlashDivision(e.Right)
 	case *ast.UnaryExpr:
@@ -567,6 +588,14 @@ var xpathIdConstraintRe = regexp.MustCompile(`(?:^|[^\w./])(?i:id)\s*(?:=|!=|<|>
 func (v *microflowValidator) checkXPathIdConstraint(variable, xpath string) {
 	for _, m := range xpathIdConstraintRe.FindAllStringSubmatch(xpath, -1) {
 		operand := m[1]
+		// `[id = '[%CurrentUser%]']` (and other `'[%…%]'` server tokens) is the
+		// standard, build-clean Mendix idiom for the signed-in user's id — Mendix's
+		// XPath engine resolves the token to a GUID, so it IS a valid id operand.
+		// Only a STORED id value (String/Long variable or a plain literal) is the
+		// unsupported case this rule targets. (FINDINGS #53)
+		if strings.HasPrefix(operand, "'[%") && strings.HasSuffix(operand, "%]'") {
+			continue
+		}
 		if strings.HasPrefix(operand, "$") {
 			// A $-variable operand: flag only when it is a primitive VALUE (a stored
 			// id — String/Long/Integer). An object variable is not in varKinds, so an

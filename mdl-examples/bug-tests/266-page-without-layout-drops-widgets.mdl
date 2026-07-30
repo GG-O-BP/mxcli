@@ -1,0 +1,34 @@
+-- ============================================================================
+-- Follow-up finding: a page created WITHOUT a `Layout:` clause silently drops
+-- all its widgets
+-- ============================================================================
+--
+-- Symptom: `create page X { ...widgets... }` with no `Layout:` clause reported
+-- "Created page" (only a log warning), but the page had NO layout call — so the
+-- widget tree had nowhere to attach and was silently dropped. Mendix then rejects
+-- the layout-less page at build with CE1613 ("The selected layout
+-- 'dummyModule.dummyName' no longer exists" — its internal placeholder for a
+-- missing layout). `mxcli check` passed; the widgets were simply gone.
+--
+-- A Mendix page always needs a layout; its widgets are placed into the layout's
+-- placeholders. Without one there is no valid page. After fix, mxcli rejects the
+-- build with an actionable error instead of producing a broken, widget-less page.
+--
+-- The BAD form (rejected at exec — uncomment to see the error):
+--   create or replace page "MyFirstModule"."NoLayout" (URL: 'nl') {
+--     container c1 { dynamictext dt (Content: 'x') }
+--   }
+--   -> page 'MyFirstModule.NoLayout' has widgets but no Layout: clause — ...
+--
+-- The correct form specifies a layout, so the widgets are placed:
+-- ============================================================================
+
+create or replace page "MyFirstModule"."WithLayout" (
+  URL: 'withlayout',
+  Layout: Atlas_Core.Atlas_Default
+) {
+  container c1 {
+    dynamictext dt (Content: 'Hello')
+  }
+}
+/

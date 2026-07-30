@@ -407,6 +407,7 @@ dataSourceExprV3
     | MICROFLOW qualifiedName microflowArgsV3?        // MICROFLOW Module.Flow
     | NANOFLOW qualifiedName microflowArgsV3?         // NANOFLOW Module.Flow
     | ASSOCIATION associationPathV3                   // ASSOCIATION Module.Assoc (explicit form)
+    | ASSOCIATION VARIABLE SLASH associationPathV3    // ASSOCIATION $currentObject/Module.Assoc (keyword + sugar)
     | SELECTION (IDENTIFIER | QUOTED_IDENTIFIER)      // SELECTION widgetName ("name" if reserved)
     ;
 

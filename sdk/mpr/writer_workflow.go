@@ -109,7 +109,41 @@ func (w *Writer) serializeWorkflow(wf *workflows.Workflow) ([]byte, error) {
 	// NOTE: OverviewPage was deleted in Mendix 9.11.0 — do not serialize it.
 	// NOTE: AllowedModuleRoles is not present in Studio Pro BSON — omitted.
 
+	pv := w.reader.ProjectVersion()
+	renameCallMicroflowTypeBSON(doc, pv != nil && pv.IsAtLeast(11, 9))
 	return marshalUnitIDFirst(doc)
+}
+
+// renameCallMicroflowTypeBSON rewrites every "Workflows$CallMicroflowTask" $Type
+// in a serialized workflow tree to the 11.9+ "Workflows$CallMicroflowActivity"
+// name when useActivity is set. Mendix 11.9 (WOR-2802) split MicroflowBasedActivity
+// into CallMicroflowActivity + AIAgentTaskActivity; writing the pre-11.9 name to an
+// 11.9+ project makes the runtime fail to load the whole model (FINDINGS #39). The
+// modelsdk engine does the same via applyCallMicroflowStorageName.
+func renameCallMicroflowTypeBSON(v any, useActivity bool) {
+	if !useActivity {
+		return
+	}
+	renameCallMicroflowWalk(v)
+}
+
+func renameCallMicroflowWalk(v any) {
+	switch t := v.(type) {
+	case bson.D:
+		for i := range t {
+			if t[i].Key == "$Type" {
+				if s, ok := t[i].Value.(string); ok && s == "Workflows$CallMicroflowTask" {
+					t[i].Value = "Workflows$CallMicroflowActivity"
+				}
+				continue
+			}
+			renameCallMicroflowWalk(t[i].Value)
+		}
+	case bson.A:
+		for i := range t {
+			renameCallMicroflowWalk(t[i])
+		}
+	}
 }
 
 // serializeWorkflowStringTemplate creates a minimal Mendix StringTemplate BSON structure for workflows.
@@ -234,8 +268,10 @@ func serializeWorkflowFlow(flow *workflows.Flow) bson.D {
 
 // SerializeWorkflowActivity dispatches to the correct activity serializer.
 // Exported for use by the ALTER WORKFLOW executor.
-func SerializeWorkflowActivity(act workflows.WorkflowActivity) bson.D {
-	return serializeWorkflowActivity(act)
+func SerializeWorkflowActivity(act workflows.WorkflowActivity, useCallMicroflowActivityName bool) bson.D {
+	d := serializeWorkflowActivity(act)
+	renameCallMicroflowTypeBSON(d, useCallMicroflowActivityName)
+	return d
 }
 
 // serializeWorkflowActivity dispatches to the correct serializer.

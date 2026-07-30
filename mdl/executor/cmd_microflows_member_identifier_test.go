@@ -95,3 +95,37 @@ func TestResolveMemberChange_UnquotedAssociationResolves(t *testing.T) {
 		t.Errorf("unexpected errors: %v", fb.errors)
 	}
 }
+
+// TestResolveMemberChange_RejectsUnknownAssociation guards FINDINGS #51: a
+// one-qualifier member (`Module.Name`) that is not a known association cannot be an
+// attribute either, so it must be rejected rather than serialized as an invalid
+// Attribute (which yields an unloadable .mpr: "... is not a valid AttributeIdentifier").
+func TestResolveMemberChange_RejectsUnknownAssociation(t *testing.T) {
+	moduleID := model.ID("m")
+	backend := &mock.MockBackend{
+		GetModuleByNameFunc: func(name string) (*model.Module, error) {
+			if name == "M" {
+				return &model.Module{BaseElement: model.BaseElement{ID: moduleID}, Name: name}, nil
+			}
+			return nil, nil
+		},
+		GetDomainModelFunc: func(id model.ID) (*domainmodel.DomainModel, error) {
+			// Domain model exists but has NO associations — the referenced one is absent.
+			return &domainmodel.DomainModel{ContainerID: moduleID}, nil
+		},
+	}
+	fb := &flowBuilder{backend: backend}
+	mc := &microflows.MemberChange{}
+	fb.resolveMemberChange(mc, "M.Nonexistent_Assoc", "M.Child")
+
+	if mc.AttributeQualifiedName != "" || mc.AssociationQualifiedName != "" {
+		t.Errorf("unknown association must not serialize: attr=%q assoc=%q",
+			mc.AttributeQualifiedName, mc.AssociationQualifiedName)
+	}
+	if len(fb.errors) == 0 {
+		t.Fatal("expected a validation error for the unknown association, got none")
+	}
+	if !strings.Contains(fb.errors[0], "not a known association") {
+		t.Errorf("unexpected error: %q", fb.errors[0])
+	}
+}

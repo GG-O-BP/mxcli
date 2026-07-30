@@ -366,3 +366,39 @@ func TestSerializeWorkflowFlow_RoundtripFromFixture(t *testing.T) {
 		t.Errorf("roundtrip last activity = %T, want *workflows.EndWorkflowActivity", last)
 	}
 }
+
+// TestRenameCallMicroflowTypeBSON verifies the version-gated $Type rewrite in the
+// legacy engine (FINDINGS #39): a CallMicroflowTask nested inside a Flow's
+// activities array is renamed to CallMicroflowActivity only when useActivity is set.
+func TestRenameCallMicroflowTypeBSON(t *testing.T) {
+	build := func() bson.D {
+		return bson.D{
+			{Key: "$Type", Value: "Workflows$Workflow"},
+			{Key: "Flow", Value: bson.D{
+				{Key: "$Type", Value: "Workflows$Flow"},
+				{Key: "Activities", Value: bson.A{
+					int32(3),
+					bson.D{{Key: "$Type", Value: "Workflows$CallMicroflowTask"}, {Key: "Name", Value: "Call"}},
+					bson.D{{Key: "$Type", Value: "Workflows$EndWorkflowActivity"}},
+				}},
+			}},
+		}
+	}
+	typeOfActivity := func(d bson.D) string {
+		flow := d[1].Value.(bson.D)
+		acts := flow[1].Value.(bson.A)
+		return acts[1].(bson.D)[0].Value.(string)
+	}
+
+	off := build()
+	renameCallMicroflowTypeBSON(off, false)
+	if got := typeOfActivity(off); got != "Workflows$CallMicroflowTask" {
+		t.Errorf("pre-11.9: activity $Type = %q, want Workflows$CallMicroflowTask", got)
+	}
+
+	on := build()
+	renameCallMicroflowTypeBSON(on, true)
+	if got := typeOfActivity(on); got != "Workflows$CallMicroflowActivity" {
+		t.Errorf("11.9+: activity $Type = %q, want Workflows$CallMicroflowActivity", got)
+	}
+}

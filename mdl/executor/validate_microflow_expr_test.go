@@ -46,6 +46,10 @@ func TestValidateMicroflow_UnknownFunction(t *testing.T) {
 		// fires, but the hint must steer to "assign to a variable first", not a
 		// did-you-mean against an unrelated math function (finding #7).
 		{"count aggregate hint", "declare $ok Boolean = if count($x) > 0 then true else false;", true, "aggregate activity"},
+		// FINDINGS #17: an aggregate inside a `create` attribute value must also be
+		// flagged — previously only return/if/declare/set expressions were checked.
+		{"aggregate in create attr", `$r = create "M"."E" (Total = formatDecimal(sum($x), '0.00'));`, true, "aggregate activity"},
+		{"known func in create attr", `$r = create "M"."E" (Total = trim($x));`, false, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
