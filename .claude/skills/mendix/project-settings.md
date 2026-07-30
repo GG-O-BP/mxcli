@@ -54,6 +54,12 @@ alter settings configuration 'Default'
   DatabaseUrl = 'newhost:5432';
 ```
 
+`HttpPortNumber`, `ServerPortNumber`, `BcryptCost`, `DefaultTaskParallelism` and
+`WorkflowEngineParallelism` are Integer-typed, and `AllowUserMultipleSessions` is
+Boolean. An unparseable value is rejected by `mxcli check` (MDL-SET01 / MDL-SET02)
+and by the write itself — it is no longer silently ignored. Quoted numbers are
+fine: `HttpPortNumber = '8080'` and `HttpPortNumber = 8080` are equivalent.
+
 ### Constant Overrides
 
 ```sql
@@ -129,3 +135,4 @@ alter settings configuration 'Default'
 - [ ] There is always exactly one ProjectSettings document; it cannot be created or deleted
 - [ ] Model setting key names are case-sensitive (e.g., `JavaVersion`, not `javaversion`)
 - [ ] Configuration names are case-insensitive (e.g., `'default'` matches `'default'`)
+- [ ] Integer / Boolean settings must parse — `mxcli check` reports MDL-SET01 / MDL-SET02 before the write

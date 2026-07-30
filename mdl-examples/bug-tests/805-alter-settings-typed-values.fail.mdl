@@ -1,0 +1,30 @@
+-- Bug #805: ALTER SETTINGS silently ignored invalid values for typed properties
+--
+-- NEGATIVE TEST (.fail.mdl) — this script is EXPECTED to fail `mxcli check`.
+-- `make check-mdl` inverts the exit code for .fail.mdl files: an unexpected
+-- pass would be reported as a regression of MDL-SET01 / MDL-SET02.
+--
+-- Symptom: `HttpPortNumber = 'not-a-number'` printed "Updated configuration
+-- 'Default'" and changed nothing. strconv.Atoi's error was discarded
+-- (`if v, err := strconv.Atoi(valStr); err == nil`), so the assignment was
+-- skipped while the handler still reported success. DESCRIBE SETTINGS showed
+-- the original value. The boolean settings had the same hole: comparing the
+-- value against "true" turned every other spelling into false.
+--
+-- Fix: the executor returns a validation error naming the setting and the
+-- offending value, and `mxcli check` reports the same before the project is
+-- opened for writing (MDL-SET01 integers, MDL-SET02 booleans).
+--
+-- Expected: `mxcli check` exits non-zero with MDL-SET01 on both port numbers
+-- and on BcryptCost, and MDL-SET02 on AllowUserMultipleSessions.
+
+alter settings configuration 'Default'
+  HttpPortNumber = 'not-a-number',
+  ServerPortNumber = '80O0';
+
+alter settings model
+  BcryptCost = 'high',
+  AllowUserMultipleSessions = 'yes';
+
+alter settings workflows
+  DefaultTaskParallelism = 'many';

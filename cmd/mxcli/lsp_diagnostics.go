@@ -279,6 +279,12 @@ func (s *mdlServer) runSemanticValidation(text string) []protocol.Diagnostic {
 		if mfStmt, ok := stmt.(*ast.CreateMicroflowStmt); ok {
 			violations = append(violations, executor.ValidateMicroflow(mfStmt)...)
 		}
+		if setStmt, ok := stmt.(*ast.AlterSettingsStmt); ok {
+			violations = append(violations, executor.ValidateSettings(setStmt)...)
+		}
+		if cfgStmt, ok := stmt.(*ast.CreateConfigurationStmt); ok {
+			violations = append(violations, executor.ValidateCreateConfiguration(cfgStmt)...)
+		}
 		if viewStmt, ok := stmt.(*ast.CreateViewEntityStmt); ok {
 			if viewStmt.Query.RawQuery != "" {
 				violations = append(violations, executor.ValidateOQLSyntax(viewStmt.Query.RawQuery)...)
