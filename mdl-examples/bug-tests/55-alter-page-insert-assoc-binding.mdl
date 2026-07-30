@@ -1,0 +1,58 @@
+-- ============================================================================
+-- FINDINGS #55: ALTER PAGE INSERT/REPLACE drops the attribute binding when the
+-- target lives inside a list bound `from association`
+-- ============================================================================
+--
+-- Symptom: inserting (or replacing) a data-bound widget into a ListView whose
+-- datasource is an association (`from association`, i.e. a nested master-detail
+-- list) produced a widget whose Attribute binding pointed at the WRONG entity —
+-- the OUTER data view's entity instead of the association's destination entity —
+-- or no binding at all. `mxcli check` passed; the Mendix build then failed with
+--   [CE1613] "The selected attribute 'Module.OuterEntity.Attr' no longer exists."
+-- and DESCRIBE masked it by printing only the short attribute name.
+--
+-- Root cause: the ALTER PAGE mutator reads the enclosing entity from
+-- DataSource.EntityRef.Entity. That field is only populated for a DIRECT entity
+-- ref (database source). An AssociationSource stores its destination on the last
+-- DomainModels$EntityRefStep of an IndirectEntityRef, so the mutator saw no
+-- entity for the list and left the context at the outer data view's entity. The
+-- inserted bare attribute then resolved against that outer entity.
+--
+-- Fix: extractEntityFromDataSource (mdl/backend/pagemutator/mutator.go) now also
+-- reads the IndirectEntityRef's last EntityRefStep.DestinationEntity, so a list
+-- bound `from association` reports the correct child entity to INSERT/REPLACE.
+--
+-- Verify (Mendix 11.x): exec this script, then `mx check App.mpr` → 0 errors.
+--   The probe dynamictext must bind to WeekRow.RowTotal, not Week.RowTotal.
+-- ============================================================================
+
+create entity MyFirstModule.Week ( Label: String );
+create entity MyFirstModule.WeekRow ( RowTotal: Decimal );
+create association MyFirstModule.WeekRow_Week
+  from MyFirstModule.WeekRow to MyFirstModule.Week;
+/
+
+create or replace page MyFirstModule.WeekTimesheet
+( Title: 'Week', Layout: Atlas_Core.Atlas_Default, Params: { $Week: MyFirstModule.Week } )
+{
+  dataview dvWeek (datasource: $Week) {
+    dynamictext hLabel (content: 'Week')
+    -- nested list over the association: its rows are WeekRow, not Week
+    listview lvRows (datasource: $currentObject/MyFirstModule.WeekRow_Week) {
+      dynamictext wrTotal (Attribute: RowTotal)
+    }
+  }
+}
+/
+
+-- INSERT a data-bound widget as a sibling of wrTotal. It must inherit the
+-- association destination (WeekRow) as its context, so RowTotal binds to
+-- WeekRow.RowTotal.
+alter page MyFirstModule.WeekTimesheet {
+  insert after wrTotal {
+    dynamictext probe55 (Attribute: RowTotal, Class: 'vdh-probe')
+  }
+}
+/
+
+describe page MyFirstModule.WeekTimesheet;

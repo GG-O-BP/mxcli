@@ -1349,11 +1349,41 @@ func extractEntityFromDataSource(wDoc bson.D) string {
 		return ""
 	}
 	if entityRef := bsonnav.DGetDoc(ds, "EntityRef"); entityRef != nil {
+		// DirectEntityRef (database source): the entity is named directly.
 		if entity := bsonnav.DGetString(entityRef, "Entity"); entity != "" {
+			return entity
+		}
+		// IndirectEntityRef (association source, e.g. a ListView bound
+		// `from association`): the destination entity lives on the LAST
+		// EntityRefStep, not at EntityRef.Entity. Without this, descending into
+		// an association-bound list left the context entity unchanged, so a
+		// bare attribute inserted via ALTER PAGE resolved against the wrong
+		// (outer) entity and failed the build with CE1613 (FINDINGS #55).
+		if entity := lastStepDestinationEntity(entityRef); entity != "" {
 			return entity
 		}
 	}
 	return ""
+}
+
+// lastStepDestinationEntity returns the DestinationEntity of the final
+// DomainModels$EntityRefStep in an IndirectEntityRef's Steps array (the entity
+// an association path ultimately lands on). The Steps array is
+// `[<count>, step, step, ...]` — a leading numeric marker followed by the step
+// documents — so non-document elements (the marker) are skipped. Returns "" if
+// there are no step documents.
+func lastStepDestinationEntity(entityRef bson.D) string {
+	dest := ""
+	for _, elem := range bsonnav.DGetArrayElements(bsonnav.DGet(entityRef, "Steps")) {
+		stepDoc, ok := elem.(bson.D)
+		if !ok {
+			continue
+		}
+		if d := bsonnav.DGetString(stepDoc, "DestinationEntity"); d != "" {
+			dest = d
+		}
+	}
+	return dest
 }
 
 // ---------------------------------------------------------------------------
