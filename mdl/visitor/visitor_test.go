@@ -1086,6 +1086,37 @@ ALTER ENTITY M.E DROP ATTRIBUTE PlainCol;`)
 	}
 }
 
+// TestAlterEntityAddAttributeDocComment guards traceops #27: a `/** … */` doc
+// comment written BETWEEN `add attribute` clauses (before the ADD keyword) must
+// parse and document the FOLLOWING attribute — `--` line comments are discarded,
+// so they are not an equivalent workaround.
+func TestAlterEntityAddAttributeDocComment(t *testing.T) {
+	prog, errs := Build(`alter entity M.E
+  add attribute Zz1: string(10)
+  /** doc for the second column */
+  add attribute Zz2: string(10);`)
+	if len(errs) > 0 {
+		t.Fatalf("parse error: %v", errs[0])
+	}
+	if len(prog.Statements) != 2 {
+		t.Fatalf("expected 2 statements (one per add attribute), got %d", len(prog.Statements))
+	}
+	zz1 := prog.Statements[0].(*ast.AlterEntityStmt)
+	if zz1.Attribute == nil || zz1.Attribute.Name != "Zz1" {
+		t.Fatalf("statement 0 is not ADD Zz1: %+v", zz1)
+	}
+	if zz1.Attribute.Documentation != "" {
+		t.Errorf("Zz1 should have no doc, got %q", zz1.Attribute.Documentation)
+	}
+	zz2 := prog.Statements[1].(*ast.AlterEntityStmt)
+	if zz2.Attribute == nil || zz2.Attribute.Name != "Zz2" {
+		t.Fatalf("statement 1 is not ADD Zz2: %+v", zz2)
+	}
+	if zz2.Attribute.Documentation != "doc for the second column" {
+		t.Errorf("Zz2 documentation = %q, want %q", zz2.Attribute.Documentation, "doc for the second column")
+	}
+}
+
 // TestAlterEntityAddAttribute verifies ALTER ENTITY ADD ATTRIBUTE produces correct AST.
 func TestAlterEntityAddAttribute(t *testing.T) {
 	input := `ALTER ENTITY MyModule.Customer
