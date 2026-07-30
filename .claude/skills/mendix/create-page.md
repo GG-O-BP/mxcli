@@ -444,8 +444,8 @@ column colActions (caption: 'Actions') {
 |--------|-------------|
 | `datasource: database from Module.Entity` | Direct database query |
 | `datasource: $Variable` | Variable bound (requires DATAVIEW parent with entity) |
-| `datasource: microflow Module.GetData()` | Microflow datasource |
-| `datasource: nanoflow Module.GetData()` | Nanoflow datasource (client-side, no server roundtrip) |
+| `datasource: microflow Module.GetData` | Microflow datasource — no `()`, the name alone |
+| `datasource: nanoflow Module.GetData` | Nanoflow datasource (client-side, no server roundtrip) — no `()` |
 | `datasource: selection widgetName` | Listen to selection from another widget |
 | `datasource: association path` | Retrieve by association from context (ByAssociation) |
 | `datasource: $currentObject/Module.Assoc` | Sugar for `association` — same semantics, reads more naturally |
@@ -553,8 +553,12 @@ datepicker dpCreated (label: 'Created Date', attribute: CreatedDate)
 -- Enumeration mode (attribute is an enum type):
 combobox cbCountry (label: 'Country', attribute: Country)
 
--- Association mode (Attribute = association, DataSource = target entity, CaptionAttribute = display attr):
-combobox cmbCustomer (label: 'Customer', attribute: Order_Customer, datasource: database MyModule.Customer, CaptionAttribute: Name)
+-- Association mode: bind a reference. Requires the option DataSource (the target
+-- entity whose objects fill the dropdown) AND a CaptionAttribute (display value).
+-- The reference can be given as `Association:` or, equivalently, `attribute:`.
+combobox cmbCustomer (label: 'Customer', Association: Order_Customer, datasource: database MyModule.Customer, CaptionAttribute: Name)
+-- WRONG: `combobox (Association: X)` with no datasource — mxcli check errors
+-- MDL-WIDGET16 (Mendix would otherwise drop the binding → CE0642).
 ```
 
 ### DataView with Form Layout

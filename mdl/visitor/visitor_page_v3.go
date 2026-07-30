@@ -523,11 +523,16 @@ func buildWidgetV3(ctx parser.IWidgetV3Context, b *Builder) *ast.WidgetV3 {
 	}
 
 	// Get required identifier. The name may be quoted (QUOTED_IDENTIFIER) when it
-	// collides with a reserved keyword, e.g. a widget named "List". See issue #619.
+	// collides with a reserved keyword, e.g. a widget named "List" (issue #619), or
+	// a bare MDL keyword used unquoted as a name (`container body`, `dynamictext
+	// content`) — accepted by the grammar so a natural widget name is not blocked
+	// (traceops #12).
 	if id := wCtx.IDENTIFIER(); id != nil {
 		widget.Name = id.GetText()
 	} else if qid := wCtx.QUOTED_IDENTIFIER(); qid != nil {
 		widget.Name = unquoteIdentifier(qid.GetText())
+	} else if kw := wCtx.Keyword(); kw != nil {
+		widget.Name = kw.GetText()
 	}
 
 	// Parse properties

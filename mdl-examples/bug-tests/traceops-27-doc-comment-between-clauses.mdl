@@ -1,0 +1,34 @@
+-- ============================================================================
+-- TraceOps #27: a /** … */ doc comment between `alter entity … add attribute`
+-- clauses was a parse error
+-- ============================================================================
+--
+-- Symptom: placing a doc comment between two add-attribute clauses failed with
+--   line 4:2 no viable alternative at input '/** … */add'
+-- The alterEntityAction list accepted a doc comment only INSIDE an
+-- attributeDefinition (after the ADD ATTRIBUTE keyword), not between clauses.
+--
+-- Why `--` line comments are NOT an acceptable workaround: `--` comments are
+-- discarded by the lexer, so they never reach the Mendix model. A `/** … */`
+-- doc comment, by contrast, is PERSISTED as the attribute's Mendix
+-- documentation (visible in Studio Pro). Rewriting to `--` silently drops the
+-- documentation the author intended to store.
+--
+-- Fix: alterEntityAction now accepts an optional leading docComment on ADD
+-- ATTRIBUTE / ADD COLUMN, and the visitor attaches it as the added attribute's
+-- documentation (mirroring a CREATE ENTITY attribute doc comment).
+--
+-- After the fix this builds clean (`mx check` → 0 errors) and the doc comment is
+-- stored on Zz2 (DESCRIBE ENTITY round-trips it).
+-- ============================================================================
+
+create entity MyFirstModule.Requirement ( Name: String );
+/
+
+alter entity MyFirstModule.Requirement
+  add attribute Zz1: string(10)
+  /** Documentation for the second column, persisted into the Mendix model */
+  add attribute Zz2: string(10);
+/
+
+describe entity MyFirstModule.Requirement;

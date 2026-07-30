@@ -3,6 +3,7 @@
 package executor
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/mendixlabs/mxcli/model"
@@ -248,7 +249,7 @@ func parseRawWidget(ctx *ExecContext, w map[string]any, parentEntityContext ...s
 	case "Forms$DataView", "Pages$DataView":
 		widget.DataSource = extractDataViewDataSource(ctx, w)
 		if widget.DataSource != nil && widget.DataSource.Reference != "" {
-			widget.EntityContext = widget.DataSource.Reference
+			widget.EntityContext = dataSourceEntityContext(ctx, widget.DataSource)
 		} else if inheritedCtx != "" {
 			widget.EntityContext = inheritedCtx
 		}
@@ -312,7 +313,7 @@ func parseRawWidget(ctx *ExecContext, w map[string]any, parentEntityContext ...s
 			// showNumberOfRows: not yet fully supported in DataGrid2, skip to avoid CE0463
 			widget.Selection = extractGallerySelection(ctx, w)
 			if widget.DataSource != nil && widget.DataSource.Reference != "" {
-				widget.EntityContext = widget.DataSource.Reference
+				widget.EntityContext = dataSourceEntityContext(ctx, widget.DataSource)
 			} else if inheritedCtx != "" {
 				widget.EntityContext = inheritedCtx
 			}
@@ -330,7 +331,7 @@ func parseRawWidget(ctx *ExecContext, w map[string]any, parentEntityContext ...s
 			widget.TabletColumns = extractCustomWidgetPropertyString(ctx, w, "tabletItems")
 			widget.PhoneColumns = extractCustomWidgetPropertyString(ctx, w, "phoneItems")
 			if widget.DataSource != nil && widget.DataSource.Reference != "" {
-				widget.EntityContext = widget.DataSource.Reference
+				widget.EntityContext = dataSourceEntityContext(ctx, widget.DataSource)
 			} else if inheritedCtx != "" {
 				widget.EntityContext = inheritedCtx
 			}
@@ -369,7 +370,7 @@ func parseRawWidget(ctx *ExecContext, w map[string]any, parentEntityContext ...s
 	case "Forms$Gallery", "Pages$Gallery":
 		widget.DataSource = extractGalleryDataSource(ctx, w)
 		if widget.DataSource != nil && widget.DataSource.Reference != "" {
-			widget.EntityContext = widget.DataSource.Reference
+			widget.EntityContext = dataSourceEntityContext(ctx, widget.DataSource)
 		} else if inheritedCtx != "" {
 			widget.EntityContext = inheritedCtx
 		}
@@ -383,9 +384,13 @@ func parseRawWidget(ctx *ExecContext, w map[string]any, parentEntityContext ...s
 	case "Forms$ListView", "Pages$ListView":
 		widget.DataSource = extractListViewDataSource(ctx, w)
 		if widget.DataSource != nil && widget.DataSource.Reference != "" {
-			widget.EntityContext = widget.DataSource.Reference
+			widget.EntityContext = dataSourceEntityContext(ctx, widget.DataSource)
 		} else if inheritedCtx != "" {
 			widget.EntityContext = inheritedCtx
+		}
+		// Round-trip a non-default PageSize (the output formatter suppresses "20").
+		if ps := extractInt(w["PageSize"]); ps > 0 {
+			widget.PageSize = strconv.Itoa(ps)
 		}
 		widget.Children = parseListViewContent(ctx, w, widget.EntityContext)
 		return []rawWidget{widget}
@@ -574,18 +579,12 @@ func extractDataViewDataSource(ctx *ExecContext, w map[string]any) *rawDataSourc
 
 	switch dsType {
 	case "Forms$MicroflowSource":
-		// Extract microflow name from MicroflowSettings
-		if settings, ok := ds["MicroflowSettings"].(map[string]any); ok {
-			if mfName, ok := settings["Microflow"].(string); ok && mfName != "" {
-				return &rawDataSource{Type: "microflow", Reference: mfName}
-			}
+		if mf := microflowSourceRef(ds); mf != "" {
+			return &rawDataSource{Type: "microflow", Reference: mf}
 		}
 	case "Forms$NanoflowSource":
-		// Extract nanoflow name from NanoflowSettings
-		if settings, ok := ds["NanoflowSettings"].(map[string]any); ok {
-			if nfName, ok := settings["Nanoflow"].(string); ok && nfName != "" {
-				return &rawDataSource{Type: "nanoflow", Reference: nfName}
-			}
+		if nf := nanoflowSourceRef(ds); nf != "" {
+			return &rawDataSource{Type: "nanoflow", Reference: nf}
 		}
 	case "Forms$DataViewSource":
 		// "Data from context over an association" — the DataViewSource carries an
@@ -804,18 +803,11 @@ func extractListViewDataSource(ctx *ExecContext, w map[string]any) *rawDataSourc
 			return result
 		}
 	case "Forms$MicroflowSource":
-		microflow := extractString(ds["Microflow"])
-		if mfSettings, ok := ds["MicroflowSettings"].(map[string]any); ok && microflow == "" {
-			microflow = extractString(mfSettings["Microflow"])
-		}
-		if microflow != "" {
-			return &rawDataSource{Type: "microflow", Reference: microflow}
+		if mf := microflowSourceRef(ds); mf != "" {
+			return &rawDataSource{Type: "microflow", Reference: mf}
 		}
 	case "Forms$NanoflowSource":
-		nanoflow := extractString(ds["Nanoflow"])
-		if nfSettings, ok := ds["NanoflowSettings"].(map[string]any); ok && nanoflow == "" {
-			nanoflow = extractString(nfSettings["Nanoflow"])
-		}
+		nanoflow := nanoflowSourceRef(ds)
 		if nanoflow != "" {
 			return &rawDataSource{Type: "nanoflow", Reference: nanoflow}
 		}
