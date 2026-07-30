@@ -21,7 +21,8 @@ const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : 'dev
 const GIT_COMMIT = typeof __GIT_COMMIT__ !== 'undefined' ? __GIT_COMMIT__ : 'unknown';
 
 let client: LanguageClient | undefined;
-const outputChannel = vscode.window.createOutputChannel('MDL Language Server');
+// { log: true } yields a LogOutputChannel, which is what LanguageClientOptions.outputChannel requires.
+const outputChannel = vscode.window.createOutputChannel('MDL Language Server', { log: true });
 
 const MDL_SCHEME = 'mendix-mdl';
 
