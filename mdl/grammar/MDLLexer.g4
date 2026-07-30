@@ -783,7 +783,7 @@ MENDIX_TOKEN: '[%' .*? '%]';
 
 // String literals (single-quoted, with escape support)
 STRING_LITERAL
-    : '\'' ( ~['\r\n\\] | '\\' . | '\'\'' )* '\''
+    : '\'' ( ~['\\] | '\\' . | '\'\'' )* '\''
     ;
 
 // Dollar-quoted string literal (PostgreSQL style) for embedding code blocks

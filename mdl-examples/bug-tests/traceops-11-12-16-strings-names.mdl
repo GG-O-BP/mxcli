@@ -1,0 +1,48 @@
+-- ============================================================================
+-- TraceOps #11, #12, #16: string/identifier ergonomics
+-- ============================================================================
+--
+-- #11 — MDL string literals may now span multiple lines. Before, a newline
+--       inside '...' terminated the token ("missing END"). Verified: mxbuild
+--       accepts a multi-line String value.
+--
+-- #12 — A bare MDL keyword (body, content, search, as, …) may be used unquoted
+--       as a WIDGET name (matching attribute/placeholder names). Before, the
+--       parser rejected it ("mismatched input 'body'"). Names that collide with
+--       a keyword are stored fine and round-trip (DESCRIBE quotes them).
+--
+-- #16 — (parse-error, not shown here) `alter entity … add Name: type` without
+--       the `attribute` keyword now yields an actionable hint pointing at
+--       `add attribute Name: type`, instead of the opaque "no viable
+--       alternative at input 'addName'". The correct form is used below.
+--
+-- This script builds clean (`mx check` → 0 errors).
+-- ============================================================================
+
+create entity MyFirstModule.Note ( Name: String );
+/
+
+-- #16: the correct ALTER ENTITY form (with the `attribute` keyword).
+alter entity MyFirstModule.Note
+  add attribute Body: string(200);
+/
+
+-- #12: keyword widget names (body, content) used unquoted.
+create page MyFirstModule.NoteView ( Title: 'Note', Layout: Atlas_Core.Atlas_Default ) {
+  container body {
+    container content {
+      dynamictext search (Content: 'Type to search')
+    }
+  }
+}
+/
+
+-- #11: a multi-line string literal in a microflow.
+create microflow MyFirstModule.Banner () returns String as $out
+begin
+  declare $S String = 'Line one
+Line two
+Line three';
+  return $S;
+end;
+/

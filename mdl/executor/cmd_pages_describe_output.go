@@ -465,6 +465,8 @@ func outputWidgetMDLV3(ctx *ExecContext, w rawWidget, indent int) {
 					props = append(props, fmt.Sprintf("DataSource: %s", dsVal))
 				case "microflow":
 					props = append(props, fmt.Sprintf("DataSource: microflow %s", w.DataSource.Reference))
+				case "nanoflow":
+					props = append(props, fmt.Sprintf("DataSource: nanoflow %s", w.DataSource.Reference))
 				case "parameter":
 					props = append(props, fmt.Sprintf("DataSource: %s", w.DataSource.Reference))
 				}
@@ -528,6 +530,8 @@ func outputWidgetMDLV3(ctx *ExecContext, w rawWidget, indent int) {
 					props = append(props, fmt.Sprintf("DataSource: %s", dsVal))
 				case "microflow":
 					props = append(props, fmt.Sprintf("DataSource: microflow %s", w.DataSource.Reference))
+				case "nanoflow":
+					props = append(props, fmt.Sprintf("DataSource: nanoflow %s", w.DataSource.Reference))
 				}
 			}
 			// Add column counts if non-default
@@ -790,6 +794,10 @@ func outputWidgetMDLV3(ctx *ExecContext, w rawWidget, indent int) {
 			case "association":
 				props = append(props, fmt.Sprintf("DataSource: %s", associationDataSourceExpr(w.DataSource)))
 			}
+		}
+		// Emit a non-default PageSize so it round-trips (Studio Pro's default is 20).
+		if w.PageSize != "" && w.PageSize != "20" {
+			props = append(props, fmt.Sprintf("PageSize: %s", w.PageSize))
 		}
 		props = appendAppearanceProps(props, w)
 		if len(w.Children) > 0 {
