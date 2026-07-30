@@ -56,3 +56,37 @@ alter page MyFirstModule.WeekTimesheet {
 /
 
 describe page MyFirstModule.WeekTimesheet;
+/
+
+-- ----------------------------------------------------------------------------
+-- Follow-up (retest): a MICROFLOW datasource is the same class of bug. A
+-- microflow/nanoflow source stores no entity in its own BSON — the entity is
+-- the flow's RETURN type — so the inserted widget bound nothing (CE0402) until
+-- the entity was resolved from the flow. Association + database already worked;
+-- this closes the microflow/nanoflow case for INSERT and REPLACE alike.
+-- ----------------------------------------------------------------------------
+
+create microflow MyFirstModule.DS_Rows () returns list of MyFirstModule.WeekRow as $out
+begin
+  retrieve $out from MyFirstModule.WeekRow;
+  return $out;
+end;
+/
+
+create or replace page MyFirstModule.MfSourced ( Title: 'Mf', Layout: Atlas_Core.Atlas_Default )
+{
+  listview lvMf (datasource: microflow MyFirstModule.DS_Rows) {
+    dynamictext mfTotal (Attribute: RowTotal)
+  }
+}
+/
+
+-- probe must bind to WeekRow.RowTotal (the microflow's return entity).
+alter page MyFirstModule.MfSourced {
+  insert after mfTotal {
+    dynamictext probeMf (Attribute: RowTotal, Class: 'vdh-probe')
+  }
+}
+/
+
+describe page MyFirstModule.MfSourced;

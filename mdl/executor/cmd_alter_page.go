@@ -194,9 +194,19 @@ func applyInsertWidgetMutator(ctx *ExecContext, mutator backend.PageMutator, op 
 	// is a sibling, so use its enclosing container's context; for INSERT INTO the
 	// target IS the container, so the children take the target's own context (e.g.
 	// a dataview's entity).
+	into := strings.EqualFold(op.Position, "INTO")
 	entityCtx := mutator.EnclosingEntity(op.Target.Widget)
-	if strings.EqualFold(op.Position, "INTO") {
+	if into {
 		entityCtx = mutator.EnclosingEntityForChildren(op.Target.Widget)
+	}
+	// A microflow/nanoflow datasource contributes no entity to the BSON walk (its
+	// entity is the flow's RETURN type), so resolve it via the model — otherwise a
+	// widget inserted into a flow-sourced list binds nothing (CE0402/CE1613). (#55)
+	if entityCtx == "" {
+		mfQN, nfQN := mutator.EnclosingDataSourceFlow(op.Target.Widget, into)
+		if e := resolveDataSourceFlowEntity(ctx, moduleName, moduleID, mfQN, nfQN); e != "" {
+			entityCtx = e
+		}
 	}
 
 	// Build new widgets from AST
@@ -246,6 +256,13 @@ func applyReplaceWidgetMutator(ctx *ExecContext, mutator backend.PageMutator, op
 
 	// Find entity context from enclosing DataView/DataGrid/ListView for regular widget replace.
 	entityCtx := mutator.EnclosingEntity(op.Target.Widget)
+	// Resolve a microflow/nanoflow datasource's return entity (see the INSERT path).
+	if entityCtx == "" {
+		mfQN, nfQN := mutator.EnclosingDataSourceFlow(op.Target.Widget, false)
+		if e := resolveDataSourceFlowEntity(ctx, moduleName, moduleID, mfQN, nfQN); e != "" {
+			entityCtx = e
+		}
+	}
 
 	// Build new widgets from AST, excluding the target widget/column from the
 	// duplicate-name scope so a same-name replacement is allowed.
@@ -311,6 +328,29 @@ func buildColumnSpecsFromAST(ctx *ExecContext, widgets []*ast.WidgetV3, moduleNa
 // ============================================================================
 // Widget building from AST (domain logic stays in executor)
 // ============================================================================
+
+// resolveDataSourceFlowEntity resolves the entity context contributed by a
+// microflow/nanoflow datasource — its RETURN entity — for ALTER PAGE widget
+// builds. A flow datasource stores no entity in its own BSON (the entity lives
+// in the flow document), so the BSON walk yields "" and a bare inserted
+// attribute would bind nothing. Returns "" when neither flow qualified name
+// resolves (e.g. a void-returning flow). (FINDINGS #55)
+func resolveDataSourceFlowEntity(ctx *ExecContext, moduleName string, moduleID model.ID, mfQN, nfQN string) string {
+	if mfQN == "" && nfQN == "" {
+		return ""
+	}
+	pb := &pageBuilder{
+		ctx:        ctx,
+		backend:    ctx.Backend,
+		moduleID:   moduleID,
+		moduleName: moduleName,
+		execCache:  ctx.Cache,
+	}
+	if mfQN != "" {
+		return pb.getMicroflowReturnEntityName(mfQN)
+	}
+	return pb.getNanoflowReturnEntityName(nfQN)
+}
 
 // buildWidgetsFromAST converts AST widgets to pages.Widget domain objects.
 // It uses the mutator for scope resolution (WidgetScope, ParamScope).

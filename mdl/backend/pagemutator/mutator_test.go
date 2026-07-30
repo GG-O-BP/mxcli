@@ -1369,3 +1369,56 @@ func TestEnclosingEntity_AssociationSource(t *testing.T) {
 		t.Errorf("EnclosingEntityForChildren(lvRows) = %q, want MyFirstModule.WeekRow", got)
 	}
 }
+
+// makeMicroflowListView builds a ListView bound to a microflow datasource
+// (Forms$MicroflowSource → MicroflowSettings.Microflow), mirroring what the
+// writer emits for `datasource: microflow …`.
+func makeMicroflowListView(name, microflowQN string, children ...bson.D) bson.D {
+	childArr := bson.A{int32(2)}
+	for _, c := range children {
+		childArr = append(childArr, c)
+	}
+	return bson.D{
+		{Key: "$Type", Value: "Forms$ListView"},
+		{Key: "Name", Value: name},
+		{Key: "Widgets", Value: childArr},
+		{Key: "DataSource", Value: bson.D{
+			{Key: "$Type", Value: "Forms$MicroflowSource"},
+			{Key: "MicroflowSettings", Value: bson.D{
+				{Key: "$Type", Value: "Forms$MicroflowSettings"},
+				{Key: "Microflow", Value: microflowQN},
+			}},
+		}},
+	}
+}
+
+// TestEnclosingDataSourceFlow guards the microflow-datasource half of FINDINGS
+// #55: a widget inside a list bound to a microflow datasource must report that
+// microflow's qualified name (so the executor can resolve its return entity),
+// and a nearer NON-flow (association/database) source must shadow an outer flow.
+func TestEnclosingDataSourceFlow(t *testing.T) {
+	// Flat: microflow-sourced list at page top level.
+	inner := makeWidget("wrTotal", "Forms$DynamicText")
+	lv := makeMicroflowListView("lvRows", "MyFirstModule.DS_Rows", inner)
+	m := &Mutator{rawData: makeRawPage(lv), widgetFinder: findBsonWidget}
+
+	// Sibling insert after wrTotal → nearest enclosing datasource is the microflow.
+	if mf, nf := m.EnclosingDataSourceFlow("wrTotal", false); mf != "MyFirstModule.DS_Rows" || nf != "" {
+		t.Errorf("EnclosingDataSourceFlow(wrTotal) = (%q,%q), want (MyFirstModule.DS_Rows, )", mf, nf)
+	}
+	// INSERT INTO the list → the list's OWN datasource is the microflow.
+	if mf, _ := m.EnclosingDataSourceFlow("lvRows", true); mf != "MyFirstModule.DS_Rows" {
+		t.Errorf("EnclosingDataSourceFlow(lvRows, forChildren) = %q, want MyFirstModule.DS_Rows", mf)
+	}
+
+	// A nearer association source must SHADOW an outer microflow: microflow list
+	// contains an association-bound list; a widget in the inner list reports NO
+	// flow (its nearest source is the association).
+	innerAssoc := makeWidget("leaf", "Forms$DynamicText")
+	assocLV := makeAssociationListView("lvInner", "MyFirstModule.A_B", "MyFirstModule.B", innerAssoc)
+	outerMf := makeMicroflowListView("lvOuter", "MyFirstModule.DS_Rows", assocLV)
+	m2 := &Mutator{rawData: makeRawPage(outerMf), widgetFinder: findBsonWidget}
+	if mf, nf := m2.EnclosingDataSourceFlow("leaf", false); mf != "" || nf != "" {
+		t.Errorf("nearer association source should shadow outer microflow: got (%q,%q), want empty", mf, nf)
+	}
+}

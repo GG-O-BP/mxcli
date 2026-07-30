@@ -772,6 +772,47 @@ func (m *Mutator) EnclosingEntity(widgetRef string) string {
 	return findEnclosingEntityContext(m.rawData, widgetRef)
 }
 
+// EnclosingDataSourceFlow returns the microflow/nanoflow qualified name of the
+// datasource that governs widgetRef's context, or "","" when that source is not
+// a flow (database/association — EnclosingEntity/EnclosingEntityForChildren
+// already resolve those, and a nearer non-flow source shadows an outer flow).
+// A microflow/nanoflow datasource's entity is its RETURN type, which lives in
+// the flow document rather than the datasource BSON, so the caller resolves the
+// returned qualified name to an entity via the model. When forChildren is true
+// the widget's OWN datasource is consulted (INSERT INTO / column inserts);
+// otherwise the nearest ENCLOSING datasource (sibling INSERT BEFORE/AFTER,
+// REPLACE). Without this a widget inserted into a flow-sourced list bound its
+// attribute to nothing (CE0402/CE1613). (FINDINGS #55)
+func (m *Mutator) EnclosingDataSourceFlow(widgetRef string, forChildren bool) (microflow, nanoflow string) {
+	if forChildren {
+		if result := m.widgetFinder(m.rawData, widgetRef); result != nil {
+			if ds := bsonnav.DGetDoc(result.widget, "DataSource"); ds != nil {
+				return flowFromDataSourceDoc(ds)
+			}
+		}
+	}
+	ds, ok := findNearestDataSourceDoc(m.rawData, widgetRef)
+	if !ok {
+		return "", ""
+	}
+	return flowFromDataSourceDoc(ds)
+}
+
+// flowFromDataSourceDoc extracts the microflow/nanoflow qualified name from a
+// widget's "DataSource" sub-document, or "","" when it is not a flow source.
+func flowFromDataSourceDoc(ds bson.D) (microflow, nanoflow string) {
+	if ds == nil {
+		return "", ""
+	}
+	if s := bsonnav.DGetDoc(ds, "MicroflowSettings"); s != nil {
+		return bsonnav.DGetString(s, "Microflow"), ""
+	}
+	if s := bsonnav.DGetDoc(ds, "NanoflowSettings"); s != nil {
+		return "", bsonnav.DGetString(s, "Nanoflow")
+	}
+	return "", ""
+}
+
 // EnclosingEntityForChildren returns the entity context that applies to
 // children of the named widget. For widgets with their own data source
 // (DataView, DataGrid, ListView, DataGrid2), this is the data source entity.
@@ -1341,6 +1382,114 @@ func findEntityContextInChildren(wDoc bson.D, widgetName string, currentEntity s
 		}
 	}
 	return ""
+}
+
+// findNearestDataSourceDoc returns the "DataSource" sub-document of the NEAREST
+// container enclosing widgetName that declares one, and whether widgetName was
+// found at all. Unlike findEnclosingEntityContext — which resolves to an entity
+// NAME and so cannot distinguish "found, but the source has no directly-readable
+// entity" (a flow source) from "not found in this branch" — this returns the raw
+// source doc, letting the caller resolve flow sources via the model. curDS
+// carries the nearest enclosing DataSource seen so far, so a nearer non-flow
+// source correctly shadows an outer flow.
+func findNearestDataSourceDoc(rawData bson.D, widgetName string) (bson.D, bool) {
+	if formCall := bsonnav.DGetDoc(rawData, "FormCall"); formCall != nil {
+		for _, arg := range bsonnav.DGetArrayElements(bsonnav.DGet(formCall, "Arguments")) {
+			argDoc, ok := arg.(bson.D)
+			if !ok {
+				continue
+			}
+			if ds, found := findNearestDSInWidgets(argDoc, "Widgets", widgetName, nil); found {
+				return ds, true
+			}
+		}
+	}
+	if ds, found := findNearestDSInWidgets(rawData, "Widgets", widgetName, nil); found {
+		return ds, true
+	}
+	if widgetContainer := bsonnav.DGetDoc(rawData, "Widget"); widgetContainer != nil {
+		if ds, found := findNearestDSInWidgets(widgetContainer, "Widgets", widgetName, nil); found {
+			return ds, true
+		}
+	}
+	return nil, false
+}
+
+func findNearestDSInWidgets(parentDoc bson.D, key string, widgetName string, curDS bson.D) (bson.D, bool) {
+	for _, elem := range bsonnav.DGetArrayElements(bsonnav.DGet(parentDoc, key)) {
+		wDoc, ok := elem.(bson.D)
+		if !ok {
+			continue
+		}
+		if bsonnav.DGetString(wDoc, "Name") == widgetName {
+			return curDS, true
+		}
+		childDS := curDS
+		if ds := bsonnav.DGetDoc(wDoc, "DataSource"); ds != nil {
+			childDS = ds
+		}
+		if ds, found := findNearestDSInChildren(wDoc, widgetName, childDS); found {
+			return ds, true
+		}
+	}
+	return nil, false
+}
+
+func findNearestDSInChildren(wDoc bson.D, widgetName string, curDS bson.D) (bson.D, bool) {
+	typeName := bsonnav.DGetString(wDoc, "$Type")
+	if ds, found := findNearestDSInWidgets(wDoc, "Widgets", widgetName, curDS); found {
+		return ds, true
+	}
+	if ds, found := findNearestDSInWidgets(wDoc, "FooterWidgets", widgetName, curDS); found {
+		return ds, true
+	}
+	if strings.Contains(typeName, "LayoutGrid") {
+		for _, row := range bsonnav.DGetArrayElements(bsonnav.DGet(wDoc, "Rows")) {
+			rowDoc, ok := row.(bson.D)
+			if !ok {
+				continue
+			}
+			for _, col := range bsonnav.DGetArrayElements(bsonnav.DGet(rowDoc, "Columns")) {
+				colDoc, ok := col.(bson.D)
+				if !ok {
+					continue
+				}
+				if ds, found := findNearestDSInWidgets(colDoc, "Widgets", widgetName, curDS); found {
+					return ds, true
+				}
+			}
+		}
+	}
+	for _, tp := range bsonnav.DGetArrayElements(bsonnav.DGet(wDoc, "TabPages")) {
+		tpDoc, ok := tp.(bson.D)
+		if !ok {
+			continue
+		}
+		if ds, found := findNearestDSInWidgets(tpDoc, "Widgets", widgetName, curDS); found {
+			return ds, true
+		}
+	}
+	if controlBar := bsonnav.DGetDoc(wDoc, "ControlBar"); controlBar != nil {
+		if ds, found := findNearestDSInWidgets(controlBar, "Items", widgetName, curDS); found {
+			return ds, true
+		}
+	}
+	if strings.Contains(typeName, "CustomWidget") {
+		if obj := bsonnav.DGetDoc(wDoc, "Object"); obj != nil {
+			for _, prop := range bsonnav.DGetArrayElements(bsonnav.DGet(obj, "Properties")) {
+				propDoc, ok := prop.(bson.D)
+				if !ok {
+					continue
+				}
+				if valDoc := bsonnav.DGetDoc(propDoc, "Value"); valDoc != nil {
+					if ds, found := findNearestDSInWidgets(valDoc, "Widgets", widgetName, curDS); found {
+						return ds, true
+					}
+				}
+			}
+		}
+	}
+	return nil, false
 }
 
 func extractEntityFromDataSource(wDoc bson.D) string {
