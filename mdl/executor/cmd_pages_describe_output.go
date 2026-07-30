@@ -791,6 +791,10 @@ func outputWidgetMDLV3(ctx *ExecContext, w rawWidget, indent int) {
 				props = append(props, fmt.Sprintf("DataSource: %s", associationDataSourceExpr(w.DataSource)))
 			}
 		}
+		// Emit a non-default PageSize so it round-trips (Studio Pro's default is 20).
+		if w.PageSize != "" && w.PageSize != "20" {
+			props = append(props, fmt.Sprintf("PageSize: %s", w.PageSize))
+		}
 		props = appendAppearanceProps(props, w)
 		if len(w.Children) > 0 {
 			formatWidgetProps(ctx.Output, prefix, header, props, " {\n")

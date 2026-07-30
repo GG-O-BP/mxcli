@@ -1,0 +1,37 @@
+-- ============================================================================
+-- TraceOps findings #9, #10, #17: DYNAMICTEXT content + ListView PageSize
+-- silently produced broken or dropped output
+-- ============================================================================
+--
+-- #9  — `dynamictext x (Content: '')` persisted as `Content: '{1}'` with NO
+--       parameters: an orphaned placeholder. mxcli check passed, but MxBuild
+--       failed CE0720 "Place holder index 1 is greater than 0". Fix: empty
+--       content with no params is a literal EMPTY template — no synthetic {1}.
+--
+-- #10 — `dynamictext s (Content: '$318')` was treated as a variable reference:
+--       persisted as `Content: '{1}', ContentParams: [{1} = $318]` (unbound) →
+--       CE0402/CE1613 "attribute '$318' no longer exists". A `$` is a variable
+--       ONLY when followed by a letter/underscore; `$318` is literal content.
+--
+-- #17 — `listview (... PageSize: 200)` parsed cleanly but the writer hardcoded
+--       PageSize=20 and dropped the value; describe showed no PageSize. Fix:
+--       honor the parsed PageSize on write and round-trip it through describe.
+--
+-- All three build clean (`mx check` → 0 errors) after the fix, and describe
+-- round-trips: `x1` (empty), `s4v (Content: '$318')`, and `PageSize: 200`.
+-- ============================================================================
+
+create entity MyFirstModule.Item ( Label: String );
+/
+
+create or replace page MyFirstModule.TraceOpsWidgets ( Title: 'W', Layout: Atlas_Core.Atlas_Default )
+{
+  listview lvTree (datasource: database MyFirstModule.Item, PageSize: 200) {
+    dynamictext x1  (Content: '')       -- #9: empty → literal empty template
+    dynamictext s4v (Content: '$318')   -- #10: dollar+digits → literal text
+    dynamictext lbl (Content: Label)    -- control: real attribute still binds
+  }
+}
+/
+
+describe page MyFirstModule.TraceOpsWidgets;

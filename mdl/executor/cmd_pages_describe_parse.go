@@ -3,6 +3,7 @@
 package executor
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/mendixlabs/mxcli/model"
@@ -386,6 +387,10 @@ func parseRawWidget(ctx *ExecContext, w map[string]any, parentEntityContext ...s
 			widget.EntityContext = widget.DataSource.Reference
 		} else if inheritedCtx != "" {
 			widget.EntityContext = inheritedCtx
+		}
+		// Round-trip a non-default PageSize (the output formatter suppresses "20").
+		if ps := extractInt(w["PageSize"]); ps > 0 {
+			widget.PageSize = strconv.Itoa(ps)
 		}
 		widget.Children = parseListViewContent(ctx, w, widget.EntityContext)
 		return []rawWidget{widget}

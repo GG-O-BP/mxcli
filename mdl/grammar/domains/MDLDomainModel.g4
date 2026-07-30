@@ -197,8 +197,8 @@ deleteBehavior
 // =============================================================================
 
 alterEntityAction
-    : ADD ATTRIBUTE ifNotExists? attributeDefinition
-    | ADD COLUMN ifNotExists? attributeDefinition
+    : docComment? ADD ATTRIBUTE ifNotExists? attributeDefinition
+    | docComment? ADD COLUMN ifNotExists? attributeDefinition
     | RENAME ATTRIBUTE attributeName TO attributeName
     | RENAME COLUMN attributeName TO attributeName
     | MODIFY ATTRIBUTE attributeName COLON? dataType attributeConstraint*

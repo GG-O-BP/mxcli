@@ -1,0 +1,44 @@
+-- ============================================================================
+-- TraceOps #23: combobox could not bind an association via `Association:`
+-- ============================================================================
+--
+-- Symptom: `combobox (Association: Mod.Ref, …)` — the parser accepted it, but
+-- the writer only read the reference from the `attribute:` keyword, so
+-- `Association:` was silently dropped and the build failed
+--   [error] [CE0642] "Property 'Attribute' is required."
+--
+-- Fixes:
+--  1) The widget engine now reads the reference from EITHER `Association:` or
+--     `attribute:` (association-source), so the intuitive `Association:` keyword
+--     works. Verified: the complete form below `mx check`s with 0 errors.
+--  2) An incomplete association combobox (a `Association:` with no `datasource:`)
+--     is caught at check time with MDL-WIDGET16 and the full working syntax,
+--     instead of silently dropping the binding and failing MxBuild with CE0642.
+--
+-- A ComboBox in association mode needs THREE things: the reference
+-- (`Association:`/`attribute:`), the option list (`datasource:` = the target
+-- entity), and the display value (`CaptionAttribute:`).
+-- ============================================================================
+
+create entity MyFirstModule.Customer ( Name: String );
+create entity MyFirstModule.Order ( Number: String );
+create association MyFirstModule.Order_Customer
+  from MyFirstModule.Order to MyFirstModule.Customer;
+/
+
+create or replace page MyFirstModule.OrderEdit
+( Title: 'Order', Layout: Atlas_Core.Atlas_Default, Params: { $Order: MyFirstModule.Order } )
+{
+  dataview dv (datasource: $Order) {
+    -- Complete association combobox — builds clean.
+    combobox cmbCustomer (
+      label: 'Customer',
+      Association: MyFirstModule.Order_Customer,
+      datasource: database MyFirstModule.Customer,
+      CaptionAttribute: Name
+    )
+  }
+}
+/
+
+describe page MyFirstModule.OrderEdit;

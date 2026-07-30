@@ -534,6 +534,16 @@ func (b *Builder) ExitAlterEntityAction(ctx *parser.AlterEntityActionContext) {
 			if ctx.ADD() != nil && (ctx.ATTRIBUTE() != nil || ctx.COLUMN() != nil) {
 				if attrDef := ctx.AttributeDefinition(); attrDef != nil {
 					attr := buildSingleAttribute(attrDef.(*parser.AttributeDefinitionContext))
+					// A `/** … */` doc comment written BETWEEN clauses (before the
+					// ADD ATTRIBUTE keyword) documents the added attribute — same as a
+					// doc comment on a CREATE ENTITY attribute. `--` line comments are
+					// NOT an equivalent: they are discarded, whereas a doc comment is
+					// persisted as the attribute's Mendix documentation. (traceops #27)
+					if attr != nil && attr.Documentation == "" {
+						if docCtx := ctx.DocComment(); docCtx != nil {
+							attr.Documentation = extractDocComment(docCtx.GetText())
+						}
+					}
 					if attr != nil {
 						b.statements = append(b.statements, &ast.AlterEntityStmt{
 							Name:        name,

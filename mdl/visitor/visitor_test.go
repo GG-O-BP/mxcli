@@ -1086,6 +1086,37 @@ ALTER ENTITY M.E DROP ATTRIBUTE PlainCol;`)
 	}
 }
 
+// TestAlterEntityAddAttributeDocComment guards traceops #27: a `/** … */` doc
+// comment written BETWEEN `add attribute` clauses (before the ADD keyword) must
+// parse and document the FOLLOWING attribute — `--` line comments are discarded,
+// so they are not an equivalent workaround.
+func TestAlterEntityAddAttributeDocComment(t *testing.T) {
+	prog, errs := Build(`alter entity M.E
+  add attribute Zz1: string(10)
+  /** doc for the second column */
+  add attribute Zz2: string(10);`)
+	if len(errs) > 0 {
+		t.Fatalf("parse error: %v", errs[0])
+	}
+	if len(prog.Statements) != 2 {
+		t.Fatalf("expected 2 statements (one per add attribute), got %d", len(prog.Statements))
+	}
+	zz1 := prog.Statements[0].(*ast.AlterEntityStmt)
+	if zz1.Attribute == nil || zz1.Attribute.Name != "Zz1" {
+		t.Fatalf("statement 0 is not ADD Zz1: %+v", zz1)
+	}
+	if zz1.Attribute.Documentation != "" {
+		t.Errorf("Zz1 should have no doc, got %q", zz1.Attribute.Documentation)
+	}
+	zz2 := prog.Statements[1].(*ast.AlterEntityStmt)
+	if zz2.Attribute == nil || zz2.Attribute.Name != "Zz2" {
+		t.Fatalf("statement 1 is not ADD Zz2: %+v", zz2)
+	}
+	if zz2.Attribute.Documentation != "doc for the second column" {
+		t.Errorf("Zz2 documentation = %q, want %q", zz2.Attribute.Documentation, "doc for the second column")
+	}
+}
+
 // TestAlterEntityAddAttribute verifies ALTER ENTITY ADD ATTRIBUTE produces correct AST.
 func TestAlterEntityAddAttribute(t *testing.T) {
 	input := `ALTER ENTITY MyModule.Customer
@@ -2518,5 +2549,71 @@ func TestEnhanceErrorMessage_XPathArithmetic(t *testing.T) {
 	// A normal expression arithmetic error (not `expecting ']'`) must not fire.
 	if got := enhanceErrorMessage("mismatched input '+' expecting ';'", ""); strings.Contains(got, xhint) {
 		t.Errorf("did not expect XPath hint for a non-constraint arithmetic error:\n%s", got)
+	}
+}
+
+// TestKeywordWidgetName guards traceops #12: an MDL keyword (body, content,
+// search, as) used unquoted as a widget name must parse and keep the name,
+// instead of being rejected ("mismatched input 'body'") or silently dropped.
+func TestKeywordWidgetName(t *testing.T) {
+	prog, errs := Build(`create page M.P ( Title: 'P', Layout: Atlas_Core.Atlas_Default ) {
+  container body {
+    dynamictext content (Content: 'x')
+  }
+}`)
+	if len(errs) > 0 {
+		t.Fatalf("parse error: %v", errs[0])
+	}
+	page := prog.Statements[0].(*ast.CreatePageStmtV3)
+	if len(page.Widgets) != 1 || page.Widgets[0].Name != "body" {
+		t.Fatalf("outer widget name = %q, want body", widgetName(page.Widgets))
+	}
+	inner := page.Widgets[0].Children
+	if len(inner) != 1 || inner[0].Name != "content" {
+		t.Errorf("inner widget name = %q, want content", widgetName(inner))
+	}
+}
+
+func widgetName(ws []*ast.WidgetV3) string {
+	if len(ws) == 0 {
+		return "<none>"
+	}
+	return ws[0].Name
+}
+
+// TestMultiLineStringLiteral guards traceops #11: a single-quoted string literal
+// may span lines. Before this the newline terminated the token ("missing END").
+func TestMultiLineStringLiteral(t *testing.T) {
+	prog, errs := Build("create microflow M.T () returns String as $out\nbegin\n  declare $S String = 'line one\nline two';\n  return $S;\nend;")
+	if len(errs) > 0 {
+		t.Fatalf("parse error: %v", errs[0])
+	}
+	if len(prog.Statements) != 1 {
+		t.Fatalf("expected 1 statement, got %d", len(prog.Statements))
+	}
+}
+
+// TestAlterEntityMissingAttributeKeywordHint guards traceops #16: the parse
+// error for `alter entity … add <name>: <type>` (missing the `attribute`
+// keyword) carries an actionable hint, and a real clause (`add index …`) does not.
+func TestAlterEntityMissingAttributeKeywordHint(t *testing.T) {
+	_, errs := Build(`alter entity M.E add Name: string(20);`)
+	if len(errs) == 0 {
+		t.Fatal("expected a parse error for the missing `attribute` keyword")
+	}
+	var joined string
+	for _, e := range errs {
+		joined += e.Error() + "\n"
+	}
+	if !strings.Contains(joined, "needs the `attribute` keyword") {
+		t.Errorf("error missing the attribute-keyword hint:\n%s", joined)
+	}
+
+	// A valid `add index` clause must NOT be mis-hinted.
+	_, errs2 := Build(`alter entity M.E add index idx (Name);`)
+	for _, e := range errs2 {
+		if strings.Contains(e.Error(), "needs the `attribute` keyword") {
+			t.Errorf("add index wrongly hinted: %v", e)
+		}
 	}
 }
