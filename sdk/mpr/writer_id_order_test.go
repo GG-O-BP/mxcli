@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/mendixlabs/mxcli/mdl/bsonutil"
+	"github.com/mendixlabs/mxcli/mdl/settingsoverlay"
 	"github.com/mendixlabs/mxcli/model"
 	"github.com/mendixlabs/mxcli/sdk/domainmodel"
 
@@ -225,6 +227,7 @@ func TestStorageObjects_IDIsFirstProperty(t *testing.T) {
 				{ConstantId: "Mod.C1", Value: "v"},
 			},
 		}
-		marshalAndValidate(t, "ServerConfiguration", serializeServerConfiguration(cfg))
+		marshalAndValidate(t, "ServerConfiguration",
+			bsonutil.OrderStorageValue(settingsoverlay.ServerConfiguration(cfg, nil, nil)))
 	})
 }

@@ -126,6 +126,13 @@ Examples:
 			if wfStmt, ok := stmt.(*ast.CreateWorkflowStmt); ok {
 				violations = append(violations, executor.ValidateWorkflow(wfStmt)...)
 			}
+			// Check typed ALTER SETTINGS / CREATE CONFIGURATION property values
+			if setStmt, ok := stmt.(*ast.AlterSettingsStmt); ok {
+				violations = append(violations, executor.ValidateSettings(setStmt)...)
+			}
+			if cfgStmt, ok := stmt.(*ast.CreateConfigurationStmt); ok {
+				violations = append(violations, executor.ValidateCreateConfiguration(cfgStmt)...)
+			}
 			// Check view entity OQL
 			if viewStmt, ok := stmt.(*ast.CreateViewEntityStmt); ok {
 				if viewStmt.Query.RawQuery != "" {
