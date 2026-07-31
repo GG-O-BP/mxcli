@@ -686,6 +686,8 @@ type Widget struct {
 	ModuleName             string
 	EntityRef              string // Qualified name of referenced entity (e.g., "OtherModule.Customer")
 	AttributeRef           string
+	MicroflowRef           string // Qualified name of an action/datasource microflow, if any
+	NanoflowRef            string // Qualified name of an action/datasource nanoflow, if any
 }
 
 // Widgets returns an iterator over all widgets (excluding system modules).
@@ -693,7 +695,8 @@ func (ctx *LintContext) Widgets() iter.Seq[Widget] {
 	return func(yield func(Widget) bool) {
 		rows, err := ctx.db.Query(`
 			SELECT w.Id, w.Name, w.WidgetType, w.ContainerId, w.ContainerQualifiedName,
-			       w.ContainerType, w.ModuleName, w.EntityRef, w.AttributeRef
+			       w.ContainerType, w.ModuleName, w.EntityRef, w.AttributeRef,
+			       w.MicroflowRef, w.NanoflowRef
 			FROM widgets w
 			LEFT JOIN modules m ON w.ModuleName = m.Name
 			WHERE COALESCE(m.Source, '') = ''
@@ -706,9 +709,9 @@ func (ctx *LintContext) Widgets() iter.Seq[Widget] {
 
 		for rows.Next() {
 			var w Widget
-			var containerID, containerQName, containerType, entityRef, attrRef sql.NullString
+			var containerID, containerQName, containerType, entityRef, attrRef, mfRef, nfRef sql.NullString
 			err := rows.Scan(&w.ID, &w.Name, &w.WidgetType, &containerID, &containerQName,
-				&containerType, &w.ModuleName, &entityRef, &attrRef)
+				&containerType, &w.ModuleName, &entityRef, &attrRef, &mfRef, &nfRef)
 			if err != nil {
 				continue
 			}
@@ -717,6 +720,8 @@ func (ctx *LintContext) Widgets() iter.Seq[Widget] {
 			w.ContainerType = containerType.String
 			w.EntityRef = entityRef.String
 			w.AttributeRef = attrRef.String
+			w.MicroflowRef = mfRef.String
+			w.NanoflowRef = nfRef.String
 
 			if ctx.IsExcluded(w.ModuleName) {
 				continue
