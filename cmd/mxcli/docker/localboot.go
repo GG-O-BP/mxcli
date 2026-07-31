@@ -141,6 +141,24 @@ func (o *LocalRuntimeOptions) launcherJar() string {
 	return filepath.Join(o.runtimeDir(), "launcher", "runtimelauncher.jar")
 }
 
+// jvmArgs builds the JVM argument list for the local runtime.
+//
+// The two -Dmendix.* system properties mount the runtime's development servlets,
+// including /dev/preview_execute_oql — the endpoint `mxcli oql` calls. Docker
+// mode passes the same flags via docker-compose (see
+// templates/docker-compose.yml); the local boot must set them too, or `mxcli
+// oql` against a `mxcli run --local` app fails with "Action not found" and
+// silently returns 0 rows (findings #36). `run --local` is always a development
+// loop (it forces DTAPMode=D), so enabling live preview unconditionally matches
+// what docker mode already does.
+func (o *LocalRuntimeOptions) jvmArgs() []string {
+	return []string{
+		"-Dmendix.live-preview=enabled",
+		"-Dmendix.running.locally.by.studiopro=true",
+		"-jar", o.launcherJar(), o.DeployDir,
+	}
+}
+
 // localRuntimeEnv builds the environment for the runtime JVM, layered on the
 // current process environment. PrepareMxCommand later adds the FreeType fix.
 func localRuntimeEnv(o LocalRuntimeOptions) []string {
@@ -377,7 +395,7 @@ func StartLocalRuntime(opts LocalRuntimeOptions) (*LocalRuntime, error) {
 // boot and for a restart (config is per-process and must be re-applied).
 func (rt *LocalRuntime) spawnAndConfigure() error {
 	javaExe := filepath.Join(rt.opts.JavaHome, "bin", "java")
-	cmd := exec.Command(javaExe, "-jar", rt.opts.launcherJar(), rt.opts.DeployDir)
+	cmd := exec.Command(javaExe, rt.opts.jvmArgs()...)
 	cmd.Dir = rt.opts.runtimeDir()
 	cmd.Env = localRuntimeEnv(rt.opts)
 	if rt.opts.Trace {
