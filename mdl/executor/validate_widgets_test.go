@@ -356,3 +356,33 @@ func TestValidateWidgetVisibility(t *testing.T) {
 		t.Errorf("unset property → got %d violations, want 0", len(v))
 	}
 }
+
+// TestValidateComboBoxAssociation guards traceops #23 (the MDL-WIDGET16 check):
+// a combobox that binds an association needs an options datasource; without one
+// Mendix drops the binding and fails the build with CE0642.
+func TestValidateComboBoxAssociation(t *testing.T) {
+	dbDS := &ast.DataSourceV3{Type: "database", Reference: "M.Customer"}
+	cases := []struct {
+		name   string
+		widget *ast.WidgetV3
+		want   bool // expect MDL-WIDGET16
+	}{
+		{"association, no datasource → flagged", &ast.WidgetV3{Type: "combobox", Name: "cb", Properties: map[string]any{"Association": "M.Order_Customer"}}, true},
+		{"association + datasource → ok", &ast.WidgetV3{Type: "combobox", Name: "cb", Properties: map[string]any{"Association": "M.Order_Customer", "DataSource": dbDS}}, false},
+		{"enumeration attribute only → ok", &ast.WidgetV3{Type: "combobox", Name: "cb", Properties: map[string]any{"Attribute": "Status"}}, false},
+		{"not a combobox → ignored", &ast.WidgetV3{Type: "textbox", Name: "tb", Properties: map[string]any{"Association": "M.Order_Customer"}}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := false
+			for _, v := range validateComboBoxAssociation(c.widget, "page X") {
+				if v.RuleID == "MDL-WIDGET16" {
+					got = true
+				}
+			}
+			if got != c.want {
+				t.Errorf("MDL-WIDGET16 present = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
