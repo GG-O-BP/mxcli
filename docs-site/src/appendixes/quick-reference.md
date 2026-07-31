@@ -24,7 +24,7 @@ CREATE PERSISTENT ENTITY Module.Photo (
 |-----------|--------|-------|
 | Create entity | `CREATE [OR MODIFY] PERSISTENT\|NON-PERSISTENT ENTITY Module.Name (attrs);` | Persistent is default |
 | Create with extends | `CREATE PERSISTENT ENTITY Module.Name EXTENDS Parent.Entity (attrs);` | EXTENDS before `(` |
-| Create view entity | `CREATE VIEW ENTITY Module.Name (attrs) AS SELECT ...;` | OQL-backed read-only |
+| Create view entity | `CREATE VIEW ENTITY Module.Name (attrs) AS SELECT ...;` | OQL-backed; no storage, edit-in-memory, write back via source |
 | Create external entity | `CREATE EXTERNAL ENTITY Module.Name FROM ODATA CLIENT Module.Client (...) (attrs);` | From consumed OData |
 | Create external entities | `CREATE [OR MODIFY] EXTERNAL ENTITIES FROM Module.Client [INTO Module] [ENTITIES (...)];` | Bulk from $metadata |
 | Drop entity | `DROP ENTITY Module.Name;` | |
