@@ -139,7 +139,7 @@ create or replace microflow MfTest.M001_HelloWorld ()
 returns boolean as $success
 begin
   declare $success boolean = true;
-  log trace node 'TEST' 'List received '
+  log trace node 'TEST' 'List received ';
   return $success;
 end;
 /
@@ -163,9 +163,9 @@ end;
 create or replace microflow MfTest.M001_HelloWorld ()
 returns boolean as $success
 begin
-  log trace node 'TEST' '> before'
+  log trace node 'TEST' '> before';
   declare $success boolean = true;
-  log trace node 'TEST' '< After'
+  log trace node 'TEST' '< After';
   return $success;
 end;
 /
@@ -2010,7 +2010,7 @@ begin
     log error node 'OrderService' 'Failed to update order status';
     change $Order (status = 'ERROR');
     commit $Order;
-    raise error
+    raise error;
   };
 
   set $success = true;

@@ -258,6 +258,12 @@ return type (`System.ConsumedODataConfiguration` vs
 
 ## Microflows - Supported Statements
 
+**Semicolons are mandatory inside a microflow or nanoflow body.** Every statement ends
+with `;`, including block terminators (`end if;`, `end loop;`, `end while;`, `end case;`).
+Omitting one is a parse error (`missing ';' at 'return'`). The terminator on the
+*definition* itself (`end;` / `end` followed by `/`) is unchanged and still optional, as
+it is for pages.
+
 | Statement | Syntax | Notes |
 |-----------|--------|-------|
 | Variable declaration | `declare $Var type = value;` | Primitives: String, Integer, Boolean, Decimal, DateTime |
