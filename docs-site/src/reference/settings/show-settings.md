@@ -18,7 +18,7 @@ The available settings categories are:
 |----------|----------|
 | `MODEL` | Application-level settings: AfterStartupMicroflow, BeforeShutdownMicroflow, HashAlgorithm, JavaVersion, etc. |
 | `CONFIGURATION` | Runtime configurations: DatabaseType, DatabaseUrl, HttpPortNumber, etc. Each named configuration is listed separately. |
-| `CONSTANT` | Constant value overrides per configuration. Shows which constants have non-default values in each configuration. |
+| `CONSTANT` | Constant value overrides per configuration. Shows which constants have non-default values in each configuration. An override whose value is private — stored on the developer's workstation rather than in the shared model — is reported as `(private)`; its value is not in the project and mxcli cannot show it. |
 | `LANGUAGE` | Localization settings: DefaultLanguageCode and available languages. |
 | `WORKFLOWS` | Workflow engine settings: UserEntity, DefaultTaskParallelism, etc. |
 

@@ -107,3 +107,44 @@ func TestDescribeConstant_Mock_NotFound(t *testing.T) {
 
 // Backend error: cmd_error_mock_test.go (TestShowConstants_Mock_BackendError)
 // JSON: cmd_json_mock_test.go (TestShowConstants_Mock_JSON)
+
+// TestShowConstantValues_MarksPrivateOverride: a private override's value lives on
+// the developer's workstation, so model.ConstantValue.Value is always "". Rendering
+// that as an empty cell was indistinguishable from an override deliberately set to
+// the empty string — the table must say which it is.
+func TestShowConstantValues_MarksPrivateOverride(t *testing.T) {
+	mod := mkModule("MyModule")
+	token := mkConstant(mod.ID, "ApiToken", "String", "default-token")
+	base := mkConstant(mod.ID, "BaseUrl", "String", "https://example.invalid")
+
+	h := mkHierarchy(mod)
+	withContainer(h, token.ContainerID, mod.ID)
+	withContainer(h, base.ContainerID, mod.ID)
+
+	mb := &mock.MockBackend{
+		IsConnectedFunc:   func() bool { return true },
+		ListConstantsFunc: func() ([]*model.Constant, error) { return []*model.Constant{token, base}, nil },
+		GetProjectSettingsFunc: func() (*model.ProjectSettings, error) {
+			return &model.ProjectSettings{
+				Configuration: &model.ConfigurationSettings{
+					Configurations: []*model.ServerConfiguration{{
+						Name: "Default",
+						ConstantValues: []*model.ConstantValue{
+							{ConstantId: "MyModule.ApiToken", IsPrivate: true},
+							{ConstantId: "MyModule.BaseUrl", Value: "https://staging.invalid"},
+						},
+					}},
+				},
+			}, nil
+		},
+	}
+
+	ctx, buf := newMockCtx(t, withBackend(mb), withHierarchy(h))
+	assertNoError(t, listConstantValues(ctx, ""))
+
+	out := buf.String()
+	assertContainsStr(t, out, "(private)")
+	// The shared override must still show its value, and the private one must not
+	// be reported as an ordinary empty override.
+	assertContainsStr(t, out, "https://staging.invalid")
+}

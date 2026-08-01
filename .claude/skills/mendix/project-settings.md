@@ -88,6 +88,8 @@ API tokens are the usual reason to make one private.
 MDL **preserves that choice but never changes it**. The two statements above operate
 on shared values only:
 
+- `show constant values` reports a private override as `(private)` rather than a blank
+  cell — the value is not in the project, so mxcli cannot show it.
 - `describe settings` reports a private override as a comment, not as a re-executable
   `alter settings constant` line — replaying that line would publish into the shared
   model a value the developer chose to keep local.
