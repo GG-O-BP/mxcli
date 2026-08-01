@@ -151,24 +151,26 @@ func TestPageClientAction_RequiredFields(t *testing.T) {
 		t.Errorf("FormSettings missing required field %q", "TitleOverride")
 	}
 
-	// TitleOverride must be an embedded Microflows$TextTemplate object, not nil.
-	// Studio Pro rejects null embedded objects on project load (same class of bug as issue #295).
+	// TitleOverride must be null. A button opening a page has no MDL syntax for
+	// overriding the opened page's title, so the page always keeps its own.
+	//
+	// This assertion was previously inverted, on the reasoning that Studio Pro rejects
+	// null embedded objects ("same class of bug as issue #295"). #295 was about
+	// Forms$PageVariable; the conclusion was generalised to TitleOverride without being
+	// observed. An empty Microflows$TextTemplate is not "no override" — it overrides
+	// with the empty string, so every popup opened by an mxcli-authored button showed a
+	// blank caption and only the close button (#812).
+	found := false
 	for _, e := range formSettings {
 		if e.Key != "TitleOverride" {
 			continue
 		}
-		to, ok := e.Value.(bson.D)
-		if !ok || to == nil {
-			t.Fatalf("TitleOverride must be a bson.D embedded object, got %T (%v)", e.Value, e.Value)
+		found = true
+		if e.Value != nil {
+			t.Fatalf("TitleOverride = %#v, want nil (#812)", e.Value)
 		}
-		var typ string
-		for _, f := range to {
-			if f.Key == "$Type" {
-				typ, _ = f.Value.(string)
-			}
-		}
-		if typ != "Microflows$TextTemplate" {
-			t.Errorf("TitleOverride.$Type = %q, want %q", typ, "Microflows$TextTemplate")
-		}
+	}
+	if !found {
+		t.Error("TitleOverride key missing entirely; Studio Pro writes it as an explicit null")
 	}
 }
