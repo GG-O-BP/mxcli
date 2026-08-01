@@ -30,6 +30,30 @@ const (
 	FormOrientationVertical   FormOrientation = "Vertical"
 )
 
+// DefaultLabelWidth is Mendix's metamodel default for DataView.LabelWidth — the
+// Horizontal form orientation, label beside the input taking 3/12 of the row.
+const DefaultLabelWidth = 3
+
+// ResolvedLabelWidth is the LabelWidth a writer must emit for this DataView.
+//
+// Studio Pro's "Form orientation" radio has no BSON field of its own: it *is*
+// LabelWidth (0 = Vertical, >0 = Horizontal). An explicit LabelWidth is the more
+// specific statement and therefore wins over FormOrientation.
+//
+// This lives on the model so both writers share one definition. Previously only the
+// legacy writer performed the translation and the modelsdk one emitted LabelWidth
+// only when it was set explicitly, so `FormOrientation: Vertical` was parsed into the
+// model and then silently dropped on the default engine (mendixlabs/mxcli#762).
+func (dv *DataView) ResolvedLabelWidth() int {
+	if dv.LabelWidth != nil {
+		return *dv.LabelWidth
+	}
+	if dv.FormOrientation == FormOrientationVertical {
+		return 0
+	}
+	return DefaultLabelWidth
+}
+
 // ListView represents a list view widget.
 type ListView struct {
 	BaseWidget

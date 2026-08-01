@@ -590,6 +590,19 @@ dataview dv (datasource: $Customer, LabelWidth: 4)                -- explicit, 0
 
 `LabelWidth: 0` ⇔ `FormOrientation: Vertical`. If both are given, `LabelWidth` wins.
 
+**Footer (`showFooter`):** a `footer { … }` block turns the footer on by itself, so
+the property is only needed when the two would disagree:
+
+```sql
+dataview dv (datasource: $Customer, showFooter: true)              -- empty footer, shown
+dataview dv (datasource: $Customer, showFooter: false) {           -- widgets declared, hidden
+  footer f { dynamictext t (content: 'hidden') }
+}
+```
+
+An explicit `showFooter` wins over the block in both directions, and hiding a footer
+never discards its widgets.
+
 ### GALLERY Widget
 
 Display items in card layout with selection and responsive columns:
