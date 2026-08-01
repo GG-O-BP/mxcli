@@ -297,6 +297,30 @@ mxcli's primary value is that AI agents (Claude Code, Cursor, etc.) can generate
 | Claude uses outdated patterns | Update CLI help text (`Short`/`long`/`Example` in Cobra) |
 | Error messages are unhelpful | Improve error text with hints |
 
+### End-to-end testing on the web (build a real app + keep a findings doc)
+
+The highest-signal way to exercise mxcli is to **build a real Mendix app with it in
+[Claude Code on the web](https://claude.ai/code)** and record what breaks. This is
+the same loop the maintainers dogfood with (e.g. the `mxcli-traceops` /
+`mxcli-timeregistration` test apps), and it works from a laptop or an iPad — no
+local install.
+
+1. Create an **empty GitHub repo** and a Claude Code environment on it (set
+   `MXCLI_HUB_KEY` for browser preview; allow outbound HTTPS to GitHub Releases,
+   Mendix's CDN, and `hub.mxcli.org`).
+2. Paste the **[bootstrap prompt](https://mendixlabs.github.io/mxcli/tools/bootstrap-prompt.html)**
+   — it installs the toolchain, creates the app, starts a `FINDINGS.md`, commits,
+   and boots the app.
+3. Ask the agent to build real features (a domain model, CRUD pages, microflows),
+   and verify with `mxcli run --local` + `mxcli oql` and a real `mx check`.
+
+**Keep a `FINDINGS.md`** at the repo root as you go — one entry per surprise or
+defect: the exact MDL, the command, the error, the Mendix + mxcli versions, and how
+you verified it. A finding that reproduces against a real `mx check` is often enough
+to drive a fix straight into a symptom row in `.claude/skills/fix-issue.md`. The full
+workflow is documented in
+**[Developing on the Web (Claude Code)](https://mendixlabs.github.io/mxcli/tutorial/claude-code-web.html)**.
+
 ### PR Section
 
 Include in your PR:

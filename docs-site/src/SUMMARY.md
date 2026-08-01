@@ -17,6 +17,7 @@
   - [Installation](tutorial/installation.md)
   - [Opening Your First Project](tutorial/opening-project.md)
   - [The REPL](tutorial/repl.md)
+- [Developing on the Web (Claude Code)](tutorial/claude-code-web.md)
 - [Exploring a Project](tutorial/exploring.md)
   - [SHOW MODULES, SHOW ENTITIES](tutorial/show-commands.md)
   - [DESCRIBE, SEARCH](tutorial/describe-search.md)

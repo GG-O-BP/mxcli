@@ -128,9 +128,19 @@ This downloads MxBuild, creates a blank Mendix project, sets up AI tooling and a
 
 ### From the web or an iPad (empty repo, no local install)
 
-No machine with a CLI? Open an **empty repo** in [Claude Code on the web](https://claude.ai/code) (works on an iPad) and paste the **bootstrap prompt** — the agent provisions the whole project (creates the app, wires the Dev Container + AI tooling, provisions the database) and commits it so future sessions self-bootstrap. This is the recommended web/iPad path; you don't need to pick a GitHub template.
+No machine with a CLI? Build a Mendix app **entirely in the browser** with
+[Claude Code on the web](https://claude.ai/code) (works on an iPad) — mxcli
+provisions the whole toolchain in the cloud container and commits it so future
+sessions self-bootstrap. You don't need to pick a GitHub template. The full
+workflow:
 
-> See **[Bootstrap Prompt](https://mendixlabs.github.io/mxcli/tools/bootstrap-prompt.html)** for the exact copy-paste text. In short: it runs `mxcli new` → `mxcli init` → commits the config → `mxcli run --local --setup --ensure-db` so the app comes up testable.
+1. **Create an empty GitHub repo** — this is where the app lives and where sessions run.
+2. **(Optional) Get a hub key** for a browser preview: open <https://hub.mxcli.org/cli>, sign in with GitHub, and **Create a hub key**.
+3. **Create a Claude Code environment** on the repo. Set `MXCLI_HUB_KEY=<key>` (from step 2) and allow outbound HTTPS to GitHub Releases, Mendix's CDN, and `hub.mxcli.org`.
+4. **Paste the bootstrap prompt** into a session. The agent installs mxcli, runs `mxcli new` → `mxcli init`, starts a `FINDINGS.md`, commits the config, and boots the app with `mxcli run --local --setup --ensure-db` so it comes up testable.
+5. **Iterate** with the warm loop below; add `--hub https://hub.mxcli.org` for a shareable browser preview.
+
+> **[Developing on the Web (Claude Code)](https://mendixlabs.github.io/mxcli/tutorial/claude-code-web.html)** walks the whole workflow, and **[Bootstrap Prompt](https://mendixlabs.github.io/mxcli/tools/bootstrap-prompt.html)** has the exact copy-paste text.
 
 Then iterate with the **warm local dev loop** — a Docker-free ~1-second edit→test cycle:
 
