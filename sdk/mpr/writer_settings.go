@@ -94,7 +94,7 @@ func serializeModelSettings(ms *model.ModelSettings, raw map[string]any) map[str
 	raw["AllowUserMultipleSessions"] = ms.AllowUserMultipleSessions
 	raw["HashAlgorithm"] = ms.HashAlgorithm
 	raw["BcryptCost"] = safeInt64(ms.BcryptCost)
-	raw["JavaVersion"] = ms.JavaVersion
+	settingsoverlay.SetJavaVersion(raw, ms.JavaVersion)
 	raw["RoundingMode"] = ms.RoundingMode
 	raw["ScheduledEventTimeZoneCode"] = ms.ScheduledEventTimeZoneCode
 	raw["FirstDayOfWeek"] = ms.FirstDayOfWeek

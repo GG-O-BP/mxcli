@@ -86,13 +86,18 @@ create configuration 'Staging';
 
 -- Create with properties
 create configuration 'Production'
-  DatabaseType = 'POSTGRESQL',
+  DatabaseType = 'PostgreSql',
   DatabaseUrl = 'prod-db:5432',
   HttpPortNumber = 8080;
 
 -- Drop a configuration
 drop configuration 'Staging';
 ```
+
+`DatabaseType` must name a Mendix database type — `Db2`, `Hsqldb`, `MySql`,
+`Oracle`, `PostgreSql`, `SapHana` or `SqlServer` — matched case-insensitively and
+stored in that spelling. Any other value is rejected; a configuration stored with
+one Mendix does not recognise cannot be opened in Studio Pro.
 
 ### Language and Workflow Settings
 

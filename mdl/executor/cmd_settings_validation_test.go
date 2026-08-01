@@ -385,8 +385,11 @@ func TestTypedSettingsKeys_MatchExecutor(t *testing.T) {
 
 				// The valid form for this kind must round-trip through both.
 				good := "7"
-				if kind == settingsKindBool {
+				switch kind {
+				case settingsKindBool:
 					good = "true"
+				case settingsKindDatabaseType:
+					good = "PostgreSql"
 				}
 				if got := ValidateSettings(&ast.AlterSettingsStmt{
 					Section:    section,

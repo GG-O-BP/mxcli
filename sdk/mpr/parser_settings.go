@@ -5,6 +5,7 @@ package mpr
 import (
 	"fmt"
 
+	"github.com/mendixlabs/mxcli/mdl/settingsoverlay"
 	"github.com/mendixlabs/mxcli/model"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -149,7 +150,7 @@ func parseModelSettings(raw map[string]any) *model.ModelSettings {
 	ms.AllowUserMultipleSessions = extractBool(raw["AllowUserMultipleSessions"], true)
 	ms.HashAlgorithm = extractString(raw["HashAlgorithm"])
 	ms.BcryptCost = extractInt(raw["BcryptCost"])
-	ms.JavaVersion = extractString(raw["JavaVersion"])
+	ms.JavaVersion = settingsoverlay.JavaVersion(raw)
 	ms.RoundingMode = extractString(raw["RoundingMode"])
 	ms.ScheduledEventTimeZoneCode = extractString(raw["ScheduledEventTimeZoneCode"])
 	ms.FirstDayOfWeek = extractString(raw["FirstDayOfWeek"])

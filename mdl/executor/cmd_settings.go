@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/mendixlabs/mxcli/generated/metamodel"
 	"github.com/mendixlabs/mxcli/mdl/ast"
 	mdlerrors "github.com/mendixlabs/mxcli/mdl/errors"
 	"github.com/mendixlabs/mxcli/model"
@@ -325,7 +326,11 @@ func alterSettingsConfiguration(ctx *ExecContext, ps *model.ProjectSettings, stm
 		valStr := settingsValueToString(val)
 		switch key {
 		case "DatabaseType":
-			cfg.DatabaseType = valStr
+			v, err := settingsDatabaseType(key, valStr)
+			if err != nil {
+				return err
+			}
+			cfg.DatabaseType = v
 		case "DatabaseUrl":
 			cfg.DatabaseUrl = valStr
 		case "DatabaseName":
@@ -453,11 +458,15 @@ func createConfiguration(ctx *ExecContext, stmt *ast.CreateConfigurationStmt) er
 		}
 	}
 
+	// Mirror the configuration Studio Pro creates: the enum member "Hsqldb" (not
+	// "HSQLDB", which no metamodel member matches) and both default ports, so a
+	// fresh configuration is runnable and loads without repair (#759).
 	newCfg := &model.ServerConfiguration{
-		Name:           stmt.Name,
-		DatabaseType:   "HSQLDB",
-		HttpPortNumber: 8080,
-		ConstantValues: []*model.ConstantValue{},
+		Name:             stmt.Name,
+		DatabaseType:     string(metamodel.SettingsDatabaseTypeHsqldb),
+		HttpPortNumber:   8080,
+		ServerPortNumber: 8090,
+		ConstantValues:   []*model.ConstantValue{},
 	}
 	newCfg.TypeName = "Settings$ServerConfiguration"
 
@@ -466,7 +475,11 @@ func createConfiguration(ctx *ExecContext, stmt *ast.CreateConfigurationStmt) er
 		valStr := settingsValueToString(val)
 		switch key {
 		case "DatabaseType":
-			newCfg.DatabaseType = valStr
+			v, err := settingsDatabaseType(key, valStr)
+			if err != nil {
+				return err
+			}
+			newCfg.DatabaseType = v
 		case "DatabaseUrl":
 			newCfg.DatabaseUrl = valStr
 		case "DatabaseName":
@@ -559,6 +572,37 @@ func settingsBool(key, valStr string) (bool, error) {
 		return false, nil
 	}
 	return false, mdlerrors.NewValidationf("%s must be true or false, got %q", key, valStr)
+}
+
+// databaseTypes lists the members of the Mendix Settings.DatabaseType enumeration
+// exactly as Studio Pro spells them in BSON (generated/metamodel.SettingsDatabaseType).
+// A configuration stored with anything else — mxcli hardcoded "HSQLDB" for every
+// CREATE CONFIGURATION — is a value the metamodel cannot resolve, and Studio Pro
+// throws "Sequence contains no matching element" when it loads the configuration
+// (mendixlabs/mxcli#759).
+var databaseTypes = []string{
+	string(metamodel.SettingsDatabaseTypeDb2),
+	string(metamodel.SettingsDatabaseTypeHsqldb),
+	string(metamodel.SettingsDatabaseTypeMySql),
+	string(metamodel.SettingsDatabaseTypeOracle),
+	string(metamodel.SettingsDatabaseTypePostgreSql),
+	string(metamodel.SettingsDatabaseTypeSapHana),
+	string(metamodel.SettingsDatabaseTypeSqlServer),
+}
+
+// settingsDatabaseType canonicalises a DatabaseType value to the enum member
+// Mendix stores, matching case-insensitively so 'postgresql' and 'PostgreSql' both
+// land on the stored spelling. Anything unrecognised is rejected rather than
+// written through.
+func settingsDatabaseType(key, valStr string) (string, error) {
+	want := strings.TrimSpace(valStr)
+	for _, dt := range databaseTypes {
+		if strings.EqualFold(dt, want) {
+			return dt, nil
+		}
+	}
+	return "", mdlerrors.NewValidationf("%s must be one of %s, got %q",
+		key, strings.Join(databaseTypes, ", "), valStr)
 }
 
 // settingsValueToString converts an AST settings value to string.
