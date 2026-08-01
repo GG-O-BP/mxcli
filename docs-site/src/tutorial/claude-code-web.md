@@ -63,6 +63,11 @@ sessions; configure two things on it:
 |----------|-------|-----|
 | `MXCLI_HUB_KEY` | the hub key from step 2 | mxcli reads it automatically so `run --hub` registers previews as you. Survives container reaping. |
 
+Set the hub key **here, on the environment — never in a committed file.** It's a
+credential, and a gitignored file wouldn't survive container recycling anyway;
+environment variables are re-injected into every session, so the environment is
+the only place it belongs.
+
 **Network policy**
 
 The bootstrap prompt downloads a few things on first run, so the environment's
