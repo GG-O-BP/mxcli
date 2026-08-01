@@ -49,9 +49,9 @@ func TestWriteParity_Microflow_ObjectOps(t *testing.T) {
 // element + parameter mappings (marker-2 list).
 func TestWriteParity_Microflow_Calls(t *testing.T) {
 	setup := []string{
-		"CREATE MICROFLOW MyFirstModule.CTarget () RETURNS BOOLEAN BEGIN RETURN true END",
-		"CREATE MICROFLOW MyFirstModule.CTargetP (Val: string) RETURNS STRING BEGIN RETURN $Val END",
-		"CREATE NANOFLOW MyFirstModule.NTarget () RETURNS BOOLEAN BEGIN RETURN true END",
+		"CREATE MICROFLOW MyFirstModule.CTarget () RETURNS BOOLEAN BEGIN RETURN true; END",
+		"CREATE MICROFLOW MyFirstModule.CTargetP (Val: string) RETURNS STRING BEGIN RETURN $Val; END",
+		"CREATE NANOFLOW MyFirstModule.NTarget () RETURNS BOOLEAN BEGIN RETURN true; END",
 	}
 	cases := []struct{ name, stmt, mf string }{
 		{"MicroflowNoArgs", "CREATE MICROFLOW MyFirstModule.MfCall () BEGIN call microflow MyFirstModule.CTarget(); END", "MfCall"},
@@ -91,10 +91,10 @@ func TestWriteParity_Microflow_Loops(t *testing.T) {
 	cases := []struct{ name, stmt, mf string }{
 		{"IterateList",
 			"CREATE MICROFLOW MyFirstModule.MfLoop (Items: list of MyFirstModule.LThing) BEGIN " +
-				"loop $It in $Items begin commit $It; end loop END", "MfLoop"},
+				"loop $It in $Items begin commit $It; end loop; END", "MfLoop"},
 		{"While",
 			"CREATE MICROFLOW MyFirstModule.MfWhile (Item: MyFirstModule.LThing) BEGIN " +
-				"while $Item/Code != '' begin commit $Item; end while END", "MfWhile"},
+				"while $Item/Code != '' begin commit $Item; end while; END", "MfWhile"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -188,8 +188,8 @@ func TestWriteParity_Microflow_Retrieve(t *testing.T) {
 // against legacy, group by group. Skeleton = start → end, boolean return.
 func TestWriteParity_Microflow(t *testing.T) {
 	cases := []struct{ name, stmt, mf string }{
-		{"Skeleton", "CREATE MICROFLOW MyFirstModule.MfEmpty () RETURNS BOOLEAN BEGIN RETURN true END", "MfEmpty"},
-		{"Parameters", "CREATE MICROFLOW MyFirstModule.MfParams (Count: integer, Label: string) RETURNS BOOLEAN BEGIN RETURN true END", "MfParams"},
+		{"Skeleton", "CREATE MICROFLOW MyFirstModule.MfEmpty () RETURNS BOOLEAN BEGIN RETURN true; END", "MfEmpty"},
+		{"Parameters", "CREATE MICROFLOW MyFirstModule.MfParams (Count: integer, Label: string) RETURNS BOOLEAN BEGIN RETURN true; END", "MfParams"},
 		{"VoidReturn", "CREATE MICROFLOW MyFirstModule.MfVoid () BEGIN END", "MfVoid"},
 	}
 	for _, c := range cases {

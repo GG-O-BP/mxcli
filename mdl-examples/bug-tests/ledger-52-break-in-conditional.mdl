@@ -34,6 +34,6 @@ begin
     if $R/Active then
       break;                 -- MDL051: crashes mx check (unloadable model)
     end if;
-  end loop
+  end loop;
   return true;
 end

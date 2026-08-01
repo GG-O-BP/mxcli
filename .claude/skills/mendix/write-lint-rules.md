@@ -194,6 +194,8 @@ def check():
 | `module_name` | string | `"Sales"` |
 | `entity_ref` | string | Referenced entity qualified name |
 | `attribute_ref` | string | Referenced attribute path |
+| `microflow_ref` | string | Action/datasource microflow qualified name (e.g. a microflow-datasource ListView), else `""` |
+| `nanoflow_ref` | string | Action/datasource nanoflow qualified name, else `""` |
 
 ### snippet
 | Property | Type | Example |

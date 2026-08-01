@@ -130,7 +130,9 @@ func oqlDevError(raw json.RawMessage) string {
 		// existing compose file, so a project generated before the flags were added
 		// keeps starting the runtime without them until it is regenerated.
 		if strings.Contains(strings.ToLower(msg), "not found") {
-			msg += " -- the running app does not expose the OQL preview endpoint. If your .docker/ predates this fix, regenerate it with `mxcli docker init --force`, then `mxcli docker build && mxcli docker up` (this starts the runtime with the live-preview dev flags)"
+			msg += " -- the running app does not expose the OQL preview endpoint, which needs the live-preview dev flags at boot." +
+				" If it was started with `mxcli run --local`, upgrade mxcli to a build that boots the local runtime with live preview (nightly-93 and earlier do not)." +
+				" If it runs under docker and your .docker/ predates this fix, regenerate it with `mxcli docker init --force`, then `mxcli docker build && mxcli docker up`."
 		}
 		return msg
 	}

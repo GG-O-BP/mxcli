@@ -597,6 +597,11 @@ func RunLocal(opts LocalRunOptions) error {
 	defer rt.Stop()
 
 	fmt.Fprintf(w, "\nApp is running at %s\n", rt.AppURL())
+	// The local runtime boots with the live-preview dev flags (see
+	// LocalRuntimeOptions.jvmArgs), so `mxcli oql` can query it directly — and it
+	// now defaults to the local admin password, so no M2EE_ADMIN_PASS is needed
+	// (findings #36).
+	fmt.Fprintf(w, "Query data:  mxcli oql -p %s \"SELECT ...\"\n", opts.ProjectPath)
 	if runtimeLog != "" {
 		fmt.Fprintf(w, "Runtime log: %s\n", runtimeLog)
 	}

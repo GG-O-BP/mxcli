@@ -170,10 +170,10 @@ func TestValidateMicroflow_AssociationObjectArg(t *testing.T) {
 // `continue` form reached users as a corrupt project.
 func TestValidateMicroflow_ConditionalBreakAccepted(t *testing.T) {
 	bodies := []string{
-		"loop $R in $L begin if $R/Active then break; end if; end loop",
-		"loop $R in $L begin if $R/Active then continue; end if; end loop",
-		"loop $R in $L begin if $R/Active then if $R/Active then break; end if; end if; end loop",
-		"loop $R in $L begin break; end loop",
+		"loop $R in $L begin if $R/Active then break; end if; end loop;",
+		"loop $R in $L begin if $R/Active then continue; end if; end loop;",
+		"loop $R in $L begin if $R/Active then if $R/Active then break; end if; end if; end loop;",
+		"loop $R in $L begin break; end loop;",
 	}
 	for _, body := range bodies {
 		t.Run(body, func(t *testing.T) {
@@ -231,10 +231,10 @@ func TestValidateMicroflow_DuplicateLoopVariable(t *testing.T) {
 		body    string
 		wantMDL bool
 	}{
-		{"two loops same iterator", "loop $R in $L begin set $x = 1; end loop loop $R in $L begin set $y = 1; end loop", true},
-		{"nested loop reuses outer iterator", "loop $R in $L begin loop $R in $L begin set $x = 1; end loop end loop", true},
-		{"distinct iterators are fine", "loop $R in $L begin set $x = 1; end loop loop $C in $L begin set $y = 1; end loop", false},
-		{"single loop is fine", "loop $R in $L begin set $x = 1; end loop", false},
+		{"two loops same iterator", "loop $R in $L begin set $x = 1; end loop; loop $R in $L begin set $y = 1; end loop;", true},
+		{"nested loop reuses outer iterator", "loop $R in $L begin loop $R in $L begin set $x = 1; end loop; end loop;", true},
+		{"distinct iterators are fine", "loop $R in $L begin set $x = 1; end loop; loop $C in $L begin set $y = 1; end loop;", false},
+		{"single loop is fine", "loop $R in $L begin set $x = 1; end loop;", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

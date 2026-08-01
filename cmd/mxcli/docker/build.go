@@ -100,16 +100,15 @@ func Build(opts BuildOptions) error {
 		if err != nil {
 			fmt.Fprintf(w, "  Skipping check: %v\n", err)
 		} else {
-			// Run update-widgets before check to prevent false CE0463 errors
+			// Run update-widgets before check to prevent false CE0463 errors.
+			// runUpdateWidgets preserves the project's on-disk storage format: the bare
+			// invocation this replaced converted MPRv2 projects to MPRv1 and deleted
+			// mprcontents/ (mendixlabs/mxcli#808). restore is deferred to Build's exit
+			// rather than run here, so both `mx check` and MxBuild below see the
+			// widget-normalized model; only the on-disk format is put back.
 			if !opts.SkipUpdateWidgets {
-				fmt.Fprintln(w, "  Updating widget definitions...")
-				uwCmd := exec.Command(mxPath, "update-widgets", updateWidgetsPathArg(opts.ProjectPath))
-				uwCmd.Stdout = w
-				uwCmd.Stderr = os.Stderr
-				PrepareMxCommand(uwCmd)
-				if err := uwCmd.Run(); err != nil {
-					fmt.Fprintf(w, "  Warning: update-widgets failed (continuing): %v\n", err)
-				}
+				restore := runUpdateWidgets(mxPath, opts.ProjectPath, w, os.Stderr)
+				defer restore()
 			}
 
 			cmd := exec.Command(mxPath, "check", opts.ProjectPath)

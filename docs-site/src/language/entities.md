@@ -65,7 +65,7 @@ CREATE NON-PERSISTENT ENTITY Sales.CustomerFilter (
 
 ### View Entity
 
-Defined by an OQL query. View entities are read-only:
+Defined by an OQL query:
 
 ```sql
 CREATE VIEW ENTITY Reports.CustomerSummary (
@@ -81,6 +81,27 @@ CREATE VIEW ENTITY Reports.CustomerSummary (
   LEFT JOIN Sales.Order o ON o.Customer = c
   GROUP BY c.Name;
 ```
+
+"Read-only" is a common shorthand for view entities, but it conflates three
+separate things — and only two of them are true:
+
+- **No storage.** A view entity has no database table, and it is *not* a
+  database view either — after deploy, Postgres has no view object for it. The
+  runtime translates the OQL and issues it per query.
+- **No write-back on `commit`.** Committing a view-entity object does nothing;
+  to persist a change you write through the source entity (retrieve it, change
+  it, commit it).
+- **Not immutable.** A view row *is* editable in memory — it behaves like a
+  **non-persistent** object, so a form can bind to it and change its
+  attributes. This makes a view entity a legitimate backing for an *editable*
+  screen (populate the form with one pushed-down query, write back through the
+  source in the save flow), not only a read-only report.
+
+**Gotcha:** each declared attribute type must match its source column exactly.
+A `String(60)` attribute over a `String(100)` source column fails the build with
+`CE6770 "View Entity is out of sync with the OQL Query."` — widen the attribute
+to match. (mxbuild genuinely type-checks the OQL, so a clean build is real
+evidence, not just a syntax pass.)
 
 ## CREATE OR MODIFY
 
