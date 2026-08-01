@@ -18,6 +18,20 @@ to the symptom table below, so the next similar issue costs fewer reads.
    reported symptom. A test that has only ever run against fixed code has not been
    shown to detect anything.
 6. After the fix: **add a new row** to the table if the symptom is not already covered.
+   **Append it at the END of the table, never at the top.**
+
+> **Why the end matters.** Every bug fix touches this one file, and for a long time
+> new rows went in directly under the header. Two branches fixing two unrelated bugs
+> therefore inserted at the *same line*, and git cannot merge that — it is a conflict
+> by construction, not by bad luck. It cost five separate resolution rounds in one
+> week, and each round risks dropping someone's row.
+>
+> Appending puts each branch's insert at a different offset, which git merges without
+> help. The table is unordered — it is looked up by matching a symptom, not by
+> reading top to bottom — so position carries no meaning and appending costs nothing.
+>
+> The rows above pre-date this convention and are left as they are; reordering them
+> would conflict with every open branch at once, which is the problem, not the fix.
 
 ---
 
