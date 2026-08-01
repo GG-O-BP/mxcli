@@ -1,0 +1,71 @@
+-- Bug #812: Show Page actions got an empty TitleOverride instead of null,
+-- blanking every popup's caption.
+--
+-- mxcli wrote every Forms$FormSettings / Forms$PageSettings with
+--
+--   TitleOverride: { $Type: "Microflows$TextTemplate", Text: {...}, Parameters: [] }
+--
+-- where Studio Pro writes `null`. An empty template is not the absence of an
+-- override — it IS an override, to the empty string — so every popup opened by an
+-- mxcli-authored button or Show Page action rendered with a blank caption and just
+-- the close button. The reporter found 10 broken popups (all mxcli-authored) against
+-- 58 correct ones in the same project.
+--
+-- The same defect hid a second one: `show page M.P with title = 'X'` reached the
+-- model (ast.ShowPageStmt.Title -> ShowPageAction.OverridePageTitle) but no writer
+-- ever read that field, so an override the author explicitly asked for was dropped.
+--
+-- Verify without Studio Pro:
+--
+--   mxcli exec 812-showpage-title-override.mdl -p app.mpr
+--   mxcli bson dump -p app.mpr --type microflow --object Issue812.OpenPlain
+--       -> TitleOverride: null
+--   mxcli bson dump -p app.mpr --type microflow --object Issue812.OpenOverridden
+--       -> TitleOverride: a Microflows$TextTemplate containing 'Explicit Override'
+--   mxcli bson dump -p app.mpr --type page --object Issue812.HostPage
+--       -> the button's PageSettings TitleOverride: null
+--
+-- The old comments claimed TitleOverride "must be non-nil" because Studio Pro
+-- rejects null embedded objects on load. That is false, and was reasoned by analogy
+-- from issue #295 (Forms$PageVariable, a different field). Verified against Mendix
+-- 11.6.6 with the null in place:
+--
+--   mxcli docker check -p app.mpr   -> "The app contains: 0 errors."
+--   mxcli docker build -p app.mpr   -> "Build complete."
+
+
+create module Issue812;
+create module role Issue812.User;
+
+create page Issue812.PopupPage (
+  title: 'Popup Title From The Page',
+  Layout: Atlas_Core.PopupLayout
+)
+{
+  container c1 { }
+}
+/
+
+-- No override: TitleOverride must be null so the page keeps its own title.
+create microflow Issue812.OpenPlain ()
+begin
+  show page Issue812.PopupPage;
+end;
+/
+
+-- Explicit override: the authored text must survive into the BSON.
+create microflow Issue812.OpenOverridden ()
+begin
+  show page Issue812.PopupPage with title = 'Explicit Override';
+end;
+/
+
+-- The button path — the case the issue was actually reported against. There is no
+-- MDL syntax for overriding the title from a widget action, so it is always null.
+create page Issue812.HostPage (title: 'Host', Layout: Atlas_Core.Atlas_Default)
+{
+  container c1 {
+    actionbutton btnOpen (caption: 'Open popup', action: show_page Issue812.PopupPage)
+  }
+}
+/
