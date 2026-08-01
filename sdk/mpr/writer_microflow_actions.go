@@ -448,7 +448,7 @@ func serializeMicroflowAction(action microflows.MicroflowAction) bson.D {
 			{Key: "$Type", Value: "Forms$FormSettings"},
 			{Key: "Form", Value: a.PageName}, // BY_NAME_REFERENCE (page qualified name)
 			{Key: "ParameterMappings", Value: paramMappings},
-			{Key: "TitleOverride", Value: emptyTextTemplate()},
+			{Key: "TitleOverride", Value: titleOverrideValue(a.OverridePageTitle)},
 		}
 		doc = append(doc, bson.E{Key: "FormSettings", Value: formSettings})
 		doc = append(doc, bson.E{Key: "NumberOfPagesToClose", Value: ""})
@@ -580,10 +580,31 @@ func emptyPageVariable() bson.D {
 	}
 }
 
+// titleOverrideValue renders FormSettings.TitleOverride: the page's own title is
+// used unless the action overrides it, and "no override" is nil — NOT an empty
+// Microflows$TextTemplate.
+//
+// An empty template is not the absence of an override, it *is* an override, to the
+// empty string: every popup opened by such an action showed a blank caption with
+// only the close button (mendixlabs/mxcli#812). The writers had been emitting one
+// unconditionally on a mistaken "must be non-nil" reading of PR #338 / issue #295 —
+// which was about Forms$PageVariable, a different field. This repo's own
+// .claude/skills/debug-bson.md already documented the correct Forms$FormSettings
+// shape as `TitleOverride: nil`.
+//
+// The same bug hid a second one: an override the author *did* ask for
+// (`show page M.P with title = 'X'`) was dropped, because the empty template was
+// written regardless of OverridePageTitle. Both cases now round-trip.
+func titleOverrideValue(override *model.Text) any {
+	if override == nil {
+		return nil
+	}
+	return serializeTextTemplate(override, nil)
+}
+
 // emptyTextTemplate returns an empty Microflows$TextTemplate embedded object.
-// TitleOverride on Forms$FormSettings is a Microflows$TextTemplate (not a scalar),
-// so it must be written as an empty object rather than nil — same pattern as
-// emptyPageVariable() for Forms$PageVariable (see PR #338 / issue #295).
+// Retained for callers that genuinely need an initialized template; do NOT use it
+// for TitleOverride — see titleOverrideValue.
 func emptyTextTemplate() bson.D {
 	return bson.D{
 		{Key: "$ID", Value: idToBsonBinary(generateUUID())},

@@ -110,12 +110,12 @@ func init() {
 	codec.RegisterTypeDefaults("Microflows$ResultHandling", codec.TypeDefaults{
 		NullFields: []string{"ImportMappingCall"},
 	})
-	// A ShowPage FormSettings always carries a TitleOverride (empty Microflows$TextTemplate)
-	// and each PageParameterMapping a Variable (empty Forms$PageVariable); both are built
-	// directly. FormSettings' ParameterMappings list empties as marker 2.
-	codec.RegisterTypeDefaults("Forms$FormSettings", codec.TypeDefaults{
-		MandatoryListMarkers: map[string]int32{"ParameterMappings": 2},
-	})
+	// Each PageParameterMapping carries a Variable (empty Forms$PageVariable), built
+	// directly. Forms$FormSettings' own defaults — the marker-2 ParameterMappings list
+	// and the null TitleOverride — are registered ONCE, in widget_write.go:
+	// RegisterTypeDefaults overwrites rather than merges, so a second registration for
+	// the same $Type silently wins by init order. A duplicate here is what swallowed
+	// the TitleOverride null and kept #812 alive after the first attempt at fixing it.
 }
 
 // majorVersion returns the project's Mendix major version (for version-gated BSON).
@@ -1279,7 +1279,12 @@ func showPageFormSettingsToGen(a *microflows.ShowPageAction) element.Element {
 		mappings = append(mappings, m)
 	}
 	addPartList(fs, "ParameterMappings", mappings)
-	addPart(fs, "TitleOverride", emptyTextTemplateToGen())
+	// TitleOverride is nil unless the action actually overrides the page title. An
+	// empty template is not "no override" — it overrides with the empty string, which
+	// blanked the caption of every popup an mxcli-authored action opened (#812).
+	if a.OverridePageTitle != nil {
+		addPart(fs, "TitleOverride", textTemplateToGen(a.OverridePageTitle, nil))
+	}
 	return fs
 }
 

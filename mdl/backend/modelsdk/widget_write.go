@@ -13,7 +13,6 @@ import (
 	"github.com/mendixlabs/mxcli/modelsdk/element"
 	genCw "github.com/mendixlabs/mxcli/modelsdk/gen/customwidgets"
 	genDm "github.com/mendixlabs/mxcli/modelsdk/gen/domainmodels"
-	genMf "github.com/mendixlabs/mxcli/modelsdk/gen/microflows"
 	genPg "github.com/mendixlabs/mxcli/modelsdk/gen/pages"
 	genTexts "github.com/mendixlabs/mxcli/modelsdk/gen/texts"
 	"github.com/mendixlabs/mxcli/sdk/microflows"
@@ -34,6 +33,14 @@ func init() {
 	// (unusual — most empty lists are marker 3).
 	codec.RegisterTypeDefaults("Forms$ClientTemplate", codec.TypeDefaults{
 		MandatoryListMarkers: map[string]int32{"Parameters": 2},
+	})
+	// A widget action's PageSettings never overrides the opened page's title — there
+	// is no MDL syntax for it — so TitleOverride is always null. It used to be written
+	// as an empty Microflows$TextTemplate, which overrides the title with the empty
+	// string: every popup an mxcli-authored button opened showed a blank caption with
+	// only the close button (#812).
+	codec.RegisterTypeDefaults("Forms$PageSettings", codec.TypeDefaults{
+		NullFields: []string{"TitleOverride"},
 	})
 	// A pluggable-widget XPath datasource (DataGrid2 / Gallery / …) always serializes
 	// SourceVariable as null when unbound, and its GridSortBar always emits an (empty)
@@ -209,8 +216,19 @@ func init() {
 	codec.RegisterTypeDefaults("Forms$FormAction", codec.TypeDefaults{
 		MandatoryListMarkers: map[string]int32{"PagesForSpecializations": 2},
 	})
+	// The single Forms$FormSettings registration — shared by the widget-action and
+	// microflow show-page paths. Keep it here and nowhere else: RegisterTypeDefaults
+	// overwrites rather than merges, so a second registration for the same $Type
+	// silently wins by init order. That is what hid #812 — a NullFields entry added
+	// next to the microflow writer was clobbered by this one.
+	//
+	// TitleOverride is null unless the action really overrides the opened page's
+	// title. An empty Microflows$TextTemplate is not "no override" — it overrides with
+	// the empty string, blanking the caption of every popup mxcli authored (#812).
+	// showPageFormSettingsToGen emits the part only when OverridePageTitle is set.
 	codec.RegisterTypeDefaults("Forms$FormSettings", codec.TypeDefaults{
 		MandatoryListMarkers: map[string]int32{"ParameterMappings": 2},
+		NullFields:           []string{"TitleOverride"},
 	})
 	// create_object action: EntityRef is null when no entity is specified.
 	codec.RegisterTypeDefaults("Forms$CreateObjectClientAction", codec.TypeDefaults{
@@ -1296,25 +1314,18 @@ func microflowSettingsToGen(microflowName string, mappings []*pages.MicroflowPar
 }
 
 // formSettingsToGen builds the Forms$FormSettings (PageSettings) shared by the
-// page-opening actions: target page by-name, empty parameter mappings, empty
-// title override.
+// page-opening actions: target page by-name and empty parameter mappings.
+//
+// TitleOverride is deliberately left unset. A widget action (a button opening a
+// page) has no MDL syntax for overriding the title, so the correct value is always
+// null — the page keeps its own title. Setting an empty Microflows$TextTemplate here
+// overrode it with the empty string, so every popup opened by an mxcli-authored
+// button rendered with a blank caption and just the close button (#812).
 func formSettingsToGen(pageName string) element.Element {
 	ps := genPg.NewPageSettings()
 	assignID(ps)
 	ps.SetPageQualifiedName(pageName)
-	ps.SetTitleOverride(emptyTextTemplateToGen())
 	return ps
-}
-
-// emptyTextTemplateToGen builds an empty Microflows$TextTemplate. This is the type
-// of FormSettings/PageSettings TitleOverride (NOT a Forms$ClientTemplate, which
-// Studio Pro's loader rejects with a type-cast error) and it must be non-nil
-// (issue #468). Mirrors sdk/mpr.emptyTextTemplate.
-func emptyTextTemplateToGen() element.Element {
-	tt := genMf.NewTextTemplate()
-	assignID(tt)
-	tt.SetText(genTexts.NewText())
-	return tt
 }
 
 // clientActionToGen converts a widget client action. Simple actions are supported;

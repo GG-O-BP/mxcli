@@ -145,10 +145,20 @@ func TestShowPageAction_RoundtripNoParams(t *testing.T) {
 	}
 }
 
-// TestShowPageAction_TitleOverride_NotNil verifies that FormSettings.TitleOverride is written as
-// an embedded Microflows$TextTemplate object, not nil.  Studio Pro rejects null embedded objects
-// on project load (same class of bug as FormSettings.ParameterMappings.Variable — issue #295).
-func TestShowPageAction_TitleOverride_NotNil(t *testing.T) {
+// TestShowPageAction_TitleOverride_IsNull replaces an earlier test that asserted the
+// opposite. That test reasoned by analogy — "same class of bug as
+// FormSettings.ParameterMappings.Variable — issue #295" — but #295 was about
+// Forms$PageVariable, a different field, and the conclusion was generalised to
+// TitleOverride without ever being observed.
+//
+// The evidence runs the other way. Studio Pro writes TitleOverride null: a scan of one
+// project found 58 correct popups (Studio Pro / marketplace) with null against 10
+// broken ones (mxcli) with an empty template, and this repo's own
+// .claude/skills/debug-bson.md documents `{Key: "TitleOverride", Value: nil}` as the
+// correct Forms$FormSettings shape. An empty Microflows$TextTemplate is not the
+// absence of an override — it overrides the title with the empty string, so every such
+// popup rendered with a blank caption and only the close button (#812).
+func TestShowPageAction_TitleOverride_IsNull(t *testing.T) {
 	action := &microflows.ShowPageAction{
 		BaseElement: model.BaseElement{ID: "test-action-id"},
 		PageName:    "Sales.Product_NewEdit",
@@ -170,9 +180,34 @@ func TestShowPageAction_TitleOverride_NotNil(t *testing.T) {
 		t.Fatal("FormSettings missing")
 	}
 
-	to := toMap(formSettings["TitleOverride"])
+	raw2, ok := formSettings["TitleOverride"]
+	if !ok {
+		t.Fatal("TitleOverride key missing entirely; Studio Pro writes it as an explicit null")
+	}
+	if raw2 != nil {
+		t.Fatalf("TitleOverride = %#v, want nil — an empty template overrides the page "+
+			"title with the empty string, blanking the popup caption (#812)", raw2)
+	}
+
+	// ...and when the action DOES override the title, the authored text must survive.
+	// Before #812 the empty template was written either way, so this half was silently
+	// dropped: OverridePageTitle was set by the builder and read by nothing.
+	withTitle := &microflows.ShowPageAction{
+		BaseElement:       model.BaseElement{ID: "test-action-id"},
+		PageName:          "Sales.Product_NewEdit",
+		OverridePageTitle: &model.Text{Translations: map[string]string{"en_US": "Edit Product"}},
+	}
+	data2, err := bson.Marshal(serializeMicroflowAction(withTitle))
+	if err != nil {
+		t.Fatalf("failed to marshal BSON: %v", err)
+	}
+	var rawDoc2 map[string]any
+	if err := bson.Unmarshal(data2, &rawDoc2); err != nil {
+		t.Fatalf("failed to unmarshal BSON: %v", err)
+	}
+	to := toMap(toMap(rawDoc2["FormSettings"])["TitleOverride"])
 	if to == nil {
-		t.Fatal("TitleOverride is nil; Studio Pro rejects null Microflows$TextTemplate objects (issue #468)")
+		t.Fatal("an explicitly authored title override was dropped (#812)")
 	}
 	if got := extractString(to["$Type"]); got != "Microflows$TextTemplate" {
 		t.Fatalf("TitleOverride.$Type = %q, want %q", got, "Microflows$TextTemplate")
