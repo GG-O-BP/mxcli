@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/mendixlabs/mxcli/sdk/mpr"
+	"github.com/mendixlabs/mxcli/sdk/mpr/version"
 )
 
 // TestBuild_PreservesMPRv2StorageFormat is the end-to-end guard for
@@ -55,6 +56,20 @@ func TestBuild_PreservesMPRv2StorageFormat(t *testing.T) {
 		t.Skipf("scaffolded project is %v, not MPRv2 — nothing to protect", v)
 	}
 
+	// Precondition: Build only supports Mendix >= 11.6.1 (portable app distribution);
+	// below that it refuses before reaching the update-widgets step this test is about.
+	// The nightly matrix includes 10.24, which is MPRv2 — so the format check above
+	// passes and Build then fails its own version guard, which is a property of the
+	// matrix row rather than a regression.
+	//
+	// This is a genuine capability gate, not a masked failure: there is no PAD build to
+	// protect on 10.x. The Check counterpart has no version guard and does run there,
+	// so MPRv2 preservation is still covered on every matrix row.
+	if pv := mprProductVersion(t, mprPath); !pv.IsAtLeastFull(11, 6, 1) {
+		t.Skipf("Build (portable app distribution) requires Mendix >= 11.6.1; scaffolded project is %s — "+
+			"TestCheck_PreservesMPRv2StorageFormat covers this version", pv.ProductVersion)
+	}
+
 	var stdout bytes.Buffer
 	if err := Build(BuildOptions{
 		ProjectPath: mprPath,
@@ -72,4 +87,15 @@ func TestBuild_PreservesMPRv2StorageFormat(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "mprcontents")); err != nil {
 		t.Errorf("mprcontents/ missing after Build, storage format was not preserved: %v", err)
 	}
+}
+
+// mprProductVersion opens the .mpr and returns its Mendix product version.
+func mprProductVersion(t *testing.T, mprPath string) *version.ProjectVersion {
+	t.Helper()
+	reader, err := mpr.Open(mprPath)
+	if err != nil {
+		t.Fatalf("mpr.Open(%s): %v", mprPath, err)
+	}
+	defer reader.Close()
+	return reader.ProjectVersion()
 }
