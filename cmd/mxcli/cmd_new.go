@@ -10,6 +10,7 @@ import (
 	"runtime"
 
 	"github.com/mendixlabs/mxcli/cmd/mxcli/docker"
+	"github.com/mendixlabs/mxcli/sdk/mpr"
 	"github.com/spf13/cobra"
 )
 
@@ -114,6 +115,28 @@ Examples:
 			}
 		}
 		fmt.Printf("  Created %s\n", mprPath)
+
+		// The project is stamped with the version of the binary that created it, not
+		// with --version. Resolving the wrong binary therefore yields a project at a
+		// version the user never asked for, and every later step (init, mxbuild,
+		// runtime) silently follows it. Check the postcondition rather than trusting
+		// the resolution: a mismatch here means the model is wrong, so fail loudly
+		// instead of handing back something that merely looks finished.
+		if reader, err := mpr.Open(mprPath); err == nil {
+			created := reader.ProjectVersion().ProductVersion
+			reader.Close()
+			if created != "" && created != mendixVersion {
+				fmt.Fprintf(os.Stderr,
+					"Error: requested Mendix %s but the created project is %s.\n",
+					mendixVersion, created)
+				fmt.Fprintf(os.Stderr,
+					"  mx create-project stamps the project with the version of the binary that ran it (%s).\n", mxPath)
+				fmt.Fprintf(os.Stderr,
+					"  Run 'mxcli setup mxbuild --version %s' and try again.\n", mendixVersion)
+				os.Exit(1)
+			}
+			fmt.Printf("  Mendix version: %s\n", created)
+		}
 
 		// Step 3: Initialize tooling
 		if !skipInit {

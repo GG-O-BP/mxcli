@@ -197,17 +197,57 @@ func ResolveMxForVersion(mxbuildPath, preferredVersion string) (string, error) {
 	return "", fmt.Errorf("mx not found; specify --mxbuild-path pointing to Mendix installation directory")
 }
 
+// localMxForVersion returns a locally available mx binary that is EXACTLY the
+// requested version, or "" if there is none.
+//
+// Unlike ResolveMxForVersion it never substitutes a different version. That
+// substitution is reasonable when the project already exists and its version is a
+// preference; it is wrong when the version IS the request — see
+// ResolveMxForNewProject.
+//
+// Looks in the same places, minus the "any version will do" fallbacks: an
+// exact-version Studio Pro install, an exact-version binary in the OS-specific
+// install locations, then the exact-version download cache. PATH is deliberately
+// excluded: an `mx` on PATH carries no version guarantee.
+func localMxForVersion(version string) string {
+	if version == "" {
+		return ""
+	}
+	if studioProDir := ResolveStudioProDir(version); studioProDir != "" {
+		for _, name := range mxBinaryNames() {
+			candidate := filepath.Join(studioProDir, "modeler", name)
+			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+				return candidate
+			}
+		}
+	}
+	if matches := globVersionedMatches(mendixSearchPaths(mxBinaryName())); len(matches) > 0 {
+		if exact := exactVersionedPath(matches, version); exact != "" {
+			return exact
+		}
+	}
+	return CachedMxPath(version)
+}
+
 // ResolveMxForNewProject finds the mx binary for use by mxcli new.
-// On Windows and macOS it prefers an installed Studio Pro to avoid downloading
-// Linux CDN binaries that won't execute on those platforms. On Linux (and as a
-// fallback) it downloads mxbuild from the CDN and derives mx from the same dir.
+//
+// The requested version is not a preference here, it is the definition of the
+// output: `mx create-project` stamps the new project with the version of the binary
+// that created it. So only an EXACT match may be reused; anything else is
+// downloaded. Delegating to ResolveMxForVersion was wrong, because its last resort
+// is AnyCachedMxPath() — with only 11.6.6 cached, `mxcli new --version 11.12.2`
+// printed "Resolving MxBuild 11.12.2..." and then produced an 11.6.6 project, with
+// no warning that the requested version had been ignored (mendixlabs/mxcli#808 era
+// finding; the CDN had the version all along).
+//
+// On Windows and macOS an exact-version Studio Pro is still preferred, so those
+// platforms do not download a Linux CDN binary that cannot execute.
 func ResolveMxForNewProject(version string, progressWriter io.Writer) (string, error) {
-	// Fast path: Studio Pro or cached download already present
-	if mxPath, err := ResolveMxForVersion("", version); err == nil {
+	if mxPath := localMxForVersion(version); mxPath != "" {
 		return mxPath, nil
 	}
-	// Slow path: download mxbuild from CDN (works on Linux; on macOS/Windows
-	// this is only reached if Studio Pro is not installed)
+	// Not available locally at the requested version: download it (works on Linux;
+	// on macOS/Windows this is only reached when Studio Pro is not installed).
 	mxbuildPath, err := DownloadMxBuild(version, progressWriter)
 	if err != nil {
 		return "", err
