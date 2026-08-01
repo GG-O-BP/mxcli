@@ -332,9 +332,12 @@ func widgetToGen(w pages.Widget) (element.Element, error) {
 		g.SetEditability(editability(x.ReadOnly))
 		g.SetReadOnlyStyle("Control")
 		g.SetShowFooter(x.ShowFooter)
-		if x.LabelWidth != nil {
-			g.SetLabelWidth(int32(*x.LabelWidth))
-		}
+		// Always emit LabelWidth. It carries Studio Pro's "Form orientation" radio,
+		// which has no BSON field of its own — so writing it only when an explicit
+		// `LabelWidth:` was given dropped `FormOrientation: Vertical` entirely
+		// (mendixlabs/mxcli#762). The resolution rule lives on the model, shared with
+		// the legacy writer.
+		g.SetLabelWidth(int32(x.ResolvedLabelWidth()))
 		g.SetNoEntityMessage(captionToGen(x.NoEntityMessage))
 		for _, c := range x.Widgets {
 			cg, err := widgetToGen(c)

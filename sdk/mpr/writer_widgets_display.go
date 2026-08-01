@@ -442,17 +442,13 @@ func serializeTitle(t *pages.Title) bson.D {
 	return doc
 }
 
-// dataViewLabelWidth resolves the LabelWidth to write to BSON. LabelWidth wins
-// if explicitly set; otherwise FormOrientation is the source (Vertical -> 0,
-// Horizontal/unset -> Mendix's metamodel default of 3).
+// dataViewLabelWidth resolves the LabelWidth to write to BSON. The rule lives on
+// the model (pages.DataView.ResolvedLabelWidth) so this writer and the modelsdk one
+// cannot drift — only this one used to translate FormOrientation, which is how
+// `FormOrientation: Vertical` came to be silently dropped on the default engine
+// (mendixlabs/mxcli#762).
 func dataViewLabelWidth(dv *pages.DataView) int64 {
-	if dv.LabelWidth != nil {
-		return int64(*dv.LabelWidth)
-	}
-	if dv.FormOrientation == pages.FormOrientationVertical {
-		return 0
-	}
-	return 3
+	return int64(dv.ResolvedLabelWidth())
 }
 
 // serializeDataView serializes a DataView widget with all required properties.
