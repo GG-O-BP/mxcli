@@ -66,6 +66,10 @@ BEGIN
 END;
 ```
 
+**Every body statement ends with a semicolon `;`** — required, not optional, exactly as
+in microflows. That includes block terminators: `end if;`, `end loop;`, `end while;`,
+`end case;`. A missing one is a parse error (`missing ';' at 'return'`), not a warning.
+
 ## Naming Convention
 
 Nanoflow names use the `NAV_` prefix by convention:
