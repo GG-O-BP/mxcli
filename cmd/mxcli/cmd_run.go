@@ -81,6 +81,7 @@ Examples:
 		hubSolution, _ := cmd.Flags().GetString("hub-solution")
 		hubBranch, _ := cmd.Flags().GetString("hub-branch")
 		hubWorktree, _ := cmd.Flags().GetString("hub-worktree")
+		hubSession, _ := cmd.Flags().GetString("hub-session")
 		// --hub is a cross-cutting ingress and implies the local serving path (the
 		// only serving mode wired today; a future PAD path will accept --hub too).
 		hubKey := ""
@@ -144,6 +145,7 @@ Examples:
 			HubSolution:        hubSolution,
 			HubBranch:          hubBranch,
 			HubWorktree:        hubWorktree,
+			HubSession:         hubSession,
 			AppPort:            appPort,
 			AdminPort:          adminPort,
 			ServePort:          servePort,
@@ -189,6 +191,7 @@ func init() {
 	runCmd.Flags().String("hub-solution", "", "Solution name to group this app under in the hub overview (multi-app solutions)")
 	runCmd.Flags().String("hub-branch", "", "Branch for the hub subdomain + overview (default: the git branch)")
 	runCmd.Flags().String("hub-worktree", "", "Worktree label to distinguish multiple worktrees of one branch")
+	runCmd.Flags().String("hub-session", "", "Session id to group this preview under in the hub overview (default: CLAUDE_CODE_REMOTE_SESSION_ID / MXCLI_HUB_SESSION)")
 	runCmd.Flags().Bool("watch", false, "Rebuild and hot-apply on every project change")
 	runCmd.Flags().Bool("ensure-db", false, "Provision the local Postgres + app database if missing (fresh-session bootstrap)")
 	runCmd.Flags().Bool("setup", false, "Prepare prerequisites (cache MxBuild+runtime, ensure DB) and exit without booting — for a SessionStart hook")
