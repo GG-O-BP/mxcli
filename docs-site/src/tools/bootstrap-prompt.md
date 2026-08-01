@@ -36,11 +36,20 @@ This is an empty repo. Provision it as a Mendix app developed with mxcli:
    SessionStart hook to `.claude/settings.json` that self-bootstraps future sessions.
 4. Bring prerequisites up: `./mxcli run --local --setup --ensure-db -p App.mpr`
    (caches MxBuild + runtime, starts Postgres, creates the app database).
-5. COMMIT everything now — `App.mpr`, `.devcontainer/`, and `.claude/` (including the
-   SessionStart hook) — so that after idle reaping the next session bootstraps from
-   files, not from re-running this prompt.
-6. Boot and verify: `./mxcli run --local -p App.mpr` in the background, then confirm
+5. Create a `FINDINGS.md` at the repo root and keep appending to it as you work.
+   Log anything surprising or broken: an mxcli command that errored, a workaround you
+   applied, a `mxcli check` that passed but a real `mx check` later flagged. Note the
+   Mendix + mxcli versions and how each finding was verified. This is durable context
+   for the next session, and the most useful thing to share back to improve mxcli.
+6. COMMIT everything now — `App.mpr`, `.devcontainer/`, `.claude/` (including the
+   SessionStart hook), and `FINDINGS.md` — so that after idle reaping the next session
+   bootstraps from files, not from re-running this prompt.
+7. Boot and verify: `./mxcli run --local -p App.mpr` in the background, then confirm
    the app answers HTTP 200 at http://localhost:8080/ and report.
+8. (Optional) For a browser preview from this cloud session, run
+   `./mxcli run --hub https://hub.mxcli.org -p App.mpr` and report the preview URL it
+   prints. This needs `MXCLI_HUB_KEY` set on the environment (see the workflow page);
+   without it, continue as a normal local run.
 
 (Optional) Seed the domain model, pages, and microflows from this prototype: <paste or link a design here>.
 ````
