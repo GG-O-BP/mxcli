@@ -185,7 +185,6 @@ func (pb *pageBuilder) buildPageV3(s *ast.CreatePageStmtV3) (*pages.Page, error)
 			byName[name] = append(byName[name], ph.Widgets...)
 		}
 
-		wrapperIdx := 0
 		for _, name := range order {
 			arg := &pages.LayoutCallArgument{
 				BaseElement: model.BaseElement{
@@ -194,17 +193,11 @@ func (pb *pageBuilder) buildPageV3(s *ast.CreatePageStmtV3) (*pages.Page, error)
 				},
 				ParameterID: model.ID(s.Layout + "." + name),
 			}
+			// The placeholder's widgets go in directly. Forms$FormCallArgument carries a
+			// Widgets array and Studio Pro fills it with the page's top-level widgets;
+			// wrapping them in a synthetic DivContainer added a phantom container to
+			// every mxcli-authored page (#760).
 			if widgets := byName[name]; len(widgets) > 0 {
-				wrapperIdx++
-				containerWidget := &pages.Container{
-					BaseWidget: pages.BaseWidget{
-						BaseElement: model.BaseElement{
-							ID:       model.ID(types.GenerateID()),
-							TypeName: "Forms$DivContainer",
-						},
-						Name: fmt.Sprintf("conditionalVisibilityWidget%d", wrapperIdx),
-					},
-				}
 				expanded, err := pb.expandFragments(widgets)
 				if err != nil {
 					return nil, err
@@ -214,9 +207,8 @@ func (pb *pageBuilder) buildPageV3(s *ast.CreatePageStmtV3) (*pages.Page, error)
 					if err != nil {
 						return nil, mdlerrors.NewBackend("build widget", err)
 					}
-					containerWidget.Widgets = append(containerWidget.Widgets, w)
+					arg.Widgets = append(arg.Widgets, w)
 				}
-				arg.Widget = containerWidget
 			}
 			page.LayoutCall.Arguments = append(page.LayoutCall.Arguments, arg)
 		}

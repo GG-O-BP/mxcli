@@ -320,7 +320,7 @@ func main() {
 				TypeName: "Forms$FormCallArgument",
 			},
 			ParameterID: model.ID(layoutQualifiedName + ".Main"),
-			Widget:      wrapper,
+			Widgets:     []pages.Widget{wrapper},
 		},
 	}
 
