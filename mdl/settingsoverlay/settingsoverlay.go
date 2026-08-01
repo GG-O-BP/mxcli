@@ -31,6 +31,13 @@ import (
 // a hardcoded marker silently downgrades it.
 const DefaultListMarker = int32(3)
 
+// PrivateValueType is the BSON $Type Studio Pro nests in a Settings$ConstantValue
+// when the override's value is private: kept on the developer's workstation instead
+// of in the shared model, so the model stores only this marker. Unlike
+// Settings$SharedValue it defines no properties at all — writing one into it is the
+// mendixlabs/mxcli#759 failure shape.
+const PrivateValueType = "Settings$PrivateValue"
+
 // SafeInt64 converts an int to int64 with a guard against the float64 safe-integer
 // range (settings values are tiny, but keep the conversion bounds-checked).
 func SafeInt64(v int) int64 {
@@ -209,6 +216,16 @@ func constantValue(cv *model.ConstantValue, raw map[string]any) map[string]any {
 		}
 	}
 	if shared, ok := AsMap(raw["SharedOrPrivateValue"]); ok {
+		// A private override has no value in the model — Settings$PrivateValue is a
+		// marker type with no properties, because the value lives on the developer's
+		// workstation. Writing cv.Value (always "") into it would both fabricate a
+		// property Mendix cannot resolve — the mendixlabs/mxcli#759 failure shape,
+		// "Sequence contains no matching element" at MprProperty — and misreport the
+		// override as empty. The shared/private choice belongs to the constant, not
+		// to a configuration edit: preserve the node exactly as stored.
+		if shared["$Type"] == PrivateValueType {
+			return raw
+		}
 		shared["Value"] = cv.Value
 		raw["SharedOrPrivateValue"] = shared
 		// Clear a flat sibling rather than leave the two disagreeing: the reader

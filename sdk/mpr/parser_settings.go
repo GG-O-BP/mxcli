@@ -132,9 +132,15 @@ func parseConstantValue(raw map[string]any) *model.ConstantValue {
 	cv.TypeName = extractString(raw["$Type"])
 	cv.ConstantId = extractString(raw["ConstantId"])
 
-	// Value is nested in SharedOrPrivateValue → Value
+	// Value is nested in SharedOrPrivateValue → Value. A Settings$PrivateValue
+	// carries no value at all: it marks an override whose value lives on the
+	// developer's workstation, outside the shared model.
 	if spv := extractBsonMap(raw["SharedOrPrivateValue"]); spv != nil {
-		cv.Value = extractString(spv["Value"])
+		if extractString(spv["$Type"]) == settingsoverlay.PrivateValueType {
+			cv.IsPrivate = true
+		} else {
+			cv.Value = extractString(spv["Value"])
+		}
 	}
 
 	return cv

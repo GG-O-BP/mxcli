@@ -63,6 +63,7 @@ type LocalRunOptions struct {
 	HubSolution string // grouping for multi-app solutions
 	HubBranch   string // override the auto-detected git branch
 	HubWorktree string // distinguish worktrees of one branch
+	HubSession  string // override the auto-detected Claude Code session id
 	// Watch keeps running, rebuilding+applying on every project change.
 	Watch bool
 	// EnsureDB provisions the local Postgres + app database if missing (otherwise
@@ -539,7 +540,7 @@ func RunLocal(opts LocalRunOptions) error {
 	if opts.Hub != "" {
 		meta := DetectHubMeta(opts.ProjectPath, HubMeta{
 			Prefix: opts.HubPrefix, Project: opts.HubProject, Solution: opts.HubSolution,
-			Branch: opts.HubBranch, Worktree: opts.HubWorktree,
+			Branch: opts.HubBranch, Worktree: opts.HubWorktree, Session: opts.HubSession,
 		})
 		fmt.Fprintf(w, "Registering with hub %s...\n", opts.Hub)
 		hubReg, err = RegisterWithHub(opts.Hub, opts.HubSecret, opts.HubKey, meta, opts.AppPort)

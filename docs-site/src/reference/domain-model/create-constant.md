@@ -75,6 +75,28 @@ CREATE CONSTANT MyModule.ApiBaseUrl TYPE String DEFAULT 'https://api.example.com
 ALTER SETTINGS CONSTANT 'MyModule.ApiBaseUrl' VALUE 'https://staging.example.com' IN CONFIGURATION 'Staging';
 ```
 
+### Shared and private values
+
+An override holds its value one of two ways:
+
+- **Shared** — stored in the model, so it travels with the project in version
+  control and every developer gets it.
+- **Private** — stored on the developer's own workstation and deliberately kept
+  out of the repository. This is the answer for a development secret: the
+  constant and the override are shared, the value is not.
+
+MDL **preserves that choice but never changes it** — the shared/private decision
+belongs to the constant, and configurations just respect it:
+
+| Statement | On a private override |
+|-----------|----------------------|
+| `ALTER SETTINGS CONSTANT … VALUE …` | **refused** — setting a value would convert it to shared and publish a deliberately-local value into version control |
+| `ALTER SETTINGS DROP CONSTANT …` | allowed — removes the whole override, which is what was asked for |
+| `SHOW CONSTANT VALUES` | reports `(private)` rather than a blank cell |
+| `DESCRIBE SETTINGS` | emits a comment, not a re-executable statement |
+
+To make a private value shared (or the reverse), change it in Studio Pro.
+
 ## See Also
 
 [CREATE ENTITY](create-entity.md), [CREATE ENUMERATION](create-enumeration.md)
