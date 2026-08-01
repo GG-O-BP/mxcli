@@ -92,7 +92,7 @@ func overlayModelSettings(ms *model.ModelSettings, raw map[string]any) map[strin
 	raw["AllowUserMultipleSessions"] = ms.AllowUserMultipleSessions
 	raw["HashAlgorithm"] = ms.HashAlgorithm
 	raw["BcryptCost"] = settingsoverlay.SafeInt64(ms.BcryptCost)
-	raw["JavaVersion"] = ms.JavaVersion
+	settingsoverlay.SetJavaVersion(raw, ms.JavaVersion)
 	raw["RoundingMode"] = ms.RoundingMode
 	raw["ScheduledEventTimeZoneCode"] = ms.ScheduledEventTimeZoneCode
 	raw["FirstDayOfWeek"] = ms.FirstDayOfWeek

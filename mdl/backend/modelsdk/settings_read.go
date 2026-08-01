@@ -130,6 +130,30 @@ func projectSettingsFromGen(g *genSet.ProjectSettings) *model.ProjectSettings {
 	return ps
 }
 
+// rawInt reads an integer property from an element's stored BSON, falling back to
+// the value the gen accessor produced when the key is absent or not an integer.
+func rawInt(el element.Element, key string, fallback int32) int {
+	v := el.Raw().Lookup(key)
+	if i, ok := v.Int32OK(); ok {
+		return int(i)
+	}
+	if i, ok := v.Int64OK(); ok {
+		return int(i)
+	}
+	return int(fallback)
+}
+
+// javaVersionOf reads the runtime Java version under whichever key this Mendix
+// version stores it: 11.6 writes "JavaVersion" ("Java21"), 11.12 renamed it to
+// "JavaMajorVersion" ("21") and the gen accessor only knows the former.
+// See settingsoverlay.JavaVersionKey (mendixlabs/mxcli#759).
+func javaVersionOf(p *genSet.RuntimeSettings) string {
+	if v, ok := p.Raw().Lookup("JavaMajorVersion").StringValueOK(); ok {
+		return v
+	}
+	return p.JavaVersion()
+}
+
 func modelSettingsFromGen(p *genSet.RuntimeSettings) *model.ModelSettings {
 	ms := &model.ModelSettings{
 		AfterStartupMicroflow:              p.AfterStartupMicroflowQualifiedName(),
@@ -138,7 +162,7 @@ func modelSettingsFromGen(p *genSet.RuntimeSettings) *model.ModelSettings {
 		AllowUserMultipleSessions:          p.AllowUserMultipleSessions(),
 		HashAlgorithm:                      p.HashAlgorithm(),
 		BcryptCost:                         int(p.BcryptCost()),
-		JavaVersion:                        p.JavaVersion(),
+		JavaVersion:                        javaVersionOf(p),
 		RoundingMode:                       p.RoundingMode(),
 		ScheduledEventTimeZoneCode:         p.ScheduledEventTimeZoneCode(),
 		FirstDayOfWeek:                     p.FirstDayOfWeek(),
@@ -166,11 +190,18 @@ func configurationSettingsFromGen(p *genSet.ConfigurationSettings) *model.Config
 			DatabaseUserName:              cfg.DatabaseUserName(),
 			DatabasePassword:              cfg.DatabasePassword(),
 			DatabaseUseIntegratedSecurity: cfg.DatabaseUseIntegratedSecurity(),
-			HttpPortNumber:                int(cfg.RuntimePortNumber()),
-			ServerPortNumber:              int(cfg.AdminPortNumber()),
-			ApplicationRootUrl:            cfg.ApplicationRootUrl(),
-			MaxJavaHeapSize:               int(cfg.MaxJavaHeapSize()),
-			ExtraJvmParameters:            cfg.ExtraJvmParameters(),
+			// The gen Configuration binds the two ports under their SDK names
+			// (RuntimePortNumber / AdminPortNumber); Studio Pro stores them as
+			// HttpPortNumber / ServerPortNumber, so the accessors always returned 0
+			// and the overlay wrote that 0 straight back — every existing
+			// configuration lost its ports on any settings write
+			// (mendixlabs/mxcli#759). Read the stored keys, keeping the accessors as
+			// the fallback in case a future version adopts the SDK spelling.
+			HttpPortNumber:     rawInt(cfg, "HttpPortNumber", cfg.RuntimePortNumber()),
+			ServerPortNumber:   rawInt(cfg, "ServerPortNumber", cfg.AdminPortNumber()),
+			ApplicationRootUrl: cfg.ApplicationRootUrl(),
+			MaxJavaHeapSize:    int(cfg.MaxJavaHeapSize()),
+			ExtraJvmParameters: cfg.ExtraJvmParameters(),
 		}
 		setBase(&sc.BaseElement, cfg, "Settings$Configuration")
 		for _, cvEl := range cfg.ConstantValuesItems() {

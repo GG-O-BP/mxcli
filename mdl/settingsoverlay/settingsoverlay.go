@@ -107,10 +107,14 @@ func ServerConfiguration(cfg *model.ServerConfiguration, raw map[string]any, sib
 // counterpart on disk. A sibling configuration is the shape template when one
 // exists — it carries the exact field set and list markers this project's Mendix
 // version writes — with the per-configuration collections emptied and the $ID
-// dropped so a fresh one is minted. Tracing is inherited from the sibling
-// deliberately: its shape is version-specific and a new configuration has no better
-// default to offer. Falls back to the field set observed in Studio Pro 10/11
-// projects when the project has no configuration at all.
+// dropped so a fresh one is minted. The tracing property is inherited from the
+// sibling deliberately: it is version-specific (Mendix 11.6 stores "Tracing", 11.12
+// "OpenTelemetry") and a new configuration has no better default to offer.
+//
+// With no sibling to copy there is no way to know which spelling this version
+// expects, so the fallback writes neither: a property the metamodel does not define
+// is what Studio Pro chokes on (see JavaVersionKey and mendixlabs/mxcli#759), while
+// an absent optional property is filled in on load.
 func newServerConfiguration(cfg *model.ServerConfiguration, siblings []map[string]any) map[string]any {
 	if len(siblings) > 0 {
 		tmpl := make(map[string]any, len(siblings[0]))
@@ -125,9 +129,47 @@ func newServerConfiguration(cfg *model.ServerConfiguration, siblings []map[strin
 	return map[string]any{
 		"ConstantValues": bson.A{DefaultListMarker},
 		"CustomSettings": bson.A{DefaultListMarker},
-		"Tracing":        nil,
 		"OpenAdminPort":  cfg.OpenAdminPort,
 		"OpenHttpPort":   cfg.OpenHttpPort,
+	}
+}
+
+// JavaVersionKey returns the storage key a Settings$ModelSettings part uses for
+// the runtime Java version, or "" when it carries neither.
+//
+// Mendix renamed the property between 11.6 ("JavaVersion", values like "Java21")
+// and 11.12 ("JavaMajorVersion", values like "21"). Writing a hardcoded
+// "JavaVersion" onto an 11.12 document therefore left the real JavaMajorVersion
+// stale and added a property that version's metamodel does not define — Studio Pro
+// resolves each stored property against the type's property list and threw
+// "Sequence contains no matching element" on the next open
+// (mendixlabs/mxcli#759). Read the key off the document instead of assuming one,
+// and never invent a key the document does not already have.
+func JavaVersionKey(raw map[string]any) string {
+	for _, k := range []string{"JavaMajorVersion", "JavaVersion"} {
+		if _, ok := raw[k]; ok {
+			return k
+		}
+	}
+	return ""
+}
+
+// JavaVersion reads the runtime Java version from a raw Settings$ModelSettings
+// part under whichever key this Mendix version stores it.
+func JavaVersion(raw map[string]any) string {
+	k := JavaVersionKey(raw)
+	if k == "" {
+		return ""
+	}
+	v, _ := raw[k].(string)
+	return v
+}
+
+// SetJavaVersion writes the runtime Java version back to the key it was read from.
+// A part carrying neither key is left untouched.
+func SetJavaVersion(raw map[string]any, v string) {
+	if k := JavaVersionKey(raw); k != "" {
+		raw[k] = v
 	}
 }
 

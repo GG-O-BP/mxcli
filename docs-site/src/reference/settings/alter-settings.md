@@ -116,10 +116,16 @@ ALTER SETTINGS DROP CONSTANT 'MyModule.ApiBaseUrl' IN CONFIGURATION 'staging';
 
 ```sql
 CREATE CONFIGURATION 'Staging'
-  DatabaseType = 'POSTGRESQL',
+  DatabaseType = 'PostgreSql',
   DatabaseUrl = 'staging-db:5432',
   HttpPortNumber = 8080;
 ```
+
+`DatabaseType` must name a Mendix database type — `Db2`, `Hsqldb`, `MySql`,
+`Oracle`, `PostgreSql`, `SapHana` or `SqlServer`. The value is matched
+case-insensitively and stored in the spelling above; anything else is rejected by
+`mxcli check` and by the executor. A configuration created without properties gets
+Studio Pro's defaults: `Hsqldb`, runtime port 8080, admin port 8090.
 
 ### Drop a configuration
 

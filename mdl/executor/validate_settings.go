@@ -18,6 +18,7 @@ type settingsValueKind int
 const (
 	settingsKindInt settingsValueKind = iota
 	settingsKindBool
+	settingsKindDatabaseType
 )
 
 // typedSettingsKeys maps a lower-cased ALTER SETTINGS section to the properties
@@ -36,6 +37,7 @@ var typedSettingsKeys = map[string]map[string]settingsValueKind{
 	"configuration": {
 		"HttpPortNumber":   settingsKindInt,
 		"ServerPortNumber": settingsKindInt,
+		"DatabaseType":     settingsKindDatabaseType,
 	},
 }
 
@@ -97,6 +99,17 @@ func validateTypedSettings(keys map[string]settingsValueKind, props map[string]a
 					Location:   loc,
 					Message:    fmt.Sprintf("%s: %s must be true or false, got %q", what, key, valStr),
 					Suggestion: fmt.Sprintf("Use `%s = true` or `%s = false`.", key, key),
+				})
+			}
+		case settingsKindDatabaseType:
+			if _, err := settingsDatabaseType(key, valStr); err != nil {
+				out = append(out, linter.Violation{
+					RuleID:   "MDL-SET03",
+					Severity: linter.SeverityError,
+					Location: loc,
+					Message: fmt.Sprintf("%s: %s must be a Mendix database type, got %q",
+						what, key, valStr),
+					Suggestion: fmt.Sprintf("Use one of: %s.", strings.Join(databaseTypes, ", ")),
 				})
 			}
 		}

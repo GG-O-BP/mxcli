@@ -275,8 +275,15 @@ func TestServerConfiguration_NoSiblings(t *testing.T) {
 			t.Errorf("fallback configuration is missing %q: %#v", key, got)
 		}
 	}
-	if _, ok := got["Tracing"]; !ok {
-		t.Errorf("fallback configuration is missing Tracing: %#v", got)
+	// The tracing property is version-specific — Mendix 11.6 stores "Tracing",
+	// 11.12 "OpenTelemetry" — and with no sibling to copy there is nothing to tell
+	// the two apart. Writing either spelling risks a property the version's
+	// metamodel does not define, which is what Studio Pro fails to resolve
+	// (mendixlabs/mxcli#759); an absent optional property is filled in on load.
+	for _, key := range []string{"Tracing", "OpenTelemetry"} {
+		if v, ok := got[key]; ok {
+			t.Errorf("fallback configuration invented %q = %#v", key, v)
+		}
 	}
 	if m := ArrayMarker(got["CustomSettings"], -1); m != DefaultListMarker {
 		t.Errorf("CustomSettings marker = %d, want %d", m, DefaultListMarker)
@@ -293,5 +300,68 @@ func TestSafeInt64_Bounds(t *testing.T) {
 	}
 	if got := SafeInt64(-int(maxSafe) - 10); got != -maxSafe {
 		t.Errorf("SafeInt64 below range = %d, want clamp to %d", got, -maxSafe)
+	}
+}
+
+// TestJavaVersionKey_FollowsDocument covers mendixlabs/mxcli#759: Mendix renamed
+// the runtime Java version property between 11.6 ("JavaVersion" = "Java21") and
+// 11.12 ("JavaMajorVersion" = "21"). The overlay must write back to the key the
+// document already carries and invent neither, because a property the version's
+// metamodel does not define is what Studio Pro fails to resolve on open.
+func TestJavaVersionKey_FollowsDocument(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     map[string]any
+		wantKey string
+		wantVal string
+	}{
+		{
+			name:    "mendix 11.6",
+			raw:     map[string]any{"JavaVersion": "Java21"},
+			wantKey: "JavaVersion",
+			wantVal: "Java21",
+		},
+		{
+			name:    "mendix 11.12",
+			raw:     map[string]any{"JavaMajorVersion": "21"},
+			wantKey: "JavaMajorVersion",
+			wantVal: "21",
+		},
+		{
+			name:    "neither key",
+			raw:     map[string]any{"HashAlgorithm": "BCrypt"},
+			wantKey: "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := JavaVersionKey(tc.raw); got != tc.wantKey {
+				t.Fatalf("JavaVersionKey = %q, want %q", got, tc.wantKey)
+			}
+			if got := JavaVersion(tc.raw); got != tc.wantVal {
+				t.Errorf("JavaVersion = %q, want %q", got, tc.wantVal)
+			}
+
+			SetJavaVersion(tc.raw, "written")
+			if tc.wantKey == "" {
+				for _, k := range []string{"JavaVersion", "JavaMajorVersion"} {
+					if v, ok := tc.raw[k]; ok {
+						t.Errorf("SetJavaVersion invented %q = %#v", k, v)
+					}
+				}
+				return
+			}
+			if tc.raw[tc.wantKey] != "written" {
+				t.Errorf("%s = %#v, want %q", tc.wantKey, tc.raw[tc.wantKey], "written")
+			}
+			for _, k := range []string{"JavaVersion", "JavaMajorVersion"} {
+				if k == tc.wantKey {
+					continue
+				}
+				if v, ok := tc.raw[k]; ok {
+					t.Errorf("SetJavaVersion also wrote %q = %#v", k, v)
+				}
+			}
+		})
 	}
 }
