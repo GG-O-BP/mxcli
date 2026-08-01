@@ -205,6 +205,36 @@ The reserved-word lists live in `mdl/executor/cmd_enumerations.go` (`mendixReser
 
 A microflow wired as the project's **after-startup** microflow must return `Boolean` — Mendix build fails with **CE0142** on a void (no-return) microflow. A common trip-up: a seed/demo-data microflow wired to after-startup will not build until it ends with a `return true` (Boolean). This is a Mendix platform rule, not an mxcli check.
 
+### Overlay Writes: Never Invent a Key, Branch on `$Type`
+
+When a write overlays fields onto preserved BSON (`mdl/settingsoverlay`, and any
+future storage that follows ADR-0005 guard-don't-drop), two rules are load-bearing.
+Breaking either produces a document `mx check` accepts and **Studio Pro cannot
+open**: it resolves every stored property against the type's property list and
+throws `System.InvalidOperationException: Sequence contains no matching element`
+at `MprProperty.cs`. mxbuild's deserializer tolerates unknown properties, so the
+build is not a safety net here.
+
+1. **Write only keys the document already carries.** Property names are
+   version-specific — Mendix renamed `JavaVersion` (`"Java21"`) to
+   `JavaMajorVersion` (`"21"`) and `Tracing` to `OpenTelemetry` between 11.6 and
+   11.12. Read the key off the stored document and write back to that same key;
+   when neither is present, write neither (an absent optional property is filled
+   in on load). See `settingsoverlay.JavaVersionKey` (#759).
+2. **A polymorphic child must be dispatched on `$Type` before any field
+   assignment.** Variants can differ in *arity*, not just field values:
+   `Settings$SharedValue` carries a `Value`, while `Settings$PrivateValue` is a
+   bare marker with no properties at all (the value lives on the developer's
+   workstation). Assigning `Value` to whichever node is there corrupts the marker.
+
+The same reasoning bans authoring what the model does not own: mxcli preserves a
+constant override's shared/private choice and refuses statements that would flip
+it, rather than silently converting one to the other.
+
+Enum-valued properties are the sibling trap: validate against
+`generated/metamodel` (e.g. `SettingsDatabaseType` is `Hsqldb`, never `HSQLDB`)
+rather than passing a user string through.
+
 ### Association Parent/Child Pointer Semantics (Counter-Intuitive)
 
 **CRITICAL**: Mendix BSON uses inverted naming for association pointers:

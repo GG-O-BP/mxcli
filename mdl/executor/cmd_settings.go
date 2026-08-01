@@ -134,8 +134,18 @@ func describeSettings(ctx *ExecContext) error {
 			}
 			fmt.Fprintf(ctx.Output, "alter settings configuration '%s'\n%s;\n\n", cfg.Name, strings.Join(parts, ",\n"))
 
-			// Output constant overrides
+			// Output constant overrides. A private override has no value in the
+			// model — emitting `value ''` would round-trip into a *shared* empty
+			// override, moving a value that is deliberately kept off the shared model
+			// into it. MDL does not author the shared/private choice, so describe
+			// reports it as a comment instead of a re-executable statement.
 			for _, cv := range cfg.ConstantValues {
+				if cv.IsPrivate {
+					fmt.Fprintf(ctx.Output, "-- constant '%s' has a private value in configuration '%s'\n"+
+						"-- (stored on the developer's workstation; not part of the shared model)\n\n",
+						cv.ConstantId, cfg.Name)
+					continue
+				}
 				fmt.Fprintf(ctx.Output, "alter settings constant '%s' value '%s'\n  in configuration '%s';\n\n",
 					cv.ConstantId, cv.Value, cfg.Name)
 			}
@@ -408,6 +418,18 @@ func alterSettingsConstant(ctx *ExecContext, ps *model.ProjectSettings, stmt *as
 	found := false
 	for _, cv := range cfg.ConstantValues {
 		if cv.ConstantId == stmt.ConstantId {
+			// Setting a value on a private override would convert it to a shared one,
+			// publishing into the shared model a value the developer chose to keep on
+			// their workstation — and breaking their local binding. The shared/private
+			// choice belongs to the constant, so refuse rather than flip it silently.
+			if cv.IsPrivate {
+				return mdlerrors.NewValidationf(
+					"constant '%s' has a private value in configuration '%s'; "+
+						"its value is stored on the developer's workstation, not in the shared model. "+
+						"Change the constant to a shared value in Studio Pro first, "+
+						"or use `alter settings drop constant '%s' in configuration '%s'` to remove the override",
+					stmt.ConstantId, targetConfig, stmt.ConstantId, targetConfig)
+			}
 			cv.Value = stmt.Value
 			found = true
 			break

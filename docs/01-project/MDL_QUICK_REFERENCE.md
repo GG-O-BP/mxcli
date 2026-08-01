@@ -122,6 +122,13 @@ alter entity Sales.Customer
 | Create constant | `create [or modify] constant Module.Name type DataType default 'value';` | String, Integer, Boolean, etc. |
 | Drop constant | `drop constant Module.Name;` | |
 
+A per-configuration override holds either a **shared** value (in the model, so in
+version control) or a **private** one (on the developer's own workstation, out of the
+repo). MDL preserves that choice but never changes it: `alter settings constant … value`
+is refused on a private override, `show constant values` reports it as `(private)`, and
+`describe settings` emits a comment rather than a re-executable statement.
+`alter settings drop constant` still works.
+
 **Example:**
 ```sql
 create constant MyModule.ApiBaseUrl type string default 'https://api.example.com';

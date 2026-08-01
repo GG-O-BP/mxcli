@@ -340,6 +340,11 @@ func createConstant(ctx *ExecContext, stmt *ast.CreateConstantStmt) error {
 	return nil
 }
 
+// privateValueLabel marks a constant override whose value is private: stored on the
+// developer's workstation rather than in the shared model, so mxcli can report that
+// the override exists but never its value.
+const privateValueLabel = "(private)"
+
 // listConstantValues handles SHOW CONSTANT VALUES command.
 // Displays one row per constant per configuration for easy comparison.
 func listConstantValues(ctx *ExecContext, moduleName string) error {
@@ -395,6 +400,14 @@ func listConstantValues(ctx *ExecContext, moduleName string) error {
 			configNames = append(configNames, cfg.Name)
 			m := make(map[string]string)
 			for _, cv := range cfg.ConstantValues {
+				// A private override's value is on the developer's workstation, not in
+				// the model, so cv.Value is always "". Rendering that as an empty cell
+				// would be indistinguishable from an override deliberately set to the
+				// empty string — say which it is.
+				if cv.IsPrivate {
+					m[cv.ConstantId] = privateValueLabel
+					continue
+				}
 				m[cv.ConstantId] = cv.Value
 			}
 			configValues[cfg.Name] = m
