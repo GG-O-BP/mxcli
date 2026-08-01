@@ -254,6 +254,7 @@ func parseRawWidget(ctx *ExecContext, w map[string]any, parentEntityContext ...s
 			widget.EntityContext = inheritedCtx
 		}
 		widget.LabelWidth = extractDataViewLabelWidth(w)
+		widget.ShowFooter, _ = w["ShowFooter"].(bool)
 		widget.Children = parseDataViewChildren(ctx, w, widget.EntityContext)
 		return []rawWidget{widget}
 

@@ -44,6 +44,21 @@ func (pb *pageBuilder) buildDataViewV3(w *ast.WidgetV3) (*pages.DataView, error)
 		dv.LabelWidth = &lw
 	}
 
+	// ShowFooter was previously only ever set implicitly, by the presence of a
+	// `footer { … }` block — so `showFooter: true` parsed, passed `check`, and was
+	// silently discarded (mendixlabs/mxcli#813). An explicit value is the author's
+	// statement and wins over the footer block, in both directions: it can show an
+	// empty footer, or hide one whose widgets are still declared.
+	showFooterSet := false
+	if raw, ok := lookupPropCI(w, "ShowFooter"); ok {
+		v, err := propBool(raw)
+		if err != nil {
+			return nil, mdlerrors.NewBackend("dataview ShowFooter", err)
+		}
+		dv.ShowFooter = v
+		showFooterSet = true
+	}
+
 	// Handle DataSource
 	if ds := w.GetDataSource(); ds != nil {
 		// A DataView shows a single object; Mendix offers only Context / Microflow /
@@ -81,7 +96,9 @@ func (pb *pageBuilder) buildDataViewV3(w *ast.WidgetV3) (*pages.DataView, error)
 	for _, child := range w.Children {
 		// Check if this is a FOOTER widget - its children go to FooterWidgets
 		if child.Type == "footer" {
-			dv.ShowFooter = true
+			if !showFooterSet {
+				dv.ShowFooter = true
+			}
 			for _, fw := range child.Children {
 				widget, err := pb.buildWidgetV3(fw)
 				if err != nil {
@@ -100,7 +117,9 @@ func (pb *pageBuilder) buildDataViewV3(w *ast.WidgetV3) (*pages.DataView, error)
 
 	// Also build footer widgets from Properties (legacy support)
 	if footerWidgets, ok := w.Properties["Footer"].([]*ast.WidgetV3); ok {
-		dv.ShowFooter = true
+		if !showFooterSet {
+			dv.ShowFooter = true
+		}
 		for _, fw := range footerWidgets {
 			widget, err := pb.buildWidgetV3(fw)
 			if err != nil {
@@ -1056,4 +1075,41 @@ func dataGridFilterWidgetID(widgetType string) string {
 		return pages.WidgetIDDataGridDropdownFilter
 	}
 	return ""
+}
+
+// lookupPropCI reports whether a property is present, matching the key
+// case-insensitively the way GetStringProp/GetBoolProp resolve values. Presence has
+// to be tested the same way the value is read, or `showFooter:` would be read as
+// absent while `ShowFooter:` was honoured.
+func lookupPropCI(w *ast.WidgetV3, key string) (any, bool) {
+	if v, ok := w.Properties[key]; ok {
+		return v, true
+	}
+	lower := strings.ToLower(key)
+	for k, v := range w.Properties {
+		if strings.ToLower(k) == lower {
+			return v, true
+		}
+	}
+	return nil, false
+}
+
+// propBool coerces a widget property value to a bool. GetBoolProp cannot be used
+// here: it is case-SENSITIVE (unlike GetStringProp) and accepts only a real bool, so
+// `showFooter: true` silently read as false — the property was found and its value
+// discarded, which is the same silent-drop this fix is closing.
+func propBool(v any) (bool, error) {
+	switch x := v.(type) {
+	case bool:
+		return x, nil
+	case string:
+		switch strings.ToLower(x) {
+		case "true", "yes":
+			return true, nil
+		case "false", "no":
+			return false, nil
+		}
+		return false, fmt.Errorf("invalid value %q (expected true or false)", x)
+	}
+	return false, fmt.Errorf("invalid value %v (expected true or false)", v)
 }
