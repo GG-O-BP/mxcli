@@ -190,6 +190,7 @@ func configurationSettingsFromGen(p *genSet.ConfigurationSettings) *model.Config
 			mcv := &model.ConstantValue{
 				ConstantId: constantID,
 				Value:      constantValueOf(cv),
+				IsPrivate:  isPrivateConstantValue(cv),
 			}
 			setBase(&mcv.BaseElement, cv, "Settings$ConstantValue")
 			sc.ConstantValues = append(sc.ConstantValues, mcv)
@@ -218,8 +219,24 @@ func languageSettingsFromGen(p *genSet.LanguageSettings) *model.LanguageSettings
 	return ls
 }
 
+// isPrivateConstantValue reports whether an override's value is private — stored
+// on the developer's workstation rather than in the shared model. Studio Pro marks
+// that by nesting a Settings$PrivateValue, a type with no properties at all, in
+// place of the Settings$SharedValue that would carry a value.
+//
+// The gen registry may not have a factory for the marker, so the decoded child can
+// be a bare element.Base; match on the type name rather than the Go type.
+func isPrivateConstantValue(cv *genSet.ConstantValue) bool {
+	spv := cv.SharedOrPrivateValue()
+	if spv == nil {
+		return false
+	}
+	return spv.TypeName() == "Settings$PrivateValue"
+}
+
 // constantValueOf extracts a constant's configured value. The value lives in the
-// nested SharedOrPrivateValue (a SharedValue); private values are not stored.
+// nested SharedOrPrivateValue (a SharedValue); a private value is not in the model
+// at all, so this returns "" and isPrivateConstantValue tells the two apart.
 func constantValueOf(cv *genSet.ConstantValue) string {
 	if v := cv.Value(); v != "" {
 		return v

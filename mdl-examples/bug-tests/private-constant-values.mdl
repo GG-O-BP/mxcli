@@ -1,0 +1,68 @@
+-- Bug: any settings write corrupted a PRIVATE constant override
+--
+-- A constant override's value is stored one of two ways:
+--
+--   Settings$SharedValue    carries a "Value" — lives in the model, so in git,
+--                           and every developer gets it
+--   Settings$PrivateValue   a MARKER TYPE WITH NO PROPERTIES — the value is on
+--                           the developer's own workstation, deliberately kept
+--                           out of version control (typical for dev API tokens)
+--
+-- The overlay assumed every stored SharedOrPrivateValue was a SharedValue and
+-- assigned cv.Value into it. For a private override cv.Value is always "" (the
+-- value is not in the model at all), so any settings write produced:
+--
+--   {"$Type": "Settings$PrivateValue", "Value": ""}
+--
+-- ...a property that type does not define. Studio Pro resolves each stored
+-- property against the type's property list and throws on open:
+--
+--   System.InvalidOperationException: Sequence contains no matching element
+--     at ...MprProperty.cs:line 25
+--
+-- Blast radius: configurations are shared in version control, so one developer
+-- running any ALTER SETTINGS or CREATE CONFIGURATION corrupted every developer's
+-- private overrides and pushed the result. mxbuild does not catch it — `mx check`
+-- passes on the corrupted document.
+--
+-- Separately, `describe settings` rendered a private override as `value ''`, so
+-- replaying describe's own output converted it into a SHARED empty override —
+-- publishing into git a value the developer chose to keep local.
+--
+-- Fix: model.ConstantValue.IsPrivate carries the distinction, and MDL preserves
+-- the choice but never authors it. The shared/private decision belongs to the
+-- constant; configurations just respect it.
+--
+-- This script cannot create the private override — that is exactly what MDL
+-- refuses to author — so the repro is manual:
+--
+--   1. In Studio Pro, override a constant in a configuration and set its value
+--      to private. Save and close.
+--   2. Run this script:
+--        mxcli exec private-constant-values.mdl -p app.mpr
+--   3. Dump the settings unit and confirm the override still reads
+--        {"$Type": "Settings$PrivateValue"}
+--      with NO "Value" key. Before the fix it carried "Value": "".
+--   4. Reopen in Studio Pro: it opens, and the override is still private with the
+--      developer's local value intact. Before the fix it threw at MprProperty.cs:25.
+--   5. `mxcli -p app.mpr -c "describe settings"` reports the private override as a
+--      comment, not as an `alter settings constant` line.
+--
+-- Substitute your own constant/configuration names below.
+
+-- An unrelated edit: nothing here mentions the constant, but the whole settings
+-- document is rewritten. This is the write that used to corrupt the override.
+alter settings configuration 'Default'
+  HttpPortNumber = 8099;
+
+-- Setting a value on a private override is refused rather than silently converting
+-- it to a shared one. Uncomment against a project that has one, and expect:
+--   Error: constant 'X' has a private value in configuration 'Default'; ...
+-- alter settings constant 'MyModule.ApiToken' value 'leaked-into-git'
+--   in configuration 'Default';
+
+-- Dropping the override is still allowed: it removes the private marker along with
+-- everything else, which is what was asked for.
+-- alter settings drop constant 'MyModule.ApiToken' in configuration 'Default';
+
+describe settings;

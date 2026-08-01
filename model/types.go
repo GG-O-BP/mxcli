@@ -850,7 +850,14 @@ type ServerConfiguration struct {
 type ConstantValue struct {
 	BaseElement
 	ConstantId string `json:"constantId"` // Qualified name: "BusinessEvents.ServerUrl"
-	Value      string `json:"value"`      // The overridden value
+	Value      string `json:"value"`      // The overridden value (empty when IsPrivate)
+	// IsPrivate marks an override whose value is private: the stored
+	// SharedOrPrivateValue is a Settings$PrivateValue, a marker type with no
+	// properties, because the value lives on the developer's workstation and is
+	// deliberately kept out of the shared model. Value is therefore always empty
+	// here — "" means "not in the model", not "overridden with the empty string".
+	// mxcli preserves the choice and never authors it.
+	IsPrivate bool `json:"isPrivate,omitempty"`
 }
 
 // ModelSettings represents Settings$ModelSettings.
