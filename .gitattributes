@@ -51,3 +51,16 @@ Dockerfile text eol=lf
 *.vsix binary
 *.cdx.json binary
 bun.lock binary
+
+# Append-only knowledge files use git's union merge driver.
+#
+# Every bug fix appends a row to the symptom table in fix-issue.md, so two
+# concurrent fixes always collide on the same line — five resolution rounds in
+# one week. Moving the insertion point from the top of the table to the bottom
+# did not help: both sides still append to the same place, so the collision
+# moved with it.
+#
+# "union" tells git to keep BOTH sides of a conflicting hunk instead of raising
+# a conflict. That is exactly right for a file that is only ever appended to and
+# is looked up by matching a symptom, so row order carries no meaning.
+.claude/skills/fix-issue.md merge=union

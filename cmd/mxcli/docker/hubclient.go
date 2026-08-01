@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -23,6 +24,7 @@ type HubMeta struct {
 	Solution string // optional grouping for multi-app solutions
 	Branch   string // default: the project's git branch
 	Worktree string // optional; distinguishes worktrees of one branch
+	Session  string // Claude Code session id; groups a session's endpoints in the hub overview
 }
 
 // HubRegistration is the result of registering with a hub: everything the client
@@ -73,6 +75,7 @@ func RegisterWithHub(hubURL, secret, key string, meta HubMeta, appPort int) (*Hu
 		"solution": meta.Solution,
 		"branch":   meta.Branch,
 		"worktree": meta.Worktree,
+		"session":  meta.Session,
 		"appPort":  appPort,
 	})
 	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(hubURL, "/")+"/api/register", bytes.NewReader(body))
@@ -239,7 +242,24 @@ func DetectHubMeta(projectPath string, override HubMeta) HubMeta {
 	if m.Branch == "" {
 		m.Branch = gitBranch(filepath.Dir(projectPath))
 	}
+	if m.Session == "" {
+		m.Session = detectSessionID()
+	}
 	return m
+}
+
+// detectSessionID resolves the Claude Code session id used to group a session's
+// endpoints in the hub overview. Preference: an explicit MXCLI_HUB_SESSION, then
+// the remote (web) session id — which the hub can link back to the claude.ai
+// conversation — then the per-run session id. Empty when none are set (e.g. a
+// plain terminal), which groups the preview under "(no session)".
+func detectSessionID() string {
+	for _, k := range []string{"MXCLI_HUB_SESSION", "CLAUDE_CODE_REMOTE_SESSION_ID", "CLAUDE_CODE_SESSION_ID"} {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // gitBranch returns the current branch of the repo containing dir, or "".

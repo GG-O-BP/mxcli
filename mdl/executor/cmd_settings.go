@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/mendixlabs/mxcli/generated/metamodel"
 	"github.com/mendixlabs/mxcli/mdl/ast"
 	mdlerrors "github.com/mendixlabs/mxcli/mdl/errors"
 	"github.com/mendixlabs/mxcli/model"
@@ -134,8 +135,18 @@ func describeSettings(ctx *ExecContext) error {
 			}
 			fmt.Fprintf(ctx.Output, "alter settings configuration '%s'\n%s;\n\n", cfg.Name, strings.Join(parts, ",\n"))
 
-			// Output constant overrides
+			// Output constant overrides. A private override has no value in the
+			// model — emitting `value ''` would round-trip into a *shared* empty
+			// override, moving a value that is deliberately kept off the shared model
+			// into it. MDL does not author the shared/private choice, so describe
+			// reports it as a comment instead of a re-executable statement.
 			for _, cv := range cfg.ConstantValues {
+				if cv.IsPrivate {
+					fmt.Fprintf(ctx.Output, "-- constant '%s' has a private value in configuration '%s'\n"+
+						"-- (stored on the developer's workstation; not part of the shared model)\n\n",
+						cv.ConstantId, cfg.Name)
+					continue
+				}
 				fmt.Fprintf(ctx.Output, "alter settings constant '%s' value '%s'\n  in configuration '%s';\n\n",
 					cv.ConstantId, cv.Value, cfg.Name)
 			}
@@ -325,7 +336,11 @@ func alterSettingsConfiguration(ctx *ExecContext, ps *model.ProjectSettings, stm
 		valStr := settingsValueToString(val)
 		switch key {
 		case "DatabaseType":
-			cfg.DatabaseType = valStr
+			v, err := settingsDatabaseType(key, valStr)
+			if err != nil {
+				return err
+			}
+			cfg.DatabaseType = v
 		case "DatabaseUrl":
 			cfg.DatabaseUrl = valStr
 		case "DatabaseName":
@@ -408,6 +423,18 @@ func alterSettingsConstant(ctx *ExecContext, ps *model.ProjectSettings, stmt *as
 	found := false
 	for _, cv := range cfg.ConstantValues {
 		if cv.ConstantId == stmt.ConstantId {
+			// Setting a value on a private override would convert it to a shared one,
+			// publishing into the shared model a value the developer chose to keep on
+			// their workstation — and breaking their local binding. The shared/private
+			// choice belongs to the constant, so refuse rather than flip it silently.
+			if cv.IsPrivate {
+				return mdlerrors.NewValidationf(
+					"constant '%s' has a private value in configuration '%s'; "+
+						"its value is stored on the developer's workstation, not in the shared model. "+
+						"Change the constant to a shared value in Studio Pro first, "+
+						"or use `alter settings drop constant '%s' in configuration '%s'` to remove the override",
+					stmt.ConstantId, targetConfig, stmt.ConstantId, targetConfig)
+			}
 			cv.Value = stmt.Value
 			found = true
 			break
@@ -453,11 +480,15 @@ func createConfiguration(ctx *ExecContext, stmt *ast.CreateConfigurationStmt) er
 		}
 	}
 
+	// Mirror the configuration Studio Pro creates: the enum member "Hsqldb" (not
+	// "HSQLDB", which no metamodel member matches) and both default ports, so a
+	// fresh configuration is runnable and loads without repair (#759).
 	newCfg := &model.ServerConfiguration{
-		Name:           stmt.Name,
-		DatabaseType:   "HSQLDB",
-		HttpPortNumber: 8080,
-		ConstantValues: []*model.ConstantValue{},
+		Name:             stmt.Name,
+		DatabaseType:     string(metamodel.SettingsDatabaseTypeHsqldb),
+		HttpPortNumber:   8080,
+		ServerPortNumber: 8090,
+		ConstantValues:   []*model.ConstantValue{},
 	}
 	newCfg.TypeName = "Settings$ServerConfiguration"
 
@@ -466,7 +497,11 @@ func createConfiguration(ctx *ExecContext, stmt *ast.CreateConfigurationStmt) er
 		valStr := settingsValueToString(val)
 		switch key {
 		case "DatabaseType":
-			newCfg.DatabaseType = valStr
+			v, err := settingsDatabaseType(key, valStr)
+			if err != nil {
+				return err
+			}
+			newCfg.DatabaseType = v
 		case "DatabaseUrl":
 			newCfg.DatabaseUrl = valStr
 		case "DatabaseName":
@@ -559,6 +594,37 @@ func settingsBool(key, valStr string) (bool, error) {
 		return false, nil
 	}
 	return false, mdlerrors.NewValidationf("%s must be true or false, got %q", key, valStr)
+}
+
+// databaseTypes lists the members of the Mendix Settings.DatabaseType enumeration
+// exactly as Studio Pro spells them in BSON (generated/metamodel.SettingsDatabaseType).
+// A configuration stored with anything else — mxcli hardcoded "HSQLDB" for every
+// CREATE CONFIGURATION — is a value the metamodel cannot resolve, and Studio Pro
+// throws "Sequence contains no matching element" when it loads the configuration
+// (mendixlabs/mxcli#759).
+var databaseTypes = []string{
+	string(metamodel.SettingsDatabaseTypeDb2),
+	string(metamodel.SettingsDatabaseTypeHsqldb),
+	string(metamodel.SettingsDatabaseTypeMySql),
+	string(metamodel.SettingsDatabaseTypeOracle),
+	string(metamodel.SettingsDatabaseTypePostgreSql),
+	string(metamodel.SettingsDatabaseTypeSapHana),
+	string(metamodel.SettingsDatabaseTypeSqlServer),
+}
+
+// settingsDatabaseType canonicalises a DatabaseType value to the enum member
+// Mendix stores, matching case-insensitively so 'postgresql' and 'PostgreSql' both
+// land on the stored spelling. Anything unrecognised is rejected rather than
+// written through.
+func settingsDatabaseType(key, valStr string) (string, error) {
+	want := strings.TrimSpace(valStr)
+	for _, dt := range databaseTypes {
+		if strings.EqualFold(dt, want) {
+			return dt, nil
+		}
+	}
+	return "", mdlerrors.NewValidationf("%s must be one of %s, got %q",
+		key, strings.Join(databaseTypes, ", "), valStr)
 }
 
 // settingsValueToString converts an AST settings value to string.

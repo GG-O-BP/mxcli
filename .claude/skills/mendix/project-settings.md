@@ -78,6 +78,27 @@ alter settings constant 'MyModule.ApiKey' value 'abc123';
 alter settings drop constant 'MyModule.ApiKey' in configuration 'Default';
 ```
 
+#### Shared vs private values
+
+A constant override's value is either **shared** — stored in the model and therefore
+in version control, where every developer gets it — or **private**, stored on the
+developer's own workstation and deliberately kept out of the repository. Development
+API tokens are the usual reason to make one private.
+
+MDL **preserves that choice but never changes it**. The two statements above operate
+on shared values only:
+
+- `show constant values` reports a private override as `(private)` rather than a blank
+  cell — the value is not in the project, so mxcli cannot show it.
+- `describe settings` reports a private override as a comment, not as a re-executable
+  `alter settings constant` line — replaying that line would publish into the shared
+  model a value the developer chose to keep local.
+- `alter settings constant ... value ...` on a private override is **refused**, with a
+  pointer to change it in Studio Pro first. Setting a value would convert it to a
+  shared one and break the developer's local binding.
+- `alter settings drop constant ...` **is** allowed: it removes the whole override,
+  private marker included, which is what was asked for.
+
 ### Create / Drop Configurations
 
 ```sql
@@ -86,13 +107,18 @@ create configuration 'Staging';
 
 -- Create with properties
 create configuration 'Production'
-  DatabaseType = 'POSTGRESQL',
+  DatabaseType = 'PostgreSql',
   DatabaseUrl = 'prod-db:5432',
   HttpPortNumber = 8080;
 
 -- Drop a configuration
 drop configuration 'Staging';
 ```
+
+`DatabaseType` must name a Mendix database type — `Db2`, `Hsqldb`, `MySql`,
+`Oracle`, `PostgreSql`, `SapHana` or `SqlServer` — matched case-insensitively and
+stored in that spelling. Any other value is rejected; a configuration stored with
+one Mendix does not recognise cannot be opened in Studio Pro.
 
 ### Language and Workflow Settings
 

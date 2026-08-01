@@ -76,6 +76,18 @@ ALTER SETTINGS CONFIGURATION 'production' DatabaseUrl = 'jdbc:postgresql://dbhos
 ALTER SETTINGS CONSTANT 'MyModule.ApiBaseUrl' VALUE 'https://api.staging.example.com' IN CONFIGURATION 'staging';
 ```
 
+An override's value is either **shared** — stored in the model, and so in version
+control — or **private**, stored on the developer's own workstation and kept out of
+the repository (the usual choice for development API tokens).
+
+MDL preserves that choice but never changes it. `ALTER SETTINGS CONSTANT ... VALUE`
+applies to shared values only; on a private override it is **refused**, because
+setting a value would convert it to a shared one, publish a deliberately-local value
+into version control, and break the developer's local binding. Change the constant to
+a shared value in Studio Pro first, or drop the override. `DESCRIBE SETTINGS` reports
+a private override as a comment rather than a re-executable statement, for the same
+reason.
+
 ### Set the default language
 
 ```sql
@@ -104,10 +116,16 @@ ALTER SETTINGS DROP CONSTANT 'MyModule.ApiBaseUrl' IN CONFIGURATION 'staging';
 
 ```sql
 CREATE CONFIGURATION 'Staging'
-  DatabaseType = 'POSTGRESQL',
+  DatabaseType = 'PostgreSql',
   DatabaseUrl = 'staging-db:5432',
   HttpPortNumber = 8080;
 ```
+
+`DatabaseType` must name a Mendix database type — `Db2`, `Hsqldb`, `MySql`,
+`Oracle`, `PostgreSql`, `SapHana` or `SqlServer`. The value is matched
+case-insensitively and stored in the spelling above; anything else is rejected by
+`mxcli check` and by the executor. A configuration created without properties gets
+Studio Pro's defaults: `Hsqldb`, runtime port 8080, admin port 8090.
 
 ### Drop a configuration
 

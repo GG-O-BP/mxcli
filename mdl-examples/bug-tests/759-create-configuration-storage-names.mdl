@@ -1,0 +1,64 @@
+-- Bug #759: CREATE CONFIGURATION produced a settings document Studio Pro cannot open
+--
+-- Symptom: the configuration is created and `mx check` reports no errors, but
+-- Studio Pro throws on the next open of the changed unit (e.g. clicking it in the
+-- version-control status grid):
+--
+--   System.InvalidOperationException: Sequence contains no matching element
+--     at ...MprProperty.cs:line 25
+--
+-- Silently, the same write also reset the ports of every *existing* configuration
+-- to 0 — the Default configuration lost http=8080 / server=8090.
+--
+-- Three defects, all in what the write puts on disk:
+--
+--   1. DatabaseType was hardcoded "HSQLDB". The Mendix enumeration member is
+--      "Hsqldb"; nothing matches "HSQLDB". User-supplied values were not checked
+--      at all, so 'postgres' went straight to disk too.
+--   2. The codec engine read the ports through the gen accessors, which bind the
+--      SDK names RuntimePortNumber / AdminPortNumber. Studio Pro stores
+--      HttpPortNumber / ServerPortNumber, so the read returned 0 for both and the
+--      overlay wrote that 0 back onto every configuration.
+--   3. Mendix renamed the runtime Java version property between 11.6
+--      ("JavaVersion" = "Java21") and 11.12 ("JavaMajorVersion" = "21"). mxcli
+--      wrote the 11.6 name unconditionally, so on an 11.12 project every settings
+--      write left JavaMajorVersion stale and added a JavaVersion property that
+--      version's metamodel does not define — which is the property lookup that
+--      fails.
+--
+-- mxbuild does not catch any of this: its deserializer tolerates unknown
+-- properties, so `mx check` passes on the corrupted document.
+--
+-- Manual verification (needs a project, so it is not part of `make check-mdl`'s
+-- syntax pass):
+--
+--   1. mxcli exec 759-create-configuration-storage-names.mdl -p app.mpr
+--   2. `show settings` — the Default configuration still reports http=8080, and
+--      Model Settings still reports its Java version.
+--   3. Reopen in Studio Pro and click the changed item in the Changes pane: it
+--      opens. Before the fix it threw at MprProperty.cs:25.
+--   4. `mx check app.mpr` reports no new errors (it did before the fix too).
+--
+-- A BSON-level check is stronger and needs no Studio Pro: dump the
+-- Settings$ProjectSettings unit before and after this script and diff key by key.
+-- The only difference must be the two added configurations.
+
+-- Default values: DatabaseType must land on the enum member "Hsqldb", and both
+-- ports must be set (8080 / 8090) so the new configuration is runnable.
+create configuration 'Issue759 Defaults';
+
+-- User-supplied values are canonicalised to the enum's spelling, whatever case
+-- they were typed in. 'postgresql' below must be stored as "PostgreSql".
+create configuration 'Issue759 Postgres'
+  DatabaseType = 'postgresql',
+  DatabaseName = 'issue759',
+  DatabaseUserName = 'mendix',
+  HttpPortNumber = 8081,
+  ServerPortNumber = 8091;
+
+-- ALTER goes through the same canonicalisation.
+alter settings configuration 'Issue759 Postgres'
+  DatabaseType = 'PostgreSql',
+  ApplicationRootUrl = 'http://localhost:8081/';
+
+show settings;

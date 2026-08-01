@@ -165,8 +165,12 @@ ALTER SETTINGS CONFIGURATION 'Default'
 ALTER SETTINGS CONSTANT 'BusinessEvents.ServerUrl' VALUE 'kafka:9092'
   IN CONFIGURATION 'Default';
 CREATE CONFIGURATION 'Production'
-  DatabaseType = 'POSTGRESQL',
-  HttpPortNumber = 8080;`,
+  DatabaseType = 'PostgreSql',
+  HttpPortNumber = 8080;
+
+-- DatabaseType must be a Mendix database type:
+--   Db2, Hsqldb, MySql, Oracle, PostgreSql, SapHana, SqlServer
+-- (matched case-insensitively and stored in the spelling above).`,
 		SeeAlso: []string{"settings.show"},
 	})
 

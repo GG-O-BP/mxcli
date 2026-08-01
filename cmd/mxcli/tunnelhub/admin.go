@@ -43,11 +43,21 @@ const adminHTML = `<!doctype html>
   tbody tr:nth-child(even){ background:var(--row); }
   td.url a { color:var(--accent); text-decoration:none; }
   td.url a:hover { text-decoration:underline; }
-  .dot { display:inline-block; width:.62rem; height:.62rem; border-radius:50%; margin-right:.4rem; vertical-align:-1px; }
-  .available .dot { background:#22c55e; } .stale .dot { background:#f59e0b; }
-  .available { color:inherit; } .stale { color:var(--mut); }
+  .dot { display:inline-block; width:.62rem; height:.62rem; border-radius:50%; margin-right:.4rem; vertical-align:-1px; background:var(--mut); }
+  .dot.available { background:#22c55e; } .dot.stale { background:#f59e0b; } .dot.offline { background:#9ca3af; }
+  tr.stale, tr.offline { color:var(--mut); }
   .sol { color:var(--mut); font-size:.82rem; }
   .empty { color:var(--mut); padding:2rem 0; }
+  .ses { border:1px solid var(--line); border-radius:.6rem; margin-bottom:1rem; overflow:hidden; }
+  .ses.offline { opacity:.72; }
+  .sh { display:flex; align-items:baseline; gap:.7rem; flex-wrap:wrap; padding:.6rem .8rem; background:var(--row); border-bottom:1px solid var(--line); }
+  .sh .sid { font-weight:600; font-family:ui-monospace,monospace; font-size:.9rem; }
+  .sh .sid a { color:var(--accent); text-decoration:none; } .sh .sid a:hover { text-decoration:underline; }
+  .sh .own { color:var(--mut); font-size:.85rem; } .sh .own::before { content:"@"; }
+  .sh .cnt { color:var(--mut); font-size:.82rem; }
+  .sh .ls { color:var(--mut); font-size:.82rem; margin-left:auto; }
+  .ses table { min-width:0; }
+  .ses td, .ses th { white-space:nowrap; }
   code { font-family:ui-monospace,monospace; }
   .who { color:var(--mut); font-size:.85rem; }
   .who b { color:var(--fg); font-weight:600; }
@@ -64,25 +74,11 @@ const adminHTML = `<!doctype html>
   <span class="meta" id="updated"></span>
 </header>
 <div class="wrap">
-  <table>
-    <thead><tr>
-      <th data-k="availability">Status</th>
-      <th data-k="solution">Solution</th>
-      <th data-k="project">Project</th>
-      <th data-k="branch">Branch</th>
-      <th data-k="url">URL</th>
-      <th data-k="registeredAt">Registered</th>
-      <th data-k="lastSeenAt">Last seen</th>
-      <th data-k="lastUsedAt">Last used</th>
-      <th data-k="uptimeSec">Uptime</th>
-    </tr></thead>
-    <tbody id="rows"></tbody>
-  </table>
+  <div id="sessions"></div>
   <div class="empty" id="empty" hidden>No previews registered yet. Start one with <code>mxcli run --hub …</code></div>
 </div>
 <script>
 (function(){
-  var sortKey = "lastUsedAt", data = [];
   function ago(t){
     if(!t || t.startsWith("0001")) return "—";
     var s = Math.max(0,(Date.now()-new Date(t))/1000);
@@ -95,41 +91,45 @@ const adminHTML = `<!doctype html>
     if(sec<60) return sec+"s"; if(sec<3600) return Math.floor(sec/60)+"m";
     if(sec<86400) return Math.floor(sec/3600)+"h"; return Math.floor(sec/86400)+"d";
   }
-  function cmp(a,b){
-    if(sortKey==="project"){
-      return (a.solution||"").localeCompare(b.solution||"") ||
-             (a.project||"").localeCompare(b.project||"") ||
-             (a.branch||"").localeCompare(b.branch||"");
-    }
-    if(sortKey==="availability") return (a.availability>b.availability?1:-1);
-    if(sortKey==="uptimeSec") return b.uptimeSec-a.uptimeSec;
-    // time keys: newest first
-    return new Date(b[sortKey]||0)-new Date(a[sortKey]||0);
-  }
   function esc(s){ var d=document.createElement("div"); d.textContent=s==null?"":s; return d.innerHTML; }
-  function render(){
-    data.sort(cmp);
-    document.querySelectorAll("th").forEach(function(th){ th.classList.toggle("sorted", th.dataset.k===sortKey); });
-    var rows = data.map(function(b){
-      var name = (b.prefix?esc(b.prefix)+" · ":"")+esc(b.project);
-      return "<tr class='"+esc(b.availability)+"'>"+
-        "<td><span class='dot'></span>"+esc(b.availability)+"</td>"+
-        "<td class='sol'>"+esc(b.solution||"—")+"</td>"+
-        "<td>"+name+"</td>"+
-        "<td><code>"+esc(b.branch||"—")+"</code></td>"+
-        "<td class='url'><a href='"+esc(b.url)+"' target='_blank' rel='noopener'>"+esc(b.url.replace(/^https?:\/\//,""))+"</a></td>"+
-        "<td>"+ago(b.registeredAt)+"</td>"+
-        "<td>"+ago(b.lastSeenAt)+"</td>"+
-        "<td>"+ago(b.lastUsedAt)+"</td>"+
-        "<td>"+dur(b.uptimeSec)+"</td></tr>";
-    }).join("");
-    document.getElementById("rows").innerHTML = rows;
+  function short(u){ return esc(u.replace(/^https?:\/\//,"")); }
+  function epRow(e){
+    var name = (e.prefix?esc(e.prefix)+" · ":"")+esc(e.project)+(e.solution?" <span class='sol'>("+esc(e.solution)+")</span>":"");
+    var url = e.state==="offline" ? short(e.url)
+      : "<a href='"+esc(e.url)+"' target='_blank' rel='noopener'>"+short(e.url)+"</a>";
+    return "<tr class='"+esc(e.state)+"'>"+
+      "<td><span class='dot "+esc(e.state)+"'></span>"+esc(e.state)+"</td>"+
+      "<td>"+name+"</td>"+
+      "<td><code>"+esc(e.branch||"—")+"</code></td>"+
+      "<td class='url'>"+url+"</td>"+
+      "<td>"+ago(e.lastSeenAt)+"</td>"+
+      "<td>"+ago(e.lastUsedAt)+"</td>"+
+      "<td>"+(e.uptimeSec?dur(e.uptimeSec):"—")+"</td></tr>";
+  }
+  function sessionCard(s){
+    var eps = s.endpoints||[];
+    var label = s.session ? esc(s.session) : "(no session)";
+    var sid = s.sessionUrl ? "<a href='"+esc(s.sessionUrl)+"' target='_blank' rel='noopener'>"+label+"</a>" : label;
+    var head = "<div class='sh'><span class='dot "+(s.online?"available":"offline")+"'></span>"+
+      "<span class='sid'>"+sid+"</span>"+
+      (s.owner?"<span class='own'>"+esc(s.owner)+"</span>":"")+
+      "<span class='cnt'>"+eps.length+" endpoint"+(eps.length===1?"":"s")+"</span>"+
+      "<span class='ls'>seen "+ago(s.lastSeen)+"</span></div>";
+    var table = "<table><thead><tr><th>Status</th><th>Project</th><th>Branch</th><th>URL</th>"+
+      "<th>Last seen</th><th>Last used</th><th>Uptime</th></tr></thead><tbody>"+
+      eps.map(epRow).join("")+"</tbody></table>";
+    return "<section class='ses "+(s.online?"online":"offline")+"'>"+head+table+"</section>";
+  }
+  function render(data){
+    document.getElementById("sessions").innerHTML = data.map(sessionCard).join("");
     document.getElementById("empty").hidden = data.length>0;
-    document.getElementById("count").textContent = data.length+" preview"+(data.length===1?"":"s");
+    var eps = data.reduce(function(n,s){ return n+((s.endpoints||[]).length); }, 0);
+    document.getElementById("count").textContent =
+      data.length+" session"+(data.length===1?"":"s")+" · "+eps+" endpoint"+(eps===1?"":"s");
     document.getElementById("updated").textContent = "updated "+new Date().toLocaleTimeString();
   }
   function load(){
-    fetch("/api/backends").then(function(r){return r.json();}).then(function(j){ data=j||[]; render(); }).catch(function(){});
+    fetch("/api/sessions").then(function(r){return r.json();}).then(function(j){ render(j||[]); }).catch(function(){});
   }
   function whoami(){
     fetch("/api/whoami").then(function(r){return r.json();}).then(function(j){
@@ -145,9 +145,6 @@ const adminHTML = `<!doctype html>
   }
   document.getElementById("signout").addEventListener("click", function(){
     fetch("/auth/logout", {method:"POST"}).then(function(){ location.reload(); }).catch(function(){ location.reload(); });
-  });
-  document.querySelectorAll("th").forEach(function(th){
-    th.addEventListener("click", function(){ sortKey=th.dataset.k; render(); });
   });
   whoami(); load(); setInterval(load, 5000);
 })();

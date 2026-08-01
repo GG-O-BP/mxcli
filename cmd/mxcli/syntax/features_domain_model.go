@@ -172,7 +172,18 @@ func init() {
 			"show constants", "constant values", "modify constant",
 			"string constant", "integer constant", "boolean constant",
 		},
-		Syntax:  "CREATE CONSTANT Module.Name\n  TYPE String|Integer|Long|Decimal|Boolean|DateTime\n  DEFAULT value\n  [COMMENT 'description'];\n\nCREATE OR MODIFY CONSTANT Module.Name\n  TYPE DataType DEFAULT value [COMMENT 'text'];\n\nSHOW CONSTANTS;\nSHOW CONSTANTS IN <module>;\nSHOW CONSTANT VALUES;\nDESCRIBE CONSTANT Module.Name;\nDROP CONSTANT Module.Name;\n\nRemove override:\n  ALTER SETTINGS DROP CONSTANT 'Module.Name' IN CONFIGURATION 'cfg';",
+		Syntax: "CREATE CONSTANT Module.Name\n  TYPE String|Integer|Long|Decimal|Boolean|DateTime\n  DEFAULT value\n  [COMMENT 'description'];\n\nCREATE OR MODIFY CONSTANT Module.Name\n  TYPE DataType DEFAULT value [COMMENT 'text'];\n\nSHOW CONSTANTS;\nSHOW CONSTANTS IN <module>;\nSHOW CONSTANT VALUES;\nDESCRIBE CONSTANT Module.Name;\nDROP CONSTANT Module.Name;\n\nRemove override:\n  ALTER SETTINGS DROP CONSTANT 'Module.Name' IN CONFIGURATION 'cfg';\n\n" +
+			"Shared vs private values:\n" +
+			"  A per-configuration override holds either a SHARED value (stored in the\n" +
+			"  model, so in version control — every developer gets it) or a PRIVATE one\n" +
+			"  (stored on the developer's own workstation, deliberately out of the repo;\n" +
+			"  the usual choice for development API tokens).\n\n" +
+			"  MDL preserves that choice but never changes it. ALTER SETTINGS CONSTANT\n" +
+			"  applies to shared values only — on a private override it is refused, since\n" +
+			"  setting a value would publish a deliberately-local one into version control.\n" +
+			"  SHOW CONSTANT VALUES reports it as (private); DESCRIBE SETTINGS reports it\n" +
+			"  as a comment, not a re-executable statement. DROP CONSTANT still works.\n" +
+			"  Change a constant to a shared value in Studio Pro.",
 		Example: "CREATE CONSTANT MyModule.ApiBaseUrl\n  TYPE String\n  DEFAULT 'https://api.example.com/v1';\n\nCREATE CONSTANT MyModule.MaxRetries\n  TYPE Integer DEFAULT 3\n  COMMENT 'Maximum number of API retry attempts';\n\nCREATE CONSTANT MyModule.EnableDebug\n  TYPE Boolean DEFAULT false;\n\nCREATE OR MODIFY CONSTANT MyModule.ApiBaseUrl\n  TYPE String\n  DEFAULT 'https://api.staging.example.com/v2';",
 		SeeAlso: []string{"domain-model.constant"},
 	})
