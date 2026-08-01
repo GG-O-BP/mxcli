@@ -8,7 +8,30 @@ to the symptom table below, so the next similar issue costs fewer reads.
 1. Match the issue symptom to a row in the table — go straight to that file.
 2. Follow the fix pattern for that row.
 3. Write a failing test first, then implement.
-4. After the fix: **add a new row** to the table if the symptom is not already covered.
+4. **Verify at the layer the symptom lives in.** Parser → unit test. BSON we write →
+   unit test on the encoded document. Files on disk after `mx` runs → integration test
+   (`-tags integration`). The **rendered app's behaviour or appearance** → boot it and
+   assert in a browser: [`verify-in-runtime.md`](./verify-in-runtime.md). A page can
+   serialize to valid-looking BSON, pass `mx check`, build cleanly, and still render
+   wrong.
+5. **Prove the test detects the bug**: revert the fix and confirm it fails with the
+   reported symptom. A test that has only ever run against fixed code has not been
+   shown to detect anything.
+6. After the fix: **add a new row** to the table if the symptom is not already covered.
+   **Append it at the END of the table, never at the top.**
+
+> **Why the end matters.** Every bug fix touches this one file, and for a long time
+> new rows went in directly under the header. Two branches fixing two unrelated bugs
+> therefore inserted at the *same line*, and git cannot merge that — it is a conflict
+> by construction, not by bad luck. It cost five separate resolution rounds in one
+> week, and each round risks dropping someone's row.
+>
+> Appending puts each branch's insert at a different offset, which git merges without
+> help. The table is unordered — it is looked up by matching a symptom, not by
+> reading top to bottom — so position carries no meaning and appending costs nothing.
+>
+> The rows above pre-date this convention and are left as they are; reordering them
+> would conflict with every open branch at once, which is the problem, not the fix.
 
 ---
 
