@@ -41,17 +41,21 @@ func (b *Backend) CreatePage(page *pages.Page) error {
 	slotWidgets := make([]any, 0)
 	if page.LayoutCall != nil {
 		for i, arg := range page.LayoutCall.Arguments {
-			if arg.Widget == nil {
+			if len(arg.Widgets) == 0 {
 				continue
 			}
-			w, err := b.mapPageWidget(arg.Widget)
-			if err != nil {
-				return fmt.Errorf("page %q: %w", page.Name, err)
+			mapped := make([]any, 0, len(arg.Widgets))
+			for _, aw := range arg.Widgets {
+				w, err := b.mapPageWidget(aw)
+				if err != nil {
+					return fmt.Errorf("page %q: %w", page.Name, err)
+				}
+				mapped = append(mapped, w)
 			}
 			slotWidgets = append(slotWidgets, map[string]any{
 				"$Type":   "Pages$Content",
 				"slot":    slotName(arg, i),
-				"widgets": []any{w},
+				"widgets": mapped,
 			})
 		}
 	}

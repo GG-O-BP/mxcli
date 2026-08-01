@@ -192,8 +192,8 @@ func layoutCallToGen(lc *pages.LayoutCall) (*genPg.LayoutCall, error) {
 		ga.SetTypeName("Forms$FormCallArgument")
 		assignID(ga)
 		ga.SetParameterQualifiedName(string(arg.ParameterID))
-		if arg.Widget != nil {
-			wg, err := widgetToGen(arg.Widget)
+		for _, w := range arg.Widgets {
+			wg, err := widgetToGen(w)
 			if err != nil {
 				return nil, err
 			}

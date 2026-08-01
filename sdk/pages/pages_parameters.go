@@ -14,11 +14,20 @@ type LayoutCall struct {
 	Arguments  []*LayoutCallArgument `json:"arguments,omitempty"`
 }
 
-// LayoutCallArgument represents an argument binding in a layout call.
+// LayoutCallArgument represents an argument binding in a layout call — the widgets
+// placed into one of the layout's placeholders.
+//
+// Widgets is a list because the BSON is: Forms$FormCallArgument carries a `Widgets`
+// array, and a Studio Pro page puts its top-level widgets in it directly. This used
+// to be a single Widget, which forced the builder to wrap every non-empty
+// placeholder in a synthetic Forms$DivContainer named "conditionalVisibilityWidget<N>"
+// just to squeeze N widgets through a 1-widget field. That container appeared in the
+// widget tree of every mxcli-authored page and was never something the author asked
+// for (mendixlabs/mxcli#760).
 type LayoutCallArgument struct {
 	model.BaseElement
 	ParameterID model.ID `json:"parameterId"`
-	Widget      Widget   `json:"widget,omitempty"`
+	Widgets     []Widget `json:"widgets,omitempty"`
 }
 
 // PageParameter represents a parameter of a page.
