@@ -72,6 +72,8 @@ Then, in each app's environment:
 		requireAuth, _ := cmd.Flags().GetBool("require-auth")
 		auditLog, _ := cmd.Flags().GetString("audit-log")
 		keysFile, _ := cmd.Flags().GetString("keys-file")
+		sessionsFile, _ := cmd.Flags().GetString("sessions-file")
+		sessionRetention, _ := cmd.Flags().GetDuration("session-retention")
 
 		if domain == "" {
 			fmt.Fprintln(os.Stderr, "Error: --domain is required (the wildcard base, e.g. example.com)")
@@ -103,7 +105,19 @@ Then, in each app's environment:
 
 		auth := buildHubAuth(hubHost, domain, cookieDomain, ghClientID, ghClientSecret, sessionSecret, requireAuth, auditSink)
 
-		reg := tunnelhub.NewRegistry(tunnelhub.RegistryOptions{Domain: domain})
+		// Persist the per-session endpoint history by default so the overview shows
+		// past sessions across restarts (30-day window unless overridden).
+		if sessionsFile == "" {
+			home, _ := os.UserHomeDir()
+			sessionsFile = filepath.Join(home, ".mxcli", "hub-sessions.json")
+		}
+		sessions, err := tunnelhub.NewSessionLogFile(sessionsFile, sessionRetention)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: opening --sessions-file %q: %v\n", sessionsFile, err)
+			os.Exit(1)
+		}
+
+		reg := tunnelhub.NewRegistry(tunnelhub.RegistryOptions{Domain: domain, Sessions: sessions})
 		srv, err := tunnelhub.NewServer(tunnelhub.ServerOptions{
 			Domain:         domain,
 			HubHost:        hubHost,
@@ -193,5 +207,7 @@ func init() {
 	tunnelHubCmd.Flags().Bool("require-auth", true, "Enforce the owner check on previews (deny non-owners); --require-auth=false leaves owned previews open but still filters the listing")
 	tunnelHubCmd.Flags().String("audit-log", "", "Append-only JSONL audit trail path (\"stdout\" for stdout; empty = off)")
 	tunnelHubCmd.Flags().String("keys-file", "", "Durable hub API-key store path (default ~/.mxcli/hub-keys.json when auth is on); keys survive restarts so clients keep their MXCLI_HUB_KEY")
+	tunnelHubCmd.Flags().String("sessions-file", "", "Durable per-session endpoint history path (default ~/.mxcli/hub-sessions.json); lets the overview show past sessions across restarts")
+	tunnelHubCmd.Flags().Duration("session-retention", tunnelhub.DefaultSessionRetention, "How long an offline session/endpoint stays in the overview before it is pruned")
 	rootCmd.AddCommand(tunnelHubCmd)
 }

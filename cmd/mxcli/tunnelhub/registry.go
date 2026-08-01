@@ -33,6 +33,7 @@ type Backend struct {
 	Branch      string `json:"branch"`   // git branch
 	Worktree    string `json:"worktree"` // optional, distinguishes worktrees of one branch
 	Owner       string `json:"owner"`    // GitHub login that registered it ("" = anonymous / self-hosted / auth off)
+	Session     string `json:"session"`  // Claude Code session id that registered it ("" = none / older client)
 	Subdomain   string `json:"subdomain"`
 	ReversePort int    `json:"reversePort"`
 	AppPort     int    `json:"appPort"`
@@ -65,6 +66,7 @@ type RegisterRequest struct {
 	Solution string `json:"solution"`
 	Branch   string `json:"branch"`
 	Worktree string `json:"worktree"`
+	Session  string `json:"session"` // Claude Code session id (client-supplied; groups a session's endpoints)
 	AppPort  int    `json:"appPort"`
 	// Owner is set server-side from the X-Hub-Key → login lookup, never trusted
 	// from the client body (json:"-" keeps it off the wire).
@@ -86,6 +88,7 @@ type Registry struct {
 	staleFor  time.Duration
 	expireFor time.Duration
 	now       func() time.Time
+	sessions  *SessionLog // durable per-session endpoint history (nil = disabled)
 }
 
 // RegistryOptions configures a Registry. Zero values get sensible defaults.
@@ -96,6 +99,7 @@ type RegistryOptions struct {
 	StaleFor  time.Duration // no heartbeat within this -> Stale (default 45s)
 	ExpireFor time.Duration // no heartbeat within this -> removed (default 10m)
 	Now       func() time.Time
+	Sessions  *SessionLog // durable per-session endpoint history (nil = disabled)
 }
 
 // NewRegistry creates an empty registry.
@@ -126,6 +130,7 @@ func NewRegistry(o RegistryOptions) *Registry {
 		staleFor:    o.StaleFor,
 		expireFor:   o.ExpireFor,
 		now:         o.Now,
+		sessions:    o.Sessions,
 	}
 }
 
@@ -146,11 +151,14 @@ func (r *Registry) Register(req RegisterRequest) (*Backend, error) {
 		Branch:   strings.TrimSpace(req.Branch),
 		Worktree: strings.TrimSpace(req.Worktree),
 		Owner:    strings.TrimSpace(req.Owner),
+		Session:  strings.TrimSpace(req.Session),
 		AppPort:  req.AppPort,
 	}
 	if existing, ok := r.byIdentity[b.identity()]; ok {
 		existing.LastSeenAt = now
 		existing.AppPort = req.AppPort
+		existing.Session = b.Session // a reconnect may carry a newer session id
+		r.recordSessionLocked(existing)
 		return existing, nil
 	}
 
@@ -169,7 +177,38 @@ func (r *Registry) Register(req RegisterRequest) (*Backend, error) {
 	r.bySubdomain[b.Subdomain] = b
 	r.byIdentity[b.identity()] = b
 	r.usedPorts[port] = true
+	r.recordSessionLocked(b)
 	return b, nil
+}
+
+// recordSessionLocked mirrors a backend's current state into the durable session
+// log so it survives reaping. No-op when the session log is disabled.
+func (r *Registry) recordSessionLocked(b *Backend) {
+	if r.sessions == nil {
+		return
+	}
+	r.sessions.Record(EndpointRecord{
+		Session:      b.Session,
+		Owner:        b.Owner,
+		Prefix:       b.Prefix,
+		Project:      b.Project,
+		Solution:     b.Solution,
+		Branch:       b.Branch,
+		Worktree:     b.Worktree,
+		Subdomain:    b.Subdomain,
+		URL:          r.urlForLocked(b),
+		RegisteredAt: b.RegisteredAt,
+		LastSeenAt:   b.LastSeenAt,
+	})
+}
+
+// urlForLocked is the public URL of a backend (subdomain under the hub domain).
+func (r *Registry) urlForLocked(b *Backend) string {
+	host := b.Subdomain
+	if r.domain != "" {
+		host = b.Subdomain + "." + r.domain
+	}
+	return "https://" + host
 }
 
 // Heartbeat refreshes a backend's liveness by token.
@@ -237,6 +276,103 @@ func (r *Registry) List(sortKey, viewerLogin string) []BackendView {
 	return out
 }
 
+// Sessions returns the registered endpoints grouped by Claude Code session,
+// merging live backends (available/stale) with the durable history of offline
+// ones. When viewerLogin is non-empty, only that owner's sessions are returned
+// (auth off / self-hosted passes "" for all). Sessions are sorted most-recently
+// -seen first; endpoints within a session likewise.
+func (r *Registry) Sessions(viewerLogin string) []SessionView {
+	r.mu.Lock()
+	r.reapLocked()
+
+	// Live endpoints first — keyed by identity so a history record for the same
+	// slot is treated as the same (live) endpoint, not duplicated as offline.
+	type epKey = string
+	live := map[epKey]EndpointView{}
+	meta := map[epKey]struct{ session, owner string }{}
+	for _, b := range r.byID {
+		if viewerLogin != "" && b.Owner != viewerLogin {
+			continue
+		}
+		v := r.viewLocked(b)
+		k := b.identity()
+		live[k] = EndpointView{
+			Subdomain: b.Subdomain, URL: v.URL, Prefix: b.Prefix, Project: b.Project,
+			Solution: b.Solution, Branch: b.Branch, Worktree: b.Worktree,
+			State: string(v.Availability), RegisteredAt: b.RegisteredAt,
+			LastSeenAt: b.LastSeenAt, LastUsedAt: b.LastUsedAt, UptimeSec: v.UptimeSec,
+		}
+		meta[k] = struct{ session, owner string }{b.Session, b.Owner}
+	}
+	history := r.sessions.Snapshot() // nil-safe
+	r.mu.Unlock()
+
+	// Group by session. Live endpoints override any offline record for the same slot.
+	type grp struct {
+		owner string
+		eps   map[epKey]EndpointView
+	}
+	groups := map[string]*grp{}
+	ensure := func(session, owner string) *grp {
+		g, ok := groups[session]
+		if !ok {
+			g = &grp{owner: owner, eps: map[epKey]EndpointView{}}
+			groups[session] = g
+		}
+		if g.owner == "" {
+			g.owner = owner
+		}
+		return g
+	}
+	for k, ev := range live {
+		m := meta[k]
+		ensure(m.session, m.owner).eps[k] = ev
+	}
+	for _, rec := range history {
+		if viewerLogin != "" && rec.Owner != viewerLogin {
+			continue
+		}
+		g := ensure(rec.Session, rec.Owner)
+		k := strings.Join([]string{rec.Owner, rec.Prefix, rec.Solution, rec.Project, rec.Branch, rec.Worktree}, "\x00")
+		if _, isLive := g.eps[k]; isLive {
+			continue // live entry wins
+		}
+		g.eps[k] = EndpointView{
+			Subdomain: rec.Subdomain, URL: rec.URL, Prefix: rec.Prefix, Project: rec.Project,
+			Solution: rec.Solution, Branch: rec.Branch, Worktree: rec.Worktree,
+			State: "offline", RegisteredAt: rec.RegisteredAt, LastSeenAt: rec.LastSeenAt,
+		}
+	}
+
+	out := make([]SessionView, 0, len(groups))
+	for session, g := range groups {
+		sv := SessionView{Session: session, SessionURL: sessionURL(session), Owner: g.owner}
+		for _, ev := range g.eps {
+			sv.Endpoints = append(sv.Endpoints, ev)
+			if ev.State != "offline" {
+				sv.Online = true
+			}
+			if sv.FirstSeen.IsZero() || (!ev.RegisteredAt.IsZero() && ev.RegisteredAt.Before(sv.FirstSeen)) {
+				sv.FirstSeen = ev.RegisteredAt
+			}
+			if ev.LastSeenAt.After(sv.LastSeen) {
+				sv.LastSeen = ev.LastSeenAt
+			}
+		}
+		sort.Slice(sv.Endpoints, func(i, j int) bool {
+			return sv.Endpoints[i].LastSeenAt.After(sv.Endpoints[j].LastSeenAt)
+		})
+		out = append(out, sv)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Online != out[j].Online {
+			return out[i].Online // online sessions first
+		}
+		return out[i].LastSeen.After(out[j].LastSeen)
+	})
+	return out
+}
+
 // viewLocked builds the derived view for a backend.
 func (r *Registry) viewLocked(b *Backend) BackendView {
 	host := b.Subdomain
@@ -266,6 +402,9 @@ func (r *Registry) reapLocked() {
 }
 
 func (r *Registry) removeLocked(b *Backend) {
+	// Stamp the final liveness into the session log before dropping the live
+	// entry, so the offline history shows an accurate last-seen.
+	r.recordSessionLocked(b)
 	delete(r.byID, b.ID)
 	delete(r.bySubdomain, b.Subdomain)
 	delete(r.byIdentity, b.identity())

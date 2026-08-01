@@ -89,6 +89,7 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/api/status", a.handleStatus)
 	mux.HandleFunc("/api/deregister", a.handleDeregister)
 	mux.HandleFunc("/api/backends", a.handleBackends)
+	mux.HandleFunc("/api/sessions", a.handleSessions)
 	mux.HandleFunc("/api/keys", a.handleKeys)
 	mux.HandleFunc("/api/auth-config", a.handleAuthConfig)
 	mux.HandleFunc("/api/whoami", a.handleWhoami)
@@ -413,6 +414,23 @@ func (a *API) handleBackends(w http.ResponseWriter, r *http.Request) {
 	}
 	// Open mode (no auth): list everything — today's behaviour.
 	writeJSON(w, http.StatusOK, a.opts.Registry.List(sort, ""))
+}
+
+// handleSessions (GET /api/sessions) returns the registered endpoints grouped by
+// Claude Code session, including offline ones from history. Viewer-scoped exactly
+// like /api/backends: with auth on it requires a session and filters to that
+// owner; open mode returns all.
+func (a *API) handleSessions(w http.ResponseWriter, r *http.Request) {
+	if a.opts.Auth.enabled() {
+		login := a.opts.Auth.sessionLogin(r)
+		if login == "" {
+			http.Error(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+		writeJSON(w, http.StatusOK, a.opts.Registry.Sessions(login))
+		return
+	}
+	writeJSON(w, http.StatusOK, a.opts.Registry.Sessions(""))
 }
 
 func bearerToken(r *http.Request) string {

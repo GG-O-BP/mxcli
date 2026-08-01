@@ -178,8 +178,14 @@ projects, solutions, branches, and worktrees — with a sortable overview at
   `--hub-project`/`--hub-branch`, and `--hub-worktree` separates worktrees of one branch.
 - **`--hub-prefix`** namespaces the hostname (org/solution/team/env) →
   `<prefix>-<project>-<branch>`; **`--hub-solution`** groups a solution's apps in the overview.
-- The overview shows availability — a reaped/idle container turns **stale** — and sorts by
-  last-used, registered, or project. Re-registering keeps a **stable URL**.
+- The overview **groups previews by Claude Code session** (agent): each session lists the
+  endpoints it exposed, links back to its `claude.ai/code` conversation, and shows its
+  availability — a reaped/idle container turns **stale**, then **offline**. `run --hub`
+  auto-detects the session from `CLAUDE_CODE_REMOTE_SESSION_ID` (override with
+  `--hub-session` / `MXCLI_HUB_SESSION`). Past sessions are **retained** so you can see
+  older ones: the hub persists a per-session endpoint history to `--sessions-file` (default
+  `~/.mxcli/hub-sessions.json`, survives restarts) and prunes it after `--session-retention`
+  (default 30 days). Re-registering keeps a **stable URL**.
 - `--hub` **implies `--local`**, boots the runtime with `ApplicationRootUrl` set to the
   assigned URL (so the SPA and `originURI` cookie work), and the tunnel reconnects forever.
   Combine with `--watch` for the full remote loop: edit here → hot-apply → refresh the tab.
