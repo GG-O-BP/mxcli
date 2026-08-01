@@ -631,6 +631,9 @@ type rawWidget struct {
 	WidgetID string
 	// DataView-only: LabelWidth read from BSON (-1 = not set, 0..12 = explicit)
 	LabelWidth int
+	// DataView-only: ShowFooter read from BSON. Round-tripping it matters only when
+	// the footer block would not imply the same value (#813).
+	ShowFooter bool
 	// Pluggable Image widget properties
 	ImageUrl        string // Image URL (from textTemplate)
 	AlternativeText string // Alt text (from textTemplate)

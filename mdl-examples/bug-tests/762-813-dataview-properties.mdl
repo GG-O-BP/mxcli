@@ -1,0 +1,75 @@
+-- Bugs #762 and #813: two DataView properties that parsed, passed `check`, and were
+-- then silently discarded.
+--
+-- #762 FormOrientation: Vertical had no effect on the DEFAULT (modelsdk) engine.
+--   Studio Pro's "Form orientation" radio has no BSON field of its own — it IS
+--   LabelWidth (0 = Vertical, 3 = Horizontal, Mendix's default). Only the legacy
+--   writer performed that translation; the modelsdk writer emitted LabelWidth solely
+--   when an explicit `LabelWidth:` was given, so the orientation was read into the
+--   model and dropped. Same shape as #812's OverridePageTitle: a field set on the
+--   model that no writer on the active engine reads.
+--
+-- #813 showFooter was not settable at all. ShowFooter was only ever set implicitly,
+--   by the presence of a `footer { … }` block, so there was no way to show an empty
+--   footer or to declare footer widgets that start hidden. The property sat in the
+--   validator's allow-list, so it parsed clean and was thrown away.
+--
+-- Verify without Studio Pro — LabelWidth must be [0, 3, 5, 3] and ShowFooter
+-- [false, false, false, true], identically on both engines:
+--
+--   mxcli exec 762-813-dataview-properties.mdl -p app.mpr
+--   mxcli bson dump -p app.mpr --type page --object Issue762.DVTest
+--   MXCLI_ENGINE=legacy mxcli exec ...   # must produce the same values
+--
+-- And DESCRIBE must round-trip all four:
+--   dvVert -> FormOrientation: Vertical    dvHoriz -> (nothing; 3 is the default)
+--   dvExplicit -> LabelWidth: 5            dvFoot -> ShowFooter: true
+
+create module Issue762;
+create module role Issue762.User;
+
+@position(100, 100)
+create persistent entity Issue762.Thing (
+  Name: string(100)
+);
+
+create or replace page Issue762.DVTest (
+  title: 'DataView properties',
+  Layout: Atlas_Core.Atlas_Default,
+  params: { $Thing: Issue762.Thing }
+)
+{
+  container c1 {
+    -- #762: label above the input.
+    dataview dvVert (datasource: $Thing, FormOrientation: Vertical) {
+      textbox t1 (attribute: Name)
+    }
+
+    -- The default; describe omits it because LabelWidth 3 is Mendix's default.
+    dataview dvHoriz (datasource: $Thing, FormOrientation: Horizontal) {
+      textbox t2 (attribute: Name)
+    }
+
+    -- An explicit LabelWidth is the more specific statement and wins over
+    -- FormOrientation.
+    dataview dvExplicit (datasource: $Thing, LabelWidth: 5) {
+      textbox t3 (attribute: Name)
+    }
+
+    -- #813: an empty footer, shown. Previously impossible — ShowFooter could only be
+    -- turned on by declaring footer widgets.
+    dataview dvFoot (datasource: $Thing, showFooter: true) {
+      textbox t4 (attribute: Name)
+    }
+
+    -- The other direction: footer widgets declared but hidden. An explicit value
+    -- wins over the `footer { … }` block, and hiding must not discard the widgets.
+    dataview dvHidden (datasource: $Thing, showFooter: false) {
+      textbox t5 (attribute: Name)
+      footer f1 {
+        dynamictext ft1 (content: 'hidden footer')
+      }
+    }
+  }
+}
+/
