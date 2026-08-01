@@ -373,7 +373,17 @@ func resolveM2EEDefaults(opts *M2EEOptions) error {
 		}
 	}
 
-	// Token: flag > env > .env > error
+	// Token: flag > env > .env > local dev default.
+	//
+	// A `mxcli run --local` app has no .docker/.env and never prints the password
+	// it used, so before this fallback `mxcli oql` against a local run failed with
+	// "admin password required" (findings #36). The local runtime always boots
+	// with defaultLocalAdminPass, and the admin API binds to loopback only, so
+	// using it as the last resort makes `mxcli oql` work against `run --local`
+	// with no configuration. A docker app that genuinely uses a different password
+	// records it in .docker/.env (loaded above); if it somehow doesn't, the wrong
+	// password surfaces as a clear "authentication failed" rather than a silent
+	// miss.
 	if opts.Token == "" {
 		if v := os.Getenv("M2EE_ADMIN_PASS"); v != "" {
 			opts.Token = v
@@ -382,7 +392,7 @@ func resolveM2EEDefaults(opts *M2EEOptions) error {
 		}
 	}
 	if opts.Token == "" {
-		return fmt.Errorf("admin password required: set --token, M2EE_ADMIN_PASS env var, or configure .docker/.env")
+		opts.Token = defaultLocalAdminPass
 	}
 
 	return nil

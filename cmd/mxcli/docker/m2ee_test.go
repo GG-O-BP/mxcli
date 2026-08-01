@@ -113,13 +113,16 @@ func TestResolveM2EEDefaults_FlagsPriority(t *testing.T) {
 }
 
 func TestResolveM2EEDefaults_Defaults(t *testing.T) {
+	// With no --token, no env var and no .docker/.env, the token falls back to
+	// the local dev password so `mxcli oql` works against a `run --local` app
+	// with zero configuration (findings #36).
+	t.Setenv("M2EE_ADMIN_PASS", "")
 	opts := M2EEOptions{}
-	err := resolveM2EEDefaults(&opts)
-	if err == nil {
-		t.Fatal("expected error for missing token")
+	if err := resolveM2EEDefaults(&opts); err != nil {
+		t.Fatalf("resolveM2EEDefaults: %v", err)
 	}
-	if !strings.Contains(err.Error(), "admin password required") {
-		t.Errorf("unexpected error: %v", err)
+	if opts.Token != defaultLocalAdminPass {
+		t.Errorf("token: got %q, want local dev default %q", opts.Token, defaultLocalAdminPass)
 	}
 	if opts.Host != "localhost" {
 		t.Errorf("host: got %q, want %q", opts.Host, "localhost")

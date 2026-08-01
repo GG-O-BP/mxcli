@@ -799,6 +799,12 @@ func widgetToStarlark(w Widget) starlark.Value {
 		"module_name":              starlark.String(w.ModuleName),
 		"entity_ref":               starlark.String(w.EntityRef),
 		"attribute_ref":            starlark.String(w.AttributeRef),
+		// microflow_ref / nanoflow_ref expose a widget's action or datasource
+		// flow so custom rules can detect e.g. a microflow-datasource ListView
+		// (no database pushdown). CATALOG.WIDGETS already records these; before
+		// they were dropped from the Starlark projection (findings #35).
+		"microflow_ref": starlark.String(w.MicroflowRef),
+		"nanoflow_ref":  starlark.String(w.NanoflowRef),
 	})
 }
 
