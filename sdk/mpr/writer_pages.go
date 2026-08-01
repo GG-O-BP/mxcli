@@ -162,8 +162,8 @@ func (w *Writer) serializePage(page *pages.Page) ([]byte, error) {
 				{Key: "Parameter", Value: string(arg.ParameterID)}, // Qualified name string
 			}
 			// Add widgets if present
-			if arg.Widget != nil {
-				argDoc = append(argDoc, bson.E{Key: "Widgets", Value: serializeWidgetArray([]pages.Widget{arg.Widget})})
+			if len(arg.Widgets) > 0 {
+				argDoc = append(argDoc, bson.E{Key: "Widgets", Value: serializeWidgetArray(arg.Widgets)})
 			} else {
 				argDoc = append(argDoc, bson.E{Key: "Widgets", Value: bson.A{int32(3)}})
 			}

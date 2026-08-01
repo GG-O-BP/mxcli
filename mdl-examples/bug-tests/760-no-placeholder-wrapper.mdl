@@ -1,0 +1,51 @@
+-- Bug #760: every mxcli-authored page gained a container nobody asked for.
+--
+-- The builder wrapped each non-empty layout placeholder in a synthetic
+-- Forms$DivContainer named "conditionalVisibilityWidget<N>", so creating a single
+-- button produced a button AND a container. It showed up in the Studio Pro widget
+-- tree of every page mxcli wrote.
+--
+-- The wrapper was never a BSON requirement: Forms$FormCallArgument carries a
+-- `Widgets` array and a Studio Pro page fills it with its top-level widgets
+-- directly. It existed only because pages.LayoutCallArgument declared a single
+-- `Widget` field. Verified against Mendix's own output —
+-- Administration.Account_Overview in a `mx create-project` app has two top-level
+-- widgets in one placeholder and zero wrappers.
+--
+-- Verify without Studio Pro (both engines must agree, and no wrapper may appear):
+--
+--   mxcli exec 760-no-placeholder-wrapper.mdl -p app.mpr
+--   mxcli bson dump -p app.mpr --type page --object Issue760.OneWidget \
+--     | grep -c conditionalVisibilityWidget      # expect 0
+--   mxcli docker check -p app.mpr                # expect 0 errors
+--
+-- Pages authored by older mxcli still contain the wrapper; DESCRIBE and the catalog
+-- keep unwrapping it, so those projects still read correctly.
+
+create module Issue760;
+create module role Issue760.User;
+
+-- The reported case: one widget in, one widget out.
+create or replace page Issue760.OneWidget (
+  title: 'One widget',
+  Layout: Atlas_Core.Atlas_Default
+)
+{
+  actionbutton btnOnly (caption: 'Only widget', action: close_page)
+}
+/
+
+-- The case the wrapper was introduced for: several top-level widgets go into the
+-- placeholder's Widgets array side by side, not inside a container.
+create or replace page Issue760.SeveralWidgets (
+  title: 'Several widgets',
+  Layout: Atlas_Core.Atlas_Default
+)
+{
+  dynamictext dtTitle (content: 'Heading', rendermode: H1)
+  actionbutton btnA (caption: 'A', action: close_page)
+  container cAuthored {
+    dynamictext dtNested (content: 'A container the author DID write — must survive')
+  }
+}
+/
