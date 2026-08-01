@@ -349,6 +349,12 @@ func outputWidgetMDLV3(ctx *ExecContext, w rawWidget, indent int) {
 		case w.LabelWidth > 0 && w.LabelWidth != 3:
 			props = append(props, fmt.Sprintf("LabelWidth: %d", w.LabelWidth))
 		}
+		// A `footer { … }` block already implies ShowFooter: true, so emit the property
+		// only when the implicit rule would not reproduce the stored value — an empty
+		// shown footer, or declared footer widgets that are hidden (#813).
+		if hasFooter := dataViewHasFooterBlock(w); hasFooter != w.ShowFooter {
+			props = append(props, fmt.Sprintf("ShowFooter: %t", w.ShowFooter))
+		}
 		props = appendAppearanceProps(props, w)
 		formatWidgetProps(ctx.Output, prefix, header, props, " {\n")
 		outputDataContainerContext(ctx.Output, prefix+"  ", w.Name, w.EntityContext, false)
@@ -1495,4 +1501,15 @@ func associationDataSourceExpr(ds *rawDataSource) string {
 
 func (e *Executor) outputWidgetMDLV3(w rawWidget, indent int) {
 	outputWidgetMDLV3(e.newExecContext(context.Background()), w, indent)
+}
+
+// dataViewHasFooterBlock reports whether describe will emit a `footer { … }` child
+// for this DataView, which by itself implies ShowFooter: true on re-exec.
+func dataViewHasFooterBlock(w rawWidget) bool {
+	for _, child := range w.Children {
+		if child.Type == "Footer" {
+			return true
+		}
+	}
+	return false
 }
