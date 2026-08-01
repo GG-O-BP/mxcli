@@ -1,6 +1,6 @@
 # View Entities
 
-View entities are read-only entities backed by an OQL query. They appear in the domain model but have no database table -- their data is computed from other entities via aggregation and joins.
+View entities are backed by an OQL query. They appear in the domain model but have no database table (and no database view either) -- their rows are computed from other entities via aggregation and joins, evaluated by the runtime per query. "Read-only" is a common but imprecise shorthand: a view row has no storage and `commit` does not write it back, yet it *is* editable in memory (it behaves like a non-persistent object), so a form can bind to one and write changes back through the source entity. See [View Entity](../language/entities.md#view-entity) for the full model and the `CE6770` type-match gotcha.
 
 ## Sales Summary by Category
 

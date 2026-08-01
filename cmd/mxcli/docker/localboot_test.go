@@ -55,6 +55,33 @@ func TestPathHelpers(t *testing.T) {
 	}
 }
 
+func TestJVMArgs(t *testing.T) {
+	o := testLocalOpts()
+	args := o.jvmArgs()
+	joined := strings.Join(args, " ")
+	// The live-preview dev flags must be present so `mxcli oql` can reach a
+	// `run --local` app via /dev/preview_execute_oql (findings #36).
+	for _, want := range []string{
+		"-Dmendix.live-preview=enabled",
+		"-Dmendix.running.locally.by.studiopro=true",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("jvmArgs missing %q; got %v", want, args)
+		}
+	}
+	// -jar and its two positional args (launcher jar + deploy dir) must still be
+	// last, in order, so the JVM launches the runtime.
+	if len(args) < 3 || args[len(args)-3] != "-jar" {
+		t.Fatalf("jvmArgs must end with -jar <launcher> <deploydir>; got %v", args)
+	}
+	if args[len(args)-2] != o.launcherJar() {
+		t.Errorf("launcher jar = %q, want %q", args[len(args)-2], o.launcherJar())
+	}
+	if args[len(args)-1] != o.DeployDir {
+		t.Errorf("deploy dir = %q, want %q", args[len(args)-1], o.DeployDir)
+	}
+}
+
 func TestLocalRuntimeEnv(t *testing.T) {
 	o := testLocalOpts()
 	env := localRuntimeEnv(o)

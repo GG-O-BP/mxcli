@@ -95,7 +95,9 @@ end;
 - Parameters start with `$` prefix
 - Return variable must be declared or used
 - Every microflow must end with `return` statement
-- Statements end with semicolon `;`
+- Every body statement ends with a semicolon `;` — **required**, not optional. This
+  includes block terminators: `end if;`, `end loop;`, `end while;`, `end case;`.
+  A missing one is a parse error (`missing ';' at 'return'`), not a warning.
 - Microflow ends with `/` separator
 
 ### Parameter Types
