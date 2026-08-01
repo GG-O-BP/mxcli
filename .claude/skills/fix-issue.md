@@ -8,7 +8,16 @@ to the symptom table below, so the next similar issue costs fewer reads.
 1. Match the issue symptom to a row in the table — go straight to that file.
 2. Follow the fix pattern for that row.
 3. Write a failing test first, then implement.
-4. After the fix: **add a new row** to the table if the symptom is not already covered.
+4. **Verify at the layer the symptom lives in.** Parser → unit test. BSON we write →
+   unit test on the encoded document. Files on disk after `mx` runs → integration test
+   (`-tags integration`). The **rendered app's behaviour or appearance** → boot it and
+   assert in a browser: [`verify-in-runtime.md`](./verify-in-runtime.md). A page can
+   serialize to valid-looking BSON, pass `mx check`, build cleanly, and still render
+   wrong.
+5. **Prove the test detects the bug**: revert the fix and confirm it fails with the
+   reported symptom. A test that has only ever run against fixed code has not been
+   shown to detect anything.
+6. After the fix: **add a new row** to the table if the symptom is not already covered.
 
 ---
 

@@ -287,6 +287,8 @@ When reviewing pull requests or validating work before commit, verify these item
 - [ ] **Fix-issue skill consulted** — read `.claude/skills/fix-issue.md` before diagnosing; match symptom to table before opening files
 - [ ] **Symptom table updated** — new symptom/layer/file mapping added to `.claude/skills/fix-issue.md` if not already covered
 - [ ] **Test written first** — failing test exists before implementation (parser test in `sdk/mpr/`, backend mutation test in `mdl/backend/mpr/`, executor handler test in `mdl/executor/` using `MockBackend`)
+- [ ] **Verified at the layer the symptom lives in** — a test proves something about the layer it exercises and nothing more. Parser/grammar → unit test. BSON we write → unit test on the encoded document. Files on disk after `mx` runs → integration test (`-tags integration`). **The rendered app's behaviour or appearance → `.claude/skills/verify-in-runtime.md`** (boot with `run --local`, assert in Playwright). A page can serialize to valid-looking BSON, pass `mx check`, build cleanly, and still render wrong — that was #812.
+- [ ] **Fix proven to be the cause** — revert the fix (or stub the guard) and confirm the test fails with the reported symptom. A test that only passes against fixed code has not been shown to detect anything; two bugs this week had a green suite while live (#812 a clobbered `RegisterTypeDefaults`, #808 an integration test that had only ever skipped)
 
 ### Overlap & duplication
 - [ ] Check `docs/11-proposals/` for existing proposals covering the same functionality
@@ -575,6 +577,7 @@ Full syntax tables for all MDL statements (microflows, pages, security, navigati
 - `docs/03-development/PAGE_BSON_SERIALIZATION.md` - Page/widget BSON format, type mappings, required defaults
 - `docs/03-development/WIDGET_BSON_VERSION_COMPATIBILITY.md` - What's version-resilient vs version-fragile in widget BSON output, and how to onboard a new Mendix minor (e.g. 11.10)
 - `.claude/skills/debug-bson.md` - Workflow for debugging BSON serialization issues with `mx` tool (includes the "Studio Pro Update Widget" diff methodology that closed CE0463)
+- `.claude/skills/verify-in-runtime.md` - Proving a fix in a real app in a real browser (`run --local` + Playwright). For symptoms that only exist at render time, where valid-looking BSON and a clean `mx check` prove nothing — see #812
 - `cmd/mxcli/lsp.go` - LSP server implementation (hover, definition, diagnostics, completion, symbols)
 - `cmd/mxcli/init.go` - `mxcli init` command (project initialization + VS Code extension install)
 - `cmd/mxcli/docker/oql.go` - OQL query execution against running Mendix runtime via M2EE admin API
