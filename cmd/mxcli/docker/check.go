@@ -34,58 +34,6 @@ type CheckOptions struct {
 	Stderr io.Writer
 }
 
-// updateWidgetsPathArg returns an absolute form of the .mpr path for the
-// `mx update-widgets` invocation. MxToolset's AddProjectDirAsAllowedPath computes
-// Path.GetDirectoryName(mprFilePath) to whitelist the project directory; given a
-// bare filename (e.g. "app.mpr", as passed by `mxcli docker build -p app.mpr` run
-// from the project dir) that returns "" → null and the tool throws
-// System.ArgumentNullException, silently skipping the widget migration. That in
-// turn leaves CE0463 "widget definition changed" errors unresolved at check time.
-// An absolute path always has a directory component. `mx check` is unaffected, so
-// only the update-widgets arg is normalized. Falls back to the input if Abs fails.
-func updateWidgetsPathArg(p string) string {
-	if abs, err := filepath.Abs(p); err == nil {
-		return abs
-	}
-	return p
-}
-
-// snapshotStorageFormat backs up the MPRv2 storage files (.mpr index + mprcontents/)
-// to a temp directory and returns a restore function that puts them back, undoing
-// any v2 -> v1 conversion performed by an intervening `mx update-widgets`. The
-// restore function removes the temp directory and is safe to defer; it best-effort
-// restores and never panics. mprPath and contentsDir come from an mpr.Reader on a
-// project already known to be MPRv2.
-func snapshotStorageFormat(mprPath, contentsDir string) (restore func(), err error) {
-	tmp, err := os.MkdirTemp("", "mxcli-mpr-snapshot-*")
-	if err != nil {
-		return nil, err
-	}
-
-	mprBackup := filepath.Join(tmp, filepath.Base(mprPath))
-	if err := copyFile(mprPath, mprBackup); err != nil {
-		os.RemoveAll(tmp)
-		return nil, err
-	}
-
-	contentsBackup := filepath.Join(tmp, "mprcontents")
-	if err := copyDir(contentsDir, contentsBackup); err != nil {
-		os.RemoveAll(tmp)
-		return nil, err
-	}
-
-	restore = func() {
-		defer os.RemoveAll(tmp)
-		// Restore the v2 index file.
-		_ = copyFile(mprBackup, mprPath)
-		// update-widgets deletes mprcontents/; drop whatever is there now (nothing,
-		// after a conversion) and restore the backed-up tree.
-		_ = os.RemoveAll(contentsDir)
-		_ = copyDir(contentsBackup, contentsDir)
-	}
-	return restore, nil
-}
-
 // copyFile copies a single file from src to dst, preserving the source file mode.
 func copyFile(src, dst string) error {
 	info, err := os.Stat(src)
@@ -136,50 +84,13 @@ func Check(opts CheckOptions) error {
 	}
 	fmt.Fprintf(w, "Using mx: %s\n", mxPath)
 
-	// `mx update-widgets` rewrites an MPRv2 project into the self-contained MPRv1
-	// storage format: it inlines every unit into the .mpr and deletes mprcontents/.
-	// A `check` must not mutate the on-disk storage format — silently doing so
-	// desyncs the working tree from a Git repository that tracks the mprcontents/
-	// files and can leave Studio Pro unable to open the project. So when the project
-	// is MPRv2, snapshot the .mpr + mprcontents/ before update-widgets and restore
-	// them after the check. The check still runs against the widget-normalized model
-	// (so CE0463 false positives are still suppressed); only the on-disk format is
-	// preserved. MPRv1 projects are already single-file and need no protection.
-	if !opts.SkipUpdateWidgets && opts.ProjectPath != "" {
-		if reader, err := mpr.Open(opts.ProjectPath); err == nil {
-			isV2 := reader.Version() == mpr.MPRVersionV2
-			contentsDir := reader.ContentsDir()
-			reader.Close()
-			if isV2 {
-				restore, snapErr := snapshotStorageFormat(opts.ProjectPath, contentsDir)
-				if snapErr != nil {
-					// Can't protect the format — skip update-widgets rather than risk
-					// an unrecoverable v2 -> v1 conversion. A CE0463 false positive is
-					// the lesser evil than a silent, unrestorable format change.
-					fmt.Fprintf(w, "Warning: could not snapshot MPRv2 storage (skipping update-widgets to avoid a v2->v1 conversion): %v\n", snapErr)
-					opts.SkipUpdateWidgets = true
-				} else {
-					defer restore()
-				}
-			}
-		}
-	}
-
-	// Run mx update-widgets to normalize pluggable widget definitions.
-	// This prevents false CE0463 ("widget definition changed") errors caused
-	// by mismatch between widget Object properties and Type PropertyTypes.
+	// Normalize pluggable widget definitions so `mx check` does not report false
+	// CE0463 ("widget definition changed") errors. runUpdateWidgets preserves the
+	// project's on-disk storage format; restore is deferred so the check below still
+	// runs against the widget-normalized model.
 	if !opts.SkipUpdateWidgets {
-		fmt.Fprintf(w, "Updating widget definitions in %s...\n", opts.ProjectPath)
-		uwCmd := exec.Command(mxPath, "update-widgets", updateWidgetsPathArg(opts.ProjectPath))
-		uwCmd.Stdout = w
-		uwCmd.Stderr = stderr
-		PrepareMxCommand(uwCmd)
-		if err := uwCmd.Run(); err != nil {
-			// Non-fatal: warn and continue with check
-			fmt.Fprintf(w, "Warning: update-widgets failed (continuing with check): %v\n", err)
-		} else {
-			fmt.Fprintln(w, "Widget definitions updated.")
-		}
+		restore := runUpdateWidgets(mxPath, opts.ProjectPath, w, stderr)
+		defer restore()
 	}
 
 	// Run mx check
@@ -286,17 +197,57 @@ func ResolveMxForVersion(mxbuildPath, preferredVersion string) (string, error) {
 	return "", fmt.Errorf("mx not found; specify --mxbuild-path pointing to Mendix installation directory")
 }
 
+// localMxForVersion returns a locally available mx binary that is EXACTLY the
+// requested version, or "" if there is none.
+//
+// Unlike ResolveMxForVersion it never substitutes a different version. That
+// substitution is reasonable when the project already exists and its version is a
+// preference; it is wrong when the version IS the request — see
+// ResolveMxForNewProject.
+//
+// Looks in the same places, minus the "any version will do" fallbacks: an
+// exact-version Studio Pro install, an exact-version binary in the OS-specific
+// install locations, then the exact-version download cache. PATH is deliberately
+// excluded: an `mx` on PATH carries no version guarantee.
+func localMxForVersion(version string) string {
+	if version == "" {
+		return ""
+	}
+	if studioProDir := ResolveStudioProDir(version); studioProDir != "" {
+		for _, name := range mxBinaryNames() {
+			candidate := filepath.Join(studioProDir, "modeler", name)
+			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+				return candidate
+			}
+		}
+	}
+	if matches := globVersionedMatches(mendixSearchPaths(mxBinaryName())); len(matches) > 0 {
+		if exact := exactVersionedPath(matches, version); exact != "" {
+			return exact
+		}
+	}
+	return CachedMxPath(version)
+}
+
 // ResolveMxForNewProject finds the mx binary for use by mxcli new.
-// On Windows and macOS it prefers an installed Studio Pro to avoid downloading
-// Linux CDN binaries that won't execute on those platforms. On Linux (and as a
-// fallback) it downloads mxbuild from the CDN and derives mx from the same dir.
+//
+// The requested version is not a preference here, it is the definition of the
+// output: `mx create-project` stamps the new project with the version of the binary
+// that created it. So only an EXACT match may be reused; anything else is
+// downloaded. Delegating to ResolveMxForVersion was wrong, because its last resort
+// is AnyCachedMxPath() — with only 11.6.6 cached, `mxcli new --version 11.12.2`
+// printed "Resolving MxBuild 11.12.2..." and then produced an 11.6.6 project, with
+// no warning that the requested version had been ignored (mendixlabs/mxcli#808 era
+// finding; the CDN had the version all along).
+//
+// On Windows and macOS an exact-version Studio Pro is still preferred, so those
+// platforms do not download a Linux CDN binary that cannot execute.
 func ResolveMxForNewProject(version string, progressWriter io.Writer) (string, error) {
-	// Fast path: Studio Pro or cached download already present
-	if mxPath, err := ResolveMxForVersion("", version); err == nil {
+	if mxPath := localMxForVersion(version); mxPath != "" {
 		return mxPath, nil
 	}
-	// Slow path: download mxbuild from CDN (works on Linux; on macOS/Windows
-	// this is only reached if Studio Pro is not installed)
+	// Not available locally at the requested version: download it (works on Linux;
+	// on macOS/Windows this is only reached when Studio Pro is not installed).
 	mxbuildPath, err := DownloadMxBuild(version, progressWriter)
 	if err != nil {
 		return "", err

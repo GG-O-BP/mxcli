@@ -95,7 +95,9 @@ end;
 - Parameters start with `$` prefix
 - Return variable must be declared or used
 - Every microflow must end with `return` statement
-- Statements end with semicolon `;`
+- Every body statement ends with a semicolon `;` — **required**, not optional. This
+  includes block terminators: `end if;`, `end loop;`, `end while;`, `end case;`.
+  A missing one is a parse error (`missing ';' at 'return'`), not a warning.
 - Microflow ends with `/` separator
 
 ### Parameter Types
@@ -540,6 +542,18 @@ $NewProduct = create Test.Product (
 - Closing `)` followed by semicolon
 - Syntax aligned with CALL MICROFLOW/CALL JAVA ACTION
 
+**The Commit flag** (Studio Pro's "Commit" dropdown) is the optional `commit`
+modifier after the member list:
+
+```mdl
+$Order = create Sales.Order (Number = $Nr);                      -- Commit: No (default)
+$Order = create Sales.Order (Number = $Nr) commit;               -- Commit: Yes
+$Order = create Sales.Order (Number = $Nr) commit without events;-- Commit: YesWithoutEvents
+```
+
+Omit it for the default. This is a **modifier on the create**, not the separate
+`commit $Var;` activity — see COMMIT Object below for that one.
+
 ### CHANGE Object
 
 ```mdl
@@ -547,8 +561,15 @@ change $Product (
   Name = $NewName,
   ModifiedDate = [%CurrentDateTime%]);
 
+-- Commit the changed object as part of the change activity
+change $Product (Name = $NewName) commit;
+change $Product (Name = $NewName) commit without events;
+
 -- Refresh the changed object in the client
 change $Product (Name = $NewName) refresh;
+
+-- Both: commit comes first
+change $Product (Name = $NewName) commit refresh;
 ```
 
 **Note**: Only specify attributes you want to change. Syntax aligned with CREATE.

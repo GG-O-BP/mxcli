@@ -116,60 +116,60 @@ microflowBody
  * not at the grammar level.
  */
 microflowStatement
-    : annotation* declareStatement SEMICOLON?
-    | annotation* caseStatement SEMICOLON?
-    | annotation* inheritanceSplitStatement SEMICOLON?
-    | annotation* castObjectStatement SEMICOLON?
-    | annotation* setStatement SEMICOLON?
-    | annotation* createListStatement SEMICOLON?       // Must be before createObjectStatement to match "CREATE LIST OF"
-    | annotation* createObjectStatement SEMICOLON?
-    | annotation* changeObjectStatement SEMICOLON?
-    | annotation* commitStatement SEMICOLON?
-    | annotation* deleteObjectStatement SEMICOLON?
-    | annotation* rollbackStatement SEMICOLON?
-    | annotation* retrieveStatement SEMICOLON?
-    | annotation* ifStatement SEMICOLON?
-    | annotation* loopStatement SEMICOLON?
-    | annotation* whileStatement SEMICOLON?
-    | annotation* continueStatement SEMICOLON?
-    | annotation* breakStatement SEMICOLON?
-    | annotation* returnStatement SEMICOLON?
-    | annotation* raiseErrorStatement SEMICOLON?
-    | annotation* logStatement SEMICOLON?
-    | annotation* callMicroflowStatement SEMICOLON?
-    | annotation* callNanoflowStatement SEMICOLON?
-    | annotation* callJavaActionStatement SEMICOLON?
-    | annotation* callJavaScriptActionStatement SEMICOLON?
-    | annotation* callWebServiceStatement SEMICOLON?
-    | annotation* executeDatabaseQueryStatement SEMICOLON?
-    | annotation* callExternalActionStatement SEMICOLON?
-    | annotation* showPageStatement SEMICOLON?
-    | annotation* closePageStatement SEMICOLON?
-    | annotation* showHomePageStatement SEMICOLON?
-    | annotation* showMessageStatement SEMICOLON?
-    | annotation* downloadFileStatement SEMICOLON?
-    | annotation* throwStatement SEMICOLON?
-    | annotation* listOperationStatement SEMICOLON?
-    | annotation* aggregateListStatement SEMICOLON?
-    | annotation* addToListStatement SEMICOLON?
-    | annotation* removeFromListStatement SEMICOLON?
-    | annotation* validationFeedbackStatement SEMICOLON?
-    | annotation* restCallStatement SEMICOLON?
-    | annotation* sendRestRequestStatement SEMICOLON?
-    | annotation* importFromMappingStatement SEMICOLON?
-    | annotation* exportToMappingStatement SEMICOLON?
-    | annotation* transformJsonStatement SEMICOLON?
-    | annotation* callWorkflowStatement SEMICOLON?
-    | annotation* getWorkflowDataStatement SEMICOLON?
-    | annotation* getWorkflowsStatement SEMICOLON?
-    | annotation* getWorkflowActivityRecordsStatement SEMICOLON?
-    | annotation* workflowOperationStatement SEMICOLON?
-    | annotation* setTaskOutcomeStatement SEMICOLON?
-    | annotation* openUserTaskStatement SEMICOLON?
-    | annotation* notifyWorkflowStatement SEMICOLON?
-    | annotation* openWorkflowStatement SEMICOLON?
-    | annotation* lockWorkflowStatement SEMICOLON?
-    | annotation* unlockWorkflowStatement SEMICOLON?
+    : annotation* declareStatement SEMICOLON
+    | annotation* caseStatement SEMICOLON
+    | annotation* inheritanceSplitStatement SEMICOLON
+    | annotation* castObjectStatement SEMICOLON
+    | annotation* setStatement SEMICOLON
+    | annotation* createListStatement SEMICOLON       // Must be before createObjectStatement to match "CREATE LIST OF"
+    | annotation* createObjectStatement SEMICOLON
+    | annotation* changeObjectStatement SEMICOLON
+    | annotation* commitStatement SEMICOLON
+    | annotation* deleteObjectStatement SEMICOLON
+    | annotation* rollbackStatement SEMICOLON
+    | annotation* retrieveStatement SEMICOLON
+    | annotation* ifStatement SEMICOLON
+    | annotation* loopStatement SEMICOLON
+    | annotation* whileStatement SEMICOLON
+    | annotation* continueStatement SEMICOLON
+    | annotation* breakStatement SEMICOLON
+    | annotation* returnStatement SEMICOLON
+    | annotation* raiseErrorStatement SEMICOLON
+    | annotation* logStatement SEMICOLON
+    | annotation* callMicroflowStatement SEMICOLON
+    | annotation* callNanoflowStatement SEMICOLON
+    | annotation* callJavaActionStatement SEMICOLON
+    | annotation* callJavaScriptActionStatement SEMICOLON
+    | annotation* callWebServiceStatement SEMICOLON
+    | annotation* executeDatabaseQueryStatement SEMICOLON
+    | annotation* callExternalActionStatement SEMICOLON
+    | annotation* showPageStatement SEMICOLON
+    | annotation* closePageStatement SEMICOLON
+    | annotation* showHomePageStatement SEMICOLON
+    | annotation* showMessageStatement SEMICOLON
+    | annotation* downloadFileStatement SEMICOLON
+    | annotation* throwStatement SEMICOLON
+    | annotation* listOperationStatement SEMICOLON
+    | annotation* aggregateListStatement SEMICOLON
+    | annotation* addToListStatement SEMICOLON
+    | annotation* removeFromListStatement SEMICOLON
+    | annotation* validationFeedbackStatement SEMICOLON
+    | annotation* restCallStatement SEMICOLON
+    | annotation* sendRestRequestStatement SEMICOLON
+    | annotation* importFromMappingStatement SEMICOLON
+    | annotation* exportToMappingStatement SEMICOLON
+    | annotation* transformJsonStatement SEMICOLON
+    | annotation* callWorkflowStatement SEMICOLON
+    | annotation* getWorkflowDataStatement SEMICOLON
+    | annotation* getWorkflowsStatement SEMICOLON
+    | annotation* getWorkflowActivityRecordsStatement SEMICOLON
+    | annotation* workflowOperationStatement SEMICOLON
+    | annotation* setTaskOutcomeStatement SEMICOLON
+    | annotation* openUserTaskStatement SEMICOLON
+    | annotation* notifyWorkflowStatement SEMICOLON
+    | annotation* openWorkflowStatement SEMICOLON
+    | annotation* lockWorkflowStatement SEMICOLON
+    | annotation* unlockWorkflowStatement SEMICOLON
     ;
 
 declareStatement
@@ -212,13 +212,27 @@ setStatement
     ;
 
 // $NewProduct = CREATE MfTest.Product (Name = $Name, Code = $Code);
+// $NewProduct = CREATE MfTest.Product (Name = $Name) COMMIT;
 createObjectStatement
-    : (VARIABLE EQUALS)? CREATE nonListDataType (LPAREN memberAssignmentList? RPAREN)? onErrorClause?
+    : (VARIABLE EQUALS)? CREATE nonListDataType (LPAREN memberAssignmentList? RPAREN)? commitClause? onErrorClause?
     ;
 
 // CHANGE $Product (Name = $NewName, ModifiedDate = [%CurrentDateTime%]);
+// CHANGE $Product (Name = $NewName) COMMIT WITHOUT EVENTS REFRESH;
 changeObjectStatement
-    : CHANGE VARIABLE (LPAREN memberAssignmentList? RPAREN)? REFRESH?
+    : CHANGE VARIABLE (LPAREN memberAssignmentList? RPAREN)? commitClause? REFRESH?
+    ;
+
+// The Commit flag on a create/change activity: Mendix's Microflows$Commit enum.
+// Absent = No (the default, so it is omitted from DESCRIBE output); COMMIT = Yes;
+// COMMIT WITHOUT EVENTS = YesWithoutEvents.
+//
+// This is a modifier, NOT the standalone `COMMIT $Var` activity (commitStatement).
+// The two are told apart by what follows: the activity always names a variable.
+// Because a body statement must be terminated (see microflowStatement), a stray
+// `commit $Other` on the next line cannot be absorbed into this clause.
+commitClause
+    : COMMIT (WITHOUT EVENTS)?
     ;
 
 // Shared by SET, LOOP, aggregate expressions, and validation feedback targets.

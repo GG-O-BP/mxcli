@@ -75,7 +75,7 @@ func TestWriteParity_AlterKeepsAccessRule(t *testing.T) {
 func TestWriteParity_AlterKeepsEventHandler(t *testing.T) {
 	const ent = "MyFirstModule.EvtEnt"
 	setup := []string{
-		"CREATE MICROFLOW MyFirstModule.OnEvt () RETURNS BOOLEAN BEGIN RETURN true END",
+		"CREATE MICROFLOW MyFirstModule.OnEvt () RETURNS BOOLEAN BEGIN RETURN true; END",
 		"CREATE PERSISTENT ENTITY " + ent + " ( Code: string(20), Rank: integer )",
 		"ALTER ENTITY " + ent + " ADD EVENT HANDLER ON BEFORE COMMIT CALL MyFirstModule.OnEvt RAISE ERROR",
 	}

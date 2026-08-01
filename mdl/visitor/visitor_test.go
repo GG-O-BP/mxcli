@@ -14,8 +14,8 @@ func TestMicroflowParsing(t *testing.T) {
 	input := `CREATE MICROFLOW MyModule.HelloWorld ()
 RETURNS String
 BEGIN
-  DECLARE $greeting String = 'Hello, World!'
-  RETURN $greeting
+  DECLARE $greeting String = 'Hello, World!';
+  RETURN $greeting;
 END;`
 
 	prog, errs := Build(input)
