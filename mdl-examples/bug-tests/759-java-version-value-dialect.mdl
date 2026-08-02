@@ -1,0 +1,32 @@
+-- Bug #759 (follow-up): the Java version *value* format is version-specific too
+--
+-- Symptom: on Mendix 11.12 an `alter settings model JavaVersion = 'Java21'`
+-- produced a project mx check refuses to load at all:
+--
+--   ERROR: System.ArgumentOutOfRangeException: Specified argument was out of the
+--   range of valid values. (Parameter 'majorVersion is an unsupported value: Java21')
+--      at Mendix.Modeler.Settings.JavaVersionExtensions.fromString(String majorVersion)
+--      at Mendix.Modeler.Settings.RuntimeSettings.get_JavaVersion()
+--
+-- Cause: the #759 fix followed the *key* rename ("JavaVersion" up to 11.6,
+-- "JavaMajorVersion" from 11.12) but wrote the value through verbatim. The rename
+-- changed the value format as well: 11.6 stores the enum member "Java21", 11.12
+-- the bare major "21". Writing "Java21" into JavaMajorVersion is what
+-- JavaVersionExtensions.fromString throws on.
+--
+-- Before the fix this was worse than a wrong value: unlike the unknown-property
+-- shape of the original #759, this one is a *hard* mxbuild failure — the whole
+-- project fails to load, so nothing downstream of it can be checked either.
+--
+-- Fix: settingsoverlay.JavaVersionValue renders the value in the dialect the
+-- stored key expects. Either spelling is accepted on input.
+--
+-- Verify: run against an 11.12+ project, then `mx check` — it must load and
+-- report no settings error. On an 11.6 project the same script stores 'Java21'.
+
+-- Both spellings are accepted; both land as the project's own dialect.
+alter settings model JavaVersion = 'Java21';
+alter settings model JavaVersion = '21';
+
+-- Round-trip: describe emits the project's spelling, which must replay cleanly.
+describe settings;

@@ -210,6 +210,15 @@ create persistent entity Module.Photo (
 
 **Note:** `mxcli syntax entity` output may show EXTENDS after `)` — this is misleading. Always place EXTENDS before `(`.
 
+**Security follows inheritance.** Mendix inheritance is multi-table: all of the
+parent's attributes are members of the child, so a specialized entity's access rule
+must cover them. Grant an inherited member exactly like one of the entity's own —
+`grant Module.Viewer on Module.Attachment (read (AttachmentDescription, "Name", Size));`
+— and `read *` / `write *` cover them too. Skipping them is Mendix CE0066 "Entity
+access is out of date". The one exception is entities extending `System.User`, whose
+inherited platform members Mendix manages and which must not be granted. See
+`manage-security.md`.
+
 #### System Attributes (Auditing)
 
 Mendix supports four built-in auditing properties on persistent entities. Declare them as regular attributes using pseudo-types (like `autonumber`):

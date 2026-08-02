@@ -393,7 +393,15 @@ func init() {
 			"show import mappings", "describe import mapping",
 			"with json structure", "find or create", "object handling",
 		},
-		Syntax:  "SHOW IMPORT MAPPINGS [IN Module];\nDESCRIBE IMPORT MAPPING Module.Name;\nCREATE [OR MODIFY] IMPORT MAPPING Module.Name\n  WITH JSON STRUCTURE Module.JsonStruct\n{\n  create|find|find or create Module.Entity {\n    Attr = jsonField [KEY],\n    Assoc/Module.Child = nestedKey { ... }\n  }\n};\nDROP IMPORT MAPPING Module.Name;\n\nOR MODIFY: updates mapping in-place, preserves UUID.",
+		Syntax: "SHOW IMPORT MAPPINGS [IN Module];\nDESCRIBE IMPORT MAPPING Module.Name;\n" +
+			"CREATE [OR MODIFY] IMPORT MAPPING Module.Name\n  WITH JSON STRUCTURE Module.JsonStruct\n{\n" +
+			"  create|find|find or create Module.Entity {\n    Attr = jsonField [KEY],\n" +
+			"    Assoc/Module.Child = nestedKey { ... }\n  }\n};\nDROP IMPORT MAPPING Module.Name;\n\n" +
+			"OR MODIFY: updates mapping in-place, preserves UUID.\n\n" +
+			"Inherited attributes:\n" +
+			"  An entity mapped with EXTENDS can map its inherited attributes too —\n" +
+			"  name them exactly like its own. mxcli resolves each to the entity that\n" +
+			"  declares it, which is what Studio Pro needs to show the field mapped.",
 		Example: "CREATE IMPORT MAPPING Shop.IMM_Order\n  WITH JSON STRUCTURE Shop.JSON_Order\n{\n  create Shop.Order {\n    OrderId = orderId KEY,\n    TotalAmount = total\n  }\n};\n\n-- Idempotent update\nCREATE OR MODIFY IMPORT MAPPING Shop.IMM_Order\n  WITH JSON STRUCTURE Shop.JSON_Order\n{\n  find or create Shop.Order {\n    OrderId = orderId KEY,\n    TotalAmount = total,\n    Status = status\n  }\n};",
 		SeeAlso: []string{"export-mapping", "json-structure"},
 	})

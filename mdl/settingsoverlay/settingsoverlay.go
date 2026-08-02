@@ -134,6 +134,13 @@ func newServerConfiguration(cfg *model.ServerConfiguration, siblings []map[strin
 	}
 }
 
+// The two spellings of the runtime Java version property. They differ in value
+// format as well as in name — see JavaVersionValue.
+const (
+	JavaMajorVersionKey = "JavaMajorVersion" // Mendix 11.12+, e.g. "21"
+	JavaVersionEnumKey  = "JavaVersion"      // Mendix 11.6, e.g. "Java21"
+)
+
 // JavaVersionKey returns the storage key a Settings$ModelSettings part uses for
 // the runtime Java version, or "" when it carries neither.
 //
@@ -146,7 +153,7 @@ func newServerConfiguration(cfg *model.ServerConfiguration, siblings []map[strin
 // (mendixlabs/mxcli#759). Read the key off the document instead of assuming one,
 // and never invent a key the document does not already have.
 func JavaVersionKey(raw map[string]any) string {
-	for _, k := range []string{"JavaMajorVersion", "JavaVersion"} {
+	for _, k := range []string{JavaMajorVersionKey, JavaVersionEnumKey} {
 		if _, ok := raw[k]; ok {
 			return k
 		}
@@ -165,12 +172,42 @@ func JavaVersion(raw map[string]any) string {
 	return v
 }
 
-// SetJavaVersion writes the runtime Java version back to the key it was read from.
-// A part carrying neither key is left untouched.
+// SetJavaVersion writes the runtime Java version back to the key it was read from,
+// in the value format that key expects. A part carrying neither key is left
+// untouched.
 func SetJavaVersion(raw map[string]any, v string) {
 	if k := JavaVersionKey(raw); k != "" {
-		raw[k] = v
+		raw[k] = JavaVersionValue(k, v)
 	}
+}
+
+// JavaVersionValue renders a Java version in the form the given storage key holds:
+// "JavaVersion" carries the enum member ("Java21"), "JavaMajorVersion" the bare
+// major ("21").
+//
+// The rename in #759 changed the value format along with the key, and following
+// only the key is not enough: Mendix 11.12 parses JavaMajorVersion with
+// JavaVersionExtensions.fromString, which throws ArgumentOutOfRangeException
+// ("majorVersion is an unsupported value: Java21") on the 11.6 spelling. So an
+// `alter settings model JavaVersion = 'Java21'` written verbatim onto an 11.12
+// document produces a project mx check refuses to load. Either spelling is
+// accepted on input and stored in the document's own dialect.
+//
+// A value that is neither spelling — no recognisable major version — is passed
+// through untouched, so a typo surfaces as a Mendix error rather than as a
+// silently mangled setting.
+func JavaVersionValue(key, v string) string {
+	major := strings.TrimSpace(v)
+	if len(major) >= 4 && strings.EqualFold(major[:4], "Java") {
+		major = major[4:]
+	}
+	if major == "" || strings.TrimLeft(major, "0123456789") != "" {
+		return v
+	}
+	if key == JavaMajorVersionKey {
+		return major
+	}
+	return "Java" + major
 }
 
 // ConstantValues rebuilds a configuration's ConstantValues list, updating each

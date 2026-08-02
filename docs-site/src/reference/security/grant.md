@@ -125,6 +125,45 @@ GRANT Shop.Viewer ON Shop.Customer (READ (Phone));
 -- Result: READ (Name, Email, Phone)
 ```
 
+## Inherited members
+
+Mendix inheritance is multi-table: a child adds attributes to its parent's, and
+**all** the parent's members belong to the child. Name an inherited member in a
+GRANT exactly like one of the entity's own; `READ *` and `WRITE *` cover them too.
+
+```sql
+CREATE PERSISTENT ENTITY Docs.DocumentBase (DocName: String(200));
+CREATE PERSISTENT ENTITY Docs.Contract EXTENDS Docs.DocumentBase (ContractNumber: String(50));
+
+-- DocName inherited, ContractNumber own — no distinction at the call site
+GRANT Docs.Viewer ON Docs.Contract (READ (DocName, ContractNumber));
+```
+
+An access rule must carry an entry for **every** member, own and inherited. mxcli
+writes the members you did not grant with rights `None`; omitting them entirely is
+Mendix **CE0066** *"Entity access is out of date"*, which masks the CE2729
+*"No read access to attribute"* errors beneath it until Studio Pro's
+**Update security** is clicked.
+
+A member name that matches nothing is rejected rather than skipped:
+
+```
+Error: entity Docs.Contract has no member(s) DocNam; grant only names members
+of the entity or of an entity it inherits from
+```
+
+### User entities are the exception
+
+An entity extending `System.User` is a *user entity*, and Mendix manages its
+inherited platform members (`Name`, `Password`, `Blocked`, …). Those must **not**
+appear in the access rule — listing them is CE0066. Grant only the entity's own
+members; mxcli excludes the platform ones automatically.
+
+```sql
+CREATE PERSISTENT ENTITY Docs.Employee EXTENDS System.User (EmployeeNo: String(20));
+GRANT Docs.Viewer ON Docs.Employee (READ (EmployeeNo));
+```
+
 ## See Also
 
 [REVOKE](revoke.md), [CREATE MODULE ROLE](create-module-role.md), [CREATE USER ROLE](create-user-role.md)

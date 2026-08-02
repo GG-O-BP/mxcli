@@ -1472,7 +1472,17 @@ func (w *Writer) ReconcileMemberAccesses(unitID model.ID, moduleName string) (in
 							if attrRef != "" {
 								// Extract attribute name from Module.Entity.AttrName
 								parts := splitQualifiedRef(attrRef)
-								if parts != "" && attrNames[parts] {
+								// An inherited member's reference is qualified against the
+								// entity that DECLARES it, so it does not match this
+								// entity's own attribute list and used to be deleted as
+								// stale (mendixlabs/mxcli#758). The ancestor may live in
+								// another module or in System, neither loaded here, so an
+								// inherited reference cannot be validated at this layer —
+								// preserve what cannot be checked. Mirrors the codec engine
+								// (mdl/backend/modelsdk.attrRefBelongsTo).
+								if !attrRefBelongsToEntity(attrRef, moduleName, entityName) {
+									filtered = append(filtered, maDoc)
+								} else if parts != "" && attrNames[parts] {
 									coveredAttrs[parts] = true
 									// Downgrade write rights on calculated attributes (CE6592)
 									if calculatedAttrs[parts] {
@@ -1653,3 +1663,15 @@ func stripInvalidAccessRuleProps(doc bson.D) (bson.D, bool) {
 
 // ensure primitive import is used
 var _ = primitive.Binary{}
+
+// attrRefBelongsToEntity reports whether a MemberAccess attribute reference
+// ("Module.Entity.Attribute") names one of the given entity's OWN attributes,
+// rather than one inherited from an ancestor. Only an own reference can be
+// validated from a single domain model.
+func attrRefBelongsToEntity(attrRef, moduleName, entityName string) bool {
+	idx := strings.LastIndex(attrRef, ".")
+	if idx < 0 {
+		return false
+	}
+	return strings.EqualFold(attrRef[:idx], moduleName+"."+entityName)
+}

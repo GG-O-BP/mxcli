@@ -97,6 +97,60 @@ func TestUpdateProjectSettings_JavaVersionKeyFollowsDocument(t *testing.T) {
 	}
 }
 
+// TestUpdateProjectSettings_JavaVersionValueMatchesKey covers the follow-up to
+// #759: the rename changed the value format along with the key. Mendix 11.12
+// parses JavaMajorVersion with JavaVersionExtensions.fromString, which throws
+// ArgumentOutOfRangeException ("majorVersion is an unsupported value: Java21") on
+// the 11.6 spelling — so writing the value through verbatim produced a project
+// mx check refuses to load. Either spelling on input, the document's own dialect
+// on disk.
+func TestUpdateProjectSettings_JavaVersionValueMatchesKey(t *testing.T) {
+	tests := []struct {
+		name      string
+		storedKey string
+		seed      string
+		set       string
+		want      string
+	}{
+		{"11_12_given_enum_spelling", "JavaMajorVersion", "21", "Java17", "17"},
+		{"11_12_given_bare_major", "JavaMajorVersion", "21", "17", "17"},
+		{"11_6_given_enum_spelling", "JavaVersion", "Java21", "Java17", "Java17"},
+		{"11_6_given_bare_major", "JavaVersion", "Java21", "17", "Java17"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			proj := copyFixture(t)
+			seedJavaVersionKey(t, proj, tc.storedKey, tc.seed)
+
+			setJavaVersion(t, proj, tc.set)
+
+			if got := readModelSettings(t, proj)[tc.storedKey]; got != tc.want {
+				t.Errorf("%s = %v, want %q (set %q)", tc.storedKey, got, tc.want, tc.set)
+			}
+		})
+	}
+}
+
+// setJavaVersion drives one ALTER SETTINGS MODEL JavaVersion through the backend.
+func setJavaVersion(t *testing.T, proj, v string) {
+	t.Helper()
+	b := New()
+	if err := b.Connect(proj); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	ps, err := b.GetProjectSettings()
+	if err != nil {
+		t.Fatalf("GetProjectSettings: %v", err)
+	}
+	if ps.Model == nil {
+		t.Fatal("fixture has no model settings")
+	}
+	ps.Model.JavaVersion = v
+	if err := b.UpdateProjectSettings(ps); err != nil {
+		t.Fatalf("UpdateProjectSettings: %v", err)
+	}
+}
+
 // seedJavaVersionKey rewrites the fixture's Settings$ModelSettings part so it
 // carries exactly one Java-version key, standing in for the Mendix version that
 // spells it that way.

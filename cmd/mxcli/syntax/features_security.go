@@ -33,8 +33,24 @@ func init() {
 			"entity access", "grant", "revoke", "read", "write",
 			"create", "delete", "xpath", "row-level security",
 		},
-		Syntax:  "GRANT <role> ON <module>.<entity> (<rights>) [WHERE '<xpath>'];\nREVOKE <role> ON <module>.<entity>;\nREVOKE <role> ON <module>.<entity> (<rights>);\n\nRights: CREATE, DELETE, READ *, READ (<attr>,...), WRITE *, WRITE (<attr>,...)",
-		Example: "GRANT Shop.Admin ON Shop.Customer (CREATE, DELETE, READ *, WRITE *);\nGRANT Shop.User ON Shop.Customer (READ *) WHERE '[Active = true()]';",
+		Syntax: "GRANT <role> ON <module>.<entity> (<rights>) [WHERE '<xpath>'];\n" +
+			"REVOKE <role> ON <module>.<entity>;\n" +
+			"REVOKE <role> ON <module>.<entity> (<rights>);\n\n" +
+			"Rights: CREATE, DELETE, READ *, READ (<attr>,...), WRITE *, WRITE (<attr>,...)\n\n" +
+			"Inherited members:\n" +
+			"  Mendix inheritance is multi-table — a child adds attributes to its\n" +
+			"  parent's, and ALL the parent's members belong to the child. Name them\n" +
+			"  in a GRANT exactly like the entity's own; READ */WRITE * covers them\n" +
+			"  too. A name that matches no member is an error, not a silent skip.\n\n" +
+			"  Exception: entities extending System.User are user entities, whose\n" +
+			"  platform members (Name, Password, Blocked, ...) Mendix manages. Do not\n" +
+			"  grant those; mxcli leaves them out of the rule automatically.",
+		Example: "GRANT Shop.Admin ON Shop.Customer (CREATE, DELETE, READ *, WRITE *);\n" +
+			"GRANT Shop.User ON Shop.Customer (READ *) WHERE '[Active = true()]';\n\n" +
+			"-- Contract extends DocumentBase: DocName is inherited, ContractNumber is own\n" +
+			"GRANT Docs.Viewer ON Docs.Contract (READ (DocName, ContractNumber));\n\n" +
+			"-- Attachment extends System.FileDocument: Name and Size are inherited\n" +
+			"GRANT Docs.Viewer ON Docs.Attachment (READ (Category, \"Name\", Size));",
 		SeeAlso: []string{"security.module-role", "security.microflow-access"},
 	})
 

@@ -10,7 +10,40 @@ A JSON structure defines the schema of a JSON payload. It stores a JSON snippet 
 ### Import Mappings
 An import mapping converts a JSON string into Mendix entity objects. It maps JSON fields to entity attributes.
 
-### Export Mappings
+#### Inherited attributes
+
+Mendix inheritance is multi-table: all of a parent's attributes are members of the
+child, so an entity created with `extends` can map them. Name an inherited
+attribute exactly like one of the entity's own — mxcli resolves each to the entity
+that **declares** it, which is the reference Studio Pro needs to show the field
+mapped.
+
+```sql
+create persistent entity Docs.DocumentBase (
+  DocName: String(200),
+  Confidential: Boolean
+);
+
+create persistent entity Docs.Contract extends Docs.DocumentBase (
+  ContractNumber: String(50)
+);
+
+create import mapping Docs.IMM_Contract
+  with json structure Docs.JSON_Contract
+{
+  create Docs.Contract {
+    ContractNumber = contractNumber,   -- own
+    DocName        = docName,          -- inherited
+    Confidential   = confidential      -- inherited
+  }
+};
+```
+
+Qualifying an inherited attribute against the entity being mapped instead of its
+declaring entity is Mendix **CE1613** "The selected attribute ... no longer
+exists", and the field shows unmapped in Studio Pro.
+
+## Export Mappings
 An export mapping converts Mendix entity objects into a JSON string. It maps entity attributes to JSON fields.
 
 ### Critical: Import and Export Need Different Domain Models
