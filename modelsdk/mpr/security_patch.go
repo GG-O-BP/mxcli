@@ -4,6 +4,7 @@ package mpr
 
 import (
 	"fmt"
+	"strings"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
@@ -286,14 +287,28 @@ func secPatchReconcileMemberAccessesDoc(doc bson.D, moduleName string) (bson.D, 
 
 						if attrRef != "" {
 							parts := secSplitQualifiedRef(attrRef)
-							if parts != "" && attrNames[parts] {
+							// An attribute reference is qualified against the entity that
+							// DECLARES it, so an inherited member carries an ancestor's
+							// name, not this entity's. Reconciliation used to compare only
+							// the bare member name against this entity's own attributes,
+							// so every inherited entry looked stale and was deleted —
+							// silently, and on any write that touched the module
+							// (mendixlabs/mxcli#758). The ancestor may live in another
+							// module or in System, neither of which is present in this
+							// document, so an inherited reference cannot be validated here
+							// at all: preserve it rather than delete what cannot be
+							// checked.
+							if !secRefBelongsToEntity(attrRef, moduleName, entityName) {
+								filtered = append(filtered, maDoc)
+							} else if parts != "" && attrNames[parts] {
 								coveredAttrs[parts] = true
 								if calculatedAttrs[parts] {
 									maDoc = secDowngradeCalculatedAttrRights(maDoc)
 								}
 								filtered = append(filtered, maDoc)
 							} else {
-								// Stale attribute ref (attribute was deleted or renamed).
+								// Genuinely stale: the reference claims to be this entity's
+								// own attribute, and the entity no longer has it.
 								changes = append(changes, ReconcileChange{Entity: entityName, Member: parts, Action: "stripped"})
 								changed = true
 							}
@@ -499,4 +514,19 @@ func secStripInvalidAccessRuleProps(doc bson.D) (bson.D, bool) {
 		cleaned = append(cleaned, f)
 	}
 	return cleaned, stripped
+}
+
+// secRefBelongsToEntity reports whether a MemberAccess attribute reference
+// ("Module.Entity.Attribute") is qualified against the given entity — i.e. names
+// one of its OWN attributes rather than one inherited from an ancestor.
+//
+// Only an own reference can be validated from this document: an ancestor may live
+// in another module or in System, neither of which is loaded here.
+func secRefBelongsToEntity(attrRef, moduleName, entityName string) bool {
+	parts := secSplitByDot(attrRef)
+	if len(parts) < 3 {
+		return false
+	}
+	owner := strings.Join(parts[:len(parts)-1], ".")
+	return strings.EqualFold(owner, moduleName+"."+entityName)
 }

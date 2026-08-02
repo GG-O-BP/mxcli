@@ -377,21 +377,30 @@ func execGrantEntityAccess(ctx *ExecContext, s *ast.GrantEntityAccessStmt) error
 		readMemberSet[m] = true
 	}
 
-	// Create entries for all entity attributes
-	for _, attr := range entity.Attributes {
+	// Create entries for every attribute of the entity's access surface — its own
+	// AND those inherited through the generalization chain. Enumerating only
+	// entity.Attributes meant a GRANT naming an inherited member produced no entry
+	// at all while still reporting success, and left the rule incomplete so Mendix
+	// reported CE0066 (mendixlabs/mxcli#758). Each reference is qualified against
+	// the entity that DECLARES the member; qualifying an inherited one against this
+	// entity is CE1613 "The selected attribute no longer exists".
+	entityQN := module.Name + "." + s.Entity.Name
+	members := EntityMembers(ctx, entityQN)
+	grantedMembers := map[string]bool{}
+	for _, mem := range members {
 		rights := defaultMemberAccess
-		if writeMemberSet[attr.Name] {
+		if writeMemberSet[mem.Name] {
 			rights = "ReadWrite"
-		} else if readMemberSet[attr.Name] {
+		} else if readMemberSet[mem.Name] {
 			rights = "ReadOnly"
 		}
 		// Calculated attributes cannot have write rights (CE6592)
-		isCalculated := attr.Value != nil && attr.Value.Type == "CalculatedValue"
-		if isCalculated && (rights == "ReadWrite" || rights == "WriteOnly") {
+		if mem.IsCalculated && (rights == "ReadWrite" || rights == "WriteOnly") {
 			rights = "ReadOnly"
 		}
+		grantedMembers[mem.Name] = true
 		memberAccesses = append(memberAccesses, types.EntityMemberAccess{
-			AttributeRef: module.Name + "." + s.Entity.Name + "." + attr.Name,
+			AttributeRef: mem.Ref,
 			AccessRights: rights,
 		})
 	}
@@ -407,6 +416,7 @@ func execGrantEntityAccess(ctx *ExecContext, s *ast.GrantEntityAccessStmt) error
 			} else if readMemberSet[assoc.Name] {
 				rights = "ReadOnly"
 			}
+			grantedMembers[assoc.Name] = true
 			memberAccesses = append(memberAccesses, types.EntityMemberAccess{
 				AssociationRef: module.Name + "." + assoc.Name,
 				AccessRights:   rights,
@@ -421,11 +431,23 @@ func execGrantEntityAccess(ctx *ExecContext, s *ast.GrantEntityAccessStmt) error
 			} else if readMemberSet[ca.Name] {
 				rights = "ReadOnly"
 			}
+			grantedMembers[ca.Name] = true
 			memberAccesses = append(memberAccesses, types.EntityMemberAccess{
 				AssociationRef: module.Name + "." + ca.Name,
 				AccessRights:   rights,
 			})
 		}
+	}
+
+	// A member named in the GRANT that matched nothing used to be dropped in
+	// silence — the command reported success and the access simply was not there,
+	// which is why REVOKE + GRANT could not repair a damaged rule (#758). Name it
+	// instead. Inherited members now resolve, so anything still unmatched is a typo
+	// or a member of another entity.
+	if unknown := unmatchedGrantMembers(readMembers, writeMembers, grantedMembers); len(unknown) > 0 {
+		return mdlerrors.NewValidationf(
+			"entity %s has no member(s) %s; grant only names members of the entity or of an entity it inherits from",
+			entityQN, strings.Join(unknown, ", "))
 	}
 
 	// Add MemberAccess entries for system associations (owner, changedBy).
