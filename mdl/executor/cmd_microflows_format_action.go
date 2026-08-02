@@ -429,24 +429,18 @@ func formatAction(
 				// (e.g. Status = 'Open' → Status = Module.OrderStatus.Open) when
 				// the entity is known and we are connected to a project.
 				constraint = enrichXPathConstraintForDescribe(ctx, entityName, constraint)
-				// XPath may contain multiple predicates like [a][b] or [a]\n[b].
-				// Split them and join with MDL 'and' so the parser sees
-				// separate xpathConstraint nodes.
-				if strings.HasPrefix(constraint, "[") && strings.HasSuffix(constraint, "]") {
-					// Split on "][" boundary (possibly separated by \n literals),
-					// then re-wrap each predicate.
-					inner := constraint[1 : len(constraint)-1]
-					// Normalise real newlines between predicates: ]\n[ → ][
-					inner = strings.ReplaceAll(inner, "]\n[", "][")
-					parts := strings.Split(inner, "][")
-					if len(parts) > 1 {
-						var wrapped []string
-						for _, p := range parts {
-							wrapped = append(wrapped, "["+strings.TrimSpace(p)+"]")
-						}
-						constraint = strings.Join(wrapped, "\n    ")
+				// XPath may hold several sibling predicate groups — [a][b], or
+				// separated by newlines. Emit each on its own line so the parser
+				// sees separate xpathConstraint nodes. The splitter is nesting- and
+				// quote-aware: the previous "][" split mangled a group containing a
+				// nested bracket or a literal with a ']' in it (#772).
+				if groups := visitor.SplitXPathPredicateGroups(constraint); len(groups) > 0 {
+					if len(groups) > 1 {
+						constraint = strings.Join(groups, "\n    ")
 					} else {
-						constraint = parts[0]
+						// A lone group renders without its outer brackets, matching
+						// the `where <expr>` form the MDL grammar expects.
+						constraint = strings.TrimSuffix(strings.TrimPrefix(groups[0], "["), "]")
 					}
 				}
 				stmt += fmt.Sprintf("\n    where %s", constraint)
@@ -1879,10 +1873,38 @@ func enrichXPathConstraintForDescribe(ctx *ExecContext, entityQN, constraint str
 	if len(enumAttrs) == 0 {
 		return constraint
 	}
-	expr, ok := visitor.ParseXPathConstraint(constraint)
-	if !ok || expr == nil {
+	return enrichXPathGroups(constraint, enumAttrs)
+}
+
+// enrichXPathGroups applies enum enrichment to every top-level predicate group of a
+// stored constraint.
+//
+// Mendix stores sibling groups concatenated (`[a][b][c]`), but the grammar rule
+// matches one group. Enriching the whole string at once parsed only the first and
+// re-rendered just that, silently discarding the rest — describe then showed a
+// materially less restrictive query than the project actually contains
+// (mendixlabs/mxcli#772). ParseXPathConstraint now refuses that partial parse, which
+// stops the data loss on its own; splitting first is what keeps enrichment working
+// for every group rather than only the first.
+func enrichXPathGroups(constraint string, enumAttrs map[string]string) string {
+	groups := visitor.SplitXPathPredicateGroups(constraint)
+	if len(groups) == 0 {
 		return constraint
 	}
-	enriched := enrichXPathExprWithEnums(expr, enumAttrs)
-	return "[" + xpathExprToMDLString(enriched) + "]"
+	out := make([]string, 0, len(groups))
+	for _, g := range groups {
+		out = append(out, enrichXPathGroup(g, enumAttrs))
+	}
+	return strings.Join(out, "")
+}
+
+// enrichXPathGroup enriches one bracket group, returning it unchanged when it does
+// not parse — a group mxcli cannot read is passed through verbatim rather than
+// dropped or guessed at.
+func enrichXPathGroup(group string, enumAttrs map[string]string) string {
+	expr, ok := visitor.ParseXPathConstraint(group)
+	if !ok || expr == nil {
+		return group
+	}
+	return "[" + xpathExprToMDLString(enrichXPathExprWithEnums(expr, enumAttrs)) + "]"
 }
