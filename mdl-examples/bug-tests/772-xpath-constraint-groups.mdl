@@ -1,0 +1,68 @@
+-- Bug #772: describe silently dropped trailing XPath constraint groups
+--
+-- Mendix stores sibling predicate groups concatenated in one XPathConstraint field:
+--
+--   [Reminders.Task_TaskGroup/Reminders.TaskGroup[EndDate = $EndDateLimit]]
+--   [Status != 'Completed']
+--   [CompletionDate = empty]
+--
+-- The MDL grammar rule matches ONE bracket group. With the error listeners removed,
+-- ANTLR parsed the first group, left the rest on the token stream, and still
+-- reported success. enrichXPathConstraintForDescribe read that as a full parse and
+-- re-rendered only what came back, so describe emitted:
+--
+--   where Reminders.Task_TaskGroup/Reminders.TaskGroup[EndDate = $EndDateLimit];
+--
+-- The last two predicates vanished with no warning. That is worse than a crash: the
+-- output looks complete while describing a materially LESS RESTRICTIVE query than
+-- the project actually contains, which makes correct defensive code read as buggy.
+--
+-- Two fixes, defence in depth:
+--   1. ParseXPathConstraint now reports a partial parse as a failure, so a caller
+--      falls back to the stored string instead of silently truncating it.
+--   2. visitor.SplitXPathPredicateGroups splits the constraint into top-level groups
+--      — tracking nesting depth and quoting, so a nested [..] or a ']' inside a
+--      string literal is handled — and each group is enriched and rendered on its
+--      own. Splitting on "][" mangled both of those.
+--
+-- Verify:
+--   1. mxcli exec 772-xpath-constraint-groups.mdl -p app.mpr
+--   2. mxcli -p app.mpr -c "describe microflow Bug772.MF_GetOpenTasks"
+--      All three groups must appear, and Status must render as the qualified
+--      enum value Bug772.TaskStatus.Completed (enrichment reaches later groups too).
+--   3. Feed that describe output back through exec: it re-creates the same flow.
+--
+
+create module Bug772;
+create module role Bug772.User;
+
+create enumeration Bug772.TaskStatus (
+  Open 'Open',
+  Completed 'Completed'
+);
+
+create persistent entity Bug772.TaskGroup (
+  Name: String(100),
+  EndDate: DateTime
+);
+
+create persistent entity Bug772.Task (
+  Title: String(100),
+  Status: Enumeration(Bug772.TaskStatus),
+  CompletionDate: DateTime
+);
+
+create association Bug772.Task_TaskGroup
+  from Bug772.Task to Bug772.TaskGroup
+  type Reference;
+
+create microflow Bug772.MF_GetOpenTasks (
+  EndDateLimit: DateTime
+)
+returns list of Bug772.Task as $Tasks
+begin
+  retrieve $Tasks from Bug772.Task
+    where '[Bug772.Task_TaskGroup/Bug772.TaskGroup[EndDate = $EndDateLimit]][Status != Bug772.TaskStatus.Completed][CompletionDate = empty]';
+  return $Tasks;
+end;
+/
