@@ -34,7 +34,8 @@ create module SecTest;
 create persistent entity SecTest.Customer (
   Name: string(200) not null,
   Email: string(200),
-  IsActive: boolean default true
+  IsActive: boolean default true,
+  Notes: string(500)
 );
 
 @position(300,100)
