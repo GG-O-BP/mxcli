@@ -1,0 +1,73 @@
+-- Bug #703: import/export mappings silently skipped inherited attributes
+--
+-- Mendix inheritance is multi-table: a child adds attributes to its parent's, and
+-- all the parent's are members of the child. A mapping element bound to one of
+-- them must reference the entity that DECLARES it — `Map703.DocumentBase.DocName`,
+-- not `Map703.Contract.DocName`.
+--
+-- mxcli prefixed the entity being mapped, unconditionally:
+--
+--   attr := def.Attribute
+--   if parentEntity != "" && !strings.Contains(attr, ".") {
+--       attr = parentEntity + "." + attr      // always the CHILD
+--   }
+--
+-- so every inherited field produced a reference to an attribute that does not
+-- exist on that entity. In Studio Pro the field shows as unmapped — the reported
+-- symptom — and `mx check` reports CE1613 "The selected attribute ... no longer
+-- exists".
+--
+-- A second, quieter defect sat alongside it: resolveAttributeType scanned only the
+-- entity's own attributes and fell through to a "String" default, so an inherited
+-- Boolean or DateTime element got the wrong DataType even once the reference was
+-- right. (That function also matched entities by name across every domain model,
+-- ignoring the module, so a same-named entity elsewhere could win; it now resolves
+-- the module by name.)
+--
+-- This is the mapping half of the #765 umbrella. The same declaring-entity rule
+-- governs entity access rules (#758) and the change-object writer (#451).
+--
+-- Verify:
+--   1. mxcli exec 703-mapping-inherited-attributes.mdl -p app.mpr
+--   2. mxcli docker check -p app.mpr   ->  0 errors (no CE1613)
+--   3. Dump the mapping unit: the inherited elements must read
+--        Attribute=Map703.DocumentBase.DocName       DataType=DataTypes$StringType
+--        Attribute=Map703.DocumentBase.Confidential  DataType=DataTypes$BooleanType
+--      Before the fix both read Map703.Contract.* and both were StringType.
+--   4. Open the mapping in Studio Pro: all three fields are mapped.
+
+create module Map703;
+
+create json structure Map703.JSON_Contract
+snippet '{"docName": "NDA", "confidential": true, "contractNumber": "C-1"}';
+
+-- Parent supplies DocName (String) and Confidential (Boolean).
+create persistent entity Map703.DocumentBase (
+  DocName: String(200),
+  Confidential: Boolean
+);
+
+-- Child adds its own; inherits the two above.
+create persistent entity Map703.Contract extends Map703.DocumentBase (
+  ContractNumber: String(50)
+);
+
+create import mapping Map703.IMM_Contract
+  with json structure Map703.JSON_Contract
+{
+  create Map703.Contract {
+    ContractNumber = contractNumber,
+    DocName = docName,
+    Confidential = confidential
+  }
+};
+
+create export mapping Map703.EMM_Contract
+  with json structure Map703.JSON_Contract
+{
+  Map703.Contract {
+    contractNumber = ContractNumber,
+    docName = DocName,
+    confidential = Confidential
+  }
+};

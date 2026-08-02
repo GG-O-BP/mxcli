@@ -341,9 +341,18 @@ func buildImportMappingElementModel(moduleName string, def *ast.ImportMappingEle
 		elem.TypeName = "ImportMappings$ValueMappingElement"
 		elem.DataType = resolveAttributeType(parentEntity, def.Attribute, b)
 		elem.IsKey = def.IsKey
+		// A member reference is qualified against the entity that DECLARES it, so
+		// an inherited attribute carries an ancestor's name. Prefixing the entity
+		// being mapped produced CE1613 "The selected attribute no longer exists"
+		// and left the field unmapped in Studio Pro (mendixlabs/mxcli#703) — the
+		// same rule as entity access rules (#758), both under the #765 umbrella.
 		attr := def.Attribute
 		if parentEntity != "" && !strings.Contains(attr, ".") {
-			attr = parentEntity + "." + attr
+			if ref, ok := ResolveMemberRef(b, parentEntity, attr); ok {
+				attr = ref
+			} else {
+				attr = parentEntity + "." + attr
+			}
 		}
 		elem.Attribute = attr
 	}
@@ -372,6 +381,18 @@ func resolveAttributeType(entityQN, attrName string, b backend.DomainModelBacken
 	if len(parts) != 2 {
 		return "String"
 	}
+	// Follow the generalization chain: an inherited attribute is not in the
+	// entity's own list, and defaulting it to String gave a mapping element the
+	// wrong DataType (mendixlabs/mxcli#703). Resolving by module name also stops a
+	// same-named entity in another module being picked up, which the previous
+	// scan-every-domain-model loop did.
+	if hb, ok := b.(entityLookupBackend); ok {
+		if t := ResolveMemberType(hb, entityQN, attrName); t != "" {
+			return t
+		}
+		return "String"
+	}
+
 	dms, err := b.ListDomainModels()
 	if err != nil {
 		return "String"
