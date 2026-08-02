@@ -3,6 +3,7 @@
 package modelsdkbackend
 
 import (
+	"github.com/mendixlabs/mxcli/mdl/dbconnector"
 	"github.com/mendixlabs/mxcli/model"
 	"github.com/mendixlabs/mxcli/modelsdk/element"
 	genBe "github.com/mendixlabs/mxcli/modelsdk/gen/businessevents"
@@ -443,10 +444,18 @@ func (b *Backend) ListDatabaseConnections() ([]*model.DatabaseConnection, error)
 			if !ok {
 				continue
 			}
+			// Mendix 11.13 replaced the integer QueryType with the `Type` string
+			// enum, which the gen accessor does not know; read it off the raw
+			// document so a round-trip preserves the stored value.
 			dq := &model.DatabaseQuery{
-				Name:      q.Name(),
-				SQL:       q.Query(),
-				QueryType: int(q.QueryType()),
+				Name:          q.Name(),
+				SQL:           q.Query(),
+				QueryTypeName: rawQueryTypeName(q),
+			}
+			if dq.QueryTypeName != "" {
+				dq.QueryType = dbconnector.LegacyQueryTypeFor(dq.QueryTypeName)
+			} else {
+				dq.QueryType = int(q.QueryType())
 			}
 			dq.ID = model.ID(q.ID())
 			dq.TypeName = "DatabaseConnector$DatabaseQuery"
@@ -465,4 +474,12 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// rawQueryTypeName reads a query's Mendix 11.13+ `Type` enum member off the raw
+// document. The gen accessor binds only the legacy integer QueryType, so a
+// project written by 11.13 has no typed accessor for what it actually stores.
+func rawQueryTypeName(q *genDb.DatabaseQuery) string {
+	v, _ := q.Raw().Lookup(dbconnector.TypeKey).StringValueOK()
+	return v
 }

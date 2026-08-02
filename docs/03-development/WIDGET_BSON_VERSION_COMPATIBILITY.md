@@ -276,6 +276,46 @@ manual patching after CE0463 reports come in.
 In the meantime, this doc + the `.claude/skills/debug-bson.md` methodology
 keep the patch cadence manageable.
 
+## 11.13 onboarding: the drift was outside the widget layer
+
+Adding a Mendix minor to the nightly matrix is not a one-line change to
+`.github/workflows/nightly.yml` — run the doctype corpus against it first:
+
+```bash
+mxcli setup mxbuild --version 11.13.0
+MX_BINARY=~/.mxcli/mxbuild/11.13.0/modeler/mx \
+  go test -tags integration -count=1 -run TestMxCheck_DoctypeScripts ./mdl/executor/
+```
+
+11.13 produced **no** widget-envelope drift. The one failure came from a
+different layer entirely — the Database Connector — and shows the shape of
+problem to expect from any new minor: a renamed, re-encoded property.
+
+| Construct | ≤ 11.12 | 11.13 | Cause |
+|---|---|---|---|
+| any `EXECUTE DATABASE QUERY` activity | accepted | **CE5277** "Please re-run and save the query to fix the error" | `DatabaseConnector$DatabaseQuery.QueryType` (int, 1 = custom SQL) became `Type` (string enum `Select`/`NonSelect`/`Unknown`). mxcli wrote only the legacy key, so `Type` was absent — and absent reads as Unknown. Fixed in `mdl/dbconnector` |
+| a `PostgreSQL`/`MSSQL` connection in a bare project | accepted | **CE5278** "The … JDBC driver is missing from the module settings" | A new check on the module's Java dependencies, not on anything mxcli writes. Not fixed: mxcli has no way to author module settings. Invisible in the doctype harness, which imports the connector mpk |
+
+**The method that settled it without guessing**: run the *new* mxbuild's own
+migration over an old project and diff the result.
+
+```bash
+mx convert -p -s /path/to/11.12-project    # with the 11.13 mx binary
+```
+
+Mendix ships a one-time conversion per renamed property
+(`ExternalDatabaseConnectionQueryTypeConversion` here), so the converted
+document *is* the authoritative target shape. This is the non-widget counterpart
+of the "Studio Pro Update Widget" diff above, and it needs no Studio Pro.
+
+Two rules carried over from the settings rename (#759) apply verbatim:
+
+1. **Write exactly one spelling.** Writing both is not a safe hedge — a property
+   the target version's metamodel does not define is what Studio Pro fails to
+   resolve on open. mxbuild tolerates it, so `mx check` is not the gate here.
+2. **The read side must accept either**, or the next ALTER of a new-version
+   project writes the old key's default straight back over the new one.
+
 ## References
 
 - [`.claude/skills/debug-bson.md`](../../.claude/skills/debug-bson.md) — investigation procedure for CE0463 and related widget BSON errors

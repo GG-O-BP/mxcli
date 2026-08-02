@@ -5,6 +5,7 @@ package mpr
 import (
 	"fmt"
 
+	"github.com/mendixlabs/mxcli/mdl/dbconnector"
 	"github.com/mendixlabs/mxcli/model"
 	"go.mongodb.org/mongo-driver/bson"
 )
@@ -69,8 +70,9 @@ func (w *Writer) serializeDatabaseConnection(conn *model.DatabaseConnection) ([]
 
 	// Serialize Queries
 	queries := bson.A{int32(2)} // versioned array prefix
+	typeEnum := w.storesQueryTypeEnum()
 	for _, q := range conn.Queries {
-		queries = append(queries, serializeDBQuery(q))
+		queries = append(queries, serializeDBQuery(q, typeEnum))
 	}
 	doc = append(doc, bson.E{Key: "Queries", Value: queries})
 
@@ -83,7 +85,20 @@ func (w *Writer) serializeDatabaseConnection(conn *model.DatabaseConnection) ([]
 	return marshalUnitIDFirst(doc)
 }
 
-func serializeDBQuery(q *model.DatabaseQuery) bson.D {
+// storesQueryTypeEnum reports whether this project stores a query's type under the
+// Mendix 11.13+ `Type` key. An unreadable version falls back to the legacy key.
+func (w *Writer) storesQueryTypeEnum() bool {
+	if w.reader == nil {
+		return false
+	}
+	pv := w.reader.ProjectVersion()
+	if pv == nil {
+		return false
+	}
+	return dbconnector.StoresTypeEnum(pv.MajorVersion, pv.MinorVersion)
+}
+
+func serializeDBQuery(q *model.DatabaseQuery, typeEnum bool) bson.D {
 	id := string(q.ID)
 	if id == "" {
 		id = generateUUID()
@@ -101,15 +116,24 @@ func serializeDBQuery(q *model.DatabaseQuery) bson.D {
 		params = append(params, serializeDBQueryParameter(p))
 	}
 
-	return bson.D{
+	doc := bson.D{
 		{Key: "$ID", Value: idToBsonBinary(id)},
 		{Key: "$Type", Value: "DatabaseConnector$DatabaseQuery"},
 		{Key: "Name", Value: q.Name},
 		{Key: "Query", Value: q.SQL},
-		{Key: "QueryType", Value: int64(q.QueryType)},
-		{Key: "TableMappings", Value: mappings},
-		{Key: "Parameters", Value: params},
 	}
+	// Exactly one of the two spellings — writing the other invents a property the
+	// target version's metamodel does not define. See mdl/dbconnector.
+	if typeEnum {
+		doc = append(doc, bson.E{Key: dbconnector.TypeKey,
+			Value: dbconnector.TypeToWrite(q.QueryTypeName, q.SQL)})
+	} else {
+		doc = append(doc, bson.E{Key: dbconnector.QueryTypeKey, Value: int64(q.QueryType)})
+	}
+	return append(doc,
+		bson.E{Key: "TableMappings", Value: mappings},
+		bson.E{Key: "Parameters", Value: params},
+	)
 }
 
 func serializeDBQueryParameter(p *model.DatabaseQueryParameter) bson.D {
