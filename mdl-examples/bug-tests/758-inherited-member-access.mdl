@@ -1,0 +1,70 @@
+-- Bug #758 / #765: security reconciliation stripped inherited members, and GRANT
+-- could not put them back
+--
+-- Mendix models inheritance across multiple tables: a child adds attributes to the
+-- parent's, and ALL the parent's attributes are available on the child. An access
+-- rule must therefore carry a MemberAccess entry for every member — own AND
+-- inherited — or Mendix reports CE0066 "Entity access is out of date".
+--
+-- Two facts established against `mx check`, not inferred:
+--
+--   1. An inherited member's reference is qualified against the entity that
+--      DECLARES it. `Sec758.Base.SharedField` validates clean; the child-qualified
+--      `Sec758.Item.SharedField` is CE1613 "The selected attribute no longer
+--      exists". mxcli wrote the child form.
+--
+--   2. Members inherited from System.User are the exception: entities specialising
+--      it are user entities whose platform members Mendix manages. Listing them
+--      turns a clean rule into CE0066 — confirmed on Mendix's own
+--      Administration.Account and on a fresh specialisation. Every other ancestor's
+--      members are required: omitting the six System.FileDocument members from a
+--      specialising entity's rule is CE0066 until all are present.
+--
+-- What went wrong. Both the GRANT path and reconciliation enumerated only
+-- entity.Attributes:
+--
+--   * GRANT naming an inherited member produced no entry, and reported success.
+--   * ReconcileMemberAccesses — which runs immediately after every GRANT, and on
+--     any write touching the module — saw the inherited entry's ancestor
+--     qualification, failed to match it against the child's own attributes, and
+--     deleted it as stale. So the grant wrote the right thing and the reconcile in
+--     the same command removed it. That is why REVOKE + GRANT never repaired a
+--     damaged rule.
+--
+-- The damage was masked: `mx check` reports CE0066 and stops, hiding the CE2729
+-- "No read access to attribute" cascade underneath until Studio Pro's
+-- "Update security" is clicked.
+--
+-- Verify:
+--   1. mxcli exec 758-inherited-member-access.mdl -p app.mpr
+--   2. mxcli -p app.mpr -c "describe entity Sec758.Item"
+--      -> grant ... (read (OwnField, SharedField));   both members present
+--   3. mxcli docker check -p app.mpr   ->  0 errors (no CE0066)
+--   4. Repeat step 3 after any further ALTER on the module: the inherited entry
+--      must still be there.
+
+create module Sec758;
+create module role Sec758.Editor;
+
+create persistent entity Sec758.Base (
+  SharedField: String(100)
+);
+
+-- Same-module ancestor: mixed own + inherited members.
+create persistent entity Sec758.Item extends Sec758.Base (
+  OwnField: String(100)
+);
+
+-- System ancestor whose members ARE required in the child's rule.
+create persistent entity Sec758.Attachment extends System.FileDocument (
+  "Caption": String(200)
+);
+
+-- User entity: System.User's platform members must NOT appear in the rule.
+create persistent entity Sec758.Employee extends System.User (
+  EmployeeNo: String(20)
+);
+
+grant Sec758.Editor on Sec758.Item (read (SharedField, OwnField));
+grant Sec758.Editor on Sec758.Attachment (read ("Caption"));
+grant Sec758.Editor on Sec758.Employee (read (EmployeeNo));

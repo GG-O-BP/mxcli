@@ -167,6 +167,58 @@ revoke MyModule.User on MyModule.Customer (write (Email));
 revoke MyModule.User on MyModule.Customer (delete);
 ```
 
+#### Inherited members
+
+Mendix inheritance is multi-table: a child adds attributes to its parent's, and
+**all** the parent's members belong to the child. Grant them exactly like the
+entity's own — `read *` / `write *` cover them too:
+
+```sql
+create persistent entity Docs.DocumentBase (
+  DocName: String(200),
+  Confidential: Boolean
+);
+
+create persistent entity Docs.Contract extends Docs.DocumentBase (
+  ContractNumber: String(50)
+);
+
+-- DocName is inherited, ContractNumber is Contract's own — name both the same way
+grant Docs.Viewer on Docs.Contract (read (DocName, ContractNumber));
+
+-- Attachment inherits the file members from System.FileDocument
+create persistent entity Docs.Attachment extends System.FileDocument (
+  Category: String(50)
+);
+grant Docs.Viewer on Docs.Attachment (read (Category, "Name", Size));
+```
+
+An access rule must carry an entry for **every** member, own and inherited —
+mxcli writes the ones you did not grant with rights `None`. Omitting them is
+Mendix **CE0066** "Entity access is out of date", which masks the CE2729
+"No read access to attribute" errors underneath until Studio Pro's *Update
+security* is clicked.
+
+A member name that matches nothing is now an error rather than a silent skip:
+
+```
+Error: entity Docs.Contract has no member(s) DocNam; grant only names members
+of the entity or of an entity it inherits from
+```
+
+**Exception — user entities.** An entity extending `System.User` is a *user
+entity*, and Mendix manages its inherited platform members (`Name`, `Password`,
+`Blocked`, …). Those must **not** appear in the rule; listing them is CE0066.
+Grant only the entity's own members — mxcli leaves the platform ones out
+automatically:
+
+```sql
+create persistent entity Docs.Employee extends System.User (
+  EmployeeNo: String(20)
+);
+grant Docs.Viewer on Docs.Employee (read (EmployeeNo));   -- not Name/Blocked
+```
+
 ### User Roles
 
 ```sql

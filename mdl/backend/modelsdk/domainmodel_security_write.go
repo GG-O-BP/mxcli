@@ -5,6 +5,7 @@ package modelsdkbackend
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/mendixlabs/mxcli/mdl/backend"
 	"github.com/mendixlabs/mxcli/mdl/types"
@@ -412,7 +413,8 @@ func (b *Backend) ReconcileMemberAccesses(unitID model.ID, moduleName string) (i
 				}
 				switch attrRef, assocRef := ma.AttributeQualifiedName(), ma.AssociationQualifiedName(); {
 				case attrRef != "":
-					if attrSet[attrRef] {
+					switch {
+					case attrSet[attrRef]:
 						covAttr[attrRef] = true
 						if calcSet[attrRef] {
 							if r := ma.AccessRights(); r == "ReadWrite" || r == "WriteOnly" {
@@ -420,7 +422,21 @@ func (b *Backend) ReconcileMemberAccesses(unitID model.ID, moduleName string) (i
 								changed = true
 							}
 						}
-					} else {
+					case !attrRefBelongsTo(attrRef, moduleName, entityName):
+						// An attribute reference is qualified against the entity that
+						// DECLARES it, so an inherited member carries an ancestor's name
+						// rather than this entity's. attrSet holds only this entity's own
+						// attributes, so every inherited entry looked stale and was
+						// deleted — silently, on any write touching the module, and
+						// immediately after the GRANT that had just written it correctly
+						// (mendixlabs/mxcli#758). The ancestor may live in another module
+						// or in System, neither loaded here, so an inherited reference
+						// cannot be validated at this layer at all. Preserve what cannot
+						// be checked instead of dropping it.
+						covAttr[attrRef] = true
+					default:
+						// Genuinely stale: the reference claims to be this entity's own
+						// attribute and the entity no longer has it.
 						rule.RemoveMemberAccesses(i)
 						changed = true
 					}
@@ -488,4 +504,18 @@ func newMemberAccess(rights, qualifiedName string, isAttr bool) *genDm.MemberAcc
 	}
 	assignID(ma)
 	return ma
+}
+
+// attrRefBelongsTo reports whether a MemberAccess attribute reference
+// ("Module.Entity.Attribute") names one of the given entity's OWN attributes,
+// rather than one inherited from an ancestor.
+//
+// Only an own reference can be validated from a single domain model: an ancestor
+// may live in another module or in System, neither of which is loaded here.
+func attrRefBelongsTo(attrRef, moduleName, entityName string) bool {
+	idx := strings.LastIndex(attrRef, ".")
+	if idx < 0 {
+		return false
+	}
+	return strings.EqualFold(attrRef[:idx], moduleName+"."+entityName)
 }
