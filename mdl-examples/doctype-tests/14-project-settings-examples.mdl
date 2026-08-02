@@ -36,6 +36,10 @@ alter settings model AfterStartupMicroflow = 'MyModule.ASU_Startup';
 
 /**
  * Example 1.2: Configure hash algorithm and Java version
+ *
+ * Either spelling of the Java version is accepted -- 'Java21' or '21'. Mendix
+ * stores it as "JavaVersion" = "Java21" up to 11.6 and as "JavaMajorVersion" =
+ * "21" from 11.12; mxcli writes whichever dialect the project already uses.
  */
 alter settings model HashAlgorithm = 'BCrypt', JavaVersion = 'Java21';
 

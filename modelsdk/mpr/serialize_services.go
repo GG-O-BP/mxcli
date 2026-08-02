@@ -7,6 +7,7 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 
+	"github.com/mendixlabs/mxcli/mdl/settingsoverlay"
 	"github.com/mendixlabs/mxcli/mdl/types"
 	"github.com/mendixlabs/mxcli/model"
 )
@@ -191,7 +192,8 @@ func serPSModelSettings(ms *model.ModelSettings, raw map[string]any) map[string]
 	raw["AllowUserMultipleSessions"] = ms.AllowUserMultipleSessions
 	raw["HashAlgorithm"] = ms.HashAlgorithm
 	raw["BcryptCost"] = serPSInt64(ms.BcryptCost)
-	raw["JavaVersion"] = ms.JavaVersion
+	// Version-specific key AND value format — see settingsoverlay.JavaVersionValue.
+	settingsoverlay.SetJavaVersion(raw, ms.JavaVersion)
 	raw["RoundingMode"] = ms.RoundingMode
 	raw["ScheduledEventTimeZoneCode"] = ms.ScheduledEventTimeZoneCode
 	raw["FirstDayOfWeek"] = ms.FirstDayOfWeek

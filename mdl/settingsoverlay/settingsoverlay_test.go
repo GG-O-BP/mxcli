@@ -365,3 +365,50 @@ func TestJavaVersionKey_FollowsDocument(t *testing.T) {
 		})
 	}
 }
+
+// TestJavaVersionValue_MatchesKeyDialect is the follow-up to
+// TestJavaVersionKey_FollowsDocument: the rename changed the value format along
+// with the key, so following only the key still produced a project Mendix 11.12
+// refuses to load. Its JavaVersionExtensions.fromString parses JavaMajorVersion as
+// a bare major and throws ArgumentOutOfRangeException ("majorVersion is an
+// unsupported value: Java21") on the 11.6 spelling.
+func TestJavaVersionValue_MatchesKeyDialect(t *testing.T) {
+	tests := []struct {
+		key  string
+		in   string
+		want string
+	}{
+		{JavaMajorVersionKey, "Java21", "21"},
+		{JavaMajorVersionKey, "21", "21"},
+		{JavaMajorVersionKey, "java17", "17"},
+		{JavaVersionEnumKey, "Java21", "Java21"},
+		{JavaVersionEnumKey, "21", "Java21"},
+		{JavaVersionEnumKey, " 17 ", "Java17"},
+		// Not a recognisable version: passed through so the typo surfaces as a
+		// Mendix error rather than as a silently mangled setting.
+		{JavaMajorVersionKey, "Temurin", "Temurin"},
+		{JavaVersionEnumKey, "Java-21", "Java-21"},
+		{JavaMajorVersionKey, "", ""},
+	}
+	for _, tc := range tests {
+		if got := JavaVersionValue(tc.key, tc.in); got != tc.want {
+			t.Errorf("JavaVersionValue(%q, %q) = %q, want %q", tc.key, tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestSetJavaVersion_ConvertsToStoredDialect: one MDL statement must work on both
+// Mendix versions, whichever spelling the author used.
+func TestSetJavaVersion_ConvertsToStoredDialect(t *testing.T) {
+	mendix1112 := map[string]any{JavaMajorVersionKey: "21"}
+	SetJavaVersion(mendix1112, "Java17")
+	if got := mendix1112[JavaMajorVersionKey]; got != "17" {
+		t.Errorf("%s = %#v, want %q", JavaMajorVersionKey, got, "17")
+	}
+
+	mendix116 := map[string]any{JavaVersionEnumKey: "Java21"}
+	SetJavaVersion(mendix116, "17")
+	if got := mendix116[JavaVersionEnumKey]; got != "Java17" {
+		t.Errorf("%s = %#v, want %q", JavaVersionEnumKey, got, "Java17")
+	}
+}

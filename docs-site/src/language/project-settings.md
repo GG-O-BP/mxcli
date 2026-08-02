@@ -32,6 +32,11 @@ ALTER SETTINGS MODEL HashAlgorithm = 'BCrypt';
 ALTER SETTINGS MODEL JavaVersion = '17';
 ```
 
+Mendix renamed the Java version property between versions — up to 11.6 it is stored
+as `JavaVersion` = `Java21`, from 11.12 as `JavaMajorVersion` = `21`. Write either
+spelling (`'17'` or `'Java17'`): mxcli stores the value in whichever dialect the
+project already uses.
+
 ### Configuration Settings
 
 Server configuration settings like database type, URL, and HTTP port. Each configuration is identified by name (commonly `'default'`):

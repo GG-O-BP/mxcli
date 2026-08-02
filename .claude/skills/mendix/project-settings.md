@@ -30,11 +30,20 @@ alter settings model BeforeShutdownMicroflow = 'Module.MF_Shutdown';
 alter settings model HealthCheckMicroflow = 'Module.MF_HealthCheck';
 alter settings model HashAlgorithm = 'BCrypt';
 alter settings model BcryptCost = 12;
-alter settings model JavaVersion = 'Java21';
+alter settings model JavaVersion = 'Java21';  -- or '21'; see note below
 alter settings model RoundingMode = 'HalfUp';
 alter settings model AllowUserMultipleSessions = true;
 alter settings model ScheduledEventTimeZoneCode = 'Etc/UTC';
 ```
+
+**JavaVersion spelling.** Mendix renamed this property between versions: up to 11.6
+it stores `JavaVersion` = `'Java21'`, from 11.12 it stores `JavaMajorVersion` =
+`'21'`. Write either spelling — mxcli reads which one the project uses and stores
+the value in that dialect. Getting this wrong is not a cosmetic difference: 11.12
+parses the bare major and rejects the project outright with
+`ArgumentOutOfRangeException: majorVersion is an unsupported value: Java21`.
+`describe settings` always emits the project's own spelling, so its output replays
+cleanly.
 
 ### Modify Configuration Settings
 
