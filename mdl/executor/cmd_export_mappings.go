@@ -365,9 +365,18 @@ func buildExportMappingElementModel(moduleName string, def *ast.ExportMappingEle
 		elem.Kind = "Value"
 		elem.TypeName = "ExportMappings$ValueMappingElement"
 		elem.DataType = resolveAttributeType(parentEntity, def.Attribute, b)
+		// A member reference is qualified against the entity that DECLARES it, so
+		// an inherited attribute carries an ancestor's name. Prefixing the entity
+		// being mapped produced CE1613 "The selected attribute no longer exists"
+		// and left the field unmapped in Studio Pro (mendixlabs/mxcli#703) — the
+		// same rule as entity access rules (#758), both under the #765 umbrella.
 		attr := def.Attribute
 		if parentEntity != "" && !strings.Contains(attr, ".") {
-			attr = parentEntity + "." + attr
+			if ref, ok := ResolveMemberRef(b, parentEntity, attr); ok {
+				attr = ref
+			} else {
+				attr = parentEntity + "." + attr
+			}
 		}
 		elem.Attribute = attr
 		// JsonPath already set from JSON structure clone above

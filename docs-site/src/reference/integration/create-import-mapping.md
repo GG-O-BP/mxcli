@@ -141,6 +141,32 @@ CREATE OR MODIFY IMPORT MAPPING MyModule.IMM_Pet
 - Arrays in the JSON sample map directly to child entity objects — there is no intermediate container entity (unlike export mappings).
 - Import and export of the same JSON typically require different entity structures because of the FK direction difference.
 
+## Inherited attributes
+
+Mendix inheritance is multi-table: all of a parent's attributes are members of the
+child, so an entity declared with `EXTENDS` can map them. Name an inherited
+attribute exactly like one of the entity's own; mxcli resolves each to the entity
+that **declares** it.
+
+```sql
+CREATE PERSISTENT ENTITY Docs.DocumentBase (DocName: String(200), Confidential: Boolean);
+CREATE PERSISTENT ENTITY Docs.Contract EXTENDS Docs.DocumentBase (ContractNumber: String(50));
+
+CREATE IMPORT MAPPING Docs.IMM_Contract
+  WITH JSON STRUCTURE Docs.JSON_Contract
+{
+  create Docs.Contract {
+    ContractNumber = contractNumber,
+    DocName        = docName,
+    Confidential   = confidential
+  }
+};
+```
+
+Referencing an inherited attribute against the entity being mapped rather than its
+declaring entity is Mendix **CE1613** *"The selected attribute ... no longer
+exists"*, and Studio Pro shows the field unmapped.
+
 ## See Also
 
 [CREATE JSON STRUCTURE](create-json-structure.md), [CREATE EXPORT MAPPING](create-export-mapping.md)

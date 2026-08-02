@@ -45,6 +45,46 @@ func hierarchyBackend() *mock.MockBackend {
 	}
 }
 
+func attrTypeFor(kind string) domainmodel.AttributeType {
+	if kind == "Boolean" {
+		return &domainmodel.BooleanAttributeType{}
+	}
+	return &domainmodel.StringAttributeType{}
+}
+
+// typedHierarchyBackend adds attribute types and an inherited Boolean, for the
+// type-resolution tests.
+func typedHierarchyBackend() *mock.MockBackend {
+	ids := map[string]model.ID{"App": "mod-app", "System": "mod-system"}
+	typed := func(name, kind string) *domainmodel.Attribute {
+		return &domainmodel.Attribute{Name: name, Type: attrTypeFor(kind)}
+	}
+	dms := map[model.ID]*domainmodel.DomainModel{
+		ids["App"]: {ContainerID: ids["App"], Entities: []*domainmodel.Entity{
+			{Name: "Base", Attributes: []*domainmodel.Attribute{
+				typed("SharedField", "String"), typed("Flag", "Boolean")}},
+			{Name: "Item", GeneralizationRef: "App.Base", Attributes: []*domainmodel.Attribute{
+				typed("OwnField", "String")}},
+			{Name: "Doc", GeneralizationRef: "System.FileDocument", Attributes: []*domainmodel.Attribute{
+				typed("Category", "String")}},
+		}},
+		ids["System"]: {ContainerID: ids["System"], Entities: []*domainmodel.Entity{
+			{Name: "FileDocument", Attributes: []*domainmodel.Attribute{typed("Name", "String")}},
+		}},
+	}
+	return &mock.MockBackend{
+		IsConnectedFunc: func() bool { return true },
+		GetModuleByNameFunc: func(name string) (*model.Module, error) {
+			id, ok := ids[name]
+			if !ok {
+				return nil, nil
+			}
+			return &model.Module{BaseElement: model.BaseElement{ID: id}, Name: name}, nil
+		},
+		GetDomainModelFunc: func(id model.ID) (*domainmodel.DomainModel, error) { return dms[id], nil },
+	}
+}
+
 func memberRefs(members []EntityMember) []string {
 	out := make([]string, 0, len(members))
 	for _, m := range members {
@@ -127,5 +167,67 @@ func TestUnmatchedGrantMembers(t *testing.T) {
 	got := unmatchedGrantMembers([]string{"SharedField", "Nope"}, []string{"OwnField", "Alsobad"}, granted)
 	if len(got) != 2 || got[0] != "Alsobad" || got[1] != "Nope" {
 		t.Errorf("unmatchedGrantMembers = %v, want [Alsobad Nope]", got)
+	}
+}
+
+// TestResolveMemberRef_DeclaringEntity is the mapping half of the #765 umbrella
+// (mendixlabs/mxcli#703): a mapping element bound to an inherited attribute was
+// qualified against the entity being mapped, which is CE1613 "The selected
+// attribute no longer exists" and leaves the field unmapped in Studio Pro.
+func TestResolveMemberRef_DeclaringEntity(t *testing.T) {
+	b := typedHierarchyBackend()
+
+	tests := []struct {
+		entity, member, want string
+		ok                   bool
+	}{
+		{"App.Item", "OwnField", "App.Item.OwnField", true},
+		{"App.Item", "SharedField", "App.Base.SharedField", true}, // inherited
+		{"App.Doc", "Name", "System.FileDocument.Name", true},     // inherited from System
+		{"App.Item", "Nonexistent", "", false},
+	}
+	for _, tc := range tests {
+		got, ok := ResolveMemberRef(b, tc.entity, tc.member)
+		if ok != tc.ok || got != tc.want {
+			t.Errorf("ResolveMemberRef(%s, %s) = (%q, %v), want (%q, %v)",
+				tc.entity, tc.member, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+// TestResolveMemberType_FollowsChain: an inherited attribute's type was not found
+// on the entity itself, so the mapping element defaulted to String — giving an
+// inherited Boolean or DateTime the wrong DataType (#703).
+func TestResolveMemberType_FollowsChain(t *testing.T) {
+	b := typedHierarchyBackend()
+
+	if got := ResolveMemberType(b, "App.Item", "OwnField"); got != "String" {
+		t.Errorf("own attribute type = %q, want String", got)
+	}
+	if got := ResolveMemberType(b, "App.Item", "Flag"); got != "Boolean" {
+		t.Errorf("inherited attribute type = %q, want Boolean — "+
+			"defaulting to String is what mistyped mapping elements", got)
+	}
+	if got := ResolveMemberType(b, "App.Item", "Nope"); got != "" {
+		t.Errorf("unresolvable member type = %q, want empty", got)
+	}
+}
+
+// TestResolveAttributeType_InheritedAttribute covers the mapping call site rather
+// than the resolver: resolveAttributeType scanned only the entity's own attributes
+// and fell through to its "String" default, so a mapping element bound to an
+// inherited Boolean or DateTime got the wrong DataType (mendixlabs/mxcli#703).
+func TestResolveAttributeType_InheritedAttribute(t *testing.T) {
+	b := typedHierarchyBackend()
+
+	if got := resolveAttributeType("App.Item", "OwnField", b); got != "String" {
+		t.Errorf("own attribute = %q, want String", got)
+	}
+	if got := resolveAttributeType("App.Item", "Flag", b); got != "Boolean" {
+		t.Errorf("inherited attribute = %q, want Boolean — the String default is the bug", got)
+	}
+	// An unresolvable member still falls back to the documented default.
+	if got := resolveAttributeType("App.Item", "Nope", b); got != "String" {
+		t.Errorf("unresolvable attribute = %q, want the String fallback", got)
 	}
 }

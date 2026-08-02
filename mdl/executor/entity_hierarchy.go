@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mendixlabs/mxcli/mdl/backend"
+
 	"github.com/mendixlabs/mxcli/sdk/domainmodel"
 )
 
@@ -49,6 +51,22 @@ type EntityMember struct {
 // members found so far are returned rather than nothing, so a partial model still
 // produces a usable rule.
 func EntityMembers(ctx *ExecContext, entityQN string) []EntityMember {
+	if ctx == nil {
+		return nil
+	}
+	return EntityMembersFor(ctx.Backend, entityQN)
+}
+
+// entityLookupBackend is the slice of the backend the generalization walk needs:
+// resolve a module by name, then read its domain model.
+type entityLookupBackend interface {
+	backend.ModuleBackend
+	backend.DomainModelBackend
+}
+
+// EntityMembersFor is EntityMembers against a backend directly, for callers that
+// hold one without an ExecContext (the mapping builders).
+func EntityMembersFor(b entityLookupBackend, entityQN string) []EntityMember {
 	var out []EntityMember
 	seen := map[string]bool{}    // cycle guard
 	claimed := map[string]bool{} // a child's member shadows the ancestor's
@@ -65,7 +83,7 @@ func EntityMembers(ctx *ExecContext, entityQN string) []EntityMember {
 			break
 		}
 
-		entity, ok := findEntityByQN(ctx, currentQN)
+		entity, ok := findEntityByQN(b, currentQN)
 		if !ok {
 			break
 		}
@@ -87,20 +105,22 @@ func EntityMembers(ctx *ExecContext, entityQN string) []EntityMember {
 	return out
 }
 
-// findEntityByQN resolves a qualified entity name through the backend.
-func findEntityByQN(ctx *ExecContext, entityQN string) (*domainmodel.Entity, bool) {
-	if ctx == nil || ctx.Backend == nil {
+// findEntityByQN resolves a qualified entity name through the backend. The module
+// is resolved by name rather than scanning every domain model, so a same-named
+// entity in another module cannot be picked up by accident.
+func findEntityByQN(b entityLookupBackend, entityQN string) (*domainmodel.Entity, bool) {
+	if b == nil {
 		return nil, false
 	}
 	parts := strings.SplitN(entityQN, ".", 2)
 	if len(parts) != 2 {
 		return nil, false
 	}
-	mod, err := ctx.Backend.GetModuleByName(parts[0])
+	mod, err := b.GetModuleByName(parts[0])
 	if err != nil || mod == nil {
 		return nil, false
 	}
-	dm, err := ctx.Backend.GetDomainModel(mod.ID)
+	dm, err := b.GetDomainModel(mod.ID)
 	if err != nil || dm == nil {
 		return nil, false
 	}
@@ -127,4 +147,50 @@ func unmatchedGrantMembers(readMembers, writeMembers []string, granted map[strin
 	}
 	sort.Strings(unknown)
 	return unknown
+}
+
+// ResolveMemberRef returns the reference Mendix stores for a member of an entity,
+// qualified against the entity that DECLARES it — which is an ancestor when the
+// member is inherited. Reports false when the entity has no such member.
+//
+// Qualifying an inherited member against the entity that merely uses it produces
+// CE1613 "The selected attribute ... no longer exists": in an access rule
+// (mendixlabs/mxcli#758) and equally in an import/export mapping, where Studio Pro
+// additionally shows the field as unmapped (#703).
+func ResolveMemberRef(b entityLookupBackend, entityQN, memberName string) (string, bool) {
+	if entityQN == "" || memberName == "" {
+		return "", false
+	}
+	for _, mem := range EntityMembersFor(b, entityQN) {
+		if mem.Name == memberName {
+			return mem.Ref, true
+		}
+	}
+	return "", false
+}
+
+// ResolveMemberType returns the data type of an entity's member, following the
+// generalization chain. Returns "" when the member cannot be resolved.
+func ResolveMemberType(b entityLookupBackend, entityQN, memberName string) string {
+	if entityQN == "" || memberName == "" {
+		return ""
+	}
+	seen := map[string]bool{}
+	for currentQN := entityQN; currentQN != ""; {
+		if seen[currentQN] {
+			return ""
+		}
+		seen[currentQN] = true
+		entity, ok := findEntityByQN(b, currentQN)
+		if !ok {
+			return ""
+		}
+		for _, attr := range entity.Attributes {
+			if attr != nil && attr.Name == memberName && attr.Type != nil {
+				return attr.Type.GetTypeName()
+			}
+		}
+		currentQN = entity.GeneralizationRef
+	}
+	return ""
 }
