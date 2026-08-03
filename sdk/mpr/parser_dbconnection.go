@@ -4,6 +4,7 @@ package mpr
 
 import (
 	"fmt"
+	"github.com/mendixlabs/mxcli/mdl/dbconnector"
 
 	"github.com/mendixlabs/mxcli/model"
 	"go.mongodb.org/mongo-driver/bson"
@@ -57,7 +58,14 @@ func parseDBQuery(raw map[string]any) *model.DatabaseQuery {
 	q.TypeName = extractString(raw["$Type"])
 	q.Name = extractString(raw["Name"])
 	q.SQL = extractString(raw["Query"])
-	q.QueryType = extractInt(raw["QueryType"])
+	// Mendix 11.13 replaced the integer QueryType with the `Type` string enum;
+	// read whichever key this project stores so a round-trip preserves it.
+	q.QueryTypeName = extractString(raw[dbconnector.TypeKey])
+	if q.QueryTypeName != "" {
+		q.QueryType = dbconnector.LegacyQueryTypeFor(q.QueryTypeName)
+	} else {
+		q.QueryType = extractInt(raw[dbconnector.QueryTypeKey])
+	}
 
 	// Parse TableMappings
 	mappings := extractBsonArray(raw["TableMappings"])

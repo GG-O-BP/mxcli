@@ -39,7 +39,7 @@ jobs:
       - name: Check docs-site MDL blocks
         run: ./scripts/check-skill-mdl.sh ./bin/mxcli docs-site/src
       - name: Setup mxbuild
-        run: ./bin/mxcli setup mxbuild --version 11.9.0
+        run: ./bin/mxcli setup mxbuild --version 11.12.2
       - name: Integration tests
         run: make test-integration
         timeout-minutes: 30

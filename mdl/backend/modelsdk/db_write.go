@@ -5,6 +5,7 @@ package modelsdkbackend
 import (
 	"fmt"
 
+	"github.com/mendixlabs/mxcli/mdl/dbconnector"
 	"github.com/mendixlabs/mxcli/model"
 	"github.com/mendixlabs/mxcli/modelsdk/codec"
 	"github.com/mendixlabs/mxcli/modelsdk/element"
@@ -49,7 +50,7 @@ func (b *Backend) CreateDatabaseConnection(conn *model.DatabaseConnection) error
 	if conn.ID == "" {
 		conn.ID = model.ID(mmpr.GenerateID())
 	}
-	g := databaseConnectionToGen(conn)
+	g := databaseConnectionToGen(conn, b.storesQueryTypeEnum())
 	contents, err := (&codec.Encoder{}).Encode(g)
 	if err != nil {
 		return fmt.Errorf("CreateDatabaseConnection: encode: %w", err)
@@ -67,7 +68,7 @@ func (b *Backend) UpdateDatabaseConnection(conn *model.DatabaseConnection) error
 	if b.writer == nil {
 		return fmt.Errorf("UpdateDatabaseConnection: not connected for writing")
 	}
-	g := databaseConnectionToGen(conn)
+	g := databaseConnectionToGen(conn, b.storesQueryTypeEnum())
 	contents, err := (&codec.Encoder{}).Encode(g)
 	if err != nil {
 		return fmt.Errorf("UpdateDatabaseConnection: encode: %w", err)
@@ -86,10 +87,20 @@ func (b *Backend) DeleteDatabaseConnection(id model.ID) error {
 	return b.writer.DeleteUnit(string(id))
 }
 
+// storesQueryTypeEnum reports whether this project stores a query's type under the
+// Mendix 11.13+ `Type` key. An unreadable version falls back to the legacy key.
+func (b *Backend) storesQueryTypeEnum() bool {
+	pv := b.ProjectVersion()
+	if pv == nil {
+		return false
+	}
+	return dbconnector.StoresTypeEnum(pv.MajorVersion, pv.MinorVersion)
+}
+
 // databaseConnectionToGen builds the DatabaseConnection element tree directly with
 // the verified storage keys. The gen/databaseconnector setters bind different
 // property keys, so this mirrors sdk/mpr.serializeDatabaseConnection field-for-field.
-func databaseConnectionToGen(conn *model.DatabaseConnection) element.Element {
+func databaseConnectionToGen(conn *model.DatabaseConnection, typeEnum bool) element.Element {
 	e := newElem("DatabaseConnector$DatabaseConnection", string(conn.ID))
 	addStr(e, "Name", conn.Name)
 	addStr(e, "DatabaseType", conn.DatabaseType)
@@ -107,7 +118,7 @@ func databaseConnectionToGen(conn *model.DatabaseConnection) element.Element {
 
 	queries := make([]element.Element, 0, len(conn.Queries))
 	for _, q := range conn.Queries {
-		queries = append(queries, databaseQueryToGen(q))
+		queries = append(queries, databaseQueryToGen(q, typeEnum))
 	}
 	addPartList(e, "Queries", queries)
 
@@ -118,11 +129,17 @@ func databaseConnectionToGen(conn *model.DatabaseConnection) element.Element {
 }
 
 // databaseQueryToGen builds a DatabaseConnector$DatabaseQuery sub-element.
-func databaseQueryToGen(q *model.DatabaseQuery) element.Element {
+func databaseQueryToGen(q *model.DatabaseQuery, typeEnum bool) element.Element {
 	e := newElem("DatabaseConnector$DatabaseQuery", string(q.ID))
 	addStr(e, "Name", q.Name)
 	addStr(e, "Query", q.SQL)
-	addInt64(e, "QueryType", int64(q.QueryType))
+	// Exactly one of the two spellings — writing the other invents a property the
+	// target version's metamodel does not define. See mdl/dbconnector.
+	if typeEnum {
+		addStr(e, dbconnector.TypeKey, dbconnector.TypeToWrite(q.QueryTypeName, q.SQL))
+	} else {
+		addInt64(e, dbconnector.QueryTypeKey, int64(q.QueryType))
+	}
 
 	mappings := make([]element.Element, 0, len(q.TableMappings))
 	for _, m := range q.TableMappings {

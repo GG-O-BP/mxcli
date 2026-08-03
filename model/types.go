@@ -526,8 +526,13 @@ type DatabaseConnection struct {
 // DatabaseQuery represents a DatabaseConnector$DatabaseQuery.
 type DatabaseQuery struct {
 	BaseElement
-	Name          string                    `json:"name"`
-	QueryType     int                       `json:"queryType"`     // 1 = custom SQL
+	Name      string `json:"name"`
+	QueryType int    `json:"queryType"` // 1 = custom SQL (Mendix <= 11.12 storage)
+	// QueryTypeName is the Mendix 11.13+ `Type` enum member ("Select" /
+	// "NonSelect" / "Unknown"), which replaced the integer QueryType. Empty on a
+	// project that stores the legacy key, or on a query mxcli has just authored;
+	// see mdl/dbconnector.
+	QueryTypeName string                    `json:"queryTypeName,omitempty"`
 	SQL           string                    `json:"sql,omitempty"` // extracted from TableMappings
 	TableMappings []*DatabaseTableMapping   `json:"tableMappings,omitempty"`
 	Parameters    []*DatabaseQueryParameter `json:"parameters,omitempty"`
