@@ -236,11 +236,28 @@ produced a confident wrong diagnosis during the #716 investigation.
 3. **Should `run --local` / `docker build` sync automatically?** Convenient, but an
    implicit model mutation during a build is exactly the kind of surprise this repo
    avoids elsewhere. Recommend explicit only, with the build *reporting* drift.
-4. **Interaction with the built-in definition override.** `widget_defs.go` skips any
-   widget with a hand-crafted def (gallery, dropdownsort, four filters), so those
-   never see the project's `.mpk`. Reconciliation must not inherit that skip, or it
-   will no-op on exactly the widgets #716 is about. Fixing the override to be a
-   fallback is arguably a prerequisite — see the remaining #716 residue.
+4. **The built-in definition override is NOT the lever — resolved, negatively.**
+   `widget_defs.go` skips any widget with a hand-crafted def (gallery,
+   dropdownsort, four filters), so those never see the project's `.mpk`. It looks
+   like a prerequisite for this work. It is not, because **`.def.json` carries
+   routing, not schema**: `GenerateDefJSON` emits `propertyMappings`,
+   `childSlots` and `objectLists` — which MDL keyword feeds which property key.
+   The schema CE0463 compares comes from the embedded template plus
+   `augmentFromMPK`, a different pipeline.
+
+   Measured twice: making extraction generate all 42 defs from the project's
+   `.mpk` left the fresh-authoring CE0463 count at **6, unchanged**. Attempted
+   properly (built-in keeping identity and routing, generated def supplying the
+   rest) it **regressed** `17-custom-widget-examples` — CE7006 "Selected value is
+   not valid for attribute 'title'" and CE7247 "Move this widget into a data
+   container" on the `TEXTFILTER`, because the hand-authored routing encodes
+   behaviour the generator cannot derive (e.g. the `attrChoice="linked"` rule
+   from #605). Reverted.
+
+   The override should probably still become a fallback for its own sake, but it
+   is a separate concern with its own risk, and it buys this proposal nothing.
+   Instance reconciliation must read the installed `.mpk` **directly**, the way
+   `augmentFromMPK` does — not via the definition registry.
 5. **Does this subsume `mx update-widgets` in CI?** If reconciliation is faithful, the
    doctype harness could drop its "we deliberately do NOT run update-widgets" note.
    Not a goal, but a good confidence signal if it turns out true.
