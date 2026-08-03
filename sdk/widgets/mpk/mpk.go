@@ -17,12 +17,17 @@ import (
 
 // PropertyDef describes a single property from a widget XML definition.
 type PropertyDef struct {
-	Key          string // e.g. "staticDataSourceCaption"
-	Type         string // XML type: "attribute", "expression", "textTemplate", "widgets", etc.
-	Caption      string
-	Description  string
-	Category     string // from enclosing propertyGroup captions, joined with "::"
-	Required     bool
+	Key         string // e.g. "staticDataSourceCaption"
+	Type        string // XML type: "attribute", "expression", "textTemplate", "widgets", etc.
+	Caption     string
+	Description string
+	Category    string // from enclosing propertyGroup captions, joined with "::"
+	Required    bool
+	// OnChange names the sibling action property Studio Pro runs when this
+	// property changes. It is part of the widget DEFINITION, so a stale value
+	// makes Mendix report CE0463 "the definition of this widget has changed"
+	// (mendixlabs/mxcli#716).
+	OnChange     string
 	DefaultValue string // for enumeration/boolean/integer types
 	IsList       bool
 	IsSystem     bool          // true for <systemProperty> elements
@@ -82,6 +87,7 @@ type xmlProperty struct {
 	Type         string `xml:"type,attr"`
 	DefaultValue string `xml:"defaultValue,attr"`
 	Required     string `xml:"required,attr"`
+	OnChange     string `xml:"onChange,attr"`
 	IsList       string `xml:"isList,attr"`
 	DataSource   string `xml:"dataSource,attr"`
 	Caption      string `xml:"caption"`
@@ -274,6 +280,7 @@ func walkPropertyGroup(pg xmlPropGroup, parentCategory string, def *WidgetDefini
 			Description:  p.Description,
 			Category:     category,
 			Required:     p.Required == "true",
+			OnChange:     p.OnChange,
 			DefaultValue: p.DefaultValue,
 			IsList:       p.IsList == "true",
 			DataSource:   p.DataSource,
@@ -297,6 +304,7 @@ func walkPropertyGroup(pg xmlPropGroup, parentCategory string, def *WidgetDefini
 					Caption:      np.Caption,
 					Description:  np.Description,
 					Required:     np.Required == "true",
+					OnChange:     np.OnChange,
 					DefaultValue: np.DefaultValue,
 					IsList:       np.IsList == "true",
 					DataSource:   np.DataSource,
@@ -333,6 +341,7 @@ func collectNestedProperties(pg xmlPropGroup, parent *PropertyDef) {
 			Caption:      p.Caption,
 			Description:  p.Description,
 			Required:     p.Required == "true",
+			OnChange:     p.OnChange,
 			DefaultValue: p.DefaultValue,
 			IsList:       p.IsList == "true",
 			DataSource:   p.DataSource,

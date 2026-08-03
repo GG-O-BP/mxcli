@@ -214,6 +214,10 @@ func AugmentTemplate(tmpl *WidgetTemplate, def *mpk.WidgetDefinition) error {
 	// $ID, so reordering the Type list is safe. The .mpk is authoritative.
 	reorderPropertyTypes(tmpl.Type, def)
 
+	// A surviving property's own definition attributes are version-specific too;
+	// reconciling only the property SET leaves CE0463 unexplained (#716).
+	syncDefinitionAttrs(propTypes, def.Properties)
+
 	return nil
 }
 
@@ -1215,4 +1219,67 @@ func remapObjectTypePointers(objProps []any, idRemap map[string]string) {
 			}
 		}
 	}
+}
+
+// syncDefinitionAttrs copies the scalar attributes that belong to the widget's
+// DEFINITION from the installed .mpk onto the template's PropertyTypes.
+//
+// AugmentTemplate reconciles which properties exist (adds new ones, removes
+// stale ones) but, before mendixlabs/mxcli#716, left a surviving property's own
+// attributes at whatever the embedded 11.6-era template captured. Those
+// attributes are part of what Mendix compares when deciding whether a widget's
+// definition has changed, so a widget package that merely flipped one of them
+// produced CE0463 on every instance — with nothing in the property SET to
+// explain it.
+//
+// Observed on Data Widgets 3.10 against the 11.6 templates:
+//
+//	Gallery                 OnChangeProperty "onConfigurationChange" -> "" (x4)
+//	DatagridDropdownFilter  Required         false -> true            (x2)
+//
+// Only attributes the .mpk actually declares are synced. Anything Mendix derives
+// but the XML does not carry is left alone — overwriting it with a zero value
+// would trade one definition mismatch for another.
+func syncDefinitionAttrs(propTypes []any, props []mpk.PropertyDef) {
+	byKey := make(map[string]*mpk.PropertyDef, len(props))
+	var index func([]mpk.PropertyDef)
+	index = func(ps []mpk.PropertyDef) {
+		for i := range ps {
+			byKey[ps[i].Key] = &ps[i]
+			if len(ps[i].Children) > 0 {
+				index(ps[i].Children)
+			}
+		}
+	}
+	index(props)
+
+	var walk func([]any)
+	walk = func(pts []any) {
+		for _, pt := range pts {
+			ptMap, ok := pt.(map[string]any)
+			if !ok {
+				continue
+			}
+			if key, _ := ptMap["PropertyKey"].(string); key != "" {
+				if p := byKey[key]; p != nil {
+					ptMap["Required"] = p.Required
+					ptMap["OnChangeProperty"] = p.OnChange
+				}
+			}
+			// Object-typed properties nest their own PropertyTypes.
+			if vt, ok := getMapField(ptMap, "ValueType"); ok {
+				if ot, ok := getMapField(vt, "ObjectType"); ok {
+					if nested, ok := getArrayField(ot, "PropertyTypes"); ok {
+						walk(nested)
+					}
+				}
+			}
+			if ot, ok := getMapField(ptMap, "ObjectType"); ok {
+				if nested, ok := getArrayField(ot, "PropertyTypes"); ok {
+					walk(nested)
+				}
+			}
+		}
+	}
+	walk(propTypes)
 }
