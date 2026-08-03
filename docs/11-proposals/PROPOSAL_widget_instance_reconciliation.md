@@ -136,6 +136,38 @@ MyModule.Transactions_Overview
 the author does not choose; overloading that verb would conflate the two. A CLI
 subcommand next to `widget init` is the honest home.
 
+## Rejected alternative: just re-run `widget init` + `refresh catalog`
+
+The obvious cheaper answer is that after installing an updated widget package you
+re-run the normal extraction and refresh the catalog. **Measured on the upgraded
+Ledger project — it changes nothing:**
+
+```
+before:                                              36 CE0463
+  mxcli widget init      -> Extracted: 33 new, 0 refreshed, 9 skipped
+  refresh catalog full force -> Catalog cached
+after:                                               36 CE0463
+```
+
+Both commands operate on **derived artifacts**, not on the model:
+
+| Artifact | Written by | Consumed by |
+|---|---|---|
+| `.mxcli/widgets/*.def.json` | `widget init` | **future** authoring — which MDL keyword routes to which property |
+| `.mxcli/catalog.db` | `refresh catalog` | queries, lint rules, `show`/`select` |
+| `mprcontents/<page>.mxunit` | page writers only | **mxbuild and Studio Pro — this is what CE0463 reads** |
+
+Confirmed directly after running both commands against Data Widgets 3.11.3:
+
+- the regenerated `datagrid.def.json` is **current** — it no longer mentions `advanced`
+- the stored page BSON for `dgTransactions` **still carries** `PropertyKey: "advanced"`
+
+Extraction succeeded; nothing rewrote the pages. Re-running `widget init` after an
+upgrade is still *necessary* — it is what makes newly authored widgets match the new
+package — but it is not *sufficient*, and the two halves should not be conflated.
+That split is precisely why this proposal exists as a separate operation rather than
+as a flag on `widget init`.
+
 ## Implementation Plan
 
 The reconciliation logic exists; what is missing is applying it to **stored
