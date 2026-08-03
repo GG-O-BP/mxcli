@@ -216,7 +216,7 @@ func TestStorageObjects_IDIsFirstProperty(t *testing.T) {
 			}},
 			Parameters: []*model.DatabaseQueryParameter{{ParameterName: "p1"}},
 		}
-		marshalAndValidate(t, "DBQuery", serializeDBQuery(q))
+		marshalAndValidate(t, "DBQuery", serializeDBQuery(q, false))
 	})
 
 	// Server configuration: $ID added dynamically; nested ConstantValue list.

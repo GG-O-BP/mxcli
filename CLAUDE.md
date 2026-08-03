@@ -235,6 +235,15 @@ Enum-valued properties are the sibling trap: validate against
 `generated/metamodel` (e.g. `SettingsDatabaseType` is `Hsqldb`, never `HSQLDB`)
 rather than passing a user string through.
 
+**On a CREATE there is no stored document to read the key off.** Rule 1 then
+becomes: branch on the project's Mendix version and write exactly one spelling —
+never both as a hedge. `mdl/dbconnector` does this for the 11.13 rename of
+`DatabaseQuery.QueryType` (int) to `Type` (string enum), which mxbuild *does*
+catch, as CE5277 on every activity using the query. To learn the target shape
+without guessing, run the new mxbuild's own migration over an old project
+(`mx convert -p -s <project>`) and diff the BSON: Mendix ships a one-time
+conversion per renamed property, so the converted document is authoritative.
+
 ### Association Parent/Child Pointer Semantics (Counter-Intuitive)
 
 **CRITICAL**: Mendix BSON uses inverted naming for association pointers:

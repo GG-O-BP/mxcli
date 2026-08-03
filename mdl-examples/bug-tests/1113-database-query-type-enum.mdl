@@ -1,0 +1,68 @@
+-- Mendix 11.13: DatabaseQuery.QueryType became the `Type` string enum
+--
+-- Symptom (on an 11.13 project only): every microflow using EXECUTE DATABASE
+-- QUERY fails `mx check`, once per activity:
+--
+--   [error] [CE5277] "Please re-run and save the query to fix the error"
+--     at Execute database query action activity 'Query external database'
+--
+-- The queries themselves report nothing — the error lands on the activities that
+-- point at them, which is why it reads like a microflow problem.
+--
+-- Cause: Mendix 11.13 replaced the integer `QueryType` (1 = custom SQL) on
+-- DatabaseConnector$DatabaseQuery with a `Type` string enum ("Select" /
+-- "NonSelect" / "Unknown"), and ships a one-time conversion
+-- (ExternalDatabaseConnectionQueryTypeConversion) that rewrites old documents.
+-- mxcli wrote the legacy integer unconditionally, so on 11.13 the new property
+-- was simply absent — and an absent `Type` reads as Unknown, which is what
+-- CE5277 reports.
+--
+-- Fix: mdl/dbconnector decides the spelling from the project's Mendix version
+-- and writes exactly one of them. Writing both is not a safe hedge: a property
+-- the target version's metamodel does not define is what Studio Pro fails to
+-- resolve on open (the #759 failure shape).
+--
+-- Because mxcli never connects to the database, it cannot derive the type the
+-- way Studio Pro does (by running the query and inspecting the result set). It
+-- reads the leading SQL keyword instead — better than Mendix's own converter,
+-- which marks every migrated query "Select" regardless of statement.
+--
+-- Verify: run against an 11.13+ project, then `mx check` — no CE5277. On 11.12
+-- and below the same script stores the legacy integer and also checks clean.
+--
+-- On a bare 11.13 project `mx check` still reports CE5278 ("The PostgreSQL JDBC
+-- driver ... is missing from the module settings") — a SEPARATE check 11.13 added,
+-- about the module's Java dependencies rather than anything mxcli writes. Add the
+-- driver in Studio Pro; the doctype harness does not hit it because it imports the
+-- connector mpk, which brings the dependency with it.
+
+create module DbType;
+
+create constant DbType.Dsn type string
+  default 'jdbc:postgresql://localhost:5432/demo';
+create constant DbType.User type string default 'demo';
+create constant DbType.Pass type string default '';
+
+create database connection DbType.Warehouse
+type 'PostgreSQL'
+connection string @DbType.Dsn
+username @DbType.User
+password @DbType.Pass
+begin
+  -- Reads: stored as Type = 'Select' on 11.13+.
+  query ListOrders
+    sql 'SELECT orderId, customer, total FROM orders ORDER BY orderId';
+
+  -- Writes: stored as Type = 'NonSelect'. The legacy integer could not express
+  -- this distinction at all.
+  query ArchiveOrders
+    sql 'UPDATE orders SET archived = true WHERE total = 0';
+end;
+
+-- The activity is where CE5277 surfaced, so the repro needs one.
+create microflow DbType.MF_ListOrders()
+begin
+  $Orders = execute database query DbType.Warehouse.ListOrders;
+end;
+
+describe database connection DbType.Warehouse;
