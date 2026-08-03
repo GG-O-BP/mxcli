@@ -108,6 +108,53 @@ regression guard `TestTemplates_NoMarkerlessEmptyArrays` (in both `sdk/widgets`
 and `modelsdk/widgets`) walks every embedded template and fails on any bare `[]`.
 When onboarding or re-extracting a template, never emit an empty markerless array.
 
+## CE0463 after a widget-package upgrade is usually NOT an mxcli bug
+
+Before treating a CE0463 report as template drift, establish **when the widget was
+authored relative to the installed package**. The two cases look identical in
+`mx check` output and have completely different causes.
+
+**Case 1 — authored against version A, package upgraded to version B.** Expected
+Mendix behaviour, not an mxcli defect. A widget package that drops a property
+leaves every *stored* instance carrying a property the new definition no longer
+has, which is exactly what CE0463 reports and exactly what its message
+("Update this widget / Update all widgets") tells you to fix.
+
+Worked example (mendixlabs/mxcli#716, Ledger on Mendix 11.12):
+
+| | |
+|---|---|
+| Data Widgets 3.4 (as authored) | **0 errors** |
+| upgraded to 3.11.3 | 36 CE0463 — 7 mxcli-authored, 29 Studio Pro's own template widgets |
+| after `mx update-widgets` | **0 errors** |
+
+The cause was a single dropped property: `key="advanced"` ("Enable advanced
+options") is present in `Datagrid.xml` at 3.4 and absent at 3.10 and 3.11.3.
+`update-widgets` deletes both the `WidgetPropertyType` and its `WidgetProperty`;
+everything else in the diff is index shift.
+
+**Two controls make this diagnosis, and neither is optional:**
+
+1. **Do Studio Pro's own widgets fail too?** A blank project's `dataGrid2_*`,
+   `gallery1/2`, `drop_downFilter1/2` are authored by Mendix. If they fail
+   alongside mxcli's, the tool is not the variable. (Here: 29 of the 36.)
+2. **Does `mx update-widgets` clear it?** If yes, mxcli's BSON was structurally
+   valid — it was correct for the version it was written against. Genuine
+   template bugs do *not* clear this way; the Image stale-default and the
+   number-filter markerless array both needed template fixes.
+
+**Case 2 — authored fresh against the new package and still failing.** This is
+the mxcli defect. Create a project with the new package installed, run
+`widget init`, author the widgets, then `mx check`. On Data Widgets 3.10/3.11
+that isolates a much narrower failure than #716 as filed: freshly authored
+DataGrid2 is **clean**, while Gallery and DatagridDropdownFilter still produce
+CE0463 (6 instances across the v0.10 fixture).
+
+**Do not measure Case 2 with the doctype fixtures alone.** Their pages sit in a
+blank project whose own template widgets are already failing from Case 1, so a
+raw CE0463 count mixes the two. Subtract by widget *name* against a control
+project that ran no mxcli command at all.
+
 ## Onboarding a new Mendix minor (e.g. 11.10, 12.0)
 
 The CE0463 fix methodology used for 11.9 generalizes. Steps:
