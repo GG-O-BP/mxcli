@@ -1262,8 +1262,17 @@ func syncDefinitionAttrs(propTypes []any, props []mpk.PropertyDef) {
 			}
 			if key, _ := ptMap["PropertyKey"].(string); key != "" {
 				if p := byKey[key]; p != nil {
-					ptMap["Required"] = p.Required
-					ptMap["OnChangeProperty"] = p.OnChange
+					// Update in place only. Adding a key the PropertyType does not
+					// already carry invents a property this Mendix version may not
+					// define — the mendixlabs/mxcli#759 failure shape, and the
+					// opposite of what `mx update-widgets` produces (its Gallery
+					// PropertyTypes omit both keys entirely).
+					if _, ok := ptMap["Required"]; ok {
+						ptMap["Required"] = p.Required
+					}
+					if _, ok := ptMap["OnChangeProperty"]; ok {
+						ptMap["OnChangeProperty"] = p.OnChange
+					}
 				}
 			}
 			// Object-typed properties nest their own PropertyTypes.
