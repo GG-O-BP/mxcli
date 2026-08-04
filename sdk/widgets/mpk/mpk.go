@@ -274,12 +274,17 @@ func walkPropertyGroup(pg xmlPropGroup, parentCategory string, def *WidgetDefini
 	// Collect regular properties
 	for _, p := range pg.Properties {
 		prop := PropertyDef{
-			Key:          p.Key,
-			Type:         p.Type,
-			Caption:      p.Caption,
-			Description:  p.Description,
-			Category:     category,
-			Required:     p.Required == "true",
+			Key:         p.Key,
+			Type:        p.Type,
+			Caption:     p.Caption,
+			Description: p.Description,
+			Category:    category,
+			// Mendix pluggable-widget spec: `required` defaults to true when the
+			// attribute is absent. Only an explicit required="false" is optional.
+			// Defaulting missing→false made syncDefinitionAttrs flip 24 correct
+			// `true`s to `false` on DataGrid2, producing CE0463 (mendixlabs/mxcli#716).
+			// modelsdk/widgets/mpk already reads it this way (issue #600).
+			Required:     p.Required != "false",
 			OnChange:     p.OnChange,
 			DefaultValue: p.DefaultValue,
 			IsList:       p.IsList == "true",
@@ -299,11 +304,12 @@ func walkPropertyGroup(pg xmlPropGroup, parentCategory string, def *WidgetDefini
 			}
 			for _, np := range p.NestedDirectProps {
 				prop.Children = append(prop.Children, PropertyDef{
-					Key:          np.Key,
-					Type:         np.Type,
-					Caption:      np.Caption,
-					Description:  np.Description,
-					Required:     np.Required == "true",
+					Key:         np.Key,
+					Type:        np.Type,
+					Caption:     np.Caption,
+					Description: np.Description,
+					// Absent `required` means true — see the note above.
+					Required:     np.Required != "false",
 					OnChange:     np.OnChange,
 					DefaultValue: np.DefaultValue,
 					IsList:       np.IsList == "true",
@@ -336,11 +342,12 @@ func walkPropertyGroup(pg xmlPropGroup, parentCategory string, def *WidgetDefini
 func collectNestedProperties(pg xmlPropGroup, parent *PropertyDef) {
 	for _, p := range pg.Properties {
 		child := PropertyDef{
-			Key:          p.Key,
-			Type:         p.Type,
-			Caption:      p.Caption,
-			Description:  p.Description,
-			Required:     p.Required == "true",
+			Key:         p.Key,
+			Type:        p.Type,
+			Caption:     p.Caption,
+			Description: p.Description,
+			// Absent `required` means true — see the note in walkPropertyGroup.
+			Required:     p.Required != "false",
 			OnChange:     p.OnChange,
 			DefaultValue: p.DefaultValue,
 			IsList:       p.IsList == "true",

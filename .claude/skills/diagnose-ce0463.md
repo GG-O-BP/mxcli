@@ -132,10 +132,22 @@ Ordered by how often they have actually been the answer.
 4. **Property-set drift against the package.** Real, but a weak predictor: `datagrid`
    needs 19 additions and 1 removal against Data Widgets 3.10 and passes, while
    `datagrid-dropdown-filter` is byte-for-byte in sync and fails.
+5. **A mis-defaulted definition attribute in the `.mpk` parser.** The widget XML
+   schema defaults `required` to **true**; reading a missing attribute as `false`
+   put the wrong `Required` on 24 of DataGrid2 3.4's 40 properties. Two things make
+   this family easy to miss: the value is only wrong for properties that *omit* the
+   attribute (so the packages that spell it out look fine), and `sdk/widgets/mpk`
+   and `modelsdk/widgets/mpk` are parallel copies — a fix in one leaves the other
+   latent until something starts consuming the value. Grep the sibling package
+   before concluding a defect is engine-specific.
 
 ## Rules of thumb
 
 - **Read the tail, not the count.** `0 errors` can mean "did not load".
+- **Assert the artifact exists before trusting a zero.** A run that exhausted disk
+  created no widgets at all and scored a clean `mx check` — read as "the pre-fix
+  binary is fine" and cost a wrong conclusion. `mxcli -p <proj> -c 'show widgets'
+  | grep <name>` before every measurement.
 - **Establish the control before the first measurement**, not after the tenth.
 - **A hypothesis that survives only because you have not tested it is not evidence.**
   Patch it, measure, and write down the negative result — the elimination list is
