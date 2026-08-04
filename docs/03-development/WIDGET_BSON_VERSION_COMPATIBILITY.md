@@ -108,6 +108,199 @@ regression guard `TestTemplates_NoMarkerlessEmptyArrays` (in both `sdk/widgets`
 and `modelsdk/widgets`) walks every embedded template and fails on any bare `[]`.
 When onboarding or re-extracting a template, never emit an empty markerless array.
 
+## CE0463 after a widget-package upgrade is usually NOT an mxcli bug
+
+Before treating a CE0463 report as template drift, establish **when the widget was
+authored relative to the installed package**. The two cases look identical in
+`mx check` output and have completely different causes.
+
+**Case 1 — authored against version A, package upgraded to version B.** Expected
+Mendix behaviour, not an mxcli defect. A widget package that drops a property
+leaves every *stored* instance carrying a property the new definition no longer
+has, which is exactly what CE0463 reports and exactly what its message
+("Update this widget / Update all widgets") tells you to fix.
+
+Worked example (mendixlabs/mxcli#716, Ledger on Mendix 11.12):
+
+| | |
+|---|---|
+| Data Widgets 3.4 (as authored) | **0 errors** |
+| upgraded to 3.11.3 | 36 CE0463 — 7 mxcli-authored, 29 Studio Pro's own template widgets |
+| after `mx update-widgets` | **0 errors** |
+
+The cause was a single dropped property: `key="advanced"` ("Enable advanced
+options") is present in `Datagrid.xml` at 3.4 and absent at 3.10 and 3.11.3.
+`update-widgets` deletes both the `WidgetPropertyType` and its `WidgetProperty`;
+everything else in the diff is index shift.
+
+**Two controls make this diagnosis, and neither is optional:**
+
+1. **Do Studio Pro's own widgets fail too?** A blank project's `dataGrid2_*`,
+   `gallery1/2`, `drop_downFilter1/2` are authored by Mendix. If they fail
+   alongside mxcli's, the tool is not the variable. (Here: 29 of the 36.)
+2. **Does `mx update-widgets` clear it?** If yes, mxcli's BSON was structurally
+   valid — it was correct for the version it was written against. Genuine
+   template bugs do *not* clear this way; the Image stale-default and the
+   number-filter markerless array both needed template fixes.
+
+**Case 2 — authored fresh against the new package and still failing.** This is
+the mxcli defect. Create a project with the new package installed, run
+`widget init`, author the widgets, then `mx check`. On Data Widgets 3.10/3.11
+that isolates a much narrower failure than #716 as filed: freshly authored
+DataGrid2 is **clean**, while Gallery and DatagridDropdownFilter still produce
+CE0463 (6 instances across the v0.10 fixture).
+
+**Do not measure Case 2 with the doctype fixtures alone.** Their pages sit in a
+blank project whose own template widgets are already failing from Case 1, so a
+raw CE0463 count mixes the two. Subtract by widget *name* against a control
+project that ran no mxcli command at all.
+
+### The residual #716 failures are NOT explained by template drift
+
+The obvious model — "the embedded template is behind the installed package, so
+widgets whose property set drifted the most fail" — is **wrong**. Measured on Data
+Widgets 3.10, comparing each embedded template's `PropertyKey` set against the
+installed `.mpk` XML, alongside whether freshly authored instances pass `mx check`:
+
+| Template | must ADD | must REMOVE | in sync | fresh authoring |
+|---|---|---|---|---|
+| `datagrid` | 19 | 1 | 60 | **passes** |
+| `gallery` | 11 | 0 | 33 | **fails** (4 instances) |
+| `datagrid-dropdown-filter` | 0 | 0 | 27 | **fails** (2 instances) |
+| `datagrid-text-filter` | 0 | 0 | 13 | **passes** |
+
+Drift does not predict failure in either direction. `datagrid` has by far the most
+churn and is clean; `dropdown-filter` and `text-filter` are byte-for-byte in sync
+with the package and disagree with each other. Whatever distinguishes them is in the
+*content* of specific properties, not in which properties exist.
+
+**A field-level prune is also disproven, and dangerously so.** Deleting
+`OnChangeProperty` / `Required` from every `CustomWidgets$WidgetValueType` — the
+fields `mx update-widgets` omits on Gallery — takes fresh-authoring CE0463 from 6 to
+4 on Data Widgets 3.10, but takes the **shipped 3.4 from 0 to 139**. Those fields are
+required on the version the project ships with; removing them unconditionally breaks
+every widget. Do not treat "the reference output omits it" as "we should never emit
+it" without testing the version the project actually uses.
+
+The cause of the four Gallery failures is **open**. It is not the property set, not
+`OnChangeProperty`/`Required` values, not `Appearance.DesignProperties`,
+`LabelTemplate`, the `GridSortBar` list marker, `SortDirection`/`SortOrder`, or
+`AttributeRef.EntityRef` — each was patched in isolation and re-checked, none moved
+the count.
+
+### There IS a template-free generic path — and it does not fix Gallery either
+
+`modelsdk/widgets/loader.go:getOrGenerateTemplate` resolves a widget template in
+three steps: embedded template, session cache, then **`GenerateFromMPK`** — a
+complete Type+Object built from the project's `.mpk` with no embedded snapshot at
+all. It is not theoretical: Charts (Pie/Column/Line/Bar/Area) ship no template and
+are authored entirely this way (`91b054b`).
+
+Because step 1 wins whenever an embedded template exists, Gallery never reaches it.
+Forcing it to (temporary env switch, since reverted) on Data Widgets 3.10:
+
+- The output genuinely changed — 17 lines of Type diff, and `OnChangeProperty`
+  moved from the embedded `"onConfigurationChange"` to `""`, which is what
+  `mx update-widgets` produces.
+- **All four galleries still failed CE0463.**
+
+So "derive the template from the package instead of the frozen snapshot" is
+available today, demonstrably takes effect, and is still not sufficient. Combined
+with the `SynthesizeNeutralObject` spike in
+[`PROPOSAL_multi_version_pluggable_widgets.md`](../11-proposals/PROPOSAL_multi_version_pluggable_widgets.md),
+two independent generic-construction approaches have now failed on the same class
+of widget, which is evidence the missing information is genuinely not in the `.mpk`.
+
+### The untested lead: CE0463 from a VALUE, not a schema
+
+Every CE0463 fix landed in the past week was value-shaped, not schema-shaped, and
+the error message named the widget version in each case:
+
+| Fix | Cause |
+|---|---|
+| `3cb8ab6` (ledger #54) | a column header serialized as an **empty** `TextTemplate` where Studio Pro wants the attribute name filled in |
+| `455c43a` | a hidden chart-series `markerColor` serialized as an **empty** `Forms$ClientTemplate`; Studio Pro stores **null** |
+| `4ea402c2` (#548) | object-list item TextTemplate slots emitting a placeholder `" "` ClientTemplate instead of null — CE0463 on Accordion, AreaChart, Maps |
+| `abba773` | an unset chart-series String emitted as `" "` instead of `""` |
+
+The Gallery investigation for #716 went the other way — Type/schema first — and ruled
+out the whole schema axis. The empty-vs-null-vs-placeholder axis inside the Gallery's
+`Object` (its content slots, item templates, and the `Forms$ClientTemplate` nodes
+underneath) has **not** been examined, and it is where four of the last five CE0463
+fixes actually lived.
+
+### #716 is TWO bugs, separated by one experiment
+
+The failing set — 4 galleries + 2 drop-down filters on Data Widgets 3.10 — is not one
+defect. Authoring the same fixture two ways on Mendix 11.13 splits it cleanly:
+
+| | authored on bundled 3.4, then package upgraded to 3.10 | authored fresh on 3.10 | fresh on 3.10, `augmentFromMPK` disabled |
+|---|---|---|---|
+| Galleries | **4 fail** | 4 fail | **4 fail** |
+| Drop-down filters | **0 fail** | **2 fail** | **0 fail** |
+
+**Drop-down filters: `augmentFromMPK` introduces the fault.** They are clean when
+authored against the package the template matches (3.4), clean when that project is
+upgraded, and clean on 3.10 with augmentation switched off — but fail when
+augmentation runs against the 3.10 `.mpk`. Augmentation is *making them worse*. This
+is a real mxcli bug and the actionable half of #716. Note the template needs **0
+additions and 0 removals** against 3.10, so whatever augmentation changes is at the
+attribute level, not the property set.
+
+**Galleries: the embedded template is simply 3.4-shaped.** They fail identically with
+augmentation, without it, and when authored on 3.4 and merely upgraded — the same
+behaviour as the blank project's own Studio-Pro-authored `gallery1`/`gallery2`. mxcli
+emits the same gallery whatever package is installed: correct on 3.4 (0 errors),
+stale on 3.10. That is **Case A**, the normal "Update all widgets" situation, not an
+authoring defect — and it is fixed by instance reconciliation
+([`PROPOSAL_widget_instance_reconciliation.md`](../11-proposals/PROPOSAL_widget_instance_reconciliation.md)),
+not by patching the template.
+
+This also explains why the earlier elimination pass found nothing: it was hunting an
+authoring bug in the gallery, and there isn't one.
+
+**Method note.** No Studio Pro required — a blank project ships Studio-Pro-authored
+`gallery1`/`gallery2`, and authoring the same fixture against two package versions
+gives the comparison. An earlier note here claiming a Studio Pro reference was needed
+was wrong.
+
+### #716 Gallery: what was ruled out while hunting the wrong bug
+
+Investigated exhaustively on Mendix 11.12.2 + Data Widgets 3.10, fixture 31, against
+an `mx update-widgets` reference of the same project. **Unresolved** — recorded so the
+next attempt starts from the eliminations rather than repeating them.
+
+**The constraining fact.** Replacing mxcli's whole `galCustomers` widget node with the
+reference node clears its CE0463 (35 → 34 errors). Replacing only its `Type`, or only
+its `Object`, **crashes the project load** — mx check reports "0 errors" because it
+never loads, which is an artifact, not a fix. So the cause is inside the widget node
+and requires Type and Object to stay consistently paired.
+
+**Ruled out, each by patch-and-recheck:**
+
+| Axis | Method | Result |
+|---|---|---|
+| Property set drift | template `PropertyKey` set vs `.mpk` XML | does not predict failure — `datagrid` ADD 19/REMOVE 1 passes, `datagrid-dropdown-filter` 0/0 fails |
+| All value differences | full path-level diff → **16** differing paths, applied to the failing widget alone | still fails |
+| `OnChangeProperty`, `Required` | value sync, then field prune | prune fixes 2 filters but takes shipped DW 3.4 from 0 → **139** |
+| `PrimitiveValue` `below`→`bottom` | patched | no change |
+| `GridSortBar` marker 3→2, `SortDirection`→`SortOrder`, `AttributeRef.EntityRef` | patched | no change |
+| `Appearance.DesignProperties`, `LabelTemplate` | patched | no change |
+| Pointer integrity | every `TypePointer` resolves; no orphan `PropertyType` | identical to reference |
+| Pointer semantics | each property mapped to the `PropertyKey` it points at, all depths, document order | **identical** to reference |
+| Property ordering | Object order vs Type order | identical to reference |
+| BSON key order | raw key sequence of the widget node | mxcli is non-alphabetical, reference is — but **`tfSearch` passes with the identical non-alphabetical order**, so key order is not the discriminator |
+| Generic MPK-derived template | forced Gallery through `GenerateFromMPK` | output changed (17 Type lines), still fails |
+| Definition-registry precedence | built-in as fallback instead of override | no change; regressed `17-custom-widget-examples` |
+
+**Where that leaves it.** By every measure computable from the decoded BSON — values,
+keys, ordering, pointer topology — mxcli's failing Gallery is identical to a reference
+that passes. The difference is therefore in something a Python BSON round-trip
+normalises: binary field values, or an encoding detail below the document model. The
+next attempt should work at the **byte level** (compare the encoded unit ranges
+directly) rather than on decoded documents, or obtain a Studio-Pro-authored Gallery on
+Data Widgets 3.10 for a third reference point.
+
 ## Onboarding a new Mendix minor (e.g. 11.10, 12.0)
 
 The CE0463 fix methodology used for 11.9 generalizes. Steps:

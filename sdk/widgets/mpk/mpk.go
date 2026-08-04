@@ -17,12 +17,17 @@ import (
 
 // PropertyDef describes a single property from a widget XML definition.
 type PropertyDef struct {
-	Key          string // e.g. "staticDataSourceCaption"
-	Type         string // XML type: "attribute", "expression", "textTemplate", "widgets", etc.
-	Caption      string
-	Description  string
-	Category     string // from enclosing propertyGroup captions, joined with "::"
-	Required     bool
+	Key         string // e.g. "staticDataSourceCaption"
+	Type        string // XML type: "attribute", "expression", "textTemplate", "widgets", etc.
+	Caption     string
+	Description string
+	Category    string // from enclosing propertyGroup captions, joined with "::"
+	Required    bool
+	// OnChange names the sibling action property Studio Pro runs when this
+	// property changes. It is part of the widget DEFINITION, so a stale value
+	// makes Mendix report CE0463 "the definition of this widget has changed"
+	// (mendixlabs/mxcli#716).
+	OnChange     string
 	DefaultValue string // for enumeration/boolean/integer types
 	IsList       bool
 	IsSystem     bool          // true for <systemProperty> elements
@@ -82,6 +87,7 @@ type xmlProperty struct {
 	Type         string `xml:"type,attr"`
 	DefaultValue string `xml:"defaultValue,attr"`
 	Required     string `xml:"required,attr"`
+	OnChange     string `xml:"onChange,attr"`
 	IsList       string `xml:"isList,attr"`
 	DataSource   string `xml:"dataSource,attr"`
 	Caption      string `xml:"caption"`
@@ -268,12 +274,18 @@ func walkPropertyGroup(pg xmlPropGroup, parentCategory string, def *WidgetDefini
 	// Collect regular properties
 	for _, p := range pg.Properties {
 		prop := PropertyDef{
-			Key:          p.Key,
-			Type:         p.Type,
-			Caption:      p.Caption,
-			Description:  p.Description,
-			Category:     category,
-			Required:     p.Required == "true",
+			Key:         p.Key,
+			Type:        p.Type,
+			Caption:     p.Caption,
+			Description: p.Description,
+			Category:    category,
+			// Mendix pluggable-widget spec: `required` defaults to true when the
+			// attribute is absent. Only an explicit required="false" is optional.
+			// Defaulting missing→false made syncDefinitionAttrs flip 24 correct
+			// `true`s to `false` on DataGrid2, producing CE0463 (mendixlabs/mxcli#716).
+			// modelsdk/widgets/mpk already reads it this way (issue #600).
+			Required:     p.Required != "false",
+			OnChange:     p.OnChange,
 			DefaultValue: p.DefaultValue,
 			IsList:       p.IsList == "true",
 			DataSource:   p.DataSource,
@@ -292,11 +304,13 @@ func walkPropertyGroup(pg xmlPropGroup, parentCategory string, def *WidgetDefini
 			}
 			for _, np := range p.NestedDirectProps {
 				prop.Children = append(prop.Children, PropertyDef{
-					Key:          np.Key,
-					Type:         np.Type,
-					Caption:      np.Caption,
-					Description:  np.Description,
-					Required:     np.Required == "true",
+					Key:         np.Key,
+					Type:        np.Type,
+					Caption:     np.Caption,
+					Description: np.Description,
+					// Absent `required` means true — see the note above.
+					Required:     np.Required != "false",
+					OnChange:     np.OnChange,
 					DefaultValue: np.DefaultValue,
 					IsList:       np.IsList == "true",
 					DataSource:   np.DataSource,
@@ -328,11 +342,13 @@ func walkPropertyGroup(pg xmlPropGroup, parentCategory string, def *WidgetDefini
 func collectNestedProperties(pg xmlPropGroup, parent *PropertyDef) {
 	for _, p := range pg.Properties {
 		child := PropertyDef{
-			Key:          p.Key,
-			Type:         p.Type,
-			Caption:      p.Caption,
-			Description:  p.Description,
-			Required:     p.Required == "true",
+			Key:         p.Key,
+			Type:        p.Type,
+			Caption:     p.Caption,
+			Description: p.Description,
+			// Absent `required` means true — see the note in walkPropertyGroup.
+			Required:     p.Required != "false",
+			OnChange:     p.OnChange,
 			DefaultValue: p.DefaultValue,
 			IsList:       p.IsList == "true",
 			DataSource:   p.DataSource,

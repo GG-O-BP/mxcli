@@ -1,0 +1,75 @@
+-- Bug #716 (gallery half): CE0463 on freshly authored Gallery widgets
+--
+-- Symptom: on a project with Data Widgets 3.10+ installed, every Gallery mxcli
+-- authors fails `mx check` with CE0463 "The definition of this widget has
+-- changed". On the 3.4 package bundled with Mendix 11.12/11.13 the same script
+-- is clean, which is what made this look like ordinary staleness.
+--
+-- Cause: `syncDefinitionAttrs` reconciled a surviving property's definition
+-- attributes (Required, OnChangeProperty) from the installed .mpk — but wrote
+-- them onto the CustomWidgets$WidgetPropertyType node. They live one level
+-- down, on its ValueType. The guard "only update a key that already exists"
+-- then never fired, so the whole pass was a silent no-op and the Gallery kept
+-- the embedded template's OnChangeProperty = "onConfigurationChange" where
+-- 3.10 expects "".
+--
+-- Found by diffing against `mx update-widgets` output: the differing paths were
+-- Type/ObjectType/PropertyTypes[N]/ValueType/OnChangeProperty, not
+-- PropertyTypes[N]/OnChangeProperty.
+--
+-- Second half, exposed by the first: with the pass finally executing, every
+-- authored Data grid 2 went CE0463 on the *bundled* Data Widgets 3.4 — on the
+-- legacy engine only. The Mendix widget XML schema defaults `required` to true;
+-- `sdk/widgets/mpk` read a missing attribute as false, so the sync overwrote 24
+-- correct `true`s with `false` on DataGrid2 3.4. `modelsdk/widgets/mpk` already
+-- read it correctly (#600) — the two parsers had silently diverged.
+--
+-- Verify on a project with Data Widgets 3.10+ installed:
+--   mxcli widget init -p app.mpr
+--   mxcli exec mdl-examples/doctype-tests/31-pluggable-datagrid-gallery-v010-examples.mdl -p app.mpr
+--   mx check app.mpr          -> no CE0463 on any Gallery
+--
+-- Measured, fixture 31 minus the untouched control (Mendix 11.13):
+--
+--   engine     package    baseline   ValueType   +required   +early-return
+--   modelsdk   DW 3.10       6           2           2            0
+--   modelsdk   DW 3.4        0           0           0            0
+--   legacy     DW 3.10      11          11          11           11
+--   legacy     DW 3.4        0           9           0            0
+--
+-- Third half: the two drop-down filters (ddfStatus / ddfActive). Missing
+-- ValueType/AllowUpload was the visible symptom, but the template was not the
+-- cause — augmentation never ran on this widget at all. AugmentTemplate returned
+-- early whenever the property SET already matched the .mpk ("nothing to add or
+-- remove"), which also skipped the six value-level passes that follow. Data
+-- Widgets 3.10's drop-down filter declares exactly the 25 keys the embedded
+-- 11.6-era template has, so it took the early exit and kept both a stale
+-- Required (refCaption / refCaptionExp, explicitly required="true" in the 3.10
+-- XML) and no AllowUpload on any of its 25 ValueTypes. The guard now wraps only
+-- the add/remove work.
+--
+-- STILL OPEN: the legacy engine's 11 CE0463 on Data Widgets 3.10. Its
+-- augmentation carries only syncDefinitionAttrs — the five reconcile passes
+-- added to modelsdk under #600 (enum values, property metadata, ValueType
+-- scalars, the AllowUpload envelope, PropertyType order) were never ported.
+-- modelsdk is the default engine and is clean; porting them is a separate job.
+
+create module W716;
+create persistent entity W716.Customer ( Name: string(100), City: string(100) );
+
+create page W716.Overview
+(
+  title: 'Customers',
+  layout: Atlas_Core.Atlas_Default
+)
+{
+  gallery galCustomers (
+    DataSource: database from W716.Customer sort by Name asc
+  ) {
+    template tpl1 {
+      container ctnCard (Class: 'card') {
+        dynamictext txtName (Content: '{1}', ContentParams: [{1} = Name])
+      }
+    }
+  }
+}
