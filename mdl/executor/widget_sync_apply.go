@@ -5,6 +5,7 @@ package executor
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"go.mongodb.org/mongo-driver/bson"
 
@@ -100,12 +101,11 @@ func ApplyWidgetSync(b backend.RawUnitBackend, projectPath string, opts SyncOpti
 			if def == nil {
 				return widget, false
 			}
-			updated, n, skipped := applyToWidget(widget, changes, def, opts.AddMissing)
-			if n == 0 {
+			updated, ok := applyToWidget(widget, def)
+			if !ok {
 				return widget, false
 			}
-			res.Skipped = append(res.Skipped, skipped...)
-			changed += n
+			changed += len(changes)
 			widgets++
 			return updated, true
 		})
@@ -127,131 +127,105 @@ func ApplyWidgetSync(b backend.RawUnitBackend, projectPath string, opts SyncOpti
 	return res, plan, nil
 }
 
-// applyToWidget rewrites one CustomWidget node. Returns the node, how many changes
-// were applied, and the descriptions of any it declined to apply.
-func applyToWidget(widget bson.D, changes []SyncPropertyChange, def *mpk.WidgetDefinition, addMissing bool) (bson.D, int, []string) {
-	remove := map[string]bool{}
-	update := map[string][]SyncPropertyChange{}
-	var add []string
-	var skipped []string
-	for _, c := range changes {
-		switch c.Kind {
-		case SyncRemove:
-			remove[c.Key] = true
-		case SyncUpdate:
-			update[c.Key] = append(update[c.Key], c)
-		case SyncAdd:
-			if addMissing {
-				add = append(add, c.Key)
-			} else {
-				skipped = append(skipped, fmt.Sprintf("add %s", c.Key))
-			}
-		}
-	}
-	if len(remove) == 0 && len(update) == 0 && len(add) == 0 {
-		return widget, 0, skipped
-	}
-
+// applyToWidget reconciles one stored CustomWidget node against its installed package.
+//
+// It delegates to widgets.AugmentTemplate rather than reimplementing the operations.
+// That pass performs SIX reconciliations — enum option sets, property metadata
+// (Caption/Category/DefaultValue), ValueType scalars, the AllowUpload envelope,
+// PropertyType order, and definition attributes — plus add/remove of the property set
+// itself. Hand-rolling only add/remove/attributes left 47 Captions, 32 Categories and
+// every ValueType/Translations wrong on a synced DataGrid2, because those belong to
+// passes that were never called.
+//
+// AugmentTemplate operates on a WidgetTemplate, which is exactly the (Type, Object)
+// pair a stored instance carries — the shapes are the same, only the encoding differs.
+func applyToWidget(widget bson.D, def *mpk.WidgetDefinition) (bson.D, bool) {
 	typeDoc, ok := docField(widget, "Type")
 	if !ok {
-		return widget, 0, skipped
+		return widget, false
 	}
-	objType, ok := docField(typeDoc, "ObjectType")
+	objDoc, ok := docField(widget, "Object")
 	if !ok {
-		return widget, 0, skipped
+		return widget, false
 	}
-	propTypes, ok := arrField(objType, "PropertyTypes")
+
+	typeMap, ok := widgetToMap(typeDoc).(map[string]any)
 	if !ok {
-		return widget, 0, skipped
+		return widget, false
+	}
+	objMap, ok := widgetToMap(objDoc).(map[string]any)
+	if !ok {
+		return widget, false
 	}
 
-	// Pass 1 — decide which PropertyTypes go, remembering their $IDs so the paired
-	// WidgetProperty can be removed with them.
-	doomed := map[string]bool{}
-	newPropTypes := bson.A{}
-	applied := 0
-	for _, item := range propTypes {
-		pt, ok := item.(bson.D)
-		if !ok {
-			newPropTypes = append(newPropTypes, item) // array marker, preserved
-			continue
-		}
-		key := bsonString(pt, "PropertyKey")
-		if remove[key] {
-			if id, ok := idOf(pt); ok {
-				doomed[id] = true
-			}
-			applied++
-			continue
-		}
-		// Definition attributes live on the PropertyType's ValueType, not on the
-		// PropertyType — writing them one level up is a silent no-op guarded by the
-		// "key must already exist" check (mendixlabs/mxcli#716). Update in place
-		// only: adding a key the node does not carry invents a property this Mendix
-		// version may not define (the #759 failure shape).
-		if attrs, ok := update[key]; ok {
-			if vt, ok := docField(pt, "ValueType"); ok {
-				for _, a := range attrs {
-					if a.Attr == "" || !hasKey(vt, a.Attr) {
-						continue
-					}
-					vt = setField(vt, a.Attr, a.Value)
-					applied++
-				}
-				pt = setField(pt, "ValueType", vt)
-			}
-		}
-		newPropTypes = append(newPropTypes, pt)
+	tmpl := &widgets.WidgetTemplate{
+		WidgetID: bsonString(typeDoc, "WidgetId"),
+		Type:     typeMap,
+		Object:   objMap,
+	}
+	if err := widgets.AugmentTemplate(tmpl, def); err != nil {
+		return widget, false
 	}
 
-	// Pass 2 — build the pairs for properties the package declares and this instance
-	// lacks. Construction is delegated to the authoring path (widgets.NewPropertyPair)
-	// so there is one implementation of what a property pair looks like, not two.
-	var newProps bson.A
-	for _, key := range add {
-		p := def.FindProperty(key)
-		if p == nil {
-			skipped = append(skipped, fmt.Sprintf("add %s (not found in package)", key))
-			continue
-		}
-		ptMap, propMap, ok := widgets.NewPropertyPair(*p, types.GenerateID)
-		if !ok {
-			// An XML type with no BSON mapping: skip rather than invent a shape.
-			skipped = append(skipped, fmt.Sprintf("add %s (unmapped type %q)", key, p.Type))
-			continue
-		}
-		newPropTypes = append(newPropTypes, mapToBSON(ptMap))
-		newProps = append(newProps, mapToBSON(propMap))
-		applied++
+	// AugmentTemplate mints placeholder IDs for anything it adds. Those are stable
+	// strings, so writing them straight through would give every widget that gains the
+	// same property an IDENTICAL $ID. Remap them to fresh UUIDs, consistently across
+	// Type and Object together so TypePointer still binds its PropertyType.
+	remap := map[string]string{}
+	collectWidgetPlaceholders(tmpl.Type, remap)
+	collectWidgetPlaceholders(tmpl.Object, remap)
+	for k := range remap {
+		remap[k] = types.GenerateID()
 	}
+	newType := rewriteWidgetIDs(tmpl.Type, remap)
+	newObj := rewriteWidgetIDs(tmpl.Object, remap)
 
-	// Pass 3 — drop the paired WidgetProperty for each removed PropertyType.
-	objDoc, hasObj := docField(widget, "Object")
-	if hasObj {
-		if props, ok := arrField(objDoc, "Properties"); ok {
-			kept := bson.A{}
-			for _, item := range props {
-				p, ok := item.(bson.D)
-				if !ok {
-					kept = append(kept, item)
-					continue
-				}
-				if tp, ok := idField(p, "TypePointer"); ok && doomed[tp] {
-					continue
-				}
-				kept = append(kept, p)
-			}
-			kept = append(kept, newProps...)
-			objDoc = setField(objDoc, "Properties", kept)
-			widget = setField(widget, "Object", objDoc)
+	widget = setField(widget, "Type", mapToWidgetDoc(newType))
+	widget = setField(widget, "Object", mapToWidgetDoc(newObj))
+	return widget, true
+}
+
+// collectWidgetPlaceholders records every placeholder ID AugmentTemplate minted.
+func collectWidgetPlaceholders(v any, out map[string]string) {
+	switch t := v.(type) {
+	case map[string]any:
+		for _, val := range t {
+			collectWidgetPlaceholders(val, out)
+		}
+	case []any:
+		for _, item := range t {
+			collectWidgetPlaceholders(item, out)
+		}
+	case string:
+		if isWidgetPlaceholderID(t) {
+			out[t] = ""
 		}
 	}
+}
 
-	// Mendix checks the WidgetType's PropertyType ORDER, so appended properties must be
-	// moved into the package's declaration order — appending at the end is itself a
-	// CE0463 cause. (The WidgetObject's Properties order is tolerated.)
-	objType = setField(objType, "PropertyTypes", orderPropertyTypes(newPropTypes, def))
-	typeDoc = setField(typeDoc, "ObjectType", objType)
-	widget = setField(widget, "Type", typeDoc)
-	return widget, applied, skipped
+func rewriteWidgetIDs(v any, remap map[string]string) any {
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			out[k] = rewriteWidgetIDs(val, remap)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, item := range t {
+			out[i] = rewriteWidgetIDs(item, remap)
+		}
+		return out
+	case string:
+		if id, ok := remap[t]; ok && id != "" {
+			return id
+		}
+	}
+	return v
+}
+
+// isWidgetPlaceholderID matches the "aa"-prefixed IDs the template pipeline mints.
+func isWidgetPlaceholderID(s string) bool {
+	return len(s) == 32 && strings.HasPrefix(s, "aa0000000000000000000000")
 }
