@@ -229,7 +229,42 @@ out the whole schema axis. The empty-vs-null-vs-placeholder axis inside the Gall
 underneath) has **not** been examined, and it is where four of the last five CE0463
 fixes actually lived.
 
-### #716 Gallery: what is ruled out, and the one fact that constrains the answer
+### #716 is TWO bugs, separated by one experiment
+
+The failing set — 4 galleries + 2 drop-down filters on Data Widgets 3.10 — is not one
+defect. Authoring the same fixture two ways on Mendix 11.13 splits it cleanly:
+
+| | authored on bundled 3.4, then package upgraded to 3.10 | authored fresh on 3.10 | fresh on 3.10, `augmentFromMPK` disabled |
+|---|---|---|---|
+| Galleries | **4 fail** | 4 fail | **4 fail** |
+| Drop-down filters | **0 fail** | **2 fail** | **0 fail** |
+
+**Drop-down filters: `augmentFromMPK` introduces the fault.** They are clean when
+authored against the package the template matches (3.4), clean when that project is
+upgraded, and clean on 3.10 with augmentation switched off — but fail when
+augmentation runs against the 3.10 `.mpk`. Augmentation is *making them worse*. This
+is a real mxcli bug and the actionable half of #716. Note the template needs **0
+additions and 0 removals** against 3.10, so whatever augmentation changes is at the
+attribute level, not the property set.
+
+**Galleries: the embedded template is simply 3.4-shaped.** They fail identically with
+augmentation, without it, and when authored on 3.4 and merely upgraded — the same
+behaviour as the blank project's own Studio-Pro-authored `gallery1`/`gallery2`. mxcli
+emits the same gallery whatever package is installed: correct on 3.4 (0 errors),
+stale on 3.10. That is **Case A**, the normal "Update all widgets" situation, not an
+authoring defect — and it is fixed by instance reconciliation
+([`PROPOSAL_widget_instance_reconciliation.md`](../11-proposals/PROPOSAL_widget_instance_reconciliation.md)),
+not by patching the template.
+
+This also explains why the earlier elimination pass found nothing: it was hunting an
+authoring bug in the gallery, and there isn't one.
+
+**Method note.** No Studio Pro required — a blank project ships Studio-Pro-authored
+`gallery1`/`gallery2`, and authoring the same fixture against two package versions
+gives the comparison. An earlier note here claiming a Studio Pro reference was needed
+was wrong.
+
+### #716 Gallery: what was ruled out while hunting the wrong bug
 
 Investigated exhaustively on Mendix 11.12.2 + Data Widgets 3.10, fixture 31, against
 an `mx update-widgets` reference of the same project. **Unresolved** — recorded so the
