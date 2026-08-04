@@ -188,6 +188,47 @@ The cause of the four Gallery failures is **open**. It is not the property set, 
 `AttributeRef.EntityRef` — each was patched in isolation and re-checked, none moved
 the count.
 
+### There IS a template-free generic path — and it does not fix Gallery either
+
+`modelsdk/widgets/loader.go:getOrGenerateTemplate` resolves a widget template in
+three steps: embedded template, session cache, then **`GenerateFromMPK`** — a
+complete Type+Object built from the project's `.mpk` with no embedded snapshot at
+all. It is not theoretical: Charts (Pie/Column/Line/Bar/Area) ship no template and
+are authored entirely this way (`91b054b`).
+
+Because step 1 wins whenever an embedded template exists, Gallery never reaches it.
+Forcing it to (temporary env switch, since reverted) on Data Widgets 3.10:
+
+- The output genuinely changed — 17 lines of Type diff, and `OnChangeProperty`
+  moved from the embedded `"onConfigurationChange"` to `""`, which is what
+  `mx update-widgets` produces.
+- **All four galleries still failed CE0463.**
+
+So "derive the template from the package instead of the frozen snapshot" is
+available today, demonstrably takes effect, and is still not sufficient. Combined
+with the `SynthesizeNeutralObject` spike in
+[`PROPOSAL_multi_version_pluggable_widgets.md`](../11-proposals/PROPOSAL_multi_version_pluggable_widgets.md),
+two independent generic-construction approaches have now failed on the same class
+of widget, which is evidence the missing information is genuinely not in the `.mpk`.
+
+### The untested lead: CE0463 from a VALUE, not a schema
+
+Every CE0463 fix landed in the past week was value-shaped, not schema-shaped, and
+the error message named the widget version in each case:
+
+| Fix | Cause |
+|---|---|
+| `3cb8ab6` (ledger #54) | a column header serialized as an **empty** `TextTemplate` where Studio Pro wants the attribute name filled in |
+| `455c43a` | a hidden chart-series `markerColor` serialized as an **empty** `Forms$ClientTemplate`; Studio Pro stores **null** |
+| `4ea402c2` (#548) | object-list item TextTemplate slots emitting a placeholder `" "` ClientTemplate instead of null — CE0463 on Accordion, AreaChart, Maps |
+| `abba773` | an unset chart-series String emitted as `" "` instead of `""` |
+
+The Gallery investigation for #716 went the other way — Type/schema first — and ruled
+out the whole schema axis. The empty-vs-null-vs-placeholder axis inside the Gallery's
+`Object` (its content slots, item templates, and the `Forms$ClientTemplate` nodes
+underneath) has **not** been examined, and it is where four of the last five CE0463
+fixes actually lived.
+
 ## Onboarding a new Mendix minor (e.g. 11.10, 12.0)
 
 The CE0463 fix methodology used for 11.9 generalizes. Steps:
