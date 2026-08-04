@@ -31,21 +31,28 @@
 --
 -- Measured, fixture 31 minus the untouched control (Mendix 11.13):
 --
---   engine     package    baseline   with both fixes
---   modelsdk   DW 3.10       6             2
---   modelsdk   DW 3.4        0             0
---   legacy     DW 3.10      11            11   (pre-existing, untouched)
---   legacy     DW 3.4        0             0   (9 with the ValueType fix alone)
+--   engine     package    baseline   ValueType   +required   +early-return
+--   modelsdk   DW 3.10       6           2           2            0
+--   modelsdk   DW 3.4        0           0           0            0
+--   legacy     DW 3.10      11          11          11           11
+--   legacy     DW 3.4        0           9           0            0
 --
--- STILL OPEN: the two DataGrid dropdown filters (ddfStatus / ddfActive) in that
--- fixture remain CE0463 on 3.10. Their residual diff against update-widgets is
--- ValueType/AllowUpload, absent in the modelsdk template copy (present in sdk's
--- — the two engines' template sets have diverged). Syncing the templates does
--- NOT clear it, so something further is involved.
+-- Third half: the two drop-down filters (ddfStatus / ddfActive). Missing
+-- ValueType/AllowUpload was the visible symptom, but the template was not the
+-- cause — augmentation never ran on this widget at all. AugmentTemplate returned
+-- early whenever the property SET already matched the .mpk ("nothing to add or
+-- remove"), which also skipped the six value-level passes that follow. Data
+-- Widgets 3.10's drop-down filter declares exactly the 25 keys the embedded
+-- 11.6-era template has, so it took the early exit and kept both a stale
+-- Required (refCaption / refCaptionExp, explicitly required="true" in the 3.10
+-- XML) and no AllowUpload on any of its 25 ValueTypes. The guard now wraps only
+-- the add/remove work.
 --
--- ALSO STILL OPEN: the legacy engine's 11 CE0463 on Data Widgets 3.10. That
--- predates both fixes and is unchanged by them; the modelsdk engine (the
--- default) is the one this issue tracks.
+-- STILL OPEN: the legacy engine's 11 CE0463 on Data Widgets 3.10. Its
+-- augmentation carries only syncDefinitionAttrs — the five reconcile passes
+-- added to modelsdk under #600 (enum values, property metadata, ValueType
+-- scalars, the AllowUpload envelope, PropertyType order) were never ported.
+-- modelsdk is the default engine and is clean; porting them is a separate job.
 
 create module W716;
 create persistent entity W716.Customer ( Name: string(100), City: string(100) );

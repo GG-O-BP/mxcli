@@ -132,7 +132,14 @@ Ordered by how often they have actually been the answer.
 4. **Property-set drift against the package.** Real, but a weak predictor: `datagrid`
    needs 19 additions and 1 removal against Data Widgets 3.10 and passes, while
    `datagrid-dropdown-filter` is byte-for-byte in sync and fails.
-5. **A mis-defaulted definition attribute in the `.mpk` parser.** The widget XML
+5. **Augmentation never ran.** Before theorising about a widget's stored BSON,
+   confirm the reconciliation reached it. `AugmentTemplate`'s "nothing to add or
+   remove" guard returned before six value-level passes appended after it, so any
+   widget whose property set already matched its package was emitted unreconciled
+   (#716's drop-down filter). A one-line probe settles it — call `augmentFromMPK`
+   directly and count `ValueTypes with AllowUpload`: 0/25 for the broken widget
+   against 44/44 for a working one localised this in a single step.
+6. **A mis-defaulted definition attribute in the `.mpk` parser.** The widget XML
    schema defaults `required` to **true**; reading a missing attribute as `false`
    put the wrong `Required` on 24 of DataGrid2 3.4's 40 properties. Two things make
    this family easy to miss: the value is only wrong for properties that *omit* the

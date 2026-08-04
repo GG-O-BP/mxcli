@@ -96,64 +96,68 @@ func AugmentTemplate(tmpl *WidgetTemplate, def *mpk.WidgetDefinition) error {
 		}
 	}
 
-	// Nothing to add/remove at top level, and no nested children to process
-	if len(missing) == 0 && len(stale) == 0 && !hasNestedChildren {
-		return nil
-	}
-
-	// Remove stale properties
-	if len(stale) > 0 {
-		staleSet := make(map[string]bool, len(stale))
-		for _, key := range stale {
-			staleSet[key] = true
-		}
-		propTypes, objProps = removeProperties(propTypes, objProps, staleSet)
-	}
-
-	// Add missing properties
-	for _, p := range missing {
-		bsonType := xmlTypeToBSONType(p.Type)
-		if bsonType == "" {
-			continue // Unknown type, skip
+	// The add/remove work below is only needed when the property SET differs.
+	// The value-level reconciliation that FOLLOWS this block is not: a template
+	// whose keys already match the installed package can still carry stale values
+	// (Required, AllowUpload, enum options, defaults, order). Returning early here
+	// skipped all six of those passes and was the #716 dropdown-filter bug — its
+	// property set is byte-for-byte in sync with Data Widgets 3.10, so augmentation
+	// silently did nothing at all.
+	if len(missing) > 0 || len(stale) > 0 || hasNestedChildren {
+		// Remove stale properties
+		if len(stale) > 0 {
+			staleSet := make(map[string]bool, len(stale))
+			for _, key := range stale {
+				staleSet[key] = true
+			}
+			propTypes, objProps = removeProperties(propTypes, objProps, staleSet)
 		}
 
-		// Find an exemplar of the same type to clone
-		exemplarIdx, hasExemplar := typeExemplars[bsonType]
-		var newPropType, newProp map[string]any
-		if hasExemplar {
-			var err error
-			newPropType, newProp, err = clonePropertyPair(propTypes, objProps, exemplarIdx, p)
-			if err != nil {
-				return fmt.Errorf("augment %s: %w", tmpl.WidgetID, err)
+		// Add missing properties
+		for _, p := range missing {
+			bsonType := xmlTypeToBSONType(p.Type)
+			if bsonType == "" {
+				continue // Unknown type, skip
+			}
+
+			// Find an exemplar of the same type to clone
+			exemplarIdx, hasExemplar := typeExemplars[bsonType]
+			var newPropType, newProp map[string]any
+			if hasExemplar {
+				var err error
+				newPropType, newProp, err = clonePropertyPair(propTypes, objProps, exemplarIdx, p)
+				if err != nil {
+					return fmt.Errorf("augment %s: %w", tmpl.WidgetID, err)
+				}
+			}
+			// Fall back to createPropertyPair if cloning failed (no exemplar or no matching property)
+			if newPropType == nil || newProp == nil {
+				newPropType, newProp = createPropertyPair(p, bsonType)
+			}
+
+			if newPropType != nil {
+				propTypes = append(propTypes, newPropType)
+			}
+			if newProp != nil {
+				objProps = append(objProps, newProp)
 			}
 		}
-		// Fall back to createPropertyPair if cloning failed (no exemplar or no matching property)
-		if newPropType == nil || newProp == nil {
-			newPropType, newProp = createPropertyPair(p, bsonType)
-		}
 
-		if newPropType != nil {
-			propTypes = append(propTypes, newPropType)
-		}
-		if newProp != nil {
-			objProps = append(objProps, newProp)
-		}
-	}
+		// Write back top-level
+		setArrayField(objType, "PropertyTypes", propTypes)
+		setArrayField(tmpl.Object, "Properties", objProps)
 
-	// Write back top-level
-	setArrayField(objType, "PropertyTypes", propTypes)
-	setArrayField(tmpl.Object, "Properties", objProps)
-
-	// Augment nested ObjectType properties (e.g., DataGrid2 column properties).
-	// Top-level augmentation syncs the property list, but nested ObjectTypes inside
-	// IsList Object properties also need syncing when the .mpk version differs
-	// from the template version.
-	for _, mpkProp := range def.Properties {
-		if len(mpkProp.Children) == 0 {
-			continue
-		}
-		if err := augmentNestedObjectType(propTypes, objProps, mpkProp); err != nil {
-			return fmt.Errorf("augment nested %s: %w", mpkProp.Key, err)
+		// Augment nested ObjectType properties (e.g., DataGrid2 column properties).
+		// Top-level augmentation syncs the property list, but nested ObjectTypes inside
+		// IsList Object properties also need syncing when the .mpk version differs
+		// from the template version.
+		for _, mpkProp := range def.Properties {
+			if len(mpkProp.Children) == 0 {
+				continue
+			}
+			if err := augmentNestedObjectType(propTypes, objProps, mpkProp); err != nil {
+				return fmt.Errorf("augment nested %s: %w", mpkProp.Key, err)
+			}
 		}
 	}
 
