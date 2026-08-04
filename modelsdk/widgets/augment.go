@@ -1262,16 +1262,24 @@ func syncDefinitionAttrs(propTypes []any, props []mpk.PropertyDef) {
 			}
 			if key, _ := ptMap["PropertyKey"].(string); key != "" {
 				if p := byKey[key]; p != nil {
-					// Update in place only. Adding a key the PropertyType does not
-					// already carry invents a property this Mendix version may not
-					// define — the mendixlabs/mxcli#759 failure shape, and the
-					// opposite of what `mx update-widgets` produces (its Gallery
-					// PropertyTypes omit both keys entirely).
-					if _, ok := ptMap["Required"]; ok {
-						ptMap["Required"] = p.Required
+					// These live on the PropertyType's ValueType, not on the
+					// PropertyType itself — targeting the wrong node made this a
+					// silent no-op. Verified against `mx update-widgets` output:
+					// the differing paths are
+					// PropertyTypes[N]/ValueType/{Required,OnChangeProperty}.
+					//
+					// Update in place only. Adding a key the node does not already
+					// carry invents a property this Mendix version may not define —
+					// the mendixlabs/mxcli#759 failure shape.
+					target := ptMap
+					if vt, ok := getMapField(ptMap, "ValueType"); ok {
+						target = vt
 					}
-					if _, ok := ptMap["OnChangeProperty"]; ok {
-						ptMap["OnChangeProperty"] = p.OnChange
+					if _, ok := target["Required"]; ok {
+						target["Required"] = p.Required
+					}
+					if _, ok := target["OnChangeProperty"]; ok {
+						target["OnChangeProperty"] = p.OnChange
 					}
 				}
 			}
