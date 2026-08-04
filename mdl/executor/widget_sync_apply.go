@@ -31,16 +31,15 @@ import (
 // project takes CE0463 from 33 to 127, because instances that legitimately carry a
 // caption need it. Only properties this operation introduced may be nulled.
 //
-//   - remove — a PropertyKey the installed package no longer declares. This is the
-//     mendixlabs/mxcli#716 case (`advanced`, dropped from Data Widgets after 3.4) and
-//     the operation that actually clears CE0463.
-//   - update — Required / OnChangeProperty on a surviving property, in place only.
+// Three of those four were TESTED IN ISOLATION against the fixture and NONE moved the
+// count (33 before, 33 after each): adding the `[3]` marker to empty DesignProperties,
+// writing LabelTemplate as an explicit null, and the GridSortBar SortDirection ->
+// SortOrder + marker migration. They are real differences from update-widgets output
+// but they are not what CE0463 is reacting to. Recorded so they are not retried.
 //
-// ADD is deliberately not applied yet. `mx update-widgets` does not add missing
-// properties unconditionally — it adds 12 to each stale Gallery but none to four
-// FeedbackModule Image instances that are short by four, and Mendix reports no CE0463
-// on those. Adding is also the only operation that invents nodes, so it is the one
-// worth being sure about. See PlanWidgetSync's comment.
+// The remaining untested candidate is the scoped TextTemplate null (added properties
+// only). If that also fails, the cause is not among the 25 value paths and the next
+// move is the splice bisection in .claude/skills/diagnose-ce0463.md.
 //
 // # The pairing invariant
 //
