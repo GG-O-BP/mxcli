@@ -18,7 +18,18 @@ import (
 
 // widget_sync_apply.go writes the reconciliation the planner describes.
 //
-// Scope of this step: REMOVE and UPDATE only.
+// Reconciliation is delegated to widgets.AugmentTemplate (see applyToWidget), which
+// makes the stored widget's TYPE byte-identical to `mx update-widgets` output. What
+// remains are value-level migrations update-widgets also performs and this does not:
+//
+//   - Appearance/DesignProperties: an empty list needs the `[3]` marker
+//   - LabelTemplate: written as an explicit null, not omitted
+//   - Forms$GridSortBar: SortDirection -> SortOrder, list marker 3 -> 2
+//   - a newly added TextTemplate property's value: null, not a populated template
+//
+// The last one is scoped carefully: nulling EVERY TextTemplate value in a synced
+// project takes CE0463 from 33 to 127, because instances that legitimately carry a
+// caption need it. Only properties this operation introduced may be nulled.
 //
 //   - remove — a PropertyKey the installed package no longer declares. This is the
 //     mendixlabs/mxcli#716 case (`advanced`, dropped from Data Widgets after 3.4) and

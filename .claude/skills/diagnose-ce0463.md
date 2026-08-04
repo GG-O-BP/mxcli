@@ -159,6 +159,13 @@ Ordered by how often they have actually been the answer.
 - **A hypothesis that survives only because you have not tested it is not evidence.**
   Patch it, measure, and write down the negative result — the elimination list is
   worth as much as the fix.
+- **A value fix that is right for NEW properties is usually wrong applied to all.**
+  `mx update-widgets` stores `TextTemplate: null` on a property it has just added,
+  where mxcli's authoring path builds a populated `Forms$ClientTemplate` (correct
+  there — an empty required textTemplate is CE4899). Nulling *every* TextTemplate
+  value in a synced project took CE0463 from **33 to 127**: instances that
+  legitimately carry a caption need it. Scope such a fix to the properties the
+  operation itself introduced.
 - **Test any candidate fix against the bundled package too.** Pruning the fields the
   `update-widgets` reference omits fixes 2 widgets on Data Widgets 3.10 and takes the
   bundled 3.4 from **0 → 139**.
