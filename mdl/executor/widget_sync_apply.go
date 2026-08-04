@@ -9,7 +9,10 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 
 	"github.com/mendixlabs/mxcli/mdl/backend"
+	"github.com/mendixlabs/mxcli/mdl/types"
 	"github.com/mendixlabs/mxcli/model"
+	"github.com/mendixlabs/mxcli/modelsdk/widgets"
+	"github.com/mendixlabs/mxcli/modelsdk/widgets/mpk"
 )
 
 // widget_sync_apply.go writes the reconciliation the planner describes.
@@ -63,6 +66,11 @@ func ApplyWidgetSync(b backend.RawUnitBackend, projectPath string, opts SyncOpti
 	}
 	sort.Strings(unitIDs)
 
+	defs, err := installedWidgetDefs(projectPath)
+	if err != nil {
+		return nil, plan, err
+	}
+
 	res := &SyncResult{}
 	for _, unitID := range unitIDs {
 		raw, err := b.GetRawUnitBytes(model.ID(unitID))
@@ -75,8 +83,10 @@ func ApplyWidgetSync(b backend.RawUnitBackend, projectPath string, opts SyncOpti
 		}
 
 		wanted := map[string][]SyncPropertyChange{}
+		widgetDef := map[string]*mpk.WidgetDefinition{}
 		for _, w := range byUnit[unitID] {
 			wanted[w.Widget] = append(wanted[w.Widget], w.Changes...)
+			widgetDef[w.Widget] = defs[w.WidgetID]
 		}
 
 		changed := 0
@@ -86,7 +96,11 @@ func ApplyWidgetSync(b backend.RawUnitBackend, projectPath string, opts SyncOpti
 			if !ok {
 				return widget, false
 			}
-			updated, n, skipped := applyToWidget(widget, changes)
+			def := widgetDef[name]
+			if def == nil {
+				return widget, false
+			}
+			updated, n, skipped := applyToWidget(widget, changes, def, opts.AddMissing)
 			if n == 0 {
 				return widget, false
 			}
@@ -115,9 +129,10 @@ func ApplyWidgetSync(b backend.RawUnitBackend, projectPath string, opts SyncOpti
 
 // applyToWidget rewrites one CustomWidget node. Returns the node, how many changes
 // were applied, and the descriptions of any it declined to apply.
-func applyToWidget(widget bson.D, changes []SyncPropertyChange) (bson.D, int, []string) {
+func applyToWidget(widget bson.D, changes []SyncPropertyChange, def *mpk.WidgetDefinition, addMissing bool) (bson.D, int, []string) {
 	remove := map[string]bool{}
 	update := map[string][]SyncPropertyChange{}
+	var add []string
 	var skipped []string
 	for _, c := range changes {
 		switch c.Kind {
@@ -126,10 +141,14 @@ func applyToWidget(widget bson.D, changes []SyncPropertyChange) (bson.D, int, []
 		case SyncUpdate:
 			update[c.Key] = append(update[c.Key], c)
 		case SyncAdd:
-			skipped = append(skipped, fmt.Sprintf("add %s", c.Key))
+			if addMissing {
+				add = append(add, c.Key)
+			} else {
+				skipped = append(skipped, fmt.Sprintf("add %s", c.Key))
+			}
 		}
 	}
-	if len(remove) == 0 && len(update) == 0 {
+	if len(remove) == 0 && len(update) == 0 && len(add) == 0 {
 		return widget, 0, skipped
 	}
 
@@ -185,7 +204,28 @@ func applyToWidget(widget bson.D, changes []SyncPropertyChange) (bson.D, int, []
 		newPropTypes = append(newPropTypes, pt)
 	}
 
-	// Pass 2 — drop the paired WidgetProperty for each removed PropertyType.
+	// Pass 2 — build the pairs for properties the package declares and this instance
+	// lacks. Construction is delegated to the authoring path (widgets.NewPropertyPair)
+	// so there is one implementation of what a property pair looks like, not two.
+	var newProps bson.A
+	for _, key := range add {
+		p := def.FindProperty(key)
+		if p == nil {
+			skipped = append(skipped, fmt.Sprintf("add %s (not found in package)", key))
+			continue
+		}
+		ptMap, propMap, ok := widgets.NewPropertyPair(*p, types.GenerateID)
+		if !ok {
+			// An XML type with no BSON mapping: skip rather than invent a shape.
+			skipped = append(skipped, fmt.Sprintf("add %s (unmapped type %q)", key, p.Type))
+			continue
+		}
+		newPropTypes = append(newPropTypes, mapToBSON(ptMap))
+		newProps = append(newProps, mapToBSON(propMap))
+		applied++
+	}
+
+	// Pass 3 — drop the paired WidgetProperty for each removed PropertyType.
 	objDoc, hasObj := docField(widget, "Object")
 	if hasObj {
 		if props, ok := arrField(objDoc, "Properties"); ok {
@@ -201,12 +241,16 @@ func applyToWidget(widget bson.D, changes []SyncPropertyChange) (bson.D, int, []
 				}
 				kept = append(kept, p)
 			}
+			kept = append(kept, newProps...)
 			objDoc = setField(objDoc, "Properties", kept)
 			widget = setField(widget, "Object", objDoc)
 		}
 	}
 
-	objType = setField(objType, "PropertyTypes", newPropTypes)
+	// Mendix checks the WidgetType's PropertyType ORDER, so appended properties must be
+	// moved into the package's declaration order — appending at the end is itself a
+	// CE0463 cause. (The WidgetObject's Properties order is tolerated.)
+	objType = setField(objType, "PropertyTypes", orderPropertyTypes(newPropTypes, def))
 	typeDoc = setField(typeDoc, "ObjectType", objType)
 	widget = setField(widget, "Type", typeDoc)
 	return widget, applied, skipped

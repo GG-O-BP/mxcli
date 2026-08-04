@@ -4,12 +4,16 @@ package executor
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 
 	"github.com/mendixlabs/mxcli/mdl/backend"
+	"github.com/mendixlabs/mxcli/mdl/bsonutil"
 	"github.com/mendixlabs/mxcli/mdl/types"
+	"github.com/mendixlabs/mxcli/modelsdk/widgets/mpk"
 )
 
 // widget_scan.go enumerates every stored pluggable-widget instance in the model in a
@@ -299,4 +303,92 @@ func hasKey(d bson.D, key string) bool {
 		}
 	}
 	return false
+}
+
+// mapToBSON converts a constructed property map into an ordered bson.D.
+//
+// Keys are emitted in sorted order, which is how the stored documents already look
+// ($ID, $Type, Caption, Category, Description, IsDefault, PropertyKey, ValueType) and
+// which matters: BSON key order is a documented CE0463 cause. ID-shaped strings become
+// binary, since that is how Mendix stores $ID and TypePointer.
+func mapToBSON(m map[string]any) bson.D {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	out := make(bson.D, 0, len(m))
+	for _, k := range keys {
+		out = append(out, bson.E{Key: k, Value: valueToBSON(k, m[k])})
+	}
+	return out
+}
+
+func valueToBSON(key string, v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		return mapToBSON(t)
+	case []any:
+		arr := make(bson.A, len(t))
+		for i, item := range t {
+			arr[i] = valueToBSON("", item)
+		}
+		return arr
+	case string:
+		if isIDField(key) {
+			if b, err := bsonutil.IDToBsonBinaryErr(t); err == nil {
+				return b
+			}
+		}
+		return t
+	}
+	return v
+}
+
+// isIDField names the fields Mendix stores as binary GUIDs rather than strings.
+func isIDField(key string) bool {
+	return key == "$ID" || strings.HasSuffix(key, "Pointer")
+}
+
+// orderPropertyTypes sorts a widget's PropertyTypes into the installed package's
+// declaration order, keeping any leading array marker first and leaving keys the
+// package does not declare (system properties) in their relative order at the end.
+//
+// Mendix checks this order on the WidgetType, so a property appended at the end is a
+// CE0463 cause in its own right.
+func orderPropertyTypes(propTypes bson.A, def *mpk.WidgetDefinition) bson.A {
+	rank := map[string]int{}
+	for i, p := range def.Properties {
+		rank[p.Key] = i
+	}
+
+	var markers bson.A
+	var docs []bson.D
+	for _, item := range propTypes {
+		if d, ok := item.(bson.D); ok {
+			docs = append(docs, d)
+			continue
+		}
+		markers = append(markers, item)
+	}
+
+	sort.SliceStable(docs, func(i, j int) bool {
+		ri, oki := rank[bsonString(docs[i], "PropertyKey")]
+		rj, okj := rank[bsonString(docs[j], "PropertyKey")]
+		switch {
+		case oki && okj:
+			return ri < rj
+		case oki:
+			return true // declared properties precede undeclared/system ones
+		default:
+			return false
+		}
+	})
+
+	out := append(bson.A{}, markers...)
+	for _, d := range docs {
+		out = append(out, d)
+	}
+	return out
 }

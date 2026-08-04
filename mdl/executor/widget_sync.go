@@ -12,7 +12,7 @@ import (
 
 	"github.com/mendixlabs/mxcli/mdl/backend"
 	"github.com/mendixlabs/mxcli/mdl/types"
-	"github.com/mendixlabs/mxcli/sdk/widgets/mpk"
+	"github.com/mendixlabs/mxcli/modelsdk/widgets/mpk"
 )
 
 // widget_sync.go plans the reconciliation of *stored* widget instances against the
@@ -126,6 +126,11 @@ func (p SyncPlan) Empty() bool { return p.TotalChanges() == 0 }
 type SyncOptions struct {
 	WidgetID  string // only this widget type
 	Container string // only this page/snippet (qualified name)
+	// AddMissing enables inserting properties the package declares and the instance
+	// lacks. Off by default: the pairs mxcli constructs are not yet byte-equivalent to
+	// `mx update-widgets` output (Caption, Category and ValueType/Translations still
+	// differ), so enabling it writes hundreds of nodes without clearing CE0463.
+	AddMissing bool
 }
 
 // PlanWidgetSync compares every stored widget instance against the widget package
@@ -319,7 +324,7 @@ func installedWidgetDefs(projectPath string) (map[string]*mpk.WidgetDefinition, 
 	}
 	defs := map[string]*mpk.WidgetDefinition{}
 	for _, path := range matches {
-		parsed, err := mpk.ParseMPKAll(path)
+		parsed, err := mpk.ParseAll(path)
 		if err != nil {
 			// A single unreadable package must not fail the whole plan; it becomes an
 			// unresolved widget if the model references it.

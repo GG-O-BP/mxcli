@@ -45,6 +45,7 @@ func init() {
 	widgetSyncCmd.Flags().Bool("dry-run", false, "Report what would change without writing")
 	widgetSyncCmd.Flags().String("widget", "", "Only this widget type (full widget ID)")
 	widgetSyncCmd.Flags().String("page", "", "Only this page or snippet (qualified name)")
+	widgetSyncCmd.Flags().Bool("add-missing", false, "EXPERIMENTAL: also insert properties the package declares but the widget lacks (does not yet clear CE0463)")
 	widgetSyncCmd.MarkFlagRequired("project")
 	widgetCmd.AddCommand(widgetSyncCmd)
 }
@@ -68,7 +69,8 @@ func runWidgetSync(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("connect to %s: %w", projectPath, err)
 	}
 
-	opts := executor.SyncOptions{WidgetID: widgetID, Container: page}
+	addMissing, _ := cmd.Flags().GetBool("add-missing")
+	opts := executor.SyncOptions{WidgetID: widgetID, Container: page, AddMissing: addMissing}
 
 	if dryRun {
 		plan, err := executor.PlanWidgetSync(exec.Backend(), projectPath, opts)
