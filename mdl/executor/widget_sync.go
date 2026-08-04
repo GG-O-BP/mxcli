@@ -45,23 +45,19 @@ import (
 // both act they agree exactly (DataGrid2: remove `advanced` + add 17; the drop-down
 // filters: `Required` on refCaption/refCaptionExp).
 //
-// # Two known gaps, both measured
+// # Coverage
 //
-//  1. CONTAINER COVERAGE. FindAllCustomWidgetTypes scans Forms$Page and Forms$Snippet
-//     only. Widgets in Forms$BuildingBlock are invisible to it — 44 changes across
-//     List_Cards, List_WithImage and Master_Detail that update-widgets makes and this
-//     plan does not see. Layouts are likewise unscanned.
+// Enumeration is a single pass over every widget-bearing unit type — pages, snippets,
+// building blocks and layouts (see widget_scan.go). Building blocks matter: mxcli
+// supports authoring them, and update-widgets reconciles 44 properties inside a blank
+// project's Atlas building blocks that a page/snippet-only scan cannot see.
 //
-//  2. THEME MODULES. update-widgets does not touch widgets in a module with
-//     IsThemeModule=true (FeedbackModule in a blank project), and Mendix reports no
-//     CE0463 on them either — `mx module-import` has a dedicated refusal for theme
-//     modules, so they are deliberately off-limits. This plan currently proposes 16
-//     changes there that it should not. model.Module does not yet carry the flag.
-//
-// Both are fixed by replacing the per-widget-ID scan with a single-pass enumeration
-// that returns every instance with its container type and owning module — which is
-// also O(units) instead of O(widget types x units). That is the next step, and it is
-// the primitive `marketplace diff` needs too (see PROPOSAL_marketplace_module_upgrade).
+// OPEN: `mx update-widgets` does not add missing properties to every instance. It adds
+// 12 to each stale Gallery, but leaves four FeedbackModule Image instances short by
+// four properties — and Mendix reports no CE0463 on those. So "add missing" is not
+// unconditionally what Mendix does. Removing stale properties and syncing definition
+// attributes are the operations known to be both necessary and faithful; the exact
+// trigger for "add" needs more evidence before this writes anything.
 
 // SyncChangeKind is what a plan proposes to do to one property.
 type SyncChangeKind string
@@ -135,7 +131,7 @@ type SyncOptions struct {
 // The registry carries authoring ROUTING (which MDL keyword feeds which property key),
 // not the schema CE0463 compares — verified during #716, where regenerating every
 // definition from the project's .mpk left the error count unchanged.
-func PlanWidgetSync(b backend.WidgetBackend, projectPath string, opts SyncOptions) (*SyncPlan, error) {
+func PlanWidgetSync(b backend.RawUnitBackend, projectPath string, opts SyncOptions) (*SyncPlan, error) {
 	if b == nil {
 		return nil, fmt.Errorf("not connected to a project")
 	}
@@ -149,30 +145,36 @@ func PlanWidgetSync(b backend.WidgetBackend, projectPath string, opts SyncOption
 	}
 
 	plan := &SyncPlan{}
-	ids := make([]string, 0, len(defs))
-	for id := range defs {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
 
-	for _, id := range ids {
-		if opts.WidgetID != "" && !strings.EqualFold(opts.WidgetID, id) {
+	instances, err := scanCustomWidgetInstances(b)
+	if err != nil {
+		return nil, err
+	}
+
+	unresolved := map[string]bool{}
+	for _, inst := range instances {
+		if opts.WidgetID != "" && !strings.EqualFold(opts.WidgetID, inst.WidgetID) {
 			continue
 		}
-		instances, err := b.FindAllCustomWidgetTypes(id)
-		if err != nil {
-			return nil, fmt.Errorf("find instances of %s: %w", id, err)
+		if opts.Container != "" && !strings.EqualFold(opts.Container, inst.UnitName) {
+			continue
 		}
-		for _, inst := range instances {
-			if opts.Container != "" && !strings.EqualFold(opts.Container, inst.UnitName) {
-				continue
-			}
-			wp := planInstance(inst, defs[id])
-			if len(wp.Changes) > 0 {
-				plan.Widgets = append(plan.Widgets, wp)
-			}
+		def, ok := defs[inst.WidgetID]
+		if !ok {
+			// No installed .mpk: report, never touch. Deleting an instance's
+			// properties because its package is missing would be the worst
+			// possible failure mode.
+			unresolved[inst.WidgetID] = true
+			continue
+		}
+		if wp := planInstance(inst, def); len(wp.Changes) > 0 {
+			plan.Widgets = append(plan.Widgets, wp)
 		}
 	}
+	for id := range unresolved {
+		plan.Unresolved = append(plan.Unresolved, id)
+	}
+	sort.Strings(plan.Unresolved)
 
 	sort.Slice(plan.Widgets, func(i, j int) bool {
 		if plan.Widgets[i].Container != plan.Widgets[j].Container {
@@ -184,7 +186,7 @@ func PlanWidgetSync(b backend.WidgetBackend, projectPath string, opts SyncOption
 }
 
 // planInstance diffs one stored instance against its package definition.
-func planInstance(inst *types.RawCustomWidgetType, def *mpk.WidgetDefinition) SyncWidgetPlan {
+func planInstance(inst *types.CustomWidgetInstance, def *mpk.WidgetDefinition) SyncWidgetPlan {
 	wp := SyncWidgetPlan{
 		Container:   inst.UnitName,
 		ContainerID: inst.UnitID,
