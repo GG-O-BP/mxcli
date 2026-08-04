@@ -1,0 +1,54 @@
+-- ============================================================================
+-- Ledger finding #75: Dynamic Text formatting (FormattingInfo) is reachable
+-- ============================================================================
+--
+-- Before this fix, a Decimal rendered through `dynamictext` always showed with
+-- the hardcoded default precision (e.g. "5068.38000000") — there was no way to
+-- set the per-parameter Format (decimals, thousands separator, date format).
+-- The Mendix model always stored a ClientTemplateParameter.FormattingInfo, but
+-- every writer hardcoded it and ignored user intent, and a widget-level format
+-- property was silently dropped.
+--
+-- Now each content parameter accepts a FORMAT block mapping to FormattingInfo:
+--   {1} = Amount format (decimalPrecision: 2, groupDigits: true)
+--   {1} = DueOn  format (dateFormat: DateTime)
+--   {1} = DueOn  format (dateFormat: Custom, customDateFormat: 'dd-MM-yyyy')
+--   {1} = Status format (enumFormat: Text)
+--
+-- The FORMAT keyword is required: a bare `(…)` after the expression is
+-- ambiguous with a function-call argument list because `:` is a valid OQL
+-- division operator in expressions.
+--
+-- Verified: mxcli exec -> mx check (Mendix 11.12.1) = 0 errors; DESCRIBE PAGE
+-- round-trips the format block.
+-- ============================================================================
+
+create entity Ledger.LineItem (
+  Amount: Decimal,
+  DueOn: DateTime
+);
+
+create page Ledger.LineItems (
+  Title: 'Line items',
+  Layout: Atlas_Core.Atlas_Default
+)
+{
+  layoutgrid grid {
+    row r {
+      column c (DesktopWidth: 12) {
+        listview lv (DataSource: DATABASE FROM Ledger.LineItem) {
+          -- Decimal with 2 decimals and a thousands separator.
+          dynamictext txtAmount (
+            Content: '{1}',
+            ContentParams: [{1} = Amount format (decimalPrecision: 2, groupDigits: true)]
+          )
+          -- DateTime shown with date + time.
+          dynamictext txtDue (
+            Content: '{1}',
+            ContentParams: [{1} = DueOn format (dateFormat: DateTime)]
+          )
+        }
+      }
+    }
+  }
+}

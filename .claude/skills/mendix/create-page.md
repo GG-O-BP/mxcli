@@ -237,6 +237,32 @@ dynamictext title (Attribute: Title)
 | `AttrName` | Current DataView/Gallery entity | `Name`, `Email` |
 | `'literal'` | String literal expression | `'Hello'` |
 
+**Formatting a parameter (Decimal / DateTime / Enum):** append a `format (…)`
+block to a content parameter. Without it, a Decimal renders with the platform
+default (e.g. `5068.38000000`).
+
+```sql
+-- Decimal: 2 decimals + thousands separator  ->  "5,068.38"
+dynamictext amt (content: '{1}', contentparams: [{1} = Amount format (decimalPrecision: 2, groupDigits: true)])
+
+-- DateTime: date + time, or a custom pattern
+dynamictext due  (content: '{1}', contentparams: [{1} = DueOn format (dateFormat: DateTime)])
+dynamictext day  (content: '{1}', contentparams: [{1} = DueOn format (dateFormat: Custom, customDateFormat: 'dd-MM-yyyy')])
+```
+
+| Format key | Applies to | Values |
+|------------|-----------|--------|
+| `decimalPrecision` | Decimal / Float | a non-negative integer |
+| `groupDigits` | Decimal / Float | `true` \| `false` |
+| `dateFormat` | DateTime | `Date` \| `DateTime` \| `Time` \| `Custom` |
+| `customDateFormat` | DateTime | a pattern string, requires `dateFormat: Custom` |
+| `enumFormat` | Enumeration | `Text` \| `Image` |
+
+> The **`format` keyword is required** — a bare `(…)` after the value is
+> ambiguous with a function call. Putting a format key at the **widget** level
+> (e.g. `dynamictext x (…, decimalPrecision: 2)`) is an error (MDL-WIDGET18):
+> formatting is per-parameter, so it must go inside the `contentparams` block.
+
 > **Never leave a `{N}` placeholder unbound.** `content: '{1}'` with no
 > `Attribute:`/`ContentParams:` is an orphaned template — `mxcli check` rejects it
 > (MDL-WIDGET04), MxBuild fails with CE0720, and Studio Pro throws a

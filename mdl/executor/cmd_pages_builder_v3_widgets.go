@@ -5,6 +5,7 @@ package executor
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/mendixlabs/mxcli/mdl/ast"
@@ -654,6 +655,7 @@ func (pb *pageBuilder) buildDynamicTextV3(w *ast.WidgetV3) (*pages.DynamicText, 
 					pb.resolveTemplateAttributePathFull(strVal, param)
 				}
 			}
+			param.FormattingInfo = formattingInfoFromParamFormat(p.Format)
 			dt.Content.Parameters = append(dt.Content.Parameters, param)
 		}
 	}
@@ -663,6 +665,40 @@ func (pb *pageBuilder) buildDynamicTextV3(w *ast.WidgetV3) (*pages.DynamicText, 
 	}
 
 	return dt, nil
+}
+
+// formattingInfoFromParamFormat coerces a parsed per-parameter format block into
+// an SDK FormattingInfo. Returns nil when there is no block, so the writers keep
+// emitting the existing hardcoded defaults for every unformatted parameter. When
+// a block IS present it starts from those same defaults and applies the user's
+// keys on top, so only the specified fields change. Unknown keys / invalid values
+// are ignored here — check-time validation (MDL-WIDGET18) reports them.
+func formattingInfoFromParamFormat(f *ast.ParamFormatV3) *pages.FormattingInfo {
+	if f == nil || len(f.Props) == 0 {
+		return nil
+	}
+	fi := &pages.FormattingInfo{
+		DateFormat:       "Date",
+		DecimalPrecision: 2,
+		EnumFormat:       "Text",
+	}
+	for _, p := range f.Props {
+		switch p.Key {
+		case "decimalprecision":
+			if n, err := strconv.Atoi(p.Value); err == nil {
+				fi.DecimalPrecision = n
+			}
+		case "groupdigits":
+			fi.GroupDigits = strings.EqualFold(p.Value, "true")
+		case "dateformat":
+			fi.DateFormat = p.Value
+		case "customdateformat":
+			fi.CustomDateFormat = p.Value
+		case "enumformat":
+			fi.EnumFormat = p.Value
+		}
+	}
+	return fi
 }
 
 func (pb *pageBuilder) buildTitleV3(w *ast.WidgetV3) (*pages.Title, error) {

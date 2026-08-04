@@ -129,8 +129,38 @@ type ColumnV3 struct {
 
 // ParamAssignmentV3 represents a template parameter: {1} = value
 type ParamAssignmentV3 struct {
-	Index int // Parameter index (1, 2, 3, ...)
-	Value any // Expression value
+	Index  int            // Parameter index (1, 2, 3, ...)
+	Value  any            // Expression value
+	Format *ParamFormatV3 // Optional per-parameter formatting (dynamic text), else nil
+}
+
+// ParamFormatV3 holds the optional per-parameter formatting of a dynamic-text
+// parameter, mapping to the Mendix ClientTemplateParameter FormattingInfo. Props
+// preserve the raw key/value pairs exactly as written, so the validator can flag
+// unknown keys / bad values and DESCRIBE can round-trip them.
+//
+//	{1} = Amount format (decimalPrecision: 2, groupDigits: true)
+type ParamFormatV3 struct {
+	Props []ParamFormatProp
+}
+
+// ParamFormatProp is one `key: value` entry inside a parameter format block.
+type ParamFormatProp struct {
+	Key   string // lowercased key, e.g. "decimalprecision"
+	Value string // raw value text, with surrounding quotes stripped for strings
+}
+
+// Get returns the value for a (case-insensitive) key and whether it was present.
+func (f *ParamFormatV3) Get(key string) (string, bool) {
+	if f == nil {
+		return "", false
+	}
+	for _, p := range f.Props {
+		if p.Key == key {
+			return p.Value, true
+		}
+	}
+	return "", false
 }
 
 // DesignPropertyEntryV3 represents a single design property entry. It is either

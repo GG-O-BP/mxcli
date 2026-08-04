@@ -1392,11 +1392,15 @@ func extractClientTemplateParameters(ctx *ExecContext, w map[string]any, fieldNa
 		return nil
 	}
 	var result []string
+	var suffixes []string // per-param format block " (decimalPrecision: 2, …)", "" when default
 	for _, p := range params {
 		pMap, ok := p.(map[string]any)
 		if !ok {
 			continue
 		}
+		// One suffix per emitted param, in the same order, so it can be zipped in
+		// after the value string is chosen (round-trips per-parameter formatting).
+		suffixes = append(suffixes, formatParamFormatSuffix(pMap))
 		// Check for Expression first (literal value)
 		if expr, ok := pMap["Expression"].(string); ok && expr != "" {
 			// A non-String attribute binding (Integer/DateTime/…) is written as
@@ -1449,7 +1453,47 @@ func extractClientTemplateParameters(ctx *ExecContext, w map[string]any, fieldNa
 		// Parameter exists but has no binding - mark as unbound
 		result = append(result, "<unbound>")
 	}
+	// Append each param's format block to its value string. result and suffixes are
+	// aligned (one of each per param that had a valid pMap).
+	for i := range result {
+		if i < len(suffixes) && suffixes[i] != "" {
+			result[i] += suffixes[i]
+		}
+	}
 	return result
+}
+
+// formatParamFormatSuffix renders a dynamic-text parameter's FormattingInfo back
+// to the MDL format block " (decimalPrecision: 2, groupDigits: true, …)",
+// emitting only the fields that differ from the Mendix defaults (DateFormat=Date,
+// DecimalPrecision=2, EnumFormat=Text, GroupDigits=false, CustomDateFormat=""),
+// so an unformatted parameter round-trips as before (empty string). Mirrors the
+// writer defaults in formattingInfoFromParamFormat / formattingInfoToGen.
+func formatParamFormatSuffix(pMap map[string]any) string {
+	fi, ok := pMap["FormattingInfo"].(map[string]any)
+	if !ok || fi == nil {
+		return ""
+	}
+	var parts []string
+	if dp := extractInt(fi["DecimalPrecision"]); dp != 2 {
+		parts = append(parts, fmt.Sprintf("decimalPrecision: %d", dp))
+	}
+	if gd, ok := fi["GroupDigits"].(bool); ok && gd {
+		parts = append(parts, "groupDigits: true")
+	}
+	if df := extractString(fi["DateFormat"]); df != "" && df != "Date" {
+		parts = append(parts, "dateFormat: "+df)
+	}
+	if cdf := extractString(fi["CustomDateFormat"]); cdf != "" {
+		parts = append(parts, "customDateFormat: '"+cdf+"'")
+	}
+	if ef := extractString(fi["EnumFormat"]); ef != "" && ef != "Text" {
+		parts = append(parts, "enumFormat: "+ef)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " format (" + strings.Join(parts, ", ") + ")"
 }
 
 // associationTemplateParamPath reconstructs the "Assoc/.../Attr" navigation of a
