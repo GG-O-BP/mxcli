@@ -16,13 +16,24 @@ import (
 // widget packages installed in the project — the mxcli equivalent of Studio Pro's
 // "Update all widgets" and `mx update-widgets`, without the latter's MPR v2 data loss.
 //
-// Currently read-only: it reports what would change. Applying is the next step.
+// PARTIAL. On the reference fixture (Data Widgets 3.4 -> 3.11.3) this clears 7 of 40
+// CE0463 while `mx update-widgets` clears all 40. What it does is faithful — the
+// widget Type it writes is byte-identical to Mendix's own output — but a value-level
+// difference not yet identified keeps DataGrid2 and Gallery instances erroring. The
+// help text says so rather than implying the command finishes the job.
 
 var widgetSyncCmd = &cobra.Command{
 	Use:   "sync",
 	Short: "Reconcile stored widget instances against the installed widget packages",
 	Long: `Compare every stored pluggable-widget instance against the .mpk currently
-installed in the project, and report the schema differences.
+installed in the project, and reconcile the differences.
+
+PARTIAL — this does not yet fully replace "Update all widgets". On the reference
+fixture it clears 7 of 40 CE0463 errors; Mendix's own 'mx update-widgets' clears
+all 40 but destroys the mprcontents/ folder on MPR v2 projects, which this does
+not. Preview with --dry-run and verify with 'mx check' before relying on it.
+
+Applying currently requires MXCLI_ENGINE=legacy; --dry-run works on both engines.
 
 mxcli writes a widget instance correctly for the package installed at authoring
 time. When that package is later upgraded, the stored instances go stale and
