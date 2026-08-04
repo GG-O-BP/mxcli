@@ -40,11 +40,11 @@ func TestAstDesignPropToValue_Typed(t *testing.T) {
 		key, val, wantType string
 	}{
 		{"Background color", "Brand Primary", "option"},
-		{"Text alignment", "Center", "option"},          // ToggleButtonGroup option → option (not custom!)
-		{"Column gap", "Medium", "option"},              // the CE6084 regression case
-		{"Accent", "Brand Primary", "option"},           // ColorPicker predefined swatch → option
-		{"Accent", "#ff0000", "custom"},                 // ColorPicker free-form color → custom
-		{"Unknown Key", "x", "option"},                  // not in registry → default option
+		{"Text alignment", "Center", "option"}, // ToggleButtonGroup option → option (not custom!)
+		{"Column gap", "Medium", "option"},     // the CE6084 regression case
+		{"Accent", "Brand Primary", "option"},  // ColorPicker predefined swatch → option
+		{"Accent", "#ff0000", "custom"},        // ColorPicker free-form color → custom
+		{"Unknown Key", "x", "option"},         // not in registry → default option
 	}
 	for _, c := range cases {
 		dp, ok := astDesignPropToValue(ast.DesignPropertyEntryV3{Key: c.key, Value: c.val}, props)

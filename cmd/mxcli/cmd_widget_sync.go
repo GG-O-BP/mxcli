@@ -55,10 +55,6 @@ func runWidgetSync(cmd *cobra.Command, args []string) error {
 	widgetID, _ := cmd.Flags().GetString("widget")
 	page, _ := cmd.Flags().GetString("page")
 
-	if !dryRun {
-		return fmt.Errorf("applying is not implemented yet — re-run with --dry-run to see what would change")
-	}
-
 	exec, logger := newLoggedExecutor("subcommand")
 	defer logger.Close()
 	defer exec.Close()
@@ -72,14 +68,27 @@ func runWidgetSync(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("connect to %s: %w", projectPath, err)
 	}
 
-	plan, err := executor.PlanWidgetSync(exec.Backend(), projectPath, executor.SyncOptions{
-		WidgetID:  widgetID,
-		Container: page,
-	})
+	opts := executor.SyncOptions{WidgetID: widgetID, Container: page}
+
+	if dryRun {
+		plan, err := executor.PlanWidgetSync(exec.Backend(), projectPath, opts)
+		if err != nil {
+			return err
+		}
+		renderSyncPlan(plan)
+		return nil
+	}
+
+	res, plan, err := executor.ApplyWidgetSync(exec.Backend(), projectPath, opts)
 	if err != nil {
 		return err
 	}
 	renderSyncPlan(plan)
+	fmt.Printf("\nApplied: %d property change(s) on %d widget(s) in %d unit(s).\n",
+		res.PropertiesFixed, res.WidgetsChanged, res.UnitsChanged)
+	if n := len(res.Skipped); n > 0 {
+		fmt.Printf("Not applied: %d add(s) — see `mxcli widget sync --help`.\n", n)
+	}
 	return nil
 }
 

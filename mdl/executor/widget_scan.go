@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 
 	"github.com/mendixlabs/mxcli/mdl/backend"
 	"github.com/mendixlabs/mxcli/mdl/types"
@@ -193,6 +194,108 @@ func bsonBool(d bson.D, key string) bool {
 		if e.Key == key {
 			b, _ := e.Value.(bool)
 			return b
+		}
+	}
+	return false
+}
+
+// --- bson.D editing helpers -------------------------------------------------
+// bson.D is an ordered slice, and Mendix cares about key order, so these edit in
+// place (replacing a value at its existing position) rather than rebuilding.
+
+func docField(d bson.D, key string) (bson.D, bool) {
+	for _, e := range d {
+		if e.Key == key {
+			v, ok := e.Value.(bson.D)
+			return v, ok
+		}
+	}
+	return nil, false
+}
+
+func arrField(d bson.D, key string) (bson.A, bool) {
+	for _, e := range d {
+		if e.Key == key {
+			switch a := e.Value.(type) {
+			case bson.A:
+				return a, true
+			case []any:
+				return bson.A(a), true
+			}
+		}
+	}
+	return nil, false
+}
+
+// setField replaces key's value, preserving its position. Appends only if absent —
+// callers here always pass a key that exists.
+func setField(d bson.D, key string, value any) bson.D {
+	for i := range d {
+		if d[i].Key == key {
+			d[i].Value = value
+			return d
+		}
+	}
+	return append(d, bson.E{Key: key, Value: value})
+}
+
+// idOf returns a node's $ID as a comparable hex string.
+func idOf(d bson.D) (string, bool) { return idField(d, "$ID") }
+
+func idField(d bson.D, key string) (string, bool) {
+	for _, e := range d {
+		if e.Key != key {
+			continue
+		}
+		switch v := e.Value.(type) {
+		case []byte:
+			return fmt.Sprintf("%x", v), true
+		case primitive.Binary:
+			return fmt.Sprintf("%x", v.Data), true
+		case string:
+			return v, true
+		}
+	}
+	return "", false
+}
+
+// mapWidgets walks a unit document and gives visit a chance to rewrite every
+// CustomWidget node, returning the rebuilt document.
+func mapWidgets(node any, visit func(name string, widget bson.D) (bson.D, bool)) any {
+	switch v := node.(type) {
+	case bson.D:
+		if bsonString(v, "$Type") == "CustomWidgets$CustomWidget" {
+			if replaced, ok := visit(bsonString(v, "Name"), v); ok {
+				v = replaced
+			}
+		}
+		out := make(bson.D, len(v))
+		for i, e := range v {
+			out[i] = bson.E{Key: e.Key, Value: mapWidgets(e.Value, visit)}
+		}
+		return out
+	case bson.A:
+		out := make(bson.A, len(v))
+		for i, item := range v {
+			out[i] = mapWidgets(item, visit)
+		}
+		return out
+	case []any:
+		out := make(bson.A, len(v))
+		for i, item := range v {
+			out[i] = mapWidgets(item, visit)
+		}
+		return out
+	}
+	return node
+}
+
+// hasKey reports whether a document already carries a key — the guard that keeps an
+// update from inventing a property (mendixlabs/mxcli#759).
+func hasKey(d bson.D, key string) bool {
+	for _, e := range d {
+		if e.Key == key {
+			return true
 		}
 	}
 	return false

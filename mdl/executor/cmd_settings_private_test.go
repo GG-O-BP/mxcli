@@ -104,7 +104,7 @@ func TestAlterSettingsConstant_DropPrivateIsAllowed(t *testing.T) {
 }
 
 // TestDescribeSettings_PrivateOverrideIsNotReExecutable: describe emitted
-// `value ''` for a private override, so replaying its own output converted the
+// `value ”` for a private override, so replaying its own output converted the
 // override to a shared empty one.
 func TestDescribeSettings_PrivateOverrideIsNotReExecutable(t *testing.T) {
 	wrote := false

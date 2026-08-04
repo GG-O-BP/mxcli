@@ -83,6 +83,10 @@ type SyncPropertyChange struct {
 	// Detail explains the change in the report ("dropped by the package",
 	// `Required false -> true`).
 	Detail string
+	// Attr and Value carry the target for a SyncUpdate: the ValueType field to set
+	// and what to set it to. Kept structured rather than parsed back out of Detail.
+	Attr  string
+	Value any
 }
 
 // SyncWidgetPlan is the set of changes for a single stored widget instance.
@@ -249,6 +253,8 @@ func attrChanges(key string, vt bson.D, p *mpk.PropertyDef) []SyncPropertyChange
 				Kind:   SyncUpdate,
 				Key:    key,
 				Detail: fmt.Sprintf("Required %v -> %v", b, p.Required),
+				Attr:   "Required",
+				Value:  p.Required,
 			})
 		}
 	}
@@ -258,6 +264,8 @@ func attrChanges(key string, vt bson.D, p *mpk.PropertyDef) []SyncPropertyChange
 				Kind:   SyncUpdate,
 				Key:    key,
 				Detail: fmt.Sprintf("OnChangeProperty %q -> %q", s, p.OnChange),
+				Attr:   "OnChangeProperty",
+				Value:  p.OnChange,
 			})
 		}
 	}
