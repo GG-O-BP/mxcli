@@ -1,5 +1,10 @@
 # Debug BSON Serialization Issues
 
+> **CE0463 specifically**: start with [`diagnose-ce0463.md`](diagnose-ce0463.md).
+> It carries the elimination order, the two controls that separate a package
+> upgrade from an mxcli defect, and the measurement traps (a crashed load reports
+> "0 errors"; normalised diffs hide the answer).
+
 This skill provides a systematic workflow for debugging BSON serialization errors when programmatically creating Mendix pages and widgets.
 
 ## When to Use This Skill

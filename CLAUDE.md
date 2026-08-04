@@ -616,6 +616,7 @@ Full syntax tables for all MDL statements (microflows, pages, security, navigati
 - `docs/03-development/PAGE_BSON_SERIALIZATION.md` - Page/widget BSON format, type mappings, required defaults
 - `docs/03-development/WIDGET_BSON_VERSION_COMPATIBILITY.md` - What's version-resilient vs version-fragile in widget BSON output, and how to onboard a new Mendix minor (e.g. 11.10)
 - `.claude/skills/debug-bson.md` - Workflow for debugging BSON serialization issues with `mx` tool (includes the "Studio Pro Update Widget" diff methodology that closed CE0463)
+- `.claude/skills/diagnose-ce0463.md` - **Read first for any CE0463 report**: the elimination order, the two controls that separate "the user upgraded a widget package" (not our bug) from a real mxcli defect, and the measurement traps that make CE0463 investigations go wrong
 - `.claude/skills/verify-in-runtime.md` - Proving a fix in a real app in a real browser (`run --local` + Playwright). For symptoms that only exist at render time, where valid-looking BSON and a clean `mx check` prove nothing — see #812
 - `cmd/mxcli/lsp.go` - LSP server implementation (hover, definition, diagnostics, completion, symbols)
 - `cmd/mxcli/init.go` - `mxcli init` command (project initialization + VS Code extension install)
