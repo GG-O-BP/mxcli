@@ -155,6 +155,39 @@ blank project whose own template widgets are already failing from Case 1, so a
 raw CE0463 count mixes the two. Subtract by widget *name* against a control
 project that ran no mxcli command at all.
 
+### The residual #716 failures are NOT explained by template drift
+
+The obvious model — "the embedded template is behind the installed package, so
+widgets whose property set drifted the most fail" — is **wrong**. Measured on Data
+Widgets 3.10, comparing each embedded template's `PropertyKey` set against the
+installed `.mpk` XML, alongside whether freshly authored instances pass `mx check`:
+
+| Template | must ADD | must REMOVE | in sync | fresh authoring |
+|---|---|---|---|---|
+| `datagrid` | 19 | 1 | 60 | **passes** |
+| `gallery` | 11 | 0 | 33 | **fails** (4 instances) |
+| `datagrid-dropdown-filter` | 0 | 0 | 27 | **fails** (2 instances) |
+| `datagrid-text-filter` | 0 | 0 | 13 | **passes** |
+
+Drift does not predict failure in either direction. `datagrid` has by far the most
+churn and is clean; `dropdown-filter` and `text-filter` are byte-for-byte in sync
+with the package and disagree with each other. Whatever distinguishes them is in the
+*content* of specific properties, not in which properties exist.
+
+**A field-level prune is also disproven, and dangerously so.** Deleting
+`OnChangeProperty` / `Required` from every `CustomWidgets$WidgetValueType` — the
+fields `mx update-widgets` omits on Gallery — takes fresh-authoring CE0463 from 6 to
+4 on Data Widgets 3.10, but takes the **shipped 3.4 from 0 to 139**. Those fields are
+required on the version the project ships with; removing them unconditionally breaks
+every widget. Do not treat "the reference output omits it" as "we should never emit
+it" without testing the version the project actually uses.
+
+The cause of the four Gallery failures is **open**. It is not the property set, not
+`OnChangeProperty`/`Required` values, not `Appearance.DesignProperties`,
+`LabelTemplate`, the `GridSortBar` list marker, `SortDirection`/`SortOrder`, or
+`AttributeRef.EntityRef` — each was patched in isolation and re-checked, none moved
+the count.
+
 ## Onboarding a new Mendix minor (e.g. 11.10, 12.0)
 
 The CE0463 fix methodology used for 11.9 generalizes. Steps:
