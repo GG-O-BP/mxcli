@@ -229,6 +229,43 @@ out the whole schema axis. The empty-vs-null-vs-placeholder axis inside the Gall
 underneath) has **not** been examined, and it is where four of the last five CE0463
 fixes actually lived.
 
+### #716 Gallery: what is ruled out, and the one fact that constrains the answer
+
+Investigated exhaustively on Mendix 11.12.2 + Data Widgets 3.10, fixture 31, against
+an `mx update-widgets` reference of the same project. **Unresolved** — recorded so the
+next attempt starts from the eliminations rather than repeating them.
+
+**The constraining fact.** Replacing mxcli's whole `galCustomers` widget node with the
+reference node clears its CE0463 (35 → 34 errors). Replacing only its `Type`, or only
+its `Object`, **crashes the project load** — mx check reports "0 errors" because it
+never loads, which is an artifact, not a fix. So the cause is inside the widget node
+and requires Type and Object to stay consistently paired.
+
+**Ruled out, each by patch-and-recheck:**
+
+| Axis | Method | Result |
+|---|---|---|
+| Property set drift | template `PropertyKey` set vs `.mpk` XML | does not predict failure — `datagrid` ADD 19/REMOVE 1 passes, `datagrid-dropdown-filter` 0/0 fails |
+| All value differences | full path-level diff → **16** differing paths, applied to the failing widget alone | still fails |
+| `OnChangeProperty`, `Required` | value sync, then field prune | prune fixes 2 filters but takes shipped DW 3.4 from 0 → **139** |
+| `PrimitiveValue` `below`→`bottom` | patched | no change |
+| `GridSortBar` marker 3→2, `SortDirection`→`SortOrder`, `AttributeRef.EntityRef` | patched | no change |
+| `Appearance.DesignProperties`, `LabelTemplate` | patched | no change |
+| Pointer integrity | every `TypePointer` resolves; no orphan `PropertyType` | identical to reference |
+| Pointer semantics | each property mapped to the `PropertyKey` it points at, all depths, document order | **identical** to reference |
+| Property ordering | Object order vs Type order | identical to reference |
+| BSON key order | raw key sequence of the widget node | mxcli is non-alphabetical, reference is — but **`tfSearch` passes with the identical non-alphabetical order**, so key order is not the discriminator |
+| Generic MPK-derived template | forced Gallery through `GenerateFromMPK` | output changed (17 Type lines), still fails |
+| Definition-registry precedence | built-in as fallback instead of override | no change; regressed `17-custom-widget-examples` |
+
+**Where that leaves it.** By every measure computable from the decoded BSON — values,
+keys, ordering, pointer topology — mxcli's failing Gallery is identical to a reference
+that passes. The difference is therefore in something a Python BSON round-trip
+normalises: binary field values, or an encoding detail below the document model. The
+next attempt should work at the **byte level** (compare the encoded unit ranges
+directly) rather than on decoded documents, or obtain a Studio-Pro-authored Gallery on
+Data Widgets 3.10 for a third reference point.
+
 ## Onboarding a new Mendix minor (e.g. 11.10, 12.0)
 
 The CE0463 fix methodology used for 11.9 generalizes. Steps:
