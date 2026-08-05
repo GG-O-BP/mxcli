@@ -153,6 +153,12 @@ func (pb *pageBuilder) buildClientTemplateParams(astParams []ast.ParamAssignment
 				TypeName: "Forms$ClientTemplateParameter",
 			},
 		}
+		// A per-parameter `format (...)` block carries the same FormattingInfo the
+		// standalone dynamictext widget honors (buildDynamicTextV3). This shared
+		// helper feeds DataGrid2 dynamic-text columns (object-list path) and the
+		// ALTER PAGE column path, so a `format` block authored on a column param
+		// reaches the runtime instead of being silently dropped (ledger #77).
+		param.FormattingInfo = formattingInfoFromParamFormat(p.Format)
 		strVal, ok := p.Value.(string)
 		if !ok {
 			out = append(out, param)

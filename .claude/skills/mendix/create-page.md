@@ -424,6 +424,23 @@ datagrid gridName (
 
 Only non-default column properties appear in `describe page` output.
 
+**Dynamic-text columns (`ShowContentAs: dynamicText`):** a column can render its cell as a formatted text template instead of a bare attribute — the same `Content` / `ContentParams` / `format (...)` syntax as a `dynamictext` widget (see below). The column needs no `Attribute`; give it a `Caption` for the header.
+
+```sql
+datagrid gridName (datasource: database from Module.Entity) {
+  -- Decimal with 2 decimals + thousands separator: renders e.g. "Amt: -1,234.50"
+  column amount (
+    Caption: 'Amount',
+    ShowContentAs: dynamicText,
+    Content: 'Amt: {1}',
+    ContentParams: [{1} = Amount format (decimalPrecision: 2, groupDigits: true)]
+  )
+  column due (attribute: DueOn, caption: 'Due')
+}
+```
+
+The `format (...)` block accepts `decimalPrecision`, `groupDigits`, `dateFormat` (`Date` / `DateTime` / `Time` / `Custom`), `customDateFormat`, and `enumFormat` (`Text` / `Image`). Formatting is applied by Mendix only to **attribute-bound** parameters — bind the bare attribute (`Amount`), not `toString(...)`.
+
 ```sql
 column colPrice (
   attribute: Price, caption: 'Unit Price',
