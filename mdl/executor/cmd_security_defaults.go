@@ -40,6 +40,34 @@ func checkDocumentAccessRolesSameModule(docKind, docModule, docName string, role
 	return nil
 }
 
+// validateCrossModuleGrant applies the CE0148 guard above to a GRANT statement
+// without touching the project, so `check --references` reports it instead of
+// letting exec fail partway through a script (#836). mxcli does not run a script
+// in a single transaction, so a grant that only fails at exec time leaves every
+// preceding statement applied — exactly what a pre-flight check exists to avoid.
+//
+// The document's module is taken from the statement's own qualified name rather
+// than from the resolved document: the comparison is the same, and this keeps
+// the check usable before the document exists (it may be created earlier in the
+// same script).
+//
+// Statements other than the five document-access grants return nil.
+func validateCrossModuleGrant(stmt ast.Statement) error {
+	switch s := stmt.(type) {
+	case *ast.GrantMicroflowAccessStmt:
+		return checkDocumentAccessRolesSameModule("microflow", s.Microflow.Module, s.Microflow.Name, s.Roles)
+	case *ast.GrantNanoflowAccessStmt:
+		return checkDocumentAccessRolesSameModule("nanoflow", s.Nanoflow.Module, s.Nanoflow.Name, s.Roles)
+	case *ast.GrantPageAccessStmt:
+		return checkDocumentAccessRolesSameModule("page", s.Page.Module, s.Page.Name, s.Roles)
+	case *ast.GrantODataServiceAccessStmt:
+		return checkDocumentAccessRolesSameModule("OData service", s.Service.Module, s.Service.Name, s.Roles)
+	case *ast.GrantPublishedRestServiceAccessStmt:
+		return checkDocumentAccessRolesSameModule("published REST service", s.Service.Module, s.Service.Name, s.Roles)
+	}
+	return nil
+}
+
 const (
 	autoDocumentRoleName        = "User"
 	autoDocumentRoleDescription = "Auto-created default role for mxcli document access"
