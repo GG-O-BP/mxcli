@@ -1,0 +1,57 @@
+-- ============================================================================
+-- Ledger finding #77: DataGrid2 dynamic-text columns (Show: dynamic text)
+-- ============================================================================
+--
+-- A DataGrid2 column can render its cell as a dynamic-text template
+-- (ShowContentAs: dynamicText) instead of a bare attribute — with the same
+-- per-parameter FORMAT block as a listview dynamictext (ledger #75/#76).
+--
+-- Two defects were fixed to make this work end-to-end:
+--
+--   1. The FORMAT block was dropped for column params. The shared
+--      buildClientTemplateParams helper (object-list column path + ALTER PAGE
+--      path) ignored the parsed `format (...)`, and the column-scoped
+--      serializer hardcoded FormattingInfo. A `format` block on a column param
+--      is now written and round-trips through DESCRIBE.
+--
+--   2. CE0463 "the definition of this widget has changed" on load. A
+--      dynamic-text column (no attribute, no custom-content widgets) was
+--      classified as the default item kind and serialized its `tooltip` as
+--      TextTemplate:null. Studio Pro stores an empty Forms$ClientTemplate there
+--      (as it does for an attribute column), so the widget failed to load. The
+--      column is now classified as a dynamic-text kind and emits the empty
+--      ClientTemplate.
+--
+-- Verified: mxcli exec -> raw `mx check` (Mendix 11.12.1, no update-widgets) =
+-- 0 errors; DESCRIBE round-trips the format block; the cell renders the
+-- formatted value at runtime (run --local + Playwright).
+-- ============================================================================
+
+create entity Ledger.LineItem (
+  Amount: Decimal,
+  DueOn: DateTime
+);
+
+create page Ledger.LineItemsGrid (
+  Title: 'Line items',
+  Layout: Atlas_Core.Atlas_Default
+)
+{
+  layoutgrid grid {
+    row r {
+      column c (DesktopWidth: 12) {
+        datagrid dg (DataSource: DATABASE FROM Ledger.LineItem) {
+          -- Dynamic-text cell: Decimal with 2 decimals and a thousands separator.
+          column amount (
+            Caption: 'Amount',
+            ShowContentAs: dynamicText,
+            Content: 'Amt: {1}',
+            ContentParams: [{1} = Amount format (decimalPrecision: 2, groupDigits: true)]
+          )
+          -- Plain attribute column for contrast.
+          column due (Attribute: DueOn, Caption: 'Due')
+        }
+      }
+    }
+  }
+}

@@ -2574,6 +2574,31 @@ func TestKeywordWidgetName(t *testing.T) {
 	}
 }
 
+// TestParamFormatBlock guards ledger #75: a dynamic-text content parameter may
+// carry a per-parameter FORMAT block, parsed into ParamAssignmentV3.Format.Props.
+func TestParamFormatBlock(t *testing.T) {
+	prog, errs := Build(`create page M.P ( Title: 'P', Layout: Atlas_Core.Atlas_Default ) {
+  container body {
+    dynamictext amt (Content: '{1}', ContentParams: [{1} = Amount format (decimalPrecision: 4, groupDigits: true)])
+  }
+}`)
+	if len(errs) > 0 {
+		t.Fatalf("parse error: %v", errs[0])
+	}
+	page := prog.Statements[0].(*ast.CreatePageStmtV3)
+	dt := page.Widgets[0].Children[0]
+	params := dt.GetContentParams()
+	if len(params) != 1 || params[0].Format == nil {
+		t.Fatalf("expected 1 param with a format block, got %+v", params)
+	}
+	if v, ok := params[0].Format.Get("decimalprecision"); !ok || v != "4" {
+		t.Errorf("decimalPrecision = %q,%v want 4", v, ok)
+	}
+	if v, ok := params[0].Format.Get("groupdigits"); !ok || v != "true" {
+		t.Errorf("groupDigits = %q,%v want true", v, ok)
+	}
+}
+
 func widgetName(ws []*ast.WidgetV3) string {
 	if len(ws) == 0 {
 		return "<none>"

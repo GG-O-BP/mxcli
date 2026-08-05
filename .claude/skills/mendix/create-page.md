@@ -237,6 +237,32 @@ dynamictext title (Attribute: Title)
 | `AttrName` | Current DataView/Gallery entity | `Name`, `Email` |
 | `'literal'` | String literal expression | `'Hello'` |
 
+**Formatting a parameter (Decimal / DateTime / Enum):** append a `format (…)`
+block to a content parameter. Without it, a Decimal renders with the platform
+default (e.g. `5068.38000000`).
+
+```sql
+-- Decimal: 2 decimals + thousands separator  ->  "5,068.38"
+dynamictext amt (content: '{1}', contentparams: [{1} = Amount format (decimalPrecision: 2, groupDigits: true)])
+
+-- DateTime: date + time, or a custom pattern
+dynamictext due  (content: '{1}', contentparams: [{1} = DueOn format (dateFormat: DateTime)])
+dynamictext day  (content: '{1}', contentparams: [{1} = DueOn format (dateFormat: Custom, customDateFormat: 'dd-MM-yyyy')])
+```
+
+| Format key | Applies to | Values |
+|------------|-----------|--------|
+| `decimalPrecision` | Decimal / Float | a non-negative integer |
+| `groupDigits` | Decimal / Float | `true` \| `false` |
+| `dateFormat` | DateTime | `Date` \| `DateTime` \| `Time` \| `Custom` |
+| `customDateFormat` | DateTime | a pattern string, requires `dateFormat: Custom` |
+| `enumFormat` | Enumeration | `Text` \| `Image` |
+
+> The **`format` keyword is required** — a bare `(…)` after the value is
+> ambiguous with a function call. Putting a format key at the **widget** level
+> (e.g. `dynamictext x (…, decimalPrecision: 2)`) is an error (MDL-WIDGET18):
+> formatting is per-parameter, so it must go inside the `contentparams` block.
+
 > **Never leave a `{N}` placeholder unbound.** `content: '{1}'` with no
 > `Attribute:`/`ContentParams:` is an orphaned template — `mxcli check` rejects it
 > (MDL-WIDGET04), MxBuild fails with CE0720, and Studio Pro throws a
@@ -397,6 +423,23 @@ datagrid gridName (
 | `tooltip` | text string | (empty) | Cell tooltip text |
 
 Only non-default column properties appear in `describe page` output.
+
+**Dynamic-text columns (`ShowContentAs: dynamicText`):** a column can render its cell as a formatted text template instead of a bare attribute — the same `Content` / `ContentParams` / `format (...)` syntax as a `dynamictext` widget (see below). The column needs no `Attribute`; give it a `Caption` for the header.
+
+```sql
+datagrid gridName (datasource: database from Module.Entity) {
+  -- Decimal with 2 decimals + thousands separator: renders e.g. "Amt: -1,234.50"
+  column amount (
+    Caption: 'Amount',
+    ShowContentAs: dynamicText,
+    Content: 'Amt: {1}',
+    ContentParams: [{1} = Amount format (decimalPrecision: 2, groupDigits: true)]
+  )
+  column due (attribute: DueOn, caption: 'Due')
+}
+```
+
+The `format (...)` block accepts `decimalPrecision`, `groupDigits`, `dateFormat` (`Date` / `DateTime` / `Time` / `Custom`), `customDateFormat`, and `enumFormat` (`Text` / `Image`). Formatting is applied by Mendix only to **attribute-bound** parameters — bind the bare attribute (`Amount`), not `toString(...)`.
 
 ```sql
 column colPrice (
