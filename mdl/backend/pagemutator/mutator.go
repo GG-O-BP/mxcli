@@ -105,8 +105,8 @@ func (m *Mutator) SetWidgetProperty(widgetRef string, prop string, value any) er
 	}
 	// DataGrid2 columns are WidgetObjects, not form widgets — use the column setter.
 	if len(result.colPropKeys) > 0 {
-		if result.matchCount > 1 {
-			return columnAmbiguityError(widgetRef, result.matchCount)
+		if n := m.columnMatchCount(widgetRef); n > 1 {
+			return columnAmbiguityError(widgetRef, n)
 		}
 		return setColumnPropertyMut(result.widget, result.colPropKeys, prop, value)
 	}
@@ -180,8 +180,8 @@ func (m *Mutator) InsertWidget(widgetRef string, columnRef string, position back
 		if result == nil {
 			return m.widgetNotFoundError(widgetRef)
 		}
-		if result.matchCount > 1 {
-			return columnAmbiguityError(widgetRef, result.matchCount)
+		if n := m.columnMatchCount(widgetRef); n > 1 {
+			return columnAmbiguityError(widgetRef, n)
 		}
 	}
 
@@ -307,8 +307,8 @@ func (m *Mutator) DropWidget(refs []backend.WidgetRef) error {
 			if result == nil {
 				return m.widgetNotFoundError(ref.Name())
 			}
-			if result.matchCount > 1 {
-				return columnAmbiguityError(ref.Name(), result.matchCount)
+			if n := m.columnMatchCount(ref.Name()); n > 1 {
+				return columnAmbiguityError(ref.Name(), n)
 			}
 		}
 		newArr := make([]any, 0, len(result.parentArr)-1)
@@ -332,8 +332,8 @@ func (m *Mutator) ReplaceWidget(widgetRef string, columnRef string, widgets []pa
 		if result == nil {
 			return m.widgetNotFoundError(widgetRef)
 		}
-		if result.matchCount > 1 {
-			return columnAmbiguityError(widgetRef, result.matchCount)
+		if n := m.columnMatchCount(widgetRef); n > 1 {
+			return columnAmbiguityError(widgetRef, n)
 		}
 	}
 
@@ -923,11 +923,6 @@ type bsonWidgetResult struct {
 	parentDoc   bson.D
 	index       int
 	colPropKeys map[string]string
-	// matchCount is how many columns in the same grid derive the requested
-	// name. >1 means the bare `ON <name>` is ambiguous (duplicate captions on
-	// dynamic-text/custom columns collide) and mutating the first silently is a
-	// data hazard — callers reject it. 0/1 for widgets and unique columns.
-	matchCount int
 }
 
 // widgetFinder is a function type for locating widgets in a raw BSON tree.
@@ -1072,35 +1067,21 @@ func findInWidgetChildren(wDoc bson.D, widgetName string) *bsonWidgetResult {
 				}
 				colPropKeyMap := buildColumnPropKeyMap(wDoc, typePointerID)
 				columns := bsonnav.DGetArrayElements(bsonnav.DGet(valDoc, "Objects"))
-				// Scan the whole column list rather than returning on first hit:
-				// duplicate captions on dynamic-text/custom columns derive the same
-				// name, and mutating the first silently is a hazard (ledger #78).
-				// Return the first match but record how many matched so callers can
-				// reject an ambiguous reference.
-				var firstMatch *bsonWidgetResult
-				matchCount := 0
 				for i, colItem := range columns {
 					colDoc, ok := colItem.(bson.D)
 					if !ok {
 						continue
 					}
 					if deriveColumnNameBson(colDoc, colPropKeyMap, i) == widgetName {
-						matchCount++
-						if firstMatch == nil {
-							firstMatch = &bsonWidgetResult{
-								widget:      colDoc,
-								parentArr:   columns,
-								parentKey:   "Objects",
-								parentDoc:   valDoc,
-								index:       i,
-								colPropKeys: colPropKeyMap,
-							}
+						return &bsonWidgetResult{
+							widget:      colDoc,
+							parentArr:   columns,
+							parentKey:   "Objects",
+							parentDoc:   valDoc,
+							index:       i,
+							colPropKeys: colPropKeyMap,
 						}
 					}
-				}
-				if firstMatch != nil {
-					firstMatch.matchCount = matchCount
-					return firstMatch
 				}
 				break // only one "columns" property per widget
 			}
@@ -1208,13 +1189,15 @@ func findBsonColumn(rawData bson.D, gridName, columnName string, find widgetFind
 
 // columnAmbiguityError builds the error for a bare `ON <name>` that resolves to
 // more than one DataGrid2 column. Shared by the explicit-column path
-// (findBsonColumn) and the bare-name path (via bsonWidgetResult.matchCount).
+// (findBsonColumn, within-grid) and the bare-name path (columnMatchCount,
+// page-wide — covers duplicates across two grids too).
 func columnAmbiguityError(name string, count int) error {
 	return fmt.Errorf(
-		"column %q is ambiguous: %d columns derive that name. Dynamic-text and "+
-			"custom-content columns have no stored name and are keyed by their caption, so "+
-			"identical captions collide — give them distinct captions to address them individually",
-		name, count)
+		"column %q is ambiguous: %d columns on this page derive that name — either "+
+			"identical captions in one grid (dynamic-text/custom columns are keyed by "+
+			"caption), or a same-named column in more than one grid. Give the columns "+
+			"distinct captions, or qualify the reference as `ON gridName.%s`, to address one",
+		name, count, name)
 }
 
 // collectColumnNamesBson walks the raw page/snippet tree and appends the derived
@@ -1232,6 +1215,22 @@ func collectColumnNamesBson(node any, out *[]string) {
 			collectColumnNamesBson(e, out)
 		}
 	}
+}
+
+// columnMatchCount counts how many DataGrid2 columns anywhere on the page derive
+// the given name. >1 means a bare `ON <name>` is ambiguous — whether the
+// duplicates sit in the same grid (identical captions) or in two different grids
+// on the page — and mutating the first silently is a data hazard (ledger #78).
+func (m *Mutator) columnMatchCount(name string) int {
+	var cols []string
+	collectColumnNamesBson(m.rawData, &cols)
+	n := 0
+	for _, c := range cols {
+		if c == name {
+			n++
+		}
+	}
+	return n
 }
 
 // gridColumnNames returns the derived names of a DataGrid2's columns, or nil if

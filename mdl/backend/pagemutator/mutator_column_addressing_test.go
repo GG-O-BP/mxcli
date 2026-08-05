@@ -160,3 +160,23 @@ func TestFormatColumnNameList(t *testing.T) {
 		t.Errorf("non-identifier name should be quoted, got %q", got)
 	}
 }
+
+// TestColumnMatchCount_CrossGrid: two different grids on one page each carry a
+// "Merchant" column. A bare `ON Merchant` is ambiguous across grids too — the
+// count must be page-wide, not per-grid (ledger #78 follow-up).
+func TestColumnMatchCount_CrossGrid(t *testing.T) {
+	grid1 := buildGridWithColumns([]map[string]string{{"attr": "M.E.Merchant"}, {"caption": "Amount"}})
+	grid2 := buildGridWithColumns([]map[string]string{{"attr": "M.E.Merchant"}, {"caption": "Total"}})
+	page := bson.D{{Key: "Widgets", Value: bson.A{int32(2), grid1, grid2}}}
+	m := &Mutator{rawData: page}
+
+	if n := m.columnMatchCount("Merchant"); n != 2 {
+		t.Errorf("Merchant across two grids: count = %d, want 2 (page-wide)", n)
+	}
+	if n := m.columnMatchCount("Amount"); n != 1 {
+		t.Errorf("Amount (grid1 only): count = %d, want 1", n)
+	}
+	if n := m.columnMatchCount("Nonexistent"); n != 0 {
+		t.Errorf("missing name: count = %d, want 0", n)
+	}
+}
