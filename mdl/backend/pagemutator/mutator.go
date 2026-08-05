@@ -101,10 +101,13 @@ func (m *Mutator) SetWidgetProperty(widgetRef string, prop string, value any) er
 	}
 	result := m.widgetFinder(m.rawData, widgetRef)
 	if result == nil {
-		return fmt.Errorf("widget %q not found", widgetRef)
+		return m.widgetNotFoundError(widgetRef)
 	}
 	// DataGrid2 columns are WidgetObjects, not form widgets — use the column setter.
 	if len(result.colPropKeys) > 0 {
+		if result.matchCount > 1 {
+			return columnAmbiguityError(widgetRef, result.matchCount)
+		}
 		return setColumnPropertyMut(result.widget, result.colPropKeys, prop, value)
 	}
 	return setRawWidgetPropertyMut(result.widget, prop, value)
@@ -124,9 +127,9 @@ func (m *Mutator) SetWidgetDataSource(widgetRef string, ds pages.DataSource) err
 }
 
 func (m *Mutator) SetColumnProperty(gridRef string, columnRef string, prop string, value any) error {
-	result := findBsonColumn(m.rawData, gridRef, columnRef, m.widgetFinder)
-	if result == nil {
-		return fmt.Errorf("column %q on grid %q not found", columnRef, gridRef)
+	result, err := findBsonColumn(m.rawData, gridRef, columnRef, m.widgetFinder)
+	if err != nil {
+		return err
 	}
 	return setColumnPropertyMut(result.widget, result.colPropKeys, prop, value)
 }
@@ -167,15 +170,19 @@ func (m *Mutator) findStyleableWidget(widgetRef string) (bson.D, error) {
 func (m *Mutator) InsertWidget(widgetRef string, columnRef string, position backend.InsertPosition, widgets []pages.Widget) error {
 	var result *bsonWidgetResult
 	if columnRef != "" {
-		result = findBsonColumn(m.rawData, widgetRef, columnRef, m.widgetFinder)
+		r, err := findBsonColumn(m.rawData, widgetRef, columnRef, m.widgetFinder)
+		if err != nil {
+			return err
+		}
+		result = r
 	} else {
 		result = m.widgetFinder(m.rawData, widgetRef)
-	}
-	if result == nil {
-		if columnRef != "" {
-			return fmt.Errorf("column %q on widget %q not found", columnRef, widgetRef)
+		if result == nil {
+			return m.widgetNotFoundError(widgetRef)
 		}
-		return fmt.Errorf("widget %q not found", widgetRef)
+		if result.matchCount > 1 {
+			return columnAmbiguityError(widgetRef, result.matchCount)
+		}
 	}
 
 	// Serialize widgets
@@ -290,12 +297,19 @@ func (m *Mutator) DropWidget(refs []backend.WidgetRef) error {
 		// Re-find widget each iteration because previous drops mutate the tree.
 		var result *bsonWidgetResult
 		if ref.IsColumn() {
-			result = findBsonColumn(m.rawData, ref.Widget, ref.Column, m.widgetFinder)
+			r, err := findBsonColumn(m.rawData, ref.Widget, ref.Column, m.widgetFinder)
+			if err != nil {
+				return err
+			}
+			result = r
 		} else {
 			result = m.widgetFinder(m.rawData, ref.Widget)
-		}
-		if result == nil {
-			return fmt.Errorf("widget %q not found", ref.Name())
+			if result == nil {
+				return m.widgetNotFoundError(ref.Name())
+			}
+			if result.matchCount > 1 {
+				return columnAmbiguityError(ref.Name(), result.matchCount)
+			}
 		}
 		newArr := make([]any, 0, len(result.parentArr)-1)
 		newArr = append(newArr, result.parentArr[:result.index]...)
@@ -308,15 +322,19 @@ func (m *Mutator) DropWidget(refs []backend.WidgetRef) error {
 func (m *Mutator) ReplaceWidget(widgetRef string, columnRef string, widgets []pages.Widget) error {
 	var result *bsonWidgetResult
 	if columnRef != "" {
-		result = findBsonColumn(m.rawData, widgetRef, columnRef, m.widgetFinder)
+		r, err := findBsonColumn(m.rawData, widgetRef, columnRef, m.widgetFinder)
+		if err != nil {
+			return err
+		}
+		result = r
 	} else {
 		result = m.widgetFinder(m.rawData, widgetRef)
-	}
-	if result == nil {
-		if columnRef != "" {
-			return fmt.Errorf("column %q on widget %q not found", columnRef, widgetRef)
+		if result == nil {
+			return m.widgetNotFoundError(widgetRef)
 		}
-		return fmt.Errorf("widget %q not found", widgetRef)
+		if result.matchCount > 1 {
+			return columnAmbiguityError(widgetRef, result.matchCount)
+		}
 	}
 
 	newBsonWidgets, err := m.serializeWidgets(widgets)
@@ -339,9 +357,9 @@ func (m *Mutator) InsertColumns(gridRef, afterColumnRef string, position backend
 	if afterColumnRef == "" {
 		return fmt.Errorf("InsertColumns requires a column reference")
 	}
-	result := findBsonColumn(m.rawData, gridRef, afterColumnRef, m.widgetFinder)
-	if result == nil {
-		return fmt.Errorf("column %q on widget %q not found", afterColumnRef, gridRef)
+	result, err := findBsonColumn(m.rawData, gridRef, afterColumnRef, m.widgetFinder)
+	if err != nil {
+		return err
 	}
 	gridResult := m.widgetFinder(m.rawData, gridRef)
 	if gridResult == nil {
@@ -381,9 +399,9 @@ func (m *Mutator) ReplaceColumn(gridRef, columnRef string, columns []*backend.Da
 	if columnRef == "" {
 		return fmt.Errorf("ReplaceColumn requires a column reference")
 	}
-	result := findBsonColumn(m.rawData, gridRef, columnRef, m.widgetFinder)
-	if result == nil {
-		return fmt.Errorf("column %q on widget %q not found", columnRef, gridRef)
+	result, err := findBsonColumn(m.rawData, gridRef, columnRef, m.widgetFinder)
+	if err != nil {
+		return err
 	}
 	gridResult := m.widgetFinder(m.rawData, gridRef)
 	if gridResult == nil {
@@ -905,6 +923,11 @@ type bsonWidgetResult struct {
 	parentDoc   bson.D
 	index       int
 	colPropKeys map[string]string
+	// matchCount is how many columns in the same grid derive the requested
+	// name. >1 means the bare `ON <name>` is ambiguous (duplicate captions on
+	// dynamic-text/custom columns collide) and mutating the first silently is a
+	// data hazard — callers reject it. 0/1 for widgets and unique columns.
+	matchCount int
 }
 
 // widgetFinder is a function type for locating widgets in a raw BSON tree.
@@ -1049,21 +1072,35 @@ func findInWidgetChildren(wDoc bson.D, widgetName string) *bsonWidgetResult {
 				}
 				colPropKeyMap := buildColumnPropKeyMap(wDoc, typePointerID)
 				columns := bsonnav.DGetArrayElements(bsonnav.DGet(valDoc, "Objects"))
+				// Scan the whole column list rather than returning on first hit:
+				// duplicate captions on dynamic-text/custom columns derive the same
+				// name, and mutating the first silently is a hazard (ledger #78).
+				// Return the first match but record how many matched so callers can
+				// reject an ambiguous reference.
+				var firstMatch *bsonWidgetResult
+				matchCount := 0
 				for i, colItem := range columns {
 					colDoc, ok := colItem.(bson.D)
 					if !ok {
 						continue
 					}
 					if deriveColumnNameBson(colDoc, colPropKeyMap, i) == widgetName {
-						return &bsonWidgetResult{
-							widget:      colDoc,
-							parentArr:   columns,
-							parentKey:   "Objects",
-							parentDoc:   valDoc,
-							index:       i,
-							colPropKeys: colPropKeyMap,
+						matchCount++
+						if firstMatch == nil {
+							firstMatch = &bsonWidgetResult{
+								widget:      colDoc,
+								parentArr:   columns,
+								parentKey:   "Objects",
+								parentDoc:   valDoc,
+								index:       i,
+								colPropKeys: colPropKeyMap,
+							}
 						}
 					}
+				}
+				if firstMatch != nil {
+					firstMatch.matchCount = matchCount
+					return firstMatch
 				}
 				break // only one "columns" property per widget
 			}
@@ -1078,17 +1115,34 @@ func findInWidgetChildren(wDoc bson.D, widgetName string) *bsonWidgetResult {
 // ---------------------------------------------------------------------------
 
 // findBsonColumn finds a column inside a DataGrid2 widget by derived name.
-func findBsonColumn(rawData bson.D, gridName, columnName string, find widgetFinder) *bsonWidgetResult {
+// findBsonColumn locates a DataGrid2 column inside a grid by its *derived* name.
+//
+// DataGrid2 columns carry no stored name in the Mendix model — mxcli addresses
+// them by a name derived from their content: the bound attribute for an
+// attribute column, the caption otherwise, falling back to col{N}
+// (deriveColumnNameBson). Two consequences the caller must surface rather than
+// paper over (ledger #78):
+//
+//   - the authored MDL name (`column colFoo (...)`) never survives a write, so
+//     addressing a column by it fails — report the derived names that DO work;
+//   - duplicate captions derive the same name, so `ON "Amount"` can match more
+//     than one column. Silently mutating the first is a data hazard; reject the
+//     ambiguity instead.
+//
+// Returns a non-nil error (and nil result) when the grid/column can't be
+// resolved unambiguously; the error is actionable (lists available columns, or
+// names the ambiguity).
+func findBsonColumn(rawData bson.D, gridName, columnName string, find widgetFinder) (*bsonWidgetResult, error) {
 	gridResult := find(rawData, gridName)
 	if gridResult == nil {
-		return nil
+		return nil, fmt.Errorf("widget %q not found", gridName)
 	}
 
 	gridPropKeyMap := buildPropKeyMap(gridResult.widget)
 
 	obj := bsonnav.DGetDoc(gridResult.widget, "Object")
 	if obj == nil {
-		return nil
+		return nil, fmt.Errorf("widget %q has no columns (not a DataGrid2)", gridName)
 	}
 
 	props := bsonnav.DGetArrayElements(bsonnav.DGet(obj, "Properties"))
@@ -1105,32 +1159,153 @@ func findBsonColumn(rawData bson.D, gridName, columnName string, find widgetFind
 
 		valDoc := bsonnav.DGetDoc(propDoc, "Value")
 		if valDoc == nil {
-			return nil
+			return nil, fmt.Errorf("column %q on grid %q not found", columnName, gridName)
 		}
 
 		colPropKeyMap := buildColumnPropKeyMap(gridResult.widget, typePointerID)
 
 		columns := bsonnav.DGetArrayElements(bsonnav.DGet(valDoc, "Objects"))
+		var matches []*bsonWidgetResult
+		available := make([]string, 0, len(columns))
 		for i, colItem := range columns {
 			colDoc, ok := colItem.(bson.D)
 			if !ok {
 				continue
 			}
 			derived := deriveColumnNameBson(colDoc, colPropKeyMap, i)
+			available = append(available, derived)
 			if derived == columnName {
-				return &bsonWidgetResult{
+				matches = append(matches, &bsonWidgetResult{
 					widget:      colDoc,
 					parentArr:   columns,
 					parentKey:   "Objects",
 					parentDoc:   valDoc,
 					index:       i,
 					colPropKeys: colPropKeyMap,
-				}
+				})
 			}
 		}
+		switch len(matches) {
+		case 1:
+			return matches[0], nil
+		case 0:
+			return nil, fmt.Errorf(
+				"column %q on grid %q not found — columns are addressed by a derived name "+
+					"(the bound attribute for an attribute column, the caption otherwise), "+
+					"not the name written in MDL; available columns: %s",
+				columnName, gridName, formatColumnNameList(available))
+		default:
+			return nil, fmt.Errorf(
+				"column %q on grid %q is ambiguous: %d columns derive that name. "+
+					"Dynamic-text and custom-content columns have no stored name and are keyed by "+
+					"their caption, so identical captions collide — give them distinct captions to "+
+					"address them individually",
+				columnName, gridName, len(matches))
+		}
+	}
+	return nil, fmt.Errorf("widget %q has no columns (not a DataGrid2)", gridName)
+}
+
+// columnAmbiguityError builds the error for a bare `ON <name>` that resolves to
+// more than one DataGrid2 column. Shared by the explicit-column path
+// (findBsonColumn) and the bare-name path (via bsonWidgetResult.matchCount).
+func columnAmbiguityError(name string, count int) error {
+	return fmt.Errorf(
+		"column %q is ambiguous: %d columns derive that name. Dynamic-text and "+
+			"custom-content columns have no stored name and are keyed by their caption, so "+
+			"identical captions collide — give them distinct captions to address them individually",
+		name, count)
+}
+
+// collectColumnNamesBson walks the raw page/snippet tree and appends the derived
+// name of every DataGrid2 column it finds, so a "not found" error can list the
+// names that actually work (the authored MDL name never survives a write).
+func collectColumnNamesBson(node any, out *[]string) {
+	switch v := node.(type) {
+	case bson.D:
+		*out = append(*out, gridColumnNames(v)...)
+		for _, e := range v {
+			collectColumnNamesBson(e.Value, out)
+		}
+	case bson.A:
+		for _, e := range v {
+			collectColumnNamesBson(e, out)
+		}
+	}
+}
+
+// gridColumnNames returns the derived names of a DataGrid2's columns, or nil if
+// the node is not a grid with a columns property.
+func gridColumnNames(wDoc bson.D) []string {
+	obj := bsonnav.DGetDoc(wDoc, "Object")
+	if obj == nil {
 		return nil
 	}
+	propKeyMap := buildPropKeyMap(wDoc)
+	for _, prop := range bsonnav.DGetArrayElements(bsonnav.DGet(obj, "Properties")) {
+		propDoc, ok := prop.(bson.D)
+		if !ok {
+			continue
+		}
+		typePointerID := bsonnav.ExtractBinaryIDFromDoc(bsonnav.DGet(propDoc, "TypePointer"))
+		if propKeyMap[typePointerID] != "columns" {
+			continue
+		}
+		valDoc := bsonnav.DGetDoc(propDoc, "Value")
+		if valDoc == nil {
+			return nil
+		}
+		colPropKeyMap := buildColumnPropKeyMap(wDoc, typePointerID)
+		var names []string
+		for i, colItem := range bsonnav.DGetArrayElements(bsonnav.DGet(valDoc, "Objects")) {
+			if colDoc, ok := colItem.(bson.D); ok {
+				names = append(names, deriveColumnNameBson(colDoc, colPropKeyMap, i))
+			}
+		}
+		return names
+	}
 	return nil
+}
+
+// widgetNotFoundError builds a "not found" error for a bare widget/column
+// reference. When the page carries DataGrid2 columns, it adds the addressable
+// column names — columns are keyed by a derived name (attribute or caption), not
+// the authored MDL name, which is the usual cause of the miss (ledger #78).
+func (m *Mutator) widgetNotFoundError(name string) error {
+	var cols []string
+	collectColumnNamesBson(m.rawData, &cols)
+	if len(cols) > 0 {
+		return fmt.Errorf(
+			"widget %q not found. DataGrid2 columns are addressed by a derived name "+
+				"(the bound attribute, or the caption), not the name written in MDL — "+
+				"available columns: %s (run DESCRIBE PAGE to confirm)",
+			name, formatColumnNameList(cols))
+	}
+	return fmt.Errorf("widget %q not found", name)
+}
+
+// formatColumnNameList renders derived column names for an error message: each
+// unique name once, in first-seen order, quoted when it isn't a bare identifier
+// (so a caption-derived name with spaces reads as the `ON "..."` form the user
+// must type).
+func formatColumnNameList(names []string) string {
+	seen := make(map[string]bool, len(names))
+	parts := make([]string, 0, len(names))
+	for _, n := range names {
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
+		if n == sanitizeColumnName(n) && n != "" {
+			parts = append(parts, n)
+		} else {
+			parts = append(parts, fmt.Sprintf("%q", n))
+		}
+	}
+	if len(parts) == 0 {
+		return "(none)"
+	}
+	return strings.Join(parts, ", ")
 }
 
 // buildPropKeyMap builds a TypePointer ID -> PropertyKey map.
