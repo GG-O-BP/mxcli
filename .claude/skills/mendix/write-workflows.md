@@ -69,10 +69,10 @@ begin
 
   -- Call a microflow (server logic); optional parameter mapping + outcomes
   call microflow Module.ACT_Validate
-    with (Module.ACT_Validate.Item = '$workflowContext');
+    with (Module.ACT_Validate.Item = '$WorkflowContext');
 
   -- Decision: a boolean or enum exclusive split
-  decision '$workflowContext/Total > 1000'
+  decision '$WorkflowContext/Total > 1000'
     outcomes
       true  -> { call microflow Module.ACT_Escalate; }
       false -> { call microflow Module.ACT_AutoApprove; };
@@ -182,6 +182,9 @@ documented in `system-module.md`.
 - A user task / decision with a single outcome and no activity can trip
   `CE1876` — give each branch a body or a distinct outcome.
 - The context **Parameter entity must be persistent**.
+- Write the context variable as **`$WorkflowContext`**, matching the parameter
+  name exactly. Mendix expressions are case-sensitive on 11.9+, so a lowercase
+  `$workflowContext` is an undefined variable and yields `CE0117`.
 
 ## Validate before presenting
 

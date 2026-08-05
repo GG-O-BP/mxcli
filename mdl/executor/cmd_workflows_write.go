@@ -355,7 +355,10 @@ func buildCallWorkflowActivity(n *ast.WorkflowCallWorkflowNode) *workflows.CallW
 func buildExclusiveSplit(n *ast.WorkflowDecisionNode) *workflows.ExclusiveSplitActivity {
 	act := &workflows.ExclusiveSplitActivity{}
 	act.ID = model.ID(generateWorkflowUUID())
-	act.Expression = n.Expression
+	// Same case-sensitivity trap as CALL MICROFLOW parameter mappings (#845):
+	// the context parameter is named "WorkflowContext", so a user-written
+	// `$workflowContext` is an undefined variable and mx check reports CE0117.
+	act.Expression = normalizeWorkflowContextExpr(n.Expression)
 	act.Caption = n.Caption
 
 	if act.Caption == "" {
@@ -459,7 +462,8 @@ func buildJumpTo(n *ast.WorkflowJumpToNode) *workflows.JumpToActivity {
 func buildWaitForTimer(n *ast.WorkflowWaitForTimerNode) *workflows.WaitForTimerActivity {
 	act := &workflows.WaitForTimerActivity{}
 	act.ID = model.ID(generateWorkflowUUID())
-	act.DelayExpression = n.DelayExpression
+	// A delay may reference a date attribute on the workflow context (#845).
+	act.DelayExpression = normalizeWorkflowContextExpr(n.DelayExpression)
 	act.Caption = n.Caption
 
 	if act.Caption == "" {

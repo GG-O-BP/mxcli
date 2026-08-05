@@ -1,0 +1,47 @@
+-- Bug #845: workflow DECISION expressions were not case-normalized.
+--
+-- The workflow context parameter is stored as "WorkflowContext". Mendix
+-- expressions are case-sensitive on 11.9+, so a user-written `$workflowContext`
+-- is an undefined variable. CALL MICROFLOW `WITH` expressions were already
+-- normalized (FINDINGS #39), but DECISION expressions were stored verbatim:
+--
+--   "Expression": "$workflowContext/IsExclusive"
+--
+-- mx check then reported, against an otherwise clean project:
+--
+--   [error] [CE0117] "Error(s) in expression." at Decision 'Decision'
+--
+-- The inconsistency is what hid the bug — the same spelling works in a WITH
+-- clause and fails in a DECISION. The shipped write-workflows skill documented
+-- the lowercase form in its DECISION example, so following the docs produced a
+-- project that would not build.
+--
+-- Fix: buildExclusiveSplit (and its sibling buildWaitForTimer, whose delay may
+-- reference a context date attribute) run the authored expression through
+-- normalizeWorkflowContextExpr, the same helper autoBindCallMicroflow uses.
+--
+-- Manual verification (needs a project, so `make check-mdl` only syntax-checks this):
+--
+--   mxcli exec 845-workflow-decision-context-casing.mdl -p app.mpr
+--   mx check -p app.mpr
+--
+-- Expect 0 errors. Before the fix this produced CE0117 on the decision.
+
+create module Issue845;
+create module role Issue845.User;
+
+@position(100, 100)
+create persistent entity Issue845.Ctx (
+  IsExclusive: boolean,
+  Total: decimal
+);
+
+-- Lowercase on purpose: this is the form the docs used to show.
+create workflow Issue845."WF_DecisionCasing"
+  parameter $WorkflowContext: Issue845.Ctx
+begin
+  decision '$workflowContext/IsExclusive'
+    outcomes
+      true  -> { }
+      false -> { };
+end workflow;
