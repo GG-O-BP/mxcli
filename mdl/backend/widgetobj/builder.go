@@ -317,6 +317,7 @@ type objectListItemKind string
 const (
 	itemKindAttribute     objectListItemKind = "attribute"
 	itemKindCustomContent objectListItemKind = "customcontent"
+	itemKindDynamicText   objectListItemKind = "dynamictext"
 	itemKindDefault       objectListItemKind = ""
 )
 
@@ -330,6 +331,13 @@ const (
 func detectObjectListItemKind(specByKey map[string]backend.ObjectListItemProperty, childWidgets map[string][]pages.Widget) objectListItemKind {
 	if len(childWidgets["content"]) > 0 {
 		return itemKindCustomContent
+	}
+	// A dynamic-text column (Show: dynamicText) has no attribute binding and no
+	// content widgets, so it would otherwise fall through to itemKindDefault and
+	// miss the tooltip empty-ClientTemplate convention Studio Pro applies to it
+	// (CE0463, ledger #77). Detect it from the showContentAs primitive.
+	if sca, ok := specByKey["showContentAs"]; ok && strings.EqualFold(sca.PrimitiveVal, "dynamicText") {
+		return itemKindDynamicText
 	}
 	if attr, ok := specByKey["attribute"]; ok && attr.AttributePath != "" {
 		return itemKindAttribute
@@ -345,14 +353,20 @@ func detectObjectListItemKind(specByKey map[string]backend.ObjectListItemPropert
 // Source: c3d61af1 in datagrid_builder.go — Studio Pro's per-column-kind
 // convention for DataGrid columns (verified against Cars_Overview):
 //
-//	property        attribute column   custom-content column
-//	tooltip         empty CT           null
-//	exportValue     null               empty CT
-//	dynamicText     null               null
+//	property        attribute column   dynamic-text column   custom-content column
+//	tooltip         empty CT           empty CT              null
+//	exportValue     null               null                 empty CT
+//	dynamicText     null               (the cell template)  null
+//
+// The dynamic-text column matches the attribute column for tooltip/exportValue
+// (verified against a Studio-Pro `mx update-widgets` reconciliation, ledger #77).
 var emptyClientTemplateRules = map[string]map[string]map[objectListItemKind]map[string]bool{
 	"com.mendix.widget.web.datagrid.Datagrid": {
 		"columns": {
 			itemKindAttribute: {
+				"tooltip": true,
+			},
+			itemKindDynamicText: {
 				"tooltip": true,
 			},
 			itemKindCustomContent: {
@@ -1503,14 +1517,34 @@ func SerializeColumnClientTemplateParameter(param *pages.ClientTemplateParameter
 		}
 	}
 
+	// Use the parameter's per-parameter formatting when present; a nil
+	// FormattingInfo reproduces the previous hardcoded defaults, so every
+	// unformatted column parameter is byte-identical to before. Mirrors
+	// sdk/mpr/writer_widgets.go:serializeClientTemplateParameter so a
+	// `format (...)` block authored on a DataGrid2 dynamic-text column param
+	// reaches the runtime instead of being silently dropped (ledger #77).
+	dateFormat, customDateFormat, enumFormat := "Date", "", "Text"
+	decimalPrecision := int64(2)
+	groupDigits := false
+	if fi := param.FormattingInfo; fi != nil {
+		if fi.DateFormat != "" {
+			dateFormat = fi.DateFormat
+		}
+		customDateFormat = fi.CustomDateFormat
+		if fi.EnumFormat != "" {
+			enumFormat = fi.EnumFormat
+		}
+		decimalPrecision = int64(fi.DecimalPrecision)
+		groupDigits = fi.GroupDigits
+	}
 	formattingInfo := bson.D{
 		{Key: "$ID", Value: bsonutil.NewIDBsonBinary()},
 		{Key: "$Type", Value: "Forms$FormattingInfo"},
-		{Key: "CustomDateFormat", Value: ""},
-		{Key: "DateFormat", Value: "Date"},
-		{Key: "DecimalPrecision", Value: int64(2)},
-		{Key: "EnumFormat", Value: "Text"},
-		{Key: "GroupDigits", Value: false},
+		{Key: "CustomDateFormat", Value: customDateFormat},
+		{Key: "DateFormat", Value: dateFormat},
+		{Key: "DecimalPrecision", Value: decimalPrecision},
+		{Key: "EnumFormat", Value: enumFormat},
+		{Key: "GroupDigits", Value: groupDigits},
 	}
 
 	var sourceVariable any

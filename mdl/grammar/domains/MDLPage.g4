@@ -463,7 +463,21 @@ paramListV3
     ;
 
 paramAssignmentV3
-    : LBRACE NUMBER_LITERAL RBRACE EQUALS expression
+    : LBRACE NUMBER_LITERAL RBRACE EQUALS expression (FORMAT paramFormatV3)?
+    ;
+
+// Optional per-parameter formatting for a dynamic-text parameter, mapping to the
+// Mendix ClientTemplateParameter FormattingInfo (decimalPrecision, groupDigits,
+// dateFormat, customDateFormat, enumFormat). The FORMAT keyword introduces the
+// block — a bare `(…)` after the expression is ambiguous with a function call
+// because COLON is a valid expression (OQL division) operator.
+//   {1} = Amount FORMAT (decimalPrecision: 2, groupDigits: true)
+paramFormatV3
+    : LPAREN paramFormatPropV3 (COMMA paramFormatPropV3)* RPAREN
+    ;
+
+paramFormatPropV3
+    : IDENTIFIER COLON propertyValueV3
     ;
 
 // V3 Render modes

@@ -119,6 +119,7 @@ func validateWidgetTreeIn(widgets []*ast.WidgetV3, registry *WidgetRegistry, loc
 		out = append(out, validatePluggableWidgetProperties(w, registry, locationPrefix)...)
 		out = append(out, validateWidgetVisibility(w, registry, locationPrefix)...)
 		out = append(out, validateStaticWidget(w, locationPrefix)...)
+		out = append(out, validateDynamicTextFormatting(w, locationPrefix)...)
 		out = append(out, validateDatasourceXPathAssociationEmpty(w, locationPrefix)...)
 		out = append(out, validateComboBoxAssociation(w, locationPrefix)...)
 		// Unknown-property warning applies only to built-in widgets; pluggable
@@ -578,6 +579,12 @@ func validateStaticWidgetUnknownProps(w *ast.WidgetV3, locationPrefix string) []
 		if isKnownStaticWidgetProp(key) {
 			continue
 		}
+		// Dynamic-text format keys placed at the widget level are reported by
+		// MDL-WIDGET18 (with actionable move-into-format-block guidance); don't
+		// also warn about them here.
+		if paramFormatKeys[strings.ToLower(key)] {
+			continue
+		}
 		hint := ""
 		if suggestion := nearestKey(key, staticWidgetKnownPropList); suggestion != "" {
 			hint = fmt.Sprintf(" — did you mean `%s`?", suggestion)
@@ -592,6 +599,104 @@ func validateStaticWidgetUnknownProps(w *ast.WidgetV3, locationPrefix string) []
 		})
 	}
 	return out
+}
+
+// paramFormatKeys are the recognized keys inside a dynamic-text parameter format
+// block, e.g. `{1} = Amount (decimalPrecision: 2, groupDigits: true)`. They map to
+// the Mendix ClientTemplateParameter FormattingInfo fields.
+var paramFormatKeys = map[string]bool{
+	"decimalprecision": true, "groupdigits": true,
+	"dateformat": true, "customdateformat": true, "enumformat": true,
+}
+
+var paramFormatKeyList = []string{"decimalPrecision", "groupDigits", "dateFormat", "customDateFormat", "enumFormat"}
+var paramDateFormats = map[string]bool{"date": true, "datetime": true, "time": true, "custom": true}
+var paramEnumFormats = map[string]bool{"text": true, "image": true}
+
+// validateDynamicTextFormatting (MDL-WIDGET18) checks per-parameter formatting on
+// dynamic text. It (1) turns a widget-level format property (e.g. a bare
+// `decimalPrecision:` on the widget) into an actionable ERROR pointing at the
+// ContentParams format block — instead of the old silent drop (ledger #75) — and
+// (2) validates the keys/values inside each format block so typos and bad enum
+// values fail at `check` time rather than building wrong.
+func validateDynamicTextFormatting(w *ast.WidgetV3, locationPrefix string) []linter.Violation {
+	if w == nil {
+		return nil
+	}
+	var out []linter.Violation
+
+	// (1) Format keys placed at the widget level are silently dropped on write —
+	// formatting is per-parameter. Flag them with the correct location.
+	if strings.EqualFold(w.Type, "dynamictext") {
+		for key := range w.Properties {
+			if paramFormatKeys[strings.ToLower(key)] {
+				out = append(out, linter.Violation{
+					RuleID:   "MDL-WIDGET18",
+					Severity: linter.SeverityError,
+					Message: fmt.Sprintf(
+						"%s: widget `%s`: `%s` is a per-parameter format, not a widget property — put it in the ContentParams format block, e.g. `ContentParams: [{1} = Attr format (%s: <value>)]`. A widget-level `%s` is dropped on write.",
+						locationPrefix, w.Name, key, strings.ToLower(key), key,
+					),
+				})
+			}
+		}
+	}
+
+	// (2) Validate the keys/values inside each parameter format block.
+	for _, p := range w.GetContentParams() {
+		if p.Format == nil {
+			continue
+		}
+		for _, fp := range p.Format.Props {
+			if !paramFormatKeys[fp.Key] {
+				hint := ""
+				if s := nearestKey(fp.Key, paramFormatKeyList); s != "" {
+					hint = fmt.Sprintf(" — did you mean `%s`?", s)
+				}
+				out = append(out, violation18(locationPrefix, w,
+					fmt.Sprintf("unknown format key `%s`%s", fp.Key, hint)))
+				continue
+			}
+			switch fp.Key {
+			case "decimalprecision":
+				if n, err := strconv.Atoi(fp.Value); err != nil || n < 0 {
+					out = append(out, violation18(locationPrefix, w,
+						fmt.Sprintf("decimalPrecision must be a non-negative integer, got `%s`", fp.Value)))
+				}
+			case "groupdigits":
+				if !strings.EqualFold(fp.Value, "true") && !strings.EqualFold(fp.Value, "false") {
+					out = append(out, violation18(locationPrefix, w,
+						fmt.Sprintf("groupDigits must be true or false, got `%s`", fp.Value)))
+				}
+			case "dateformat":
+				if !paramDateFormats[strings.ToLower(fp.Value)] {
+					out = append(out, violation18(locationPrefix, w,
+						fmt.Sprintf("dateFormat must be one of Date, DateTime, Time, Custom, got `%s`", fp.Value)))
+				}
+			case "enumformat":
+				if !paramEnumFormats[strings.ToLower(fp.Value)] {
+					out = append(out, violation18(locationPrefix, w,
+						fmt.Sprintf("enumFormat must be Text or Image, got `%s`", fp.Value)))
+				}
+			}
+		}
+		// customDateFormat is only meaningful with dateFormat: Custom.
+		if _, hasCustom := p.Format.Get("customdateformat"); hasCustom {
+			if df, _ := p.Format.Get("dateformat"); !strings.EqualFold(df, "Custom") {
+				out = append(out, violation18(locationPrefix, w,
+					"customDateFormat requires `dateFormat: Custom`"))
+			}
+		}
+	}
+	return out
+}
+
+func violation18(locationPrefix string, w *ast.WidgetV3, msg string) linter.Violation {
+	return linter.Violation{
+		RuleID:   "MDL-WIDGET18",
+		Severity: linter.SeverityError,
+		Message:  fmt.Sprintf("%s: widget `%s`: %s", locationPrefix, w.Name, msg),
+	}
 }
 
 // validateStaticWidget checks value-level constraints on built-in (non-pluggable)

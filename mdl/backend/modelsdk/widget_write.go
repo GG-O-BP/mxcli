@@ -954,7 +954,7 @@ func clientTemplateParameterToGen(p *pages.ClientTemplateParameter) element.Elem
 	if p.SourceVariable != "" {
 		g.SetSourceVariable(sourceVariableToGen(p.SourceVariable, p.SourceVariableKind))
 	}
-	g.SetFormattingInfo(newFormattingInfo())
+	g.SetFormattingInfo(formattingInfoToGen(p.FormattingInfo))
 	return g
 }
 
@@ -979,13 +979,36 @@ func sourceVariableToGen(name, kind string) element.Element {
 // newFormattingInfo builds the default Forms$FormattingInfo (matches the legacy
 // serializer; TimeFormat is intentionally omitted — it triggers CE0463).
 func newFormattingInfo() element.Element {
+	return formattingInfoToGen(nil)
+}
+
+// formattingInfoToGen builds a Forms$FormattingInfo, using the parameter's
+// per-parameter formatting when present and the standard defaults otherwise. A
+// nil fi reproduces the previous hardcoded defaults, so every unformatted
+// parameter is byte-identical to before. TimeFormat is intentionally omitted —
+// it is not a schema field and triggers CE0463.
+func formattingInfoToGen(fi *pages.FormattingInfo) element.Element {
+	dateFormat, customDateFormat, enumFormat := "Date", "", "Text"
+	decimalPrecision := 2
+	groupDigits := false
+	if fi != nil {
+		if fi.DateFormat != "" {
+			dateFormat = fi.DateFormat
+		}
+		customDateFormat = fi.CustomDateFormat
+		if fi.EnumFormat != "" {
+			enumFormat = fi.EnumFormat
+		}
+		decimalPrecision = fi.DecimalPrecision
+		groupDigits = fi.GroupDigits
+	}
 	f := genPg.NewFormattingInfo()
 	assignID(f)
-	f.SetCustomDateFormat("")
-	f.SetDateFormat("Date")
-	f.SetDecimalPrecision(2)
-	f.SetEnumFormat("Text")
-	f.SetGroupDigits(false)
+	f.SetCustomDateFormat(customDateFormat)
+	f.SetDateFormat(dateFormat)
+	f.SetDecimalPrecision(int32(decimalPrecision))
+	f.SetEnumFormat(enumFormat)
+	f.SetGroupDigits(groupDigits)
 	return f
 }
 

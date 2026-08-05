@@ -600,11 +600,16 @@ func extractTextTemplateParameters(ctx *ExecContext, textTemplate map[string]any
 		return nil
 	}
 	var result []string
+	var suffixes []string // per-param format block " (decimalPrecision: 0, …)", "" when default
 	for _, p := range params {
 		pMap, ok := p.(map[string]any)
 		if !ok {
 			continue
 		}
+		// One suffix per emitted param, in the same order, zipped in after the
+		// value string is chosen so a DataGrid2 dynamic-text column's per-parameter
+		// formatting round-trips through DESCRIBE (ledger #77).
+		suffixes = append(suffixes, formatParamFormatSuffix(pMap))
 		// Check for Expression first (literal value)
 		if expr, ok := pMap["Expression"].(string); ok && expr != "" {
 			result = append(result, expr)
@@ -650,6 +655,13 @@ func extractTextTemplateParameters(ctx *ExecContext, textTemplate map[string]any
 		}
 		// Parameter exists but has no binding
 		result = append(result, "<unbound>")
+	}
+	// Append each param's format block to its value string; result and suffixes
+	// are aligned (one of each per param that had a valid pMap).
+	for i := range result {
+		if i < len(suffixes) && suffixes[i] != "" {
+			result[i] += suffixes[i]
+		}
 	}
 	return result
 }
