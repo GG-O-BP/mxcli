@@ -1504,9 +1504,10 @@ func (pb *pageBuilder) resolveTemplateAttributePath(attrRef string) string {
 // When attrRef is $paramName.Attribute (where paramName is a page/snippet parameter),
 // it sets SourceVariable to paramName and AttributeRef to the resolved entity path.
 //
-// For non-String attributes (Integer, Decimal, DateTime, Boolean, etc.), the binding
-// is automatically converted to a toString() expression since DYNAMICTEXT template
-// parameters require String values.
+// Non-String attributes (Integer, Decimal, DateTime, Boolean, …) bind as a
+// structured AttributeRef, not a `toString(...)` Expression — the runtime renders
+// them through the parameter's FormattingInfo (decimalPrecision, dateFormat, …),
+// which an Expression parameter bypasses entirely (ledger #76).
 func (pb *pageBuilder) resolveTemplateAttributePathFull(attrRef string, param *pages.ClientTemplateParameter) {
 	if attrRef == "" {
 		return
@@ -1565,16 +1566,13 @@ func (pb *pageBuilder) resolveTemplateAttributePathFull(attrRef string, param *p
 		return
 	}
 
-	// For other patterns, resolve and check type
-	resolved := pb.resolveTemplateAttributePath(attrRef)
-	if !strings.HasPrefix(attrRef, "$") && pb.isNonStringAttribute(resolved) {
-		// Convert bare attribute names to toString() for non-String types.
-		// Only for bare names (e.g., "TotalOrders") in DataView context,
-		// not for $param.Attr references which are resolved via SourceVariable.
-		param.Expression = "toString($currentObject/" + attrRef + ")"
-		return
-	}
-	param.AttributeRef = resolved
+	// For other patterns, resolve to a structured AttributeRef. A non-String
+	// attribute (Decimal/DateTime/Integer/…) binds directly as an AttributeRef —
+	// the runtime renders it via the parameter's FormattingInfo, exactly as Studio
+	// Pro does. (Previously mxcli wrapped non-String attrs in a
+	// `toString($currentObject/Attr)` Expression, which bypassed FormattingInfo so
+	// decimalPrecision/dateFormat had no runtime effect — ledger #76.)
+	param.AttributeRef = pb.resolveTemplateAttributePath(attrRef)
 }
 
 // resolveTemplateAssociationPath resolves a template-parameter value that

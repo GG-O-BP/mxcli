@@ -634,7 +634,7 @@ func validateDynamicTextFormatting(w *ast.WidgetV3, locationPrefix string) []lin
 					RuleID:   "MDL-WIDGET18",
 					Severity: linter.SeverityError,
 					Message: fmt.Sprintf(
-						"%s: widget `%s`: `%s` is a per-parameter format, not a widget property — put it in the ContentParams format block, e.g. `ContentParams: [{1} = Attr (%s: <value>)]`. A widget-level `%s` is dropped on write.",
+						"%s: widget `%s`: `%s` is a per-parameter format, not a widget property — put it in the ContentParams format block, e.g. `ContentParams: [{1} = Attr format (%s: <value>)]`. A widget-level `%s` is dropped on write.",
 						locationPrefix, w.Name, key, strings.ToLower(key), key,
 					),
 				})
