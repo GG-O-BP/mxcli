@@ -1,0 +1,44 @@
+-- Bug #841: `create json structure` wrote every element's occurrence as `0..0`.
+--
+-- Mendix reads MaxOccurs=0 literally as "never occurs", so every import mapping
+-- bound to the structure silently imported zero objects: the REST call
+-- succeeded, the mapping looked correct, and no data arrived. Nothing flagged
+-- it — no validation error, and mx check passed.
+--
+-- Observed before the fix, for the snippet below:
+--
+--   element       type      min..max
+--   Page          Value     0..0
+--   Pagination    Object    0..0
+--   ItemsItem     Object    0..-1     <- the one element that was right
+--   Items         Array     0..0
+--   Root          Object    0..0
+--
+-- The lone correct row is the tell: the nested object-array item was written
+-- with MaxOccurs=-1, so the writer could always emit unbounded — every other
+-- construction site just hardcoded 0.
+--
+-- Fix (mdl/types/json_utils.go): occurrences follow the JSON shape.
+--   Root            1..1   (a document root occurs exactly once)
+--   Object / Value  0..1   (optional, at most once)
+--   Array           0..1   (the array occurs once; its item repeats)
+--   Array item      0..*   (MaxOccurs = -1, unbounded)
+--   Wrapper         0..*   (the repeating unit of a primitive array)
+--
+-- Manual verification (needs a project, so `make check-mdl` only syntax-checks this):
+--
+--   mxcli exec 841-json-structure-occurrences.mdl -p app.mpr
+--   mx check -p app.mpr
+--
+-- Expect 0 errors, and no element in the stored BSON with MaxOccurs=0.
+
+create module Issue841;
+create module role Issue841.User;
+
+-- Object root with a nested object, an object array, and a primitive array.
+create json structure Issue841."JSON_SearchRoutes"
+  snippet $${"pagination":{"page":1,"pageSize":1,"totalItems":10,"totalPages":10},"items":[{"id":"a","name":"b"}],"tags":["x","y"]}$$;
+
+-- Array root: the other top-level shape, which used a separate builder.
+create json structure Issue841."JSON_RouteList"
+  snippet $$[{"id":"a","name":"b"}]$$;

@@ -12,6 +12,12 @@ import (
 	"unicode"
 )
 
+// occursUnbounded is the MaxOccurs value Mendix reads as "unbounded" (`0..*`).
+// Note that 0 is NOT a stand-in for "unspecified": Mendix reads MaxOccurs=0
+// literally as "never occurs", so an element written that way is silently
+// skipped by every import mapping bound to the structure (#841).
+const occursUnbounded = -1
+
 // iso8601Pattern matches common ISO 8601 datetime strings that Mendix Studio Pro
 // recognizes as DateTime primitive types in JSON structures.
 var iso8601Pattern = regexp.MustCompile(
@@ -85,15 +91,18 @@ func BuildJsonElementsFromSnippet(snippet string, customNameMap map[string]strin
 	switch tok {
 	case json.Delim('{'):
 		root := b.buildElementFromRawObject("Root", "(Object)", snippet, tracker)
-		root.MinOccurs = 0
-		root.MaxOccurs = 0
+		// The root of a JSON document occurs exactly once.
+		root.MinOccurs = 1
+		root.MaxOccurs = 1
 		root.Nillable = true
 		return []*JsonElement{root}, nil
 
 	case json.Delim('['):
 		root := b.buildElementFromRawRootArray("Root", "(Array)", snippet, tracker)
-		root.MinOccurs = 0
-		root.MaxOccurs = 0
+		// The array element itself occurs once; its item child carries the
+		// repetition, mirroring the nested-array case.
+		root.MinOccurs = 1
+		root.MaxOccurs = 1
 		root.Nillable = true
 		return []*JsonElement{root}, nil
 
@@ -165,7 +174,7 @@ func (b *snippetBuilder) buildElementFromRawObject(exposedName, path, rawJSON st
 		ElementType:    "Object",
 		PrimitiveType:  "Unknown",
 		MinOccurs:      0,
-		MaxOccurs:      0,
+		MaxOccurs:      1,
 		Nillable:       true,
 		MaxLength:      -1,
 		FractionDigits: -1,
@@ -256,7 +265,7 @@ func (b *snippetBuilder) buildElementFromRawRootArray(exposedName, path, rawJSON
 		ElementType:    "Array",
 		PrimitiveType:  "Unknown",
 		MinOccurs:      0,
-		MaxOccurs:      0,
+		MaxOccurs:      1,
 		Nillable:       true,
 		MaxLength:      -1,
 		FractionDigits: -1,
@@ -279,13 +288,13 @@ func (b *snippetBuilder) buildElementFromRawRootArray(exposedName, path, rawJSON
 		if len(trimmed) > 0 && trimmed[0] == '{' {
 			itemElem := b.buildElementFromRawObject("JsonObject", itemPath, trimmed, tracker)
 			itemElem.MinOccurs = 0
-			itemElem.MaxOccurs = 0
+			itemElem.MaxOccurs = occursUnbounded
 			itemElem.Nillable = true
 			arrayElem.Children = append(arrayElem.Children, itemElem)
 		} else {
 			child := b.buildElementFromRawValue("JsonObject", itemPath, "", firstItem, tracker)
 			child.MinOccurs = 0
-			child.MaxOccurs = 0
+			child.MaxOccurs = occursUnbounded
 			arrayElem.Children = append(arrayElem.Children, child)
 		}
 	}
@@ -302,7 +311,7 @@ func (b *snippetBuilder) buildElementFromRawArray(exposedName, path, jsonKey, ra
 		ElementType:    "Array",
 		PrimitiveType:  "Unknown",
 		MinOccurs:      0,
-		MaxOccurs:      0,
+		MaxOccurs:      1,
 		Nillable:       true,
 		MaxLength:      -1,
 		FractionDigits: -1,
@@ -328,7 +337,7 @@ func (b *snippetBuilder) buildElementFromRawArray(exposedName, path, jsonKey, ra
 			itemPath := path + "|(Object)"
 			itemElem := b.buildElementFromRawObject(itemName, itemPath, trimmed, tracker)
 			itemElem.MinOccurs = 0
-			itemElem.MaxOccurs = -1
+			itemElem.MaxOccurs = occursUnbounded
 			itemElem.Nillable = true
 			arrayElem.Children = append(arrayElem.Children, itemElem)
 		} else {
@@ -342,7 +351,7 @@ func (b *snippetBuilder) buildElementFromRawArray(exposedName, path, jsonKey, ra
 				ElementType:    "Wrapper",
 				PrimitiveType:  "Unknown",
 				MinOccurs:      0,
-				MaxOccurs:      0,
+				MaxOccurs:      occursUnbounded,
 				Nillable:       true,
 				MaxLength:      -1,
 				FractionDigits: -1,
@@ -350,7 +359,7 @@ func (b *snippetBuilder) buildElementFromRawArray(exposedName, path, jsonKey, ra
 			}
 			valueElem := b.buildElementFromRawValue("Value", wrapperPath+"|", jsonKey, firstItem, tracker)
 			valueElem.MinOccurs = 0
-			valueElem.MaxOccurs = 0
+			valueElem.MaxOccurs = 1
 			wrapper.Children = append(wrapper.Children, valueElem)
 			arrayElem.Children = append(arrayElem.Children, wrapper)
 		}
@@ -380,7 +389,7 @@ func buildValueElement(exposedName, path, primitiveType, originalValue string) *
 		ElementType:    "Value",
 		PrimitiveType:  primitiveType,
 		MinOccurs:      0,
-		MaxOccurs:      0,
+		MaxOccurs:      1,
 		Nillable:       true,
 		MaxLength:      maxLength,
 		FractionDigits: -1,
