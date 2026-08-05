@@ -20,6 +20,22 @@ func (b *Backend) GetRawUnit(id model.ID) (map[string]any, error) {
 	return b.reader.GetRawUnit(id)
 }
 
+// GetRawUnitBytes returns a unit's raw BSON. Both this and UpdateRawUnit already
+// existed on the reader/writer and are used throughout this package; they were simply
+// never exposed as Backend methods, so the embedded `unimplemented` stub answered and
+// every caller going through the interface got "not implemented yet — rerun with
+// MXCLI_ENGINE=legacy". That is what gated `mxcli widget sync --apply` to the legacy
+// engine while its read-only plan ran on both.
+func (b *Backend) GetRawUnitBytes(id model.ID) ([]byte, error) {
+	return b.reader.GetRawUnitBytes(string(id))
+}
+
+// UpdateRawUnit replaces a unit's contents. Takes a string ID to match the SDK writer
+// layer convention (see backend.RawUnitBackend).
+func (b *Backend) UpdateRawUnit(unitID string, contents []byte) error {
+	return b.writer.UpdateRawUnit(unitID, contents)
+}
+
 // ListRawUnitsByType returns every unit whose $Type has the given prefix, with
 // resolved raw contents — the catalog uses this for document types that have no
 // dedicated typed reader (e.g. JavaScript actions, data transformers). Delegates
