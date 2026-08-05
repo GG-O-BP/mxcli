@@ -170,6 +170,32 @@ Both the properties and the rules are available as JSON for scripting:
 }
 ```
 
+## Reconciling stored widgets after a package upgrade (`mxcli widget sync`)
+
+Everything above keeps a widget correct **as it is authored**. When you later upgrade
+the widget package, the instances already stored in your pages go stale and Mendix
+reports CE0463 on each one. Studio Pro fixes this with "Update all widgets"; mxbuild
+has `mx update-widgets`, which works but **destroys `mprcontents/`** on an MPR v2
+project, collapsing it to a single-file v1 layout.
+
+`mxcli widget sync` is the equivalent that preserves the v2 layout:
+
+```bash
+mxcli widget sync -p app.mpr --dry-run     # preview; names every property
+mxcli widget sync -p app.mpr               # apply
+```
+
+It reconciles **schema** — properties the package added, dropped or redefined — and
+never changes a property value you set. It skips any widget whose `.mpk` is not
+installed rather than guessing.
+
+**This is partial today.** On the reference fixture (Data Widgets 3.4 → 3.11.3) it
+clears 7 of 40 CE0463 errors where `mx update-widgets` clears all 40. The widget
+*type* it writes is byte-identical to Mendix's own output; a value-level difference
+that has not yet been identified keeps DataGrid2 and Gallery instances erroring.
+Preview with `--dry-run` and confirm with `mx check` before relying on it. Applying
+currently needs `MXCLI_ENGINE=legacy`; `--dry-run` works on either engine.
+
 ## Marketplace and custom widgets
 
 `mxcli widget describe -p app.mpr <widget-id>` works for **any** widget installed in the

@@ -137,3 +137,22 @@ type EntityAccessRevocation struct {
 	RevokeReadAll      bool
 	RevokeWriteAll     bool
 }
+
+// CustomWidgetInstance is one stored pluggable-widget instance, with the context
+// needed to decide whether it may be modified. RawType/RawObject are bson.D in the
+// backends; here they are any to avoid a BSON driver dependency.
+type CustomWidgetInstance struct {
+	WidgetID   string // e.g. com.mendix.widget.web.datagrid.Datagrid
+	WidgetName string // the instance's Name
+	RawType    any
+	RawObject  any
+
+	UnitID   string
+	UnitName string
+	UnitType string // Forms$Page | Forms$Snippet | Forms$BuildingBlock | Forms$Layout
+
+	ModuleName string
+	// ModuleIsTheme marks a module Mendix declines to modify — update-widgets skips
+	// theme modules and module-import refuses them.
+	ModuleIsTheme bool
+}

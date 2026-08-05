@@ -1,7 +1,39 @@
 # Proposal: `mxcli widget sync` — reconcile stored widget instances against installed .mpk packages
 
-**Status:** Draft
-**Date:** 2026-08-03
+**Status:** Partial — shipped and parked
+**Date:** 2026-08-03 (proposal), 2026-08-04 (implementation status)
+
+## Implementation status (2026-08-04) — partial, parked
+
+`mxcli widget sync` exists and writes. On the reference fixture (v0.10 widgets
+authored against Data Widgets 3.4, package upgraded to 3.11.3, 40 CE0463) it clears
+**7 of 40**, against `mx update-widgets`'s 40.
+
+Shipped and verified:
+
+| | |
+|---|---|
+| MPR v2 preserved | 207 `mprcontents/` units before and after — the whole point |
+| Coverage | pages, snippets, **building blocks**, page templates, layouts; **zero misses** vs `update-widgets` |
+| Widget `Type` written | **byte-identical** to `update-widgets` output (0 differing paths) |
+| Idempotent | second run reports "already matches its installed package" |
+| Engines | plan runs on both and they agree; **apply needs `MXCLI_ENGINE=legacy`** |
+
+Where it stops: with the `Type` exact, 17 DataGrid2 and Gallery instances still
+report CE0463, so the trigger is value-level. Four candidate value migrations were
+identified by diffing against `update-widgets`; **three were tested in isolation and
+none moved the count** (the `[3]` marker on empty `DesignProperties`, an explicit
+null `LabelTemplate`, and the `GridSortBar` `SortDirection`→`SortOrder` + marker
+migration). The untested fourth is a TextTemplate null scoped to added properties
+only — the blanket version takes 33 → 127.
+
+Next moves, in order: the scoped TextTemplate null; if that fails, the splice
+bisection from [`diagnose-ce0463.md`](../../.claude/skills/diagnose-ce0463.md);
+then `GetRawUnitBytes`/`UpdateRawUnit` on the modelsdk backend to drop the engine
+gate.
+
+Open question 2 (retyped property) and 3 (implicit sync during build) remain
+untouched. Open question 1 (naming) resolved as `sync`.
 
 ## Problem Statement
 

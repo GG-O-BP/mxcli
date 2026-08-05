@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"sync/atomic"
 
 	"github.com/mendixlabs/mxcli/modelsdk/widgets/mpk"
@@ -1303,4 +1304,83 @@ func syncDefinitionAttrs(propTypes []any, props []mpk.PropertyDef) {
 		}
 	}
 	walk(propTypes)
+}
+
+// NewPropertyPair builds the (WidgetPropertyType, WidgetProperty) pair for a property
+// an .mpk declares but a widget does not carry, with concrete IDs rather than the
+// placeholders the template pipeline remaps later.
+//
+// It exists so `mxcli widget sync` can add a property to a widget instance ALREADY
+// STORED in the model using the same construction the authoring path uses, instead of
+// a second implementation that could drift from it. Returns ok=false for an XML type
+// with no BSON mapping — the caller must skip rather than invent a shape.
+//
+// The two halves are bound by TypePointer and must be inserted together; a half-move
+// yields a project Mendix cannot load.
+func NewPropertyPair(p mpk.PropertyDef, newID func() string) (pt, prop map[string]any, ok bool) {
+	bsonType := xmlTypeToBSONType(p.Type)
+	if bsonType == "" {
+		return nil, nil, false
+	}
+	pt, prop = createPropertyPair(p, bsonType)
+	if pt == nil || prop == nil {
+		return nil, nil, false
+	}
+	// createPropertyPair cross-references the PropertyType and its ValueType from the
+	// WidgetProperty, so the placeholders must be remapped consistently across BOTH
+	// maps — rewriting them independently would break the pairing.
+	remap := map[string]string{}
+	collectPlaceholders(pt, remap)
+	collectPlaceholders(prop, remap)
+	for k := range remap {
+		remap[k] = newID()
+	}
+	return rewriteIDs(pt, remap).(map[string]any), rewriteIDs(prop, remap).(map[string]any), true
+}
+
+// collectPlaceholders records every placeholder ID appearing anywhere in the value.
+func collectPlaceholders(v any, out map[string]string) {
+	switch t := v.(type) {
+	case map[string]any:
+		for _, val := range t {
+			collectPlaceholders(val, out)
+		}
+	case []any:
+		for _, item := range t {
+			collectPlaceholders(item, out)
+		}
+	case string:
+		if isPlaceholderID(t) {
+			out[t] = ""
+		}
+	}
+}
+
+// rewriteIDs returns a copy with every placeholder replaced by its mapped ID.
+func rewriteIDs(v any, remap map[string]string) any {
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			out[k] = rewriteIDs(val, remap)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, item := range t {
+			out[i] = rewriteIDs(item, remap)
+		}
+		return out
+	case string:
+		if id, ok := remap[t]; ok && id != "" {
+			return id
+		}
+		return t
+	}
+	return v
+}
+
+// isPlaceholderID matches the "aa" prefix placeholderID mints.
+func isPlaceholderID(s string) bool {
+	return len(s) == 32 && strings.HasPrefix(s, "aa0000000000000000000000")
 }
