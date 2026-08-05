@@ -1146,8 +1146,40 @@ func buildParamAssignmentV3(ctx parser.IParamAssignmentV3Context) ast.ParamAssig
 	if expr := paCtx.Expression(); expr != nil {
 		param.Value = stripExpressionIdentifierQuotes(expr.GetText())
 	}
+	if fmtCtx := paCtx.ParamFormatV3(); fmtCtx != nil {
+		param.Format = buildParamFormatV3(fmtCtx)
+	}
 
 	return param
+}
+
+// buildParamFormatV3 collects the raw key/value pairs of a parameter format
+// block, e.g. `(decimalPrecision: 2, groupDigits: true)`. Keys are lowercased;
+// string values have surrounding quotes stripped. Validation of keys/values
+// happens later at check time (validate_widgets), not here.
+func buildParamFormatV3(ctx parser.IParamFormatV3Context) *ast.ParamFormatV3 {
+	fc, ok := ctx.(*parser.ParamFormatV3Context)
+	if !ok {
+		return nil
+	}
+	f := &ast.ParamFormatV3{}
+	for _, p := range fc.AllParamFormatPropV3() {
+		pp, ok := p.(*parser.ParamFormatPropV3Context)
+		if !ok {
+			continue
+		}
+		id := pp.IDENTIFIER()
+		vc := pp.PropertyValueV3()
+		if id == nil || vc == nil {
+			continue
+		}
+		val := strings.Trim(vc.GetText(), "'\"")
+		f.Props = append(f.Props, ast.ParamFormatProp{
+			Key:   strings.ToLower(id.GetText()),
+			Value: val,
+		})
+	}
+	return f
 }
 
 // buildXPathString builds a WHERE string from xpath constraints and and/or operators.

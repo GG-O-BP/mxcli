@@ -994,6 +994,13 @@ create page MyModule.Customer_Edit
 - Actions: `actionbutton`, `linkbutton`, `navigationlist`
 - Structure: `dataview`, `header`, `footer`, `controlbar`, `snippetcall`
 
+**DynamicText parameter formatting** — append a `format (…)` block to a content parameter (the `format` keyword is required):
+```sql
+dynamictext amt (content: '{1}', contentparams: [{1} = Amount format (decimalPrecision: 2, groupDigits: true)])
+dynamictext due (content: '{1}', contentparams: [{1} = DueOn  format (dateFormat: DateTime)])
+```
+Keys: `decimalPrecision` (int), `groupDigits` (bool), `dateFormat` (`Date`|`DateTime`|`Time`|`Custom`), `customDateFormat` (pattern, with `dateFormat: Custom`), `enumFormat` (`Text`|`Image`).
+
 ## ALTER PAGE / ALTER SNIPPET
 
 Modify an existing page or snippet's widget tree in-place without full `create or replace`. Works directly on the raw BSON tree, preserving unsupported widget types.

@@ -5,6 +5,7 @@ package widgets
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync/atomic"
 
 	"github.com/mendixlabs/mxcli/sdk/widgets/mpk"
@@ -96,66 +97,74 @@ func AugmentTemplate(tmpl *WidgetTemplate, def *mpk.WidgetDefinition) error {
 		}
 	}
 
-	// Nothing to add/remove at top level, and no nested children to process
-	if len(missing) == 0 && len(stale) == 0 && !hasNestedChildren {
-		return nil
-	}
-
-	// Remove stale properties
-	if len(stale) > 0 {
-		staleSet := make(map[string]bool, len(stale))
-		for _, key := range stale {
-			staleSet[key] = true
-		}
-		propTypes, objProps = removeProperties(propTypes, objProps, staleSet)
-	}
-
-	// Add missing properties
-	for _, p := range missing {
-		bsonType := xmlTypeToBSONType(p.Type)
-		if bsonType == "" {
-			continue // Unknown type, skip
+	// The add/remove work below is only needed when the property SET differs.
+	// The value-level reconciliation that FOLLOWS this block is not: a template
+	// whose keys already match the installed package can still carry stale values
+	// (Required, AllowUpload, enum options, defaults, order). Returning early here
+	// skipped all six of those passes and was the #716 dropdown-filter bug — its
+	// property set is byte-for-byte in sync with Data Widgets 3.10, so augmentation
+	// silently did nothing at all.
+	if len(missing) > 0 || len(stale) > 0 || hasNestedChildren {
+		// Remove stale properties
+		if len(stale) > 0 {
+			staleSet := make(map[string]bool, len(stale))
+			for _, key := range stale {
+				staleSet[key] = true
+			}
+			propTypes, objProps = removeProperties(propTypes, objProps, staleSet)
 		}
 
-		// Find an exemplar of the same type to clone
-		exemplarIdx, hasExemplar := typeExemplars[bsonType]
-		var newPropType, newProp map[string]any
-		if hasExemplar {
-			var err error
-			newPropType, newProp, err = clonePropertyPair(propTypes, objProps, exemplarIdx, p)
-			if err != nil {
-				return fmt.Errorf("augment %s: %w", tmpl.WidgetID, err)
+		// Add missing properties
+		for _, p := range missing {
+			bsonType := xmlTypeToBSONType(p.Type)
+			if bsonType == "" {
+				continue // Unknown type, skip
+			}
+
+			// Find an exemplar of the same type to clone
+			exemplarIdx, hasExemplar := typeExemplars[bsonType]
+			var newPropType, newProp map[string]any
+			if hasExemplar {
+				var err error
+				newPropType, newProp, err = clonePropertyPair(propTypes, objProps, exemplarIdx, p)
+				if err != nil {
+					return fmt.Errorf("augment %s: %w", tmpl.WidgetID, err)
+				}
+			}
+			// Fall back to createPropertyPair if cloning failed (no exemplar or no matching property)
+			if newPropType == nil || newProp == nil {
+				newPropType, newProp = createPropertyPair(p, bsonType)
+			}
+
+			if newPropType != nil {
+				propTypes = append(propTypes, newPropType)
+			}
+			if newProp != nil {
+				objProps = append(objProps, newProp)
 			}
 		}
-		// Fall back to createPropertyPair if cloning failed (no exemplar or no matching property)
-		if newPropType == nil || newProp == nil {
-			newPropType, newProp = createPropertyPair(p, bsonType)
-		}
 
-		if newPropType != nil {
-			propTypes = append(propTypes, newPropType)
-		}
-		if newProp != nil {
-			objProps = append(objProps, newProp)
+		// Write back top-level
+		setArrayField(objType, "PropertyTypes", propTypes)
+		setArrayField(tmpl.Object, "Properties", objProps)
+
+		// Augment nested ObjectType properties (e.g., DataGrid2 column properties).
+		// Top-level augmentation syncs the property list, but nested ObjectTypes inside
+		// IsList Object properties also need syncing when the .mpk version differs
+		// from the template version.
+		for _, mpkProp := range def.Properties {
+			if len(mpkProp.Children) == 0 {
+				continue
+			}
+			if err := augmentNestedObjectType(propTypes, objProps, mpkProp); err != nil {
+				return fmt.Errorf("augment nested %s: %w", mpkProp.Key, err)
+			}
 		}
 	}
 
-	// Write back top-level
-	setArrayField(objType, "PropertyTypes", propTypes)
-	setArrayField(tmpl.Object, "Properties", objProps)
-
-	// Augment nested ObjectType properties (e.g., DataGrid2 column properties).
-	// Top-level augmentation syncs the property list, but nested ObjectTypes inside
-	// IsList Object properties also need syncing when the .mpk version differs
-	// from the template version.
-	for _, mpkProp := range def.Properties {
-		if len(mpkProp.Children) == 0 {
-			continue
-		}
-		if err := augmentNestedObjectType(propTypes, objProps, mpkProp); err != nil {
-			return fmt.Errorf("augment nested %s: %w", mpkProp.Key, err)
-		}
-	}
+	// A surviving property's own definition attributes are version-specific too;
+	// reconciling only the property SET leaves CE0463 unexplained (#716).
+	syncDefinitionAttrs(propTypes, def.Properties)
 
 	return nil
 }
@@ -1008,4 +1017,163 @@ func remapObjectTypePointers(objProps []any, idRemap map[string]string) {
 			}
 		}
 	}
+}
+
+// syncDefinitionAttrs copies the scalar attributes that belong to the widget's
+// DEFINITION from the installed .mpk onto the template's PropertyTypes.
+//
+// AugmentTemplate reconciles which properties exist (adds new ones, removes
+// stale ones) but, before mendixlabs/mxcli#716, left a surviving property's own
+// attributes at whatever the embedded 11.6-era template captured. Those
+// attributes are part of what Mendix compares when deciding whether a widget's
+// definition has changed, so a widget package that merely flipped one of them
+// produced CE0463 on every instance — with nothing in the property SET to
+// explain it.
+//
+// Observed on Data Widgets 3.10 against the 11.6 templates:
+//
+//	Gallery                 OnChangeProperty "onConfigurationChange" -> "" (x4)
+//	DatagridDropdownFilter  Required         false -> true            (x2)
+//
+// Only attributes the .mpk actually declares are synced. Anything Mendix derives
+// but the XML does not carry is left alone — overwriting it with a zero value
+// would trade one definition mismatch for another.
+func syncDefinitionAttrs(propTypes []any, props []mpk.PropertyDef) {
+	byKey := make(map[string]*mpk.PropertyDef, len(props))
+	var index func([]mpk.PropertyDef)
+	index = func(ps []mpk.PropertyDef) {
+		for i := range ps {
+			byKey[ps[i].Key] = &ps[i]
+			if len(ps[i].Children) > 0 {
+				index(ps[i].Children)
+			}
+		}
+	}
+	index(props)
+
+	var walk func([]any)
+	walk = func(pts []any) {
+		for _, pt := range pts {
+			ptMap, ok := pt.(map[string]any)
+			if !ok {
+				continue
+			}
+			if key, _ := ptMap["PropertyKey"].(string); key != "" {
+				if p := byKey[key]; p != nil {
+					// These live on the PropertyType's ValueType, not on the
+					// PropertyType itself — targeting the wrong node made this a
+					// silent no-op. Verified against `mx update-widgets` output:
+					// the differing paths are
+					// PropertyTypes[N]/ValueType/{Required,OnChangeProperty}.
+					//
+					// Update in place only. Adding a key the node does not already
+					// carry invents a property this Mendix version may not define —
+					// the mendixlabs/mxcli#759 failure shape.
+					target := ptMap
+					if vt, ok := getMapField(ptMap, "ValueType"); ok {
+						target = vt
+					}
+					if _, ok := target["Required"]; ok {
+						target["Required"] = p.Required
+					}
+					if _, ok := target["OnChangeProperty"]; ok {
+						target["OnChangeProperty"] = p.OnChange
+					}
+				}
+			}
+			// Object-typed properties nest their own PropertyTypes.
+			if vt, ok := getMapField(ptMap, "ValueType"); ok {
+				if ot, ok := getMapField(vt, "ObjectType"); ok {
+					if nested, ok := getArrayField(ot, "PropertyTypes"); ok {
+						walk(nested)
+					}
+				}
+			}
+			if ot, ok := getMapField(ptMap, "ObjectType"); ok {
+				if nested, ok := getArrayField(ot, "PropertyTypes"); ok {
+					walk(nested)
+				}
+			}
+		}
+	}
+	walk(propTypes)
+}
+
+// NewPropertyPair builds the (WidgetPropertyType, WidgetProperty) pair for a property
+// an .mpk declares but a widget does not carry, with concrete IDs rather than the
+// placeholders the template pipeline remaps later.
+//
+// It exists so `mxcli widget sync` can add a property to a widget instance ALREADY
+// STORED in the model using the same construction the authoring path uses, instead of
+// a second implementation that could drift from it. Returns ok=false for an XML type
+// with no BSON mapping — the caller must skip rather than invent a shape.
+//
+// The two halves are bound by TypePointer and must be inserted together; a half-move
+// yields a project Mendix cannot load.
+func NewPropertyPair(p mpk.PropertyDef, newID func() string) (pt, prop map[string]any, ok bool) {
+	bsonType := xmlTypeToBSONType(p.Type)
+	if bsonType == "" {
+		return nil, nil, false
+	}
+	pt, prop = createPropertyPair(p, bsonType)
+	if pt == nil || prop == nil {
+		return nil, nil, false
+	}
+	// createPropertyPair cross-references the PropertyType and its ValueType from the
+	// WidgetProperty, so the placeholders must be remapped consistently across BOTH
+	// maps — rewriting them independently would break the pairing.
+	remap := map[string]string{}
+	collectPlaceholders(pt, remap)
+	collectPlaceholders(prop, remap)
+	for k := range remap {
+		remap[k] = newID()
+	}
+	return rewriteIDs(pt, remap).(map[string]any), rewriteIDs(prop, remap).(map[string]any), true
+}
+
+// collectPlaceholders records every placeholder ID appearing anywhere in the value.
+func collectPlaceholders(v any, out map[string]string) {
+	switch t := v.(type) {
+	case map[string]any:
+		for _, val := range t {
+			collectPlaceholders(val, out)
+		}
+	case []any:
+		for _, item := range t {
+			collectPlaceholders(item, out)
+		}
+	case string:
+		if isPlaceholderID(t) {
+			out[t] = ""
+		}
+	}
+}
+
+// rewriteIDs returns a copy with every placeholder replaced by its mapped ID.
+func rewriteIDs(v any, remap map[string]string) any {
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			out[k] = rewriteIDs(val, remap)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, item := range t {
+			out[i] = rewriteIDs(item, remap)
+		}
+		return out
+	case string:
+		if id, ok := remap[t]; ok && id != "" {
+			return id
+		}
+		return t
+	}
+	return v
+}
+
+// isPlaceholderID matches the "aa" prefix placeholderID mints.
+func isPlaceholderID(s string) bool {
+	return len(s) == 32 && strings.HasPrefix(s, "aa0000000000000000000000")
 }

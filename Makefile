@@ -25,11 +25,17 @@ CMD_PATH = ./cmd/mxcli
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 BUILD_TIME = $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 LDFLAGS = -ldflags "-X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME)"
+# RELEASE_LDFLAGS additionally strips the symbol table (-s) and DWARF debug info
+# (-w), which is ~25% of the binary (≈28MB on a ~112MB build) and unnecessary for
+# distribution. Combined with -trimpath (GO_BUILD_FLAGS) for reproducible builds
+# without local path leakage. The build-debug target keeps symbols for debugging.
+RELEASE_LDFLAGS = -ldflags "-s -w -X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME)"
+GO_BUILD_FLAGS = -trimpath
 
 # Clean version for VS Code extension (must be valid semver: major.minor.patch)
 VSCE_VERSION = $(shell echo "$(VERSION)" | sed 's/^v//; s/-.*//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$$' || echo "0.0.0")
 
-.PHONY: build build-debug release clean test engine-diff test-mdl check-mdl check-skill-mdl check-widget-versions grammar completions sync-skills sync-commands sync-lint-rules sync-changelog sync-all docs documentation docs-site docs-serve vscode-ext vscode-install source-tree sbom sbom-report lint lint-go lint-ts fmt vet
+.PHONY: build build-debug size release clean test engine-diff test-mdl check-mdl check-skill-mdl check-widget-versions grammar completions sync-skills sync-commands sync-lint-rules sync-changelog sync-all docs documentation docs-site docs-serve vscode-ext vscode-install source-tree sbom sbom-report lint lint-go lint-ts fmt vet
 
 # Helper: copy file only if content differs (avoids mtime updates that invalidate go build cache)
 # Usage: $(call copy-if-changed,src,dst)
@@ -103,9 +109,9 @@ completions:
 # Build for current platform (auto-syncs skills and commands)
 build: grammar sync-all completions
 	@mkdir -p $(BUILD_DIR)
-	CGO_ENABLED=0 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) $(CMD_PATH)
-	CGO_ENABLED=0 go build -o $(BUILD_DIR)/source_tree ./cmd/source_tree
-	@echo "Built $(BUILD_DIR)/$(BINARY_NAME) $(BUILD_DIR)/source_tree"
+	CGO_ENABLED=0 go build $(GO_BUILD_FLAGS) $(RELEASE_LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) $(CMD_PATH)
+	CGO_ENABLED=0 go build $(GO_BUILD_FLAGS) -o $(BUILD_DIR)/source_tree ./cmd/source_tree
+	@echo "Built $(BUILD_DIR)/$(BINARY_NAME) ($$(du -h $(BUILD_DIR)/$(BINARY_NAME) | cut -f1)) $(BUILD_DIR)/source_tree"
 
 # Build with debug tools (includes bson discover/compare/dump)
 build-debug: sync-all completions
@@ -113,28 +119,33 @@ build-debug: sync-all completions
 	CGO_ENABLED=0 go build -tags debug $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-debug $(CMD_PATH)
 	@echo "Built $(BUILD_DIR)/$(BINARY_NAME)-debug (debug build with bson tools)"
 
+# Report the built binary size (builds first if needed). Handy for catching size
+# regressions before a release.
+size: build
+	@echo "$(BINARY_NAME): $$(du -h $(BUILD_DIR)/$(BINARY_NAME) | cut -f1) (stripped release build)"
+
 # Build for all platforms (CGO_ENABLED=0 for cross-compilation)
 release: clean grammar vscode-ext sync-all
 	@mkdir -p $(BUILD_DIR)
 	@echo "Building release binaries..."
 
 	@echo "  -> Linux (amd64)"
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 $(CMD_PATH)
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(GO_BUILD_FLAGS) $(RELEASE_LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 $(CMD_PATH)
 
 	@echo "  -> Linux (arm64)"
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-arm64 $(CMD_PATH)
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build $(GO_BUILD_FLAGS) $(RELEASE_LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-arm64 $(CMD_PATH)
 
 	@echo "  -> macOS (amd64 - Intel)"
-	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-amd64 $(CMD_PATH)
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build $(GO_BUILD_FLAGS) $(RELEASE_LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-amd64 $(CMD_PATH)
 
 	@echo "  -> macOS (arm64 - Apple Silicon)"
-	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 $(CMD_PATH)
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build $(GO_BUILD_FLAGS) $(RELEASE_LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 $(CMD_PATH)
 
 	@echo "  -> Windows (amd64)"
-	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe $(CMD_PATH)
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build $(GO_BUILD_FLAGS) $(RELEASE_LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe $(CMD_PATH)
 
 	@echo "  -> Windows (arm64)"
-	CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-windows-arm64.exe $(CMD_PATH)
+	CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build $(GO_BUILD_FLAGS) $(RELEASE_LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-windows-arm64.exe $(CMD_PATH)
 
 	@echo ""
 	@echo "Release binaries:"

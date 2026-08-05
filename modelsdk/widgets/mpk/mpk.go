@@ -17,12 +17,16 @@ import (
 
 // PropertyDef describes a single property from a widget XML definition.
 type PropertyDef struct {
-	Key            string // e.g. "staticDataSourceCaption"
-	Type           string // XML type: "attribute", "expression", "textTemplate", "widgets", etc.
-	Caption        string
-	Description    string
-	Category       string // from enclosing propertyGroup captions, joined with "::"
-	Required       bool
+	Key         string // e.g. "staticDataSourceCaption"
+	Type        string // XML type: "attribute", "expression", "textTemplate", "widgets", etc.
+	Caption     string
+	Description string
+	Category    string // from enclosing propertyGroup captions, joined with "::"
+	Required    bool
+	// OnChange names the sibling action property Studio Pro runs when this
+	// property changes. Part of the widget DEFINITION, so a stale value makes
+	// Mendix report CE0463 "definition of this widget has changed" (#716).
+	OnChange       string
 	DefaultValue   string // for enumeration/boolean/integer types
 	IsList         bool
 	Multiline      bool     // for string/textTemplate: multiline="true"
@@ -201,6 +205,7 @@ type xmlProperty struct {
 	Type           string             `xml:"type,attr"`
 	DefaultValue   string             `xml:"defaultValue,attr"`
 	Required       string             `xml:"required,attr"`
+	OnChange       string             `xml:"onChange,attr"`
 	IsList         string             `xml:"isList,attr"`
 	Multiline      string             `xml:"multiline,attr"`
 	DataSource     string             `xml:"dataSource,attr"`
@@ -391,6 +396,7 @@ func walkPropertyGroup(pg xmlPropGroup, parentCategory string, def *WidgetDefini
 			// an explicit required="false" is optional. Defaulting missing→false here
 			// caused within-key CE0463 drift on augment-added keys (issue #600).
 			Required:               p.Required != "false",
+			OnChange:               p.OnChange,
 			DefaultValue:           p.DefaultValue,
 			IsList:                 p.IsList == "true",
 			Multiline:              p.Multiline == "true",
@@ -463,6 +469,7 @@ func collectNestedProperties(pg xmlPropGroup, parent *PropertyDef, parentCategor
 			// an explicit required="false" is optional. Defaulting missing→false here
 			// caused within-key CE0463 drift on augment-added keys (issue #600).
 			Required:               p.Required != "false",
+			OnChange:               p.OnChange,
 			DefaultValue:           p.DefaultValue,
 			IsList:                 p.IsList == "true",
 			Multiline:              p.Multiline == "true",

@@ -646,14 +646,32 @@ func serializeClientTemplateParameter(param *pages.ClientTemplateParameter) bson
 	// EnumFormat / GroupDigits). Writing TimeFormat here triggers Studio
 	// Pro CE0463 "widget definition changed" on pluggable widgets that
 	// embed this struct (e.g. Gallery / DataGrid2 column captions).
+	//
+	// Use the parameter's per-parameter formatting when present; a nil
+	// FormattingInfo reproduces the previous hardcoded defaults, so every
+	// unformatted parameter is byte-identical to before.
+	dateFormat, customDateFormat, enumFormat := "Date", "", "Text"
+	decimalPrecision := int64(2)
+	groupDigits := false
+	if fi := param.FormattingInfo; fi != nil {
+		if fi.DateFormat != "" {
+			dateFormat = fi.DateFormat
+		}
+		customDateFormat = fi.CustomDateFormat
+		if fi.EnumFormat != "" {
+			enumFormat = fi.EnumFormat
+		}
+		decimalPrecision = int64(fi.DecimalPrecision)
+		groupDigits = fi.GroupDigits
+	}
 	formattingInfo := bson.D{
 		{Key: "$ID", Value: idToBsonBinary(generateUUID())},
 		{Key: "$Type", Value: "Forms$FormattingInfo"},
-		{Key: "CustomDateFormat", Value: ""},
-		{Key: "DateFormat", Value: "Date"},
-		{Key: "DecimalPrecision", Value: int64(2)},
-		{Key: "EnumFormat", Value: "Text"},
-		{Key: "GroupDigits", Value: false},
+		{Key: "CustomDateFormat", Value: customDateFormat},
+		{Key: "DateFormat", Value: dateFormat},
+		{Key: "DecimalPrecision", Value: decimalPrecision},
+		{Key: "EnumFormat", Value: enumFormat},
+		{Key: "GroupDigits", Value: groupDigits},
 	}
 
 	// Build SourceVariable if present (references a page/snippet parameter)

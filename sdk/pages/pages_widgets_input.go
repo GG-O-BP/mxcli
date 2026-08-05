@@ -39,7 +39,8 @@ type TextArea struct {
 type FormattingInfo struct {
 	model.BaseElement
 	DateFormat       string `json:"dateFormat,omitempty"`
-	TimeFormat       string `json:"timeFormat,omitempty"`
+	CustomDateFormat string `json:"customDateFormat,omitempty"` // pattern paired with DateFormat="Custom"
+	TimeFormat       string `json:"timeFormat,omitempty"`       // not a Forms$FormattingInfo schema field — never serialized (CE0463)
 	DecimalPrecision int    `json:"decimalPrecision,omitempty"`
 	GroupDigits      bool   `json:"groupDigits,omitempty"`
 	EnumFormat       string `json:"enumFormat,omitempty"`

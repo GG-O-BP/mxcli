@@ -26,11 +26,14 @@ trip CE0463 the moment the project's widget version didn't match.
 
 mxcli never hard-codes one widget shape. It reconciles a known-good template against the
 widget package **installed in your project**, so the definition it writes matches the
-version you actually have — no `mx update-widgets` step required.
+version you actually have at the moment you create the widget.
 
 1. **Embedded template.** mxcli ships a known-good template for each built-in widget
    (extracted from Studio Pro). This provides the correct nested BSON structure that is
-   hard to build from scratch.
+   hard to build from scratch. A widget with **no** embedded template — anything from
+   the Marketplace, and the Charts family — is instead generated whole from the
+   package (`GenerateFromMPK`), so an embedded template is not a prerequisite for
+   support.
 
 2. **Reconcile against the project `.mpk`.** When you pass a project (`-p`), mxcli finds
    the widget's `.mpk` in the project's `widgets/` folder, parses its definition, and
@@ -49,8 +52,31 @@ version you actually have — no `mx update-widgets` step required.
    Studio Pro would give it.
 
 The result: widgets created by mxcli open cleanly across Mendix 10.x and 11.x with the
-bundled widget packages, and against Marketplace-updated packages, without manual
-"Update widgets" fix-ups.
+widget packages bundled with those releases — verified on Mendix 11.12 with Data
+Widgets 3.4: a project authored entirely by mxcli reports **0** CE0463.
+
+### Two things this does *not* cover
+
+**Upgrading a widget package does not update widgets you already created.** A package
+that drops a property leaves every *stored* instance carrying a property the new
+definition no longer has — which is what CE0463 reports, and what its message
+("Update all widgets") asks you to fix. This is normal Mendix behaviour and it is not
+specific to mxcli: Studio Pro's own widgets are flagged identically. Measured on
+Mendix 11.12, upgrading Data Widgets 3.4 → 3.11.3:
+
+| Project | as authored | after the upgrade | after `mx update-widgets` |
+|---|---|---|---|
+| a real mxcli-built app | 0 errors | 36 CE0463 (7 mxcli-authored, 29 Studio Pro's own) | 0 errors |
+
+mxcli has no "Update all widgets" equivalent yet. Until it does, run the update in
+Studio Pro. Avoid `mx update-widgets` on an MPR v2 project — it collapses
+`mprcontents/` back to the single-file v1 layout.
+
+**Two widgets do not yet author cleanly against Data Widgets 3.10+.** Freshly created
+`gallery` and `dropdownfilter` widgets produce CE0463 on those packages; `datagrid2`,
+`textfilter`, `datefilter` and `numberfilter` are clean. Tracked as
+[mendixlabs/mxcli#716](https://github.com/mendixlabs/mxcli/issues/716). On the
+bundled 3.4 package all of them are clean.
 
 > For the internal mechanics (template extraction, BSON cross-references, the augment
 > pipeline), see [Widget Template System](../internals/widget-templates.md) and
@@ -143,6 +169,32 @@ Both the properties and the rules are available as JSON for scripting:
   ]
 }
 ```
+
+## Reconciling stored widgets after a package upgrade (`mxcli widget sync`)
+
+Everything above keeps a widget correct **as it is authored**. When you later upgrade
+the widget package, the instances already stored in your pages go stale and Mendix
+reports CE0463 on each one. Studio Pro fixes this with "Update all widgets"; mxbuild
+has `mx update-widgets`, which works but **destroys `mprcontents/`** on an MPR v2
+project, collapsing it to a single-file v1 layout.
+
+`mxcli widget sync` is the equivalent that preserves the v2 layout:
+
+```bash
+mxcli widget sync -p app.mpr --dry-run     # preview; names every property
+mxcli widget sync -p app.mpr               # apply
+```
+
+It reconciles **schema** — properties the package added, dropped or redefined — and
+never changes a property value you set. It skips any widget whose `.mpk` is not
+installed rather than guessing.
+
+**This is partial today.** On the reference fixture (Data Widgets 3.4 → 3.11.3) it
+clears 7 of 40 CE0463 errors where `mx update-widgets` clears all 40. The widget
+*type* it writes is byte-identical to Mendix's own output; a value-level difference
+that has not yet been identified keeps DataGrid2 and Gallery instances erroring.
+Preview with `--dry-run` and confirm with `mx check` before relying on it. Applying
+currently needs `MXCLI_ENGINE=legacy`; `--dry-run` works on either engine.
 
 ## Marketplace and custom widgets
 
