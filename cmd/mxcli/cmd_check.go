@@ -166,6 +166,11 @@ Examples:
 		// not row-scoped, so the argument is unbound (CE1571) at build time.
 		violations = append(violations, executor.ValidatePageButtonContext(prog)...)
 
+		// Flag a document-access GRANT naming a role from another module — Mendix
+		// rejects it with CE0148. Needs no project, so it runs here rather than
+		// under --references, where it would only fire with -p (#836).
+		violations = append(violations, executor.ValidateGrantRoles(prog)...)
+
 		if isStructured {
 			// Always emit structured output (even when clean)
 			formatter.Format(violations, os.Stderr)
