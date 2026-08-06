@@ -186,6 +186,10 @@ projects, solutions, branches, and worktrees — with a sortable overview at
   older ones: the hub persists a per-session endpoint history to `--sessions-file` (default
   `~/.mxcli/hub-sessions.json`, survives restarts) and prunes it after `--session-retention`
   (default 30 days). Re-registering keeps a **stable URL**.
+- Each endpoint shows **first seen** alongside last-seen, last-used, and uptime. First seen
+  is read from that persisted history, so it is the first time the endpoint was *ever*
+  exposed — unlike uptime, it does not reset when an idle container is reaped and the
+  preview reconnects.
 - `--hub` **implies `--local`**, boots the runtime with `ApplicationRootUrl` set to the
   assigned URL (so the SPA and `originURI` cookie work), and the tunnel reconnects forever.
   Combine with `--watch` for the full remote loop: edit here → hot-apply → refresh the tab.
