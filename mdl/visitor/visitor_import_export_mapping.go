@@ -54,7 +54,7 @@ func buildImportRootElement(ctx *parser.ImportMappingRootElementContext) *ast.Im
 
 	// Entity name
 	if ctx.QualifiedName() != nil {
-		elem.Entity = ctx.QualifiedName().GetText()
+		elem.Entity = buildQualifiedName(ctx.QualifiedName()).String()
 	}
 
 	// Children
@@ -83,8 +83,8 @@ func buildImportChild(ctx *parser.ImportMappingChildContext) *ast.ImportMappingE
 		// Association path: qualifiedName SLASH qualifiedName
 		allQN := ctx.AllQualifiedName()
 		if len(allQN) >= 2 {
-			elem.Association = allQN[0].GetText()
-			elem.Entity = allQN[1].GetText()
+			elem.Association = buildQualifiedName(allQN[0]).String()
+			elem.Entity = buildQualifiedName(allQN[1]).String()
 		}
 
 		// JSON key after EQUALS
@@ -106,7 +106,7 @@ func buildImportChild(ctx *parser.ImportMappingChildContext) *ast.ImportMappingE
 		}
 		allQN := ctx.AllQualifiedName()
 		if len(allQN) >= 1 {
-			elem.Converter = allQN[0].GetText()
+			elem.Converter = buildQualifiedName(allQN[0]).String()
 		}
 		if len(allIdent) >= 2 {
 			elem.ConverterParam = identifierOrKeywordText(allIdent[1])
@@ -174,7 +174,7 @@ func buildExportRootElement(ctx *parser.ExportMappingRootElementContext) *ast.Ex
 	elem := &ast.ExportMappingElementDef{}
 
 	if ctx.QualifiedName() != nil {
-		elem.Entity = ctx.QualifiedName().GetText()
+		elem.Entity = buildQualifiedName(ctx.QualifiedName()).String()
 	}
 
 	for _, childCtx := range ctx.AllExportMappingChild() {
@@ -197,8 +197,8 @@ func buildExportChild(ctx *parser.ExportMappingChildContext) *ast.ExportMappingE
 
 	if len(allQN) >= 2 {
 		// Object mapping: Assoc/Entity AS jsonKey
-		elem.Association = allQN[0].GetText()
-		elem.Entity = allQN[1].GetText()
+		elem.Association = buildQualifiedName(allQN[0]).String()
+		elem.Entity = buildQualifiedName(allQN[1]).String()
 
 		// JSON key after AS
 		allIdent := ctx.AllIdentifierOrKeyword()
