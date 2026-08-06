@@ -497,3 +497,121 @@ func TestSwitcherStorageKeyIsSubstitutedNotHardcoded(t *testing.T) {
 		t.Errorf("storage key appears %d times in the generated JavaScript, want 4", got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Regressions reported from the RssReader test build (MXCLI-FINDINGS 15-17)
+// ---------------------------------------------------------------------------
+
+// Finding 15. `theme remove` with no name fell back to the default theme, so on
+// a project themed with any other one it removed nothing, reported every file
+// as unchanged and exited 0 — a silent no-op on the documented invocation.
+func TestResolve_FindsTheInstalledThemeNotTheDefault(t *testing.T) {
+	dir := newProject(t)
+	if _, err := Apply(dir, "ledger", Options{}); err != nil {
+		t.Fatal(err)
+	}
+
+	installed, err := Installed(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(installed) != 1 || installed[0] != "ledger" {
+		t.Fatalf("Installed = %v, want [ledger]", installed)
+	}
+
+	// This is the call `theme remove` makes with no argument. Falling back to
+	// the default here is exactly the bug.
+	got, err := Resolve(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "ledger" {
+		t.Errorf("Resolve = %q, want ledger", got)
+	}
+	if got == DefaultName {
+		t.Error("resolved to the default theme rather than the installed one")
+	}
+}
+
+func TestResolve_UnthemedProjectIsAnErrorNotASilentDefault(t *testing.T) {
+	dir := newProject(t)
+
+	if _, err := Resolve(dir, ""); err == nil {
+		t.Fatal("expected an error for a project with no theme")
+	}
+	// `apply` may still fall back — a project with no theme is exactly when
+	// installing the default is right.
+	got, err := Resolve(dir, DefaultName)
+	if err != nil || got != DefaultName {
+		t.Errorf("Resolve(fallback) = (%q, %v), want (%q, nil)", got, err, DefaultName)
+	}
+}
+
+// Finding 16. Switching themes replaced the block in custom-variables.scss and
+// main.scss but appended to _mxcli-atlas-map.scss, leaving the outgoing theme's
+// block in place and doubling the file — two themes mapping the same Atlas
+// variables in one file, resolved by source order rather than intent.
+func TestApply_SwitchingLeavesExactlyOneBlockInEveryFile(t *testing.T) {
+	dir := newProject(t)
+	for _, name := range []string{"signal", "ledger", "console", "signal"} {
+		if _, err := Apply(dir, name, Options{}); err != nil {
+			t.Fatalf("apply %s: %v", name, err)
+		}
+		installed, err := Installed(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(installed) != 1 || installed[0] != name {
+			t.Fatalf("after apply %s, Installed = %v, want [%s]", name, installed, name)
+		}
+
+		blocks, err := filepath.Glob(filepath.Join(dir, "theme", "web", "*.scss"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range blocks {
+			body := read(t, f)
+			if n := strings.Count(body, beginMarker); n > 1 {
+				t.Errorf("after apply %s, %s carries %d theme blocks",
+					name, filepath.Base(f), n)
+			}
+		}
+	}
+}
+
+// Finding 17. The topbar language selector was unreadable in every dark palette
+// (1.13:1). Atlas paints it at (0,3,0) from --bg-color-secondary with a #fff
+// fallback; the guard was a bare .current-language-text at (0,1,0), which only
+// won on layouts that do not nest the selector under .navbar-brand.
+func TestAtlasMap_LanguageSelectorMatchesAtlasSpecificityAndUsesTheRailToken(t *testing.T) {
+	themes, err := List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, th := range themes {
+		body, err := assetsFS.ReadFile(
+			"assets/" + th.Name + "/files/theme/web/_mxcli-atlas-map.scss")
+		if err != nil {
+			t.Fatal(err)
+		}
+		src := string(body)
+		if !strings.Contains(src, ".navbar-brand .widget-language-selector .current-language-text") {
+			t.Errorf("%s: does not match Atlas's own (0,3,0) selector, so its rule cannot win", th.Name)
+		}
+		if !strings.Contains(src, "var(--mxt-rail-ink-active, var(--mxt-rail-ink))") {
+			t.Errorf("%s: topbar text must resolve through the rail token", th.Name)
+		}
+		// `color: inherit` inherits body ink, which is dark on a dark rail —
+		// wrong even at the right specificity. Match the declaration, not the
+		// comment that explains why it is wrong.
+		for _, line := range strings.Split(src, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "//") {
+				continue
+			}
+			if strings.HasPrefix(trimmed, "color: inherit") {
+				t.Errorf("%s: still declares color: inherit for topbar text", th.Name)
+			}
+		}
+	}
+}

@@ -180,16 +180,26 @@
 // Atlas fixups — rules, not mappings, for the few places Atlas hardcodes a
 // colour instead of reading a variable.
 //
-// The topbar widgets (the language selector among them) paint their text with
-// --color-base, which Atlas assumes is white because it assumes a dark rail.
-// Every mxcli theme does keep the rail dark, but --color-base is the light
-// surface colour in a light theme and a dark panel colour in a dark one, so
-// the text disappears either way. Inheriting from the topbar chain — which the
-// --navtopbar-color mapping above already sets correctly — fixes it without
-// guessing at a colour.
+// The topbar language selector paints itself with --bg-color-secondary and a
+// #fff fallback, which assumes a dark rail. Every mxcli theme does keep the
+// rail dark, but --bg-color-secondary is the light *surface* colour: white in a
+// light palette (so it reads by luck) and near-black in a dark one, where the
+// text drops to a 1.13:1 contrast ratio and is effectively invisible.
+//
+// Two things matter in the fix. Atlas's own selector is
+// `.navbar-brand .widget-language-selector .current-language-text` at (0,3,0),
+// so a bare `.current-language-text` at (0,1,0) never wins — it only appeared
+// to work on layouts that do not nest the selector under .navbar-brand. And
+// `color: inherit` is the wrong value even at the right weight: the inherited
+// colour is body ink, which is dark, and the rail is dark in both palettes.
+// The rail has its own token; use it.
+//
+// Both selector shapes are listed so the rule applies whether or not the
+// layout uses .navbar-brand; each is matched at its own specificity.
 // ---------------------------------------------------------------------------
 .current-language-text,
-.mx-navigationbar .mx-text,
-.navbar .mx-text {
-  color: inherit;
+.language-arrow,
+.navbar-brand .widget-language-selector .current-language-text,
+.navbar-brand .widget-language-selector .language-arrow {
+  color: var(--mxt-rail-ink-active, var(--mxt-rail-ink));
 }

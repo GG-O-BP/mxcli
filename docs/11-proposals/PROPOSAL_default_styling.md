@@ -292,3 +292,35 @@ unconditional global widget overrides, not a `prefers-color-scheme` flip. Mendix
 - **Should `mxcli init` apply the theme too?** Today only `new` does. `init` runs
   against existing projects that may already have styling, so applying there
   should probably stay explicit (`mxcli theme apply`).
+
+---
+
+## External validation (RssReader test build)
+
+The theming work was exercised independently against a real app — Feedline, ~1,900
+lines of MDL and ~1,400 lines of custom SCSS — and reported in
+`ako/mxcli-rssreader:MXCLI-FINDINGS.md`. Three defects came back, all fixed:
+
+| # | Defect | Root cause |
+|---|---|---|
+| 15 | `theme remove` with no name removed nothing and exited 0 | the bare invocation targeted the default theme instead of the installed one |
+| 16 | switching themes doubled `_mxcli-atlas-map.scss` | the protected-path branch in `remove` returned without writing the truncation, so the outgoing block survived and the incoming one was appended |
+| 17 | topbar language selector unreadable in every dark palette (1.13:1) | the guard matched at (0,1,0) against Atlas's (0,3,0), and `color: inherit` was the wrong value regardless |
+
+Two lessons worth carrying forward:
+
+- **A guard that names the right element is not evidence it applies.** #17 had a
+  rule targeting exactly the right selector; it lost the cascade. Read the
+  *winning* declaration, not the one you wrote.
+- **Measure contrast, not colour.** The original verification read
+  `getComputedStyle(el).color`, saw white and moved on. Computing the WCAG ratio
+  against the first non-transparent ancestor background is what separates
+  1.13:1 from 19.47:1 — and it is a two-line addition to a Playwright probe.
+
+The report also confirmed the parts that hold: fences refuse edits and `--force`
+overrides them, `--dry-run` writes nothing, `--variant dark` really bakes, the
+switcher works end to end with the documented reload limitation reproducing
+exactly, vendored fonts render with no outbound network, and applying a theme to
+a heavily customised project was non-destructive. One behaviour worth documenting
+rather than fixing: `apply` appends its block to the end of `main.scss`, after any
+`@import` the project already had there.

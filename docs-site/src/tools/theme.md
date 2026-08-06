@@ -116,12 +116,24 @@ instead of rewiring sixty. Pinning an Atlas variable to a literal colour is the
 one thing that breaks switching — a hardcoded `--font-color-default` is
 invisible the moment the ground goes dark.
 
+### Import order in `main.scss`
+
+`apply` appends its block to the **end** of `theme/web/main.scss`, so it lands
+after any `@import` the project already had there. If your app carries a
+stylesheet imported last specifically to win the cascade over Atlas, the theme's
+partial now comes after it. Higher-specificity app classes are unaffected; a
+rule that relied purely on being last is not. Move your `@import` below the
+mxcli block — anything outside the fence is never touched.
+
 ### Two Atlas constraints worth knowing
 
-- **The navigation rail stays dark in both palettes.** A few Atlas topbar widgets
-  paint their text with `--color-base`, which the framework assumes is white
-  because it assumes a dark rail. Every mxcli theme keeps the rail dark and
-  forces `color: inherit` on those widgets.
+- **The navigation rail stays dark in both palettes.** Atlas topbar widgets paint
+  their own text assuming a dark rail — the language selector uses
+  `--bg-color-secondary` with a `#fff` fallback, at a specificity
+  (`.navbar-brand .widget-language-selector .current-language-text`) that a
+  simple override cannot beat. Every mxcli theme keeps the rail dark and
+  re-declares those selectors at matching specificity, resolving the colour
+  through the rail token.
 - **`themesource/<name>/` is only compiled when `<name>` matches a real module**,
   so a theme never writes there. `theme/web/main.scss` compiles last and is the
   correct home for app-level styling.
