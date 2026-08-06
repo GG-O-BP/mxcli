@@ -61,8 +61,8 @@ Style from the bottom up. Each layer only does what the layer below can't.
 
 ```
 Layer 3  VERIFY      run --local --watch  +  Playwright screenshot   (mx check is NOT enough)
-Layer 2  IDENTITY    themesource/<mod>/web/main.scss — custom tokens + recipe classes
-                     (mono type, status pills, timeline spine) — ONLY what Atlas can't provide
+Layer 2  IDENTITY    theme/web/_<name>.scss, imported from theme/web/main.scss — recipe
+                     classes (mono type, status pills, timeline spine) — ONLY what Atlas can't do
 Layer 1  BRAND       theme/web/custom-variables.scss — retune Atlas tokens (--brand-primary,
                      backgrounds, semantic colors, radius) so Atlas components inherit the palette
 Layer 0  ATLAS       Atlas classes / design properties / building blocks — structure & base look
@@ -73,11 +73,22 @@ Layer 0  ATLAS       Atlas classes / design properties / building blocks — str
 - **Layer 1 — Brand.** Retune Atlas tokens in `theme/web/custom-variables.scss` so
   the whole framework (buttons, backgrounds, form inputs, pluggable widgets like
   Switch/Slider/ProgressBar) picks up your palette. Scaffold below.
-- **Layer 2 — Identity.** Only the handful of shapes Atlas genuinely can't express
-  go in `main.scss` as prefixed recipe classes. See `theme-styling.md` for the SCSS
-  chain and `migrate-design-prototype.md` for the token→component method.
+- **Layer 2 — Identity.** Only the handful of shapes Atlas genuinely can't express.
+  Put them in a partial imported from **`theme/web/main.scss`**, which compiles
+  *last* — after Atlas Core and after every module theme source — so your rules win
+  without `!important`. Use `themesource/<mod>/web/main.scss` only when the styling
+  belongs to that module: a theme source folder whose name does not match a real
+  module is **silently not compiled**. See `theme-styling.md`.
 - **Layer 3 — Verify.** Non-negotiable. `mx check` misses client-side crashes; you
   must screenshot a *running* build.
+
+**Start from the shipped default, don't start from nothing.** `mxcli new` applies
+the `signal` theme, and `mxcli theme apply -p app.mpr` adds it to an existing
+project. It already carries a full Layer-1 token set, vendored IBM Plex, the focus
+ring, the 32px/44px density scale and the `num` / `pill` / `stat` recipe classes.
+Re-brand it by changing `--brand-primary` in its generated block; the block is
+fenced with a digest, so mxcli will refuse to overwrite your edits. `mxcli theme
+show signal` lists exactly which files it writes.
 
 A Layer-1 token retune **cascades down** into Atlas components and pluggable
 widgets for free — that is the headline payoff. A full re-brand (new palette, type,

@@ -1,0 +1,161 @@
+// Layer 1 — BRAND. Atlas reads these tokens; every Atlas class, form control and
+// brand-aware pluggable widget (Switch, Slider, ProgressBar, BadgeButton) inherits
+// them with no per-widget CSS. Atlas Core itself is untouched.
+//
+// To re-brand the whole app, change --brand-primary and nothing else.
+//
+// Mendix 11 Atlas is CSS-custom-property-first, so these are `:root` declarations,
+// not SCSS `!default` variables. This file is imported once per module, so it must
+// hold declarations only — never rules. Rules live in _mxcli-signal.scss (Layer 2),
+// which is compiled last.
+
+:root {
+  /* ---- palette -------------------------------------------------------- */
+  --brand-primary: #0f6e6b; /* the one signal colour */
+  --brand-success: #1f7a4d;
+  --brand-warning: #b45309;
+  --brand-danger: #b42318;
+  --brand-info: #1f5fa8;
+  --brand-default: #edeff2; /* neutral surface for default buttons/labels */
+  --gray: #8a929e; /* cool grey ramp, not Atlas's warm default */
+
+  --color-base: #ffffff;
+  --bg-color: #f4f6f8; /* app ground */
+  --bg-color-secondary: #ffffff; /* cards, modals, panels */
+
+  --link-color: var(--brand-primary);
+  --link-hover-color: #0b5754;
+
+  /* ---- type ----------------------------------------------------------- */
+  --font-family-base: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-size-default: 14px;
+  --font-size-small: 12px;
+  --font-size-large: 16px;
+  --line-height-base: 1.45;
+
+  --font-color-default: #14181f;
+  --font-color-detail: #5a6572;
+  --font-color-header: #14181f;
+
+  /* An operational scale — tighter than Atlas's marketing-page defaults. */
+  --font-size-h1: 28px;
+  --font-size-h2: 22px;
+  --font-size-h3: 18px;
+  --font-size-h4: 16px;
+  --font-size-h5: var(--font-size-default);
+  --font-size-h6: 12px;
+  --font-weight-header: 600;
+  --font-header-margin: 0 0 8px 0;
+
+  /* ---- shape ---------------------------------------------------------- */
+  --border-color-default: #dce1e7;
+  --border-radius-s: 4px;
+  --border-radius-m: 4px;
+  --border-radius-l: 6px;
+  --border-radius-default: var(--border-radius-s);
+
+  --shadow-color: rgba(20, 24, 31, 0.08);
+  --shadow-small: 0 1px 2px 0;
+  --shadow-medium: 0 2px 4px 0;
+  --shadow-large: 0 8px 16px 0;
+
+  /* ---- focus ---------------------------------------------------------- */
+  /* Visible on every focusable element, never suppressed. The soft 3px halo
+     that pairs with this outline is in _mxcli-signal.scss. */
+  --focus-outline: 2px solid var(--brand-primary);
+  --focus-outline-offset: 1px;
+
+  /* ---- density: 32px controls on desktop ------------------------------ */
+  /* Below 768px _mxcli-signal.scss grows every control to a 44px touch target. */
+  --form-input-height: 32px;
+  --form-input-padding-y: 4px;
+  --form-input-padding-x: 8px;
+  --form-input-font-size: var(--font-size-default);
+  --form-input-border-radius: var(--border-radius-s);
+  --form-input-bg: var(--color-base);
+  --form-input-border-color: var(--border-color-default);
+  --form-input-border-focus-color: var(--brand-primary);
+  --form-input-color: var(--font-color-default);
+  --form-input-placeholder-color: #98a1ad;
+
+  --form-label-color: var(--font-color-detail);
+  --form-label-weight: 500;
+  --form-label-gutter: 6px;
+  --form-group-margin-bottom: 12px;
+  --form-group-gutter: 12px;
+
+  /* ---- grids: 32px rows ----------------------------------------------- */
+  --padding-table-cell-top: 6px;
+  --padding-table-cell-bottom: 6px;
+  --padding-table-cell-left: 12px;
+  --padding-table-cell-right: 12px;
+
+  --grid-border-color: var(--border-color-default);
+  --grid-bg: transparent;
+  --grid-bg-header: transparent;
+  --grid-bg-striped: #f9fafb;
+  --grid-bg-hover: #edf2f2;
+  --grid-bg-selected: #e3efef;
+  --grid-bg-selected-hover: #d6e8e7;
+  --grid-selected-color: var(--font-color-default);
+
+  /* ---- cards ---------------------------------------------------------- */
+  --card-bg: var(--bg-color-secondary);
+  --card-border: 1px solid var(--border-color-default);
+  --card-border-radius: var(--border-radius-s);
+  --card-padding: 16px;
+  --card-margin-bottom: 16px;
+  --card-shadow: var(--shadow-small) var(--shadow-color);
+
+  /* ---- buttons -------------------------------------------------------- */
+  --btn-border-radius: var(--border-radius-s);
+  --btn-font-size: var(--font-size-default);
+  --btn-default-bg: var(--color-base);
+  --btn-default-border-color: var(--border-color-default);
+  --btn-default-color: var(--font-color-default);
+  --btn-default-icon-color: var(--font-color-detail);
+
+  /* ---- shell: flat slate rail, not Atlas's blue gradient --------------- */
+  --topbar-bg: #14181f;
+  --topbar-border-color: #232a34;
+  --sidebar-bg: #14181f;
+  --navigation-bg: var(--sidebar-bg);
+  --navigation-bg-hover: rgba(255, 255, 255, 0.08);
+  --navigation-bg-active: rgba(255, 255, 255, 0.14);
+  --navigation-color: #d3d8de;
+  --navigation-color-hover: #ffffff;
+  --navigation-color-active: #ffffff;
+  --navigation-sub-bg: rgba(255, 255, 255, 0.05);
+  --navigation-sub-color: var(--navigation-color);
+  --navigation-border-color: rgba(255, 255, 255, 0.08);
+  --navigation-border-radius: var(--border-radius-s);
+
+  --navsidebar-bg: var(--sidebar-bg);
+  --navsidebar-bg-hover: var(--navigation-bg-hover);
+  --navsidebar-bg-active: var(--navigation-bg-active);
+  --navsidebar-color: var(--navigation-color);
+  --navsidebar-color-hover: var(--navigation-color-hover);
+  --navsidebar-color-active: var(--navigation-color-active);
+  --navsidebar-border-color: rgba(255, 255, 255, 0.08);
+  --navsidebar-border-radius: var(--border-radius-s);
+
+  --navtopbar-bg: var(--topbar-bg);
+  --navtopbar-bg-hover: var(--navigation-bg-hover);
+  --navtopbar-bg-active: var(--navigation-bg-active);
+  --navtopbar-color: var(--navigation-color);
+  --navtopbar-color-hover: var(--navigation-color-hover);
+  --navtopbar-color-active: var(--navigation-color-active);
+  --navtopbar-border-color: var(--topbar-border-color);
+
+  /* ---- headers, modals, tabs ------------------------------------------ */
+  --header-bg-color: var(--brand-primary);
+  --header-text-color: var(--color-base);
+
+  --modal-header-border-color: var(--border-color-default);
+  --modal-body-bg: var(--bg-color-secondary);
+  --modal-footer-bg: var(--bg-color-secondary);
+
+  --tabs-border-color: var(--border-color-default);
+  --tabs-lined-border-color: var(--brand-primary);
+  --tabs-lined-border-width: 2px;
+}

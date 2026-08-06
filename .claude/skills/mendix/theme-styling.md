@@ -49,9 +49,63 @@ MyProject/
 5. MXUI components
 6. Core styles (base, animations, spacing, flex)
 7. Widget-specific styles
-8. Module-specific styles from `themesource/*/web/*.scss`
+
+Then each **module's** `themesource/<module>/web/main.scss`, and **last of all**
+`theme/web/main.scss`.
 
 Variables declared earlier are overridden by later declarations (with `!default` flag). This means `custom-variables.scss` overrides `atlas_core/web/variables.scss` values.
+
+### Where to put app-level styling — three rules that are not obvious
+
+Verified against a real Mendix 11.13 project (probe rules compiled with
+`mxbuild --target=deploy`, then grepped out of `theme-cache/web/theme.compiled.css`).
+
+**1. `theme/web/main.scss` compiles LAST — it is the right home for app styling.**
+After Atlas Core *and* after every module theme source, so a partial imported
+here overrides any Atlas rule with **no `!important`**. It is a three-line file of
+Mendix's own imports, not an Atlas-owned file; appending one `@import` is safe:
+
+```scss
+@import "custom-variables";
+@import "theme-dark";
+@import "theme-neutral";
+@import "my-app";          // -> theme/web/_my-app.scss
+```
+
+**2. A `themesource/<name>/` folder is only compiled when `<name>` is a real module.**
+mxbuild walks the model's modules and pulls each one's theme source; it never
+globs the directory. An invented folder (`themesource/my_theme/`) is **silently
+skipped** — build succeeds, rules simply absent. Use a module's theme source only
+when the styling belongs to that module (it then exports with the `.mpk`).
+
+> Debugging "my CSS doesn't apply": first prove the file is compiled *at all* —
+> grep a unique probe selector in `theme-cache/web/theme.compiled.css`. Absent and
+> overridden look identical in the browser, and only one of them is a
+> specificity problem.
+
+**3. `theme/web/custom-variables.scss` is imported once PER MODULE** (8× in a
+blank app). It must hold **declarations only** — a CSS rule there is emitted once
+per module. Tokens go here; rules go in the Layer-2 partial.
+
+### Mendix 11: CSS custom properties, not SCSS variables
+
+The stock `theme/web/custom-variables.scss` is a `:root { --brand-primary: … }`
+block plus a few SCSS switches (`$font-family-import`, `$btn-bordered`,
+`$use-css-variables`). Legacy Sass variables are still mapped
+(`_css-variables-mappings.scss`), but the modern idiom is `:root` declarations.
+The derived ramp (`--brand-primary-50…900`) is built with CSS `color-mix()`
+against `var(--brand-primary)`, so retuning the primary re-derives the whole ramp
+live — no SCSS recompilation of variants needed.
+
+### Fonts: vendor them under `theme/web/`
+
+`theme/web/<subdir>/` is copied to the deployment web root, and
+`theme.compiled.css` is served from that root — so fonts at
+`theme/web/fonts/x.woff2` are referenced as `url("./fonts/x.woff2")`. Prefer this
+over `@import url('…fonts.googleapis…')`: no `@import`-ordering trap, no
+third-party request per page load, and the app renders correctly air-gapped.
+
+`mxcli theme apply` does exactly this — see `mxcli theme show signal`.
 
 ## CSS Hot-Reload Workflow
 

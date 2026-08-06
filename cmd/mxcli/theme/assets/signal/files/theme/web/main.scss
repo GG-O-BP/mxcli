@@ -1,0 +1,3 @@
+// This file compiles after Atlas Core and after every module theme source, so the
+// partial imported here can override any Atlas rule without !important.
+@import "mxcli-signal";
