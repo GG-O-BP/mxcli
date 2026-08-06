@@ -916,7 +916,7 @@ func (pb *pageBuilder) resolveAssociationDestination(assocQN, contextEntity stri
 	}
 	modName, assocName := parts[0], parts[1]
 
-	domainModels, err := pb.backend.ListDomainModels()
+	domainModels, err := pb.getDomainModels()
 	if err != nil {
 		return ""
 	}
@@ -928,6 +928,21 @@ func (pb *pageBuilder) resolveAssociationDestination(assocQN, contextEntity stri
 		// pick the wrong one.
 		if pb.moduleNameByID(dm.ContainerID) != modName {
 			continue
+		}
+		// A cross-module association (target in another module, including
+		// `System`) lives in a separate list where the remote end is the BY_NAME
+		// ChildRef rather than a BY_ID pointer — see associationEndpoints
+		// (issuetracker #19). Resolving it here means the empty-end fallbacks
+		// below are a last resort, not the normal path for these.
+		for _, ca := range dm.CrossAssociations {
+			if ca.Name != assocName {
+				continue
+			}
+			parentEntity := pb.entityQNByID(ca.ParentID)
+			if contextEntity != "" && contextEntity == ca.ChildRef {
+				return parentEntity
+			}
+			return ca.ChildRef
 		}
 		for _, a := range dm.Associations {
 			if a.Name != assocName {
@@ -973,7 +988,7 @@ func (pb *pageBuilder) entityQNByID(entityID model.ID) string {
 	if entityID == "" {
 		return ""
 	}
-	domainModels, err := pb.backend.ListDomainModels()
+	domainModels, err := pb.getDomainModels()
 	if err != nil {
 		return ""
 	}
@@ -996,6 +1011,14 @@ func (pb *pageBuilder) entityQNByID(entityID model.ID) string {
 func (pb *pageBuilder) moduleNameByID(moduleID model.ID) string {
 	if moduleID == "" {
 		return ""
+	}
+	// The hierarchy already indexes module names and is the source the sibling
+	// resolvers (associationEndpoints, entityGeneralizations) read, so consult it
+	// first — same answer, one less backend round trip.
+	if h, err := pb.getHierarchy(); err == nil {
+		if name := h.GetModuleName(moduleID); name != "" {
+			return name
+		}
 	}
 	modules, err := pb.backend.ListModules()
 	if err != nil {
@@ -1658,7 +1681,7 @@ func (pb *pageBuilder) resolveAssociationAttributePath(attrRef string) (finalQN 
 		current = dest
 	}
 
-	return current + "." + attrName, steps, true
+	return current + "." + storedSystemMemberName(attrName), steps, true
 }
 
 // associationDestination returns the entity reached by navigating assocQN from
@@ -1736,6 +1759,16 @@ func (pb *pageBuilder) entityGeneralizations() (map[string]string, error) {
 
 // associationEndpoints resolves a qualified association name to its FROM
 // (ParentID) and TO (ChildID) entity qualified names.
+//
+// A domain model keeps associations in **two** lists. `Associations` holds the
+// intra-module ones, where both ends are BY_ID. An association whose target is
+// in another module — including the platform's own `System` module — is a
+// `DomainModels$CrossAssociation` and lives in `CrossAssociations`, where only
+// the local (FROM) end is BY_ID and the remote end is the BY_NAME `ChildRef`.
+// Searching only the first list left every cross-module hop unresolvable, so a
+// widget bound to `Issue_Assignee/Name` fell back to a flat attribute path and
+// the build failed CE1613 "The selected attribute … no longer exists"
+// (issuetracker #19).
 func (pb *pageBuilder) associationEndpoints(assocQN string) (fromEntity, toEntity string, ok bool) {
 	parts := strings.SplitN(assocQN, ".", 2)
 	if len(parts) != 2 {
@@ -1765,15 +1798,24 @@ func (pb *pageBuilder) associationEndpoints(assocQN string) (fromEntity, toEntit
 		if h.GetModuleName(dm.ContainerID) != modName {
 			continue
 		}
-		a := dm.FindAssociationByName(assocName)
-		if a == nil {
-			continue
+		if a := dm.FindAssociationByName(assocName); a != nil {
+			from, to := entityQN[a.ParentID], entityQN[a.ChildID]
+			if from == "" || to == "" {
+				return "", "", false
+			}
+			return from, to, true
 		}
-		from, to := entityQN[a.ParentID], entityQN[a.ChildID]
-		if from == "" || to == "" {
-			return "", "", false
+		// Cross-module: the remote end is already a qualified name.
+		for _, ca := range dm.CrossAssociations {
+			if ca.Name != assocName {
+				continue
+			}
+			from := entityQN[ca.ParentID]
+			if from == "" || ca.ChildRef == "" {
+				return "", "", false
+			}
+			return from, ca.ChildRef, true
 		}
-		return from, to, true
 	}
 	return "", "", false
 }

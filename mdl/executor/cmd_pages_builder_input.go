@@ -35,6 +35,7 @@ func (pb *pageBuilder) resolveAttributePath(attr string) string {
 	if attr == "" {
 		return ""
 	}
+	attr = storedSystemMemberName(attr)
 	// If the attribute already contains a dot, it's already qualified
 	if strings.Contains(attr, ".") {
 		return attr
@@ -46,10 +47,47 @@ func (pb *pageBuilder) resolveAttributePath(attr string) string {
 	return attr
 }
 
+// systemMemberBindingNames maps the name an audit member is DECLARED under to
+// the name Mendix actually stores it as.
+//
+// `alter entity … add attribute CreatedDate: AutoCreatedDate` is the spelling
+// mxcli requires (it rejects any other declared name, telling you to use this
+// one), but the member is stored as `createdDate` — so binding a widget to
+// `CreatedDate`, the same name you just declared, failed the build with CE1613
+// "The selected attribute … no longer exists" while the undocumented lowercase
+// form worked. Accept the declared spelling and write the stored one.
+// (issuetracker #19)
+var systemMemberBindingNames = map[string]string{
+	"createddate": "createdDate",
+	"changeddate": "changedDate",
+	"changedby":   "changedBy",
+	"owner":       "owner",
+}
+
+// storedSystemMemberName maps a bare audit-member name to its stored spelling,
+// leaving every other name (and any qualified or association path) untouched.
+func storedSystemMemberName(attr string) string {
+	if strings.ContainsAny(attr, "./$") {
+		return attr
+	}
+	if stored, ok := systemMemberBindingNames[strings.ToLower(attr)]; ok {
+		return stored
+	}
+	return attr
+}
+
 // resolveAssociationPath resolves a short association name to a fully qualified name.
 // Associations are module-level objects, so the path is Module.AssociationName (2-part).
 // If the name already contains a dot, it's returned as-is.
 func (pb *pageBuilder) resolveAssociationPath(assocName string) string {
+	return pb.resolveAssociationPathIn(assocName, pb.entityContext)
+}
+
+// resolveAssociationPathIn is resolveAssociationPath against an explicit entity
+// context. Callers that bind a member of a *containing* entity — while
+// pb.entityContext already points at their own data source — must pass that
+// containing entity, or a bare name is qualified with the wrong module.
+func (pb *pageBuilder) resolveAssociationPathIn(assocName, entityContext string) string {
 	if assocName == "" {
 		return ""
 	}
@@ -58,8 +96,8 @@ func (pb *pageBuilder) resolveAssociationPath(assocName string) string {
 		return assocName
 	}
 	// Extract module name from entity context (e.g., "PgTest.Order" → "PgTest")
-	if pb.entityContext != "" {
-		parts := strings.SplitN(pb.entityContext, ".", 2)
+	if entityContext != "" {
+		parts := strings.SplitN(entityContext, ".", 2)
 		if len(parts) >= 1 {
 			return parts[0] + "." + assocName
 		}
