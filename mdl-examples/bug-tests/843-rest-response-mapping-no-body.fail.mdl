@@ -1,0 +1,51 @@
+-- Issue #843, second half: the syntax the reporter actually wrote.
+--
+-- NEGATIVE TEST (.fail.mdl) — EXPECTED to fail `mxcli check`.
+-- `make check-mdl` inverts the exit code: an unexpected pass is a regression of
+-- the MDL-REST01 rule.
+--
+-- `Response: mapping ZZB."IMM_R10"` points at an import mapping *document*. The
+-- clause expects an entity plus a `{ ... }` body listing the JSON fields, and
+-- Mendix has nowhere to store a document reference: the metamodel defines
+-- exactly two response handlers, Rest$ImplicitMappingResponseHandling (inline)
+-- and Rest$NoResponseHandling.
+--
+-- So the statement parsed, named a mapping document where an entity belongs,
+-- contributed no field mappings, and was written out as "no response handling" —
+-- accepted in silence. It is now refused, at `mxcli check` time (no project
+-- needed) as well as at exec time.
+
+create module ZZB;
+create module role ZZB.User;
+
+@position(100, 100)
+create non-persistent entity ZZB."Routing" (
+  "RoutingCode": String(100),
+  "RoutingName": String(200)
+);
+
+create json structure ZZB."JSON_R10"
+  snippet $${"routing_code":"RT-PCBA-001","routing_name":"Routing for PCBA line 1"}$$;
+
+create import mapping ZZB."IMM_R10"
+  with json structure ZZB."JSON_R10"
+{
+  create ZZB.Routing {
+    RoutingCode = routing_code,
+    RoutingName = routing_name
+  }
+};
+
+create rest client ZZB."MESSlice" (
+  BaseUrl: 'http://localhost:3001/api/mes/core/v1',
+  Authentication: none
+)
+{
+  operation "SearchRoutes" {
+    Method: get,
+    Path: '/routes',
+    Query: ($page: String, $pageSize: String),
+    Timeout: 300,
+    Response: mapping ZZB."IMM_R10"
+  }
+};

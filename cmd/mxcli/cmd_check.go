@@ -171,6 +171,11 @@ Examples:
 		// under --references, where it would only fire with -p (#836).
 		violations = append(violations, executor.ValidateGrantRoles(prog)...)
 
+		// Flag a REST client operation whose Body/Response mapping clause has no
+		// `{ ... }` body — Mendix cannot reference a mapping document from an
+		// operation, so the mapping would be dropped in silence (#843).
+		violations = append(violations, executor.ValidateRestClientMappings(prog)...)
+
 		if isStructured {
 			// Always emit structured output (even when clean)
 			formatter.Format(violations, os.Stderr)
