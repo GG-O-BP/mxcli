@@ -23,6 +23,9 @@ Thank you for your interest in contributing to mxcli! This document explains wha
 - Go 1.26+
 - Git
 - Make
+- ANTLR4 and a JDK — `make build` regenerates the parser, and the generated
+  files in `mdl/grammar/parser/` are not committed. The dev container installs
+  both; on a local machine see "Option 2" below.
 - (Optional) Docker or Podman 4.7+ for dev container
 - (Optional) Claude Code / Cursor for agentic development
 
@@ -40,9 +43,23 @@ cd mxcli
 ```bash
 git clone https://github.com/mendixlabs/mxcli
 cd mxcli
+
+# ANTLR4 — required by `make grammar`, which `make build` always runs.
+# The version must match CI; the antlr4 wrapper reads it from this variable.
+pip install 'antlr4-tools==0.2.2'
+export ANTLR4_TOOLS_ANTLR_VERSION=4.13.2
+
 make build
 ./bin/mxcli --help
 ```
+
+**Option 3: Claude Code on the web**
+
+Web sessions do not use the dev container, so `.claude/hooks/session-start.sh`
+installs ANTLR4 and warms the Go module cache at session start. To also
+pre-cache MxBuild (needed for `mx check`), set
+`MXCLI_HOOK_MXBUILD_VERSION=11.13.0` in the environment; otherwise fetch it on
+demand with `mxcli setup mxbuild --version 11.13.0`.
 
 ### Common Tasks
 
