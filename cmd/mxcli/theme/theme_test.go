@@ -74,10 +74,16 @@ func TestApply_WritesTheThreeLayersAndTheFonts(t *testing.T) {
 		t.Fatal("apply reported no changes")
 	}
 
-	// Layer 1: tokens land in the file every module imports.
+	// Layer 1: the palette lands in the file every module imports. It declares
+	// the theme's own tokens; the Atlas variables are mapped from them one file
+	// down, which is what lets a variant restate ~30 values instead of ~60.
 	vars := read(t, filepath.Join(dir, "theme", "web", "custom-variables.scss"))
-	if !strings.Contains(vars, "--brand-primary: #0f6e6b") {
+	if !strings.Contains(vars, "--mxt-brand: #0f6e6b") {
 		t.Error("brand token not written")
+	}
+	atlasMap := read(t, filepath.Join(dir, "theme", "web", "_mxcli-atlas-map.scss"))
+	if !strings.Contains(atlasMap, "--brand-primary: var(--mxt-brand)") {
+		t.Error("Atlas wiring not written")
 	}
 	if !strings.Contains(vars, "$brand-logo: false;") {
 		t.Error("Mendix's own content was dropped from custom-variables.scss")
@@ -263,5 +269,182 @@ func TestLayer1BlockContainsNoRules(t *testing.T) {
 		if strings.HasSuffix(trimmed, "{") && !strings.HasPrefix(trimmed, ":root") {
 			t.Errorf("custom-variables.scss must hold declarations only, found selector: %q", trimmed)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Variants and the multi-theme registry
+// ---------------------------------------------------------------------------
+
+func TestAllThemesAreWellFormed(t *testing.T) {
+	themes, err := List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(themes) < 3 {
+		t.Fatalf("expected signal, ledger and console; got %d", len(themes))
+	}
+	for _, th := range themes {
+		if th.DefaultVariant != VariantLight && th.DefaultVariant != VariantDark {
+			t.Errorf("%s: defaultVariant %q is neither light nor dark", th.Name, th.DefaultVariant)
+		}
+		if th.AltVariant() == th.DefaultVariant {
+			t.Errorf("%s: alt variant equals the default", th.Name)
+		}
+		if len(th.Colorway) == 0 || th.Summary == "" || th.Title == "" {
+			t.Errorf("%s: incomplete theme.json: %+v", th.Name, th)
+		}
+	}
+}
+
+// The Atlas wiring is what makes a palette swap cheap, so every theme has to
+// run through the same one. Shipped per theme (a theme package is meant to be
+// self-contained), which is exactly why it can drift.
+func TestAtlasMapIsIdenticalInEveryTheme(t *testing.T) {
+	themes, err := List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reference []byte
+	var referenceName string
+	for _, th := range themes {
+		body, err := assetsFS.ReadFile("assets/" + th.Name + "/files/theme/web/_mxcli-atlas-map.scss")
+		if err != nil {
+			t.Fatalf("%s ships no Atlas map: %v", th.Name, err)
+		}
+		if reference == nil {
+			reference, referenceName = body, th.Name
+			continue
+		}
+		if string(body) != string(reference) {
+			t.Errorf("%s's Atlas map has drifted from %s's", th.Name, referenceName)
+		}
+	}
+}
+
+// A palette that pins Atlas leaves to literal colours cannot survive a variant
+// flip: the ink stays near-black on a near-black ground. Every theme must go
+// through --mxt-* instead, which is what the Atlas map exists for.
+func TestPalettesDeclareOnlyThemeTokens(t *testing.T) {
+	themes, err := List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, th := range themes {
+		body, err := assetsFS.ReadFile("assets/" + th.Name + "/files/theme/web/custom-variables.scss")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(body), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if !strings.HasPrefix(trimmed, "--") {
+				continue
+			}
+			if !strings.HasPrefix(trimmed, "--mxt-") {
+				t.Errorf("%s custom-variables.scss:%d declares an Atlas variable directly: %q",
+					th.Name, i+1, trimmed)
+			}
+		}
+	}
+}
+
+func TestApplyVariant_AutoShipsBothPalettes(t *testing.T) {
+	dir := newProject(t)
+	if _, err := Apply(dir, DefaultName, Options{Variant: VariantAuto}); err != nil {
+		t.Fatal(err)
+	}
+	main := read(t, filepath.Join(dir, "theme", "web", "main.scss"))
+	if !strings.Contains(main, "$mxcli-theme-variant: auto;") {
+		t.Errorf("variant not written into main.scss:\n%s", main)
+	}
+	partial := read(t, filepath.Join(dir, "theme", "web", "_mxcli-signal.scss"))
+	if !strings.Contains(partial, "prefers-color-scheme") {
+		t.Error("auto must follow the OS")
+	}
+	// The explicit-class path has to outrank Mendix's own _theme-dark.scss,
+	// which also declares :root.theme-dark.
+	if !strings.Contains(partial, ":root.theme-dark") {
+		t.Error("auto must honour an explicit theme-dark class")
+	}
+}
+
+func TestApplyVariant_PinnedIsWrittenThrough(t *testing.T) {
+	for _, v := range []Variant{VariantLight, VariantDark} {
+		dir := newProject(t)
+		if _, err := Apply(dir, DefaultName, Options{Variant: v}); err != nil {
+			t.Fatal(err)
+		}
+		main := read(t, filepath.Join(dir, "theme", "web", "main.scss"))
+		if !strings.Contains(main, "$mxcli-theme-variant: "+string(v)+";") {
+			t.Errorf("variant %q not written into main.scss:\n%s", v, main)
+		}
+		if strings.Contains(main, "{{VARIANT}}") {
+			t.Errorf("variant placeholder left unexpanded for %q", v)
+		}
+	}
+}
+
+func TestParseVariant_RejectsNonsense(t *testing.T) {
+	if _, err := ParseVariant("sepia"); err == nil {
+		t.Fatal("expected an error for an unknown variant")
+	}
+	for _, ok := range []string{"auto", "light", "dark"} {
+		if _, err := ParseVariant(ok); err != nil {
+			t.Errorf("ParseVariant(%q) = %v", ok, err)
+		}
+	}
+}
+
+// Two themes at once would both map the Atlas leaves, and which palette won
+// would come down to SCSS import order rather than to what was asked for.
+func TestApply_RemovesThePreviousTheme(t *testing.T) {
+	dir := newProject(t)
+	if _, err := Apply(dir, "ledger", Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "theme", "web", "_mxcli-ledger.scss")); err != nil {
+		t.Fatalf("ledger not applied: %v", err)
+	}
+
+	if _, err := Apply(dir, "signal", Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "theme", "web", "_mxcli-ledger.scss")); !os.IsNotExist(err) {
+		t.Error("ledger's partial survived a switch to signal")
+	}
+	main := read(t, filepath.Join(dir, "theme", "web", "main.scss"))
+	if strings.Contains(main, "mxcli-ledger") {
+		t.Errorf("ledger is still imported after switching to signal:\n%s", main)
+	}
+	if !strings.Contains(main, "mxcli-signal") {
+		t.Error("signal is not imported")
+	}
+	// Ledger's fonts must go too, or the binary's payload accumulates in the
+	// project every time someone tries a theme.
+	if got, _ := filepath.Glob(filepath.Join(dir, "theme", "web", "mxcli-fonts", "source-*.woff2")); len(got) > 0 {
+		t.Errorf("ledger's fonts survived the switch: %v", got)
+	}
+}
+
+func TestSwitcherMDL_TargetsTheRequestedModule(t *testing.T) {
+	mdl := SwitcherMDL("Ops")
+	if strings.Contains(mdl, "{{MODULE}}") {
+		t.Error("module placeholder left unexpanded")
+	}
+	for _, want := range []string{
+		"create or modify javascript action Ops.ToggleAppTheme",
+		"create or modify javascript action Ops.SetAppTheme",
+		"create or modify javascript action Ops.ApplyStoredTheme",
+		"create or replace nanoflow Ops.ACT_ToggleTheme",
+		SwitcherStorageKey,
+	} {
+		if !strings.Contains(mdl, want) {
+			t.Errorf("switcher MDL is missing %q", want)
+		}
+	}
+	// The class has to land on the root element: popups and modals render at
+	// <body>, outside any page container, and must follow the theme too.
+	if !strings.Contains(mdl, "document.documentElement") {
+		t.Error("the theme class must be set on the root element")
 	}
 }

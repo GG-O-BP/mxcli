@@ -272,6 +272,21 @@ a partial. Files the project already owns are written as digest-fenced blocks
 (guard-don't-drop, as in ADR-0005): a block with local edits is refused, not
 overwritten.
 
+Two more, learned by flipping the variant on a running app:
+
+- **Atlas ships `:root.theme-dark` / `:root.theme-neutral` in `theme/web/` but
+  nothing that applies them** — the slot exists, the switcher does not. A theme's
+  own dark block must be declared at `:root.theme-dark` *after* Mendix's
+  `_theme-dark.scss` (same specificity, later wins), or the app reverts to stock
+  Mendix blue the moment the class appears. Because the class lands on `<html>`,
+  popups and modals rendered at `<body>` follow it too.
+- **Never pin an Atlas leaf to a literal colour.** Map it to a theme token
+  (`--bg-color: var(--mxt-ground)`) so a variant restates ~30 values instead of
+  ~60. A hardcoded `--font-color-default` is invisible the moment the ground goes
+  dark. Two Atlas rules also assume a *dark navigation rail* and paint topbar text
+  with `--color-base`, so every mxcli theme keeps the rail dark in both variants
+  and forces `color: inherit` on those widgets.
+
 ### Association Parent/Child Pointer Semantics (Counter-Intuitive)
 
 **CRITICAL**: Mendix BSON uses inverted naming for association pointers:
@@ -492,7 +507,8 @@ go build -o bin/mxcli ./cmd/mxcli
 | **Connector gen** | `sql <alias> generate connector into <module> [tables (...)] [views (...)] [exec]` | Auto-generate Database Connector MDL from discovered schema |
 | **Diagnostics** | `mxcli diag [--bundle]` | Session logs, version info, bug report bundles |
 | **New project** | `mxcli new <name> --version X.Y.Z [--output-dir dir] [--theme none]` | Downloads mxbuild, creates blank project, applies default styling, runs init, installs Linux mxcli for devcontainer |
-| **Default styling** | `mxcli theme list\|show\|apply\|remove` | Applies mxcli's built-in theme (files under `theme/` only — the model is never touched) |
+| **Default styling** | `mxcli theme list\|show\|apply\|remove` | Applies a built-in theme (signal/ledger/console) — files under `theme/` only, the model is never touched |
+| **Theme switching** | `mxcli theme apply <name> --variant auto\|light\|dark`, `mxcli theme switcher install` | `auto` ships both palettes (follows the OS + honours a `theme-light`/`theme-dark` class); `switcher install` adds the JS actions + nanoflow for a user toggle (**this one does write to the model**) |
 | **Setup mxcli** | `mxcli setup mxcli [--os linux] [--arch amd64] [--output ./mxcli]` | Download platform-specific mxcli binary from GitHub releases |
 
 ### mxcli new
@@ -578,7 +594,7 @@ Full syntax tables for all MDL statements (microflows, pages, security, navigati
 ## Current Implementation Status
 
 **Implemented:**
-- Default styling (`mxcli theme list/show/apply/remove`, `mxcli new --theme`): an embedded theme package written into `theme/` — Layer-1 brand tokens, a Layer-2 partial imported from `theme/web/main.scss` (which compiles last), and vendored IBM Plex. **No model changes**, so it hot-applies under `run --local --watch` and cannot affect a build. Generated regions are digest-fenced: a block carrying local edits is refused rather than overwritten. Default theme `signal`; `--theme none` opts out. Package: `cmd/mxcli/theme/`. See `docs/11-proposals/PROPOSAL_default_styling.md`
+- Default styling + runtime theme switching (`mxcli theme list/show/apply/remove/switcher`, `mxcli new --theme`): three embedded themes (**signal** light-first, **ledger** light-first, **console** dark-first), each a palette in `theme/web/custom-variables.scss` + a shared Atlas wiring partial + a theme partial imported from `theme/web/main.scss` (which compiles last), plus vendored fonts. **No model changes**, so it hot-applies under `run --local --watch` and cannot affect a build. Generated regions are digest-fenced: a block carrying local edits is refused rather than overwritten. Applying a theme removes the previous one. `--variant auto` (default) ships both palettes — the app follows `prefers-color-scheme` before first paint and honours a `theme-light`/`theme-dark` class on `<html>`; `light`/`dark` bakes one. `theme switcher install` is the only part that writes to the model (JS actions + a nanoflow for a toggle button). Package: `cmd/mxcli/theme/`. See `docs/11-proposals/PROPOSAL_default_styling.md`
 - MPR v1/v2 reading and writing
 - Domain model (entities, attributes, associations)
 - ALTER ENTITY (add/rename/modify/drop attributes, indexes, documentation)

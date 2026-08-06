@@ -41,6 +41,28 @@ const DefaultName = "signal"
 // NoneName opts out of default styling, leaving Atlas untouched.
 const NoneName = "none"
 
+// Variant selects which light/dark behaviour a theme is written with.
+type Variant string
+
+const (
+	// VariantAuto follows the OS preference and honours a theme-light /
+	// theme-dark class on the root element. The default.
+	VariantAuto Variant = "auto"
+	// VariantLight bakes the light palette with no switching.
+	VariantLight Variant = "light"
+	// VariantDark bakes the dark palette with no switching.
+	VariantDark Variant = "dark"
+)
+
+// ParseVariant validates a user-supplied variant name.
+func ParseVariant(s string) (Variant, error) {
+	switch Variant(s) {
+	case VariantAuto, VariantLight, VariantDark:
+		return Variant(s), nil
+	}
+	return "", fmt.Errorf("unknown variant %q (want auto, light or dark)", s)
+}
+
 // FileSpec documents one file a theme writes, for `mxcli theme show`.
 type FileSpec struct {
 	Path    string `json:"path"`
@@ -50,13 +72,25 @@ type FileSpec struct {
 
 // Theme is a named styling package embedded in the mxcli binary.
 type Theme struct {
-	Name        string     `json:"name"`
-	Title       string     `json:"title"`
-	Version     string     `json:"version"`
-	Summary     string     `json:"summary"`
-	Description string     `json:"description"`
-	Colorway    []string   `json:"colorway"`
-	Files       []FileSpec `json:"files"`
+	Name        string   `json:"name"`
+	Title       string   `json:"title"`
+	Version     string   `json:"version"`
+	Summary     string   `json:"summary"`
+	Description string   `json:"description"`
+	Colorway    []string `json:"colorway"`
+	// DefaultVariant is the palette the theme is written around; the other one
+	// is what `auto` switches to. Console is dark-first, Signal and Ledger are
+	// light-first.
+	DefaultVariant Variant    `json:"defaultVariant"`
+	Files          []FileSpec `json:"files"`
+}
+
+// AltVariant is the variant `auto` switches to — the opposite of the default.
+func (t *Theme) AltVariant() Variant {
+	if t.DefaultVariant == VariantDark {
+		return VariantLight
+	}
+	return VariantDark
 }
 
 // FileResult is what applying one file did.
@@ -87,6 +121,12 @@ type Options struct {
 	Force bool
 	// DryRun reports what would change without writing.
 	DryRun bool
+	// Variant selects light/dark behaviour. Empty means VariantAuto.
+	Variant Variant
+	// KeepOthers leaves other themes' blocks in place. Off by default: two
+	// themes both mapping the Atlas leaves would fight in the cascade, and
+	// which one won would depend on import order rather than on intent.
+	KeepOthers bool
 }
 
 // List returns the embedded themes, ordered by name.
@@ -137,6 +177,18 @@ func Apply(projectDir, name string, opts Options) (*Result, error) {
 	if err := requireMendixProject(projectDir); err != nil {
 		return nil, err
 	}
+	if opts.Variant == "" {
+		opts.Variant = VariantAuto
+	}
+
+	// Only one theme at a time. Both would map the same Atlas leaves, so which
+	// palette won would come down to SCSS import order rather than to what the
+	// user asked for. Removing first also cleans up the previous theme's fonts.
+	if !opts.KeepOthers {
+		if err := removeRivalThemes(projectDir, t, opts); err != nil {
+			return nil, err
+		}
+	}
 
 	res := &Result{Theme: name}
 	root := path.Join(assetsRoot, name, "files")
@@ -159,7 +211,7 @@ func Apply(projectDir, name string, opts Options) (*Result, error) {
 
 		var fr FileResult
 		if isBlockFile(rel) {
-			fr, err = applyBlockFile(target, rel, t, string(body), opts)
+			fr, err = applyBlockFile(target, rel, t, expand(string(body), t, opts), opts)
 		} else {
 			fr, err = applyVerbatimFile(target, rel, body, opts)
 		}
@@ -183,6 +235,12 @@ func Apply(projectDir, name string, opts Options) (*Result, error) {
 
 // Remove cuts a theme's blocks back out and deletes the files it owns outright.
 func Remove(projectDir, name string, opts Options) (*Result, error) {
+	return remove(projectDir, name, opts, nil)
+}
+
+// remove is Remove with a set of project-relative paths that must survive,
+// because another theme is about to write them.
+func remove(projectDir, name string, opts Options, protect map[string]bool) (*Result, error) {
 	t, err := Get(name)
 	if err != nil {
 		return nil, err
@@ -209,6 +267,13 @@ func Remove(projectDir, name string, opts Options) (*Result, error) {
 		}
 
 		if !isBlockFile(rel) {
+			// A verbatim file another theme is about to write (every theme ships
+			// mxcli-fonts/OFL.txt) stays put; deleting it would make the incoming
+			// apply report a change on a project that ends up identical.
+			if protect[rel] {
+				res.Files = append(res.Files, FileResult{Path: rel, Action: ActionUnchanged})
+				return nil
+			}
 			if !opts.DryRun {
 				if err := os.Remove(target); err != nil {
 					return err
@@ -229,7 +294,13 @@ func Remove(projectDir, name string, opts Options) (*Result, error) {
 			res.Files = append(res.Files, FileResult{Path: rel, Action: ActionSkipped})
 			return nil
 		}
-		// A file that is entirely ours is deleted rather than left empty.
+		// A file that is entirely ours is deleted rather than left empty — unless
+		// the incoming theme is about to write it, in which case leave the empty
+		// shell for its apply to fill.
+		if out == "" && protect[rel] {
+			res.Files = append(res.Files, FileResult{Path: rel, Action: action})
+			return nil
+		}
 		if out == "" {
 			if !opts.DryRun {
 				if err := os.Remove(target); err != nil {
@@ -326,6 +397,59 @@ func applyVerbatimFile(target, rel string, body []byte, opts Options) (FileResul
 		return FileResult{}, err
 	}
 	return FileResult{Path: rel, Action: action}, nil
+}
+
+// expand fills the placeholders a theme asset may carry. Kept deliberately
+// tiny — the assets are real SCSS that must stay readable and editable in
+// place, so the only things templated are the two values a user chooses at
+// apply time.
+func expand(body string, t *Theme, opts Options) string {
+	r := strings.NewReplacer(
+		"{{VARIANT}}", string(opts.Variant),
+		"{{THEME}}", t.Name,
+	)
+	return r.Replace(body)
+}
+
+// removeRivalThemes strips every other embedded theme from the project. A
+// hand-edited rival block is left alone and reported, same as anywhere else.
+//
+// Files the incoming theme also ships are protected. Themes share paths —
+// every one of them writes theme/web/mxcli-fonts/OFL.txt — so without this the
+// rival pass deletes a file that is about to be written again, which shows up
+// as an apply that is never idempotent.
+func removeRivalThemes(projectDir string, incoming *Theme, opts Options) error {
+	all, err := List()
+	if err != nil {
+		return err
+	}
+	protect, err := assetPaths(incoming.Name)
+	if err != nil {
+		return err
+	}
+	for _, other := range all {
+		if other.Name == incoming.Name {
+			continue
+		}
+		if _, err := remove(projectDir, other.Name, opts, protect); err != nil {
+			return fmt.Errorf("removing previous theme %q: %w", other.Name, err)
+		}
+	}
+	return nil
+}
+
+// assetPaths is the set of project-relative paths a theme writes.
+func assetPaths(name string) (map[string]bool, error) {
+	root := path.Join(assetsRoot, name, "files")
+	out := map[string]bool{}
+	err := fs.WalkDir(assetsFS, root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		out[strings.TrimPrefix(p, root+"/")] = true
+		return nil
+	})
+	return out, err
 }
 
 // isBlockFile reports whether a file gets the marker treatment. Anything else

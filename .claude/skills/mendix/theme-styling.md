@@ -107,6 +107,34 @@ third-party request per page load, and the app renders correctly air-gapped.
 
 `mxcli theme apply` does exactly this — see `mxcli theme show signal`.
 
+### Light/dark: Mendix ships the slot, not the switcher
+
+`theme/web/_theme-dark.scss` and `_theme-neutral.scss` declare `:root.theme-dark`
+and `:root.theme-neutral`. **Nothing in Atlas ever applies those classes** — grep
+`themesource/` and you will find no reference. They are a slot for you to drive.
+
+Three consequences worth knowing before building any light/dark support:
+
+1. **A token flip really does repaint Atlas.** Adding `theme-dark` to `<html>` on
+   a running Mendix 11 app turns the page ground, cards, form controls, sidebar,
+   buttons and DataGrid2 dark, with no per-widget CSS. This is materially better
+   than Atlas 3, where the same trick left widgets light. And because the class
+   is on `<html>`, popups and modals rendered at `<body>` follow it too.
+2. **Your dark block must come after Mendix's.** `_theme-dark.scss` hardcodes
+   stock Mendix blue at `:root.theme-dark`. Declare the same selector from a file
+   imported later in `theme/web/main.scss` — same specificity, later wins — or
+   your brand vanishes the moment the class appears.
+3. **Never pin an Atlas variable to a literal colour.** Map it to a token
+   (`--bg-color: var(--my-ground)`) so a variant restates the tokens, not the
+   wiring. A hardcoded `--font-color-default` is invisible on a dark ground.
+
+The rail is the one place Atlas still assumes: several topbar widgets paint text
+with `--color-base`, expecting white, because they expect a dark navigation rail.
+Keep the rail dark in both variants, or force `color: inherit` on those widgets.
+
+For a working implementation of all of the above, read the generated
+`theme/web/_mxcli-atlas-map.scss` in any themed project.
+
 ## CSS Hot-Reload Workflow
 
 For theme/styling changes during Docker development:

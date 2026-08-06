@@ -6,8 +6,9 @@ theme so a generated app looks like a product on first boot, and
 
 ```bash
 mxcli theme list                        # built-in themes; the default is marked *
-mxcli theme show signal                 # tokens, colorway, and the files it writes
+mxcli theme show signal                 # palette, colorway, and the files it writes
 mxcli theme apply -p app.mpr            # apply to an existing project
+mxcli theme apply ledger -p app.mpr     # switch theme (the previous one is removed)
 mxcli theme apply -p app.mpr --dry-run  # report changes without writing
 mxcli theme remove -p app.mpr           # take it back out
 
@@ -15,21 +16,32 @@ mxcli new MyApp --version 11.13.0                # applies `signal`
 mxcli new MyApp --version 11.13.0 --theme none   # plain Atlas
 ```
 
-## What it changes
+## The themes
 
-The default theme is **Signal**: cool slate ground, one teal signal colour, 4px
-radius, an 8px spacing unit, 32px grid rows and form controls, IBM Plex Sans with
-IBM Plex Mono for numbers, and a visible focus ring on every focusable element.
-Below 768px every control grows to a 44px touch target.
-
-It writes four things, all under `theme/`:
-
-| File | Layer | What |
+| Name | Default palette | Character |
 |---|---|---|
-| `theme/web/custom-variables.scss` | Brand | the token block Atlas reads — palette, type, shape, density |
-| `theme/web/_mxcli-signal.scss` | Identity | `@font-face`, focus ring, touch density, recipe classes |
-| `theme/web/main.scss` | — | one `@import` line |
-| `theme/web/mxcli-fonts/` | — | vendored IBM Plex (SIL OFL 1.1) |
+| **signal** (default) | light | Cool slate, one teal signal colour, 4px radius, 32px rows, IBM Plex |
+| **ledger** | light | Warm paper, hairline rules instead of card shadows, Source Serif headings over Source Sans, 2px radius, 30px rows |
+| **console** | dark | Near-black ground, teal with a violet accent, Space Grotesk over JetBrains Mono, 6px radius, 28px rows, surfaces separated by lightness |
+
+All three share the same density discipline: an 8px spacing unit, monospace
+numerics, a visible focus ring on every focusable element, and every control
+growing to a 44px touch target below 768px.
+
+Only one theme applies at a time — `theme apply` removes the previous one,
+because two themes mapping the same Atlas variables would fight in the cascade.
+
+## What it writes
+
+Five things, all under `theme/`:
+
+| File | What |
+|---|---|
+| `theme/web/custom-variables.scss` | the theme's palette — this is the file to edit |
+| `theme/web/_mxcli-atlas-map.scss` | the Atlas wiring: ~60 Atlas variables expressed in terms of the palette |
+| `theme/web/_mxcli-<name>.scss` | the other palette, the variant blocks, `@font-face`, recipe classes |
+| `theme/web/main.scss` | the variant switch plus two `@import` lines |
+| `theme/web/mxcli-fonts/` | vendored fonts (SIL OFL 1.1) |
 
 **The model is never touched.** No `.mpr` changes, so nothing here can affect a
 build, and the theme hot-applies under `mxcli run --local --watch`.
@@ -40,18 +52,79 @@ modals and the brand-aware pluggable widgets (Switch, Slider, ProgressBar,
 BadgeButton) with no per-widget CSS. That is also why the project stays
 upgradable across Mendix releases.
 
+## Light and dark
+
+`--variant auto` is the default and ships both palettes:
+
+```bash
+mxcli theme apply signal -p app.mpr                  # auto
+mxcli theme apply signal -p app.mpr --variant dark   # bake one palette, no switching
+```
+
+Under `auto` the app follows the operating system's `prefers-color-scheme`
+**before first paint** — no flash, no script — and honours a `theme-light` or
+`theme-dark` class on the root element when something sets one.
+
+Mendix ships that slot (`theme/web/_theme-dark.scss` declares `:root.theme-dark`)
+but nothing that applies it, and its palette is stock Mendix blue. An mxcli theme
+re-declares the same selector from a file that compiles later, so the theme's own
+dark palette wins.
+
+### A user-facing toggle
+
+```bash
+mxcli theme switcher install -p app.mpr --module MyFirstModule
+```
+
+**This is the one theme command that writes to the model.** It has to: the class
+has to be set by something the browser can run, and there is no theme-level hook
+to run script before first paint. It creates three JavaScript actions
+(`ToggleAppTheme`, `SetAppTheme`, `ApplyStoredTheme`) and a nanoflow, then you
+wire a button:
+
+```sql
+actionbutton btnTheme (caption: 'Theme', action: nanoflow MyFirstModule.ACT_ToggleTheme)
+```
+
+A click flips the palette and remembers the choice in `localStorage`. The class
+goes on `<html>`, so popups and modals — which Mendix renders at `<body>`,
+outside any page container — follow it too.
+
+**Known limit:** after a reload the app goes back to following the OS. Mendix has
+no page on-load event to re-apply the stored value, and the usual substitute (a
+data view with a nanoflow data source) is not authorable by mxcli on either
+engine yet. `ApplyStoredTheme` is installed and ready — wire it in Studio Pro if
+you need the choice to persist across reloads.
+
 ## Re-branding
 
-Change one line in the generated block:
+Change one line in `theme/web/custom-variables.scss`:
 
 ```scss
 :root {
-  --brand-primary: #0f6e6b;   /* <- the one signal colour */
+  --mxt-brand: #0f6e6b;   /* <- the one signal colour */
 ```
 
-Atlas builds the whole derived ramp (`--brand-primary-50` … `-900`) from it with
-CSS `color-mix()`, so buttons, links, active navigation and the pluggable widgets
-follow immediately.
+`_mxcli-atlas-map.scss` maps that onto `--brand-primary`, and Atlas builds the
+whole derived ramp (`--brand-primary-50` … `-900`) from it with CSS
+`color-mix()` — so buttons, links, active navigation and the brand-aware
+pluggable widgets follow immediately, in both palettes.
+
+The palette file declares only `--mxt-*` tokens, never Atlas variables directly.
+That is what makes a variant cheap: the dark block restates about thirty values
+instead of rewiring sixty. Pinning an Atlas variable to a literal colour is the
+one thing that breaks switching — a hardcoded `--font-color-default` is
+invisible the moment the ground goes dark.
+
+### Two Atlas constraints worth knowing
+
+- **The navigation rail stays dark in both palettes.** A few Atlas topbar widgets
+  paint their text with `--color-base`, which the framework assumes is white
+  because it assumes a dark rail. Every mxcli theme keeps the rail dark and
+  forces `color: inherit` on those widgets.
+- **`themesource/<name>/` is only compiled when `<name>` matches a real module**,
+  so a theme never writes there. `theme/web/main.scss` compiles last and is the
+  correct home for app-level styling.
 
 ## Recipe classes
 
