@@ -1,5 +1,5 @@
 -- ============================================================================
--- Sudoku finding #40: a loop variable used after the loop passed mxcli check
+-- Loop variable used after the loop passed mxcli check (CE0108)
 -- ============================================================================
 --
 -- Symptom (before fix): referencing a loop's variable AFTER `end loop;` passed
@@ -22,7 +22,7 @@
 -- carry-out idiom (declare before the loop, assign inside, read after).
 --
 -- Usage (expected to FAIL check):
---   mxcli check mdl-examples/bug-tests/sudoku-40-loop-variable-out-of-scope.fail.mdl
+--   mxcli check mdl-examples/bug-tests/loop-variable-out-of-scope.fail.mdl
 -- ============================================================================
 
 create module S40;
