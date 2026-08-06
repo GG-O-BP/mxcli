@@ -1,0 +1,47 @@
+-- Bug #840: DESCRIBE MICROFLOW invented an `on error rollback` clause.
+--
+-- An activity authored with no error-handling clause came back from describe
+-- carrying one:
+--
+--   authored:   call microflow Issue840.MF_Leaf();
+--   described:  call microflow Issue840.MF_Leaf() on error rollback;
+--
+-- "Rollback" is what convertErrorHandlingType(nil) stores for an activity with
+-- no clause, and what the parser falls back to when ErrorHandlingType is absent
+-- from the BSON. So the stored value cannot distinguish "the author wrote
+-- `on error rollback`" from "the author wrote nothing".
+--
+-- Nothing could catch it: "Rollback" is structurally valid, so mx check and
+-- every mxcli validator pass. It simply grew the diff on each describe
+-- round-trip and put a clause in the user's script that they never wrote.
+--
+-- Fix (mdl/executor/cmd_microflows_show_helpers.go): formatErrorHandlingSuffix
+-- no longer emits a suffix for Rollback. This is the lossless direction —
+-- re-executing the output stores Rollback again, so the model is unchanged.
+-- Continue / Custom / CustomWithoutRollback are never defaults, so they still
+-- round-trip: their presence always means the author wrote them.
+--
+-- Manual verification (needs a project, so `make check-mdl` only syntax-checks this):
+--
+--   mxcli exec 840-describe-invents-on-error-rollback.mdl -p app.mpr
+--   mxcli -p app.mpr -c "describe microflow Issue840.MF_Caller"
+--
+-- Expect the first call to describe WITHOUT any on-error clause, and the second
+-- to keep `on error continue`. Feeding that output back through `mxcli exec`
+-- and describing again must produce byte-identical output.
+
+create module Issue840;
+create module role Issue840.User;
+
+create microflow Issue840."MF_Leaf" ()
+begin
+  declare $X Boolean = true;
+end;
+
+create microflow Issue840."MF_Caller" ()
+begin
+  -- No clause: must NOT come back as `on error rollback`.
+  call microflow Issue840.MF_Leaf();
+  -- Explicit non-default: must survive the round-trip.
+  call microflow Issue840.MF_Leaf() on error continue;
+end;

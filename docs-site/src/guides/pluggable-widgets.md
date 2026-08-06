@@ -193,8 +193,15 @@ installed rather than guessing.
 clears 7 of 40 CE0463 errors where `mx update-widgets` clears all 40. The widget
 *type* it writes is byte-identical to Mendix's own output; a value-level difference
 that has not yet been identified keeps DataGrid2 and Gallery instances erroring.
-Preview with `--dry-run` and confirm with `mx check` before relying on it. Applying
-currently needs `MXCLI_ENGINE=legacy`; `--dry-run` works on either engine.
+Preview with `--dry-run` and confirm with `mx check` before relying on it. It runs on
+either engine — the modelsdk and legacy backends produce structurally identical
+output.
+
+Each unit is verified for duplicate GUIDs before being written, and the run aborts
+rather than writing one. This matters because Mendix validates GUID uniqueness only
+when *saving*: a duplicate loads fine and passes `mx check`, then breaks the next save
+— and `mx update-widgets` collapses `mprcontents/` before it discovers the problem,
+leaving the project both flattened and unloadable.
 
 ## Marketplace and custom widgets
 

@@ -271,6 +271,14 @@ func (e *Executor) CheckProjectConflicts(prog *ast.Program) []error {
 
 // validateWithContext validates a statement, considering objects defined in the script.
 func validateWithContext(ctx *ExecContext, stmt ast.Statement, sc *scriptContext) error {
+	// Cross-module document-access grants (CE0148) are rejected at exec time by
+	// checkDocumentAccessRolesSameModule. Run the same guard here so the failure
+	// surfaces during --references instead of partway through a script (#836).
+	// The check needs no project state, so it runs before the switch.
+	if err := validateCrossModuleGrant(stmt); err != nil {
+		return err
+	}
+
 	switch s := stmt.(type) {
 	// Statements that reference modules
 	case *ast.CreateEntityStmt:

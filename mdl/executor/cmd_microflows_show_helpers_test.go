@@ -227,13 +227,18 @@ func TestPrependFreeAnnotationLines_ModelAnnotationsStayFree(t *testing.T) {
 // formatErrorHandlingSuffix
 // =============================================================================
 
+// Rollback is the value stored when the author wrote no clause at all
+// (convertErrorHandlingType(nil)) and the value the parser falls back to when
+// the BSON key is absent. It therefore carries no information about what the
+// author wrote, and read-back must not emit it — see issue #840 and
+// TestFormatErrorHandlingSuffix_RollbackIsNotEmitted below.
 func TestFormatErrorHandlingSuffix(t *testing.T) {
 	tests := []struct {
 		errType microflows.ErrorHandlingType
 		want    string
 	}{
 		{microflows.ErrorHandlingTypeContinue, " on error continue"},
-		{microflows.ErrorHandlingTypeRollback, " on error rollback"},
+		{microflows.ErrorHandlingTypeRollback, ""},
 		{microflows.ErrorHandlingTypeCustom, " on error"},
 		{microflows.ErrorHandlingTypeCustomWithoutRollback, " on error without rollback"},
 		{microflows.ErrorHandlingTypeAbort, ""},
@@ -500,5 +505,40 @@ func TestFormatActivity_ErrorEvent(t *testing.T) {
 	got := e.formatActivity(obj, nil, nil)
 	if got != "raise error;" {
 		t.Errorf("got %q, want %q", got, "raise error;")
+	}
+}
+
+// TestFormatErrorHandlingSuffix_RollbackIsNotEmitted guards issue #840.
+//
+// DESCRIBE MICROFLOW invented an `on error rollback` clause on activities that
+// were never written with one:
+//
+//	call microflow TFC.MF_Leaf();            -- authored
+//	call microflow TFC.MF_Leaf() on error rollback;   -- described
+//
+// "Rollback" is what convertErrorHandlingType(nil) stores for an activity with
+// no clause, and what the parser falls back to when ErrorHandlingType is absent
+// from the BSON. It is structurally valid, so no checker can flag the invented
+// clause — it just quietly grows the diff on every describe round-trip.
+//
+// Emitting nothing for Rollback is lossless: re-executing describe output
+// without the clause stores Rollback again, so the model round-trips exactly.
+// Emitting it is the lossy direction, because it adds a clause to the script
+// that the author did not write.
+func TestFormatErrorHandlingSuffix_RollbackIsNotEmitted(t *testing.T) {
+	if got := formatErrorHandlingSuffix(microflows.ErrorHandlingTypeRollback); got != "" {
+		t.Errorf("Rollback suffix = %q, want \"\" — Rollback is the stored default and cannot be distinguished from an authored clause", got)
+	}
+	// The explicit-only values must still round-trip: none of them is ever a
+	// default, so their presence always means the author wrote them.
+	explicit := map[microflows.ErrorHandlingType]string{
+		microflows.ErrorHandlingTypeContinue:              " on error continue",
+		microflows.ErrorHandlingTypeCustom:                " on error",
+		microflows.ErrorHandlingTypeCustomWithoutRollback: " on error without rollback",
+	}
+	for errType, want := range explicit {
+		if got := formatErrorHandlingSuffix(errType); got != want {
+			t.Errorf("formatErrorHandlingSuffix(%q) = %q, want %q", errType, got, want)
+		}
 	}
 }

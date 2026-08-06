@@ -1,0 +1,46 @@
+-- Bug #836: `check --references` passed a GRANT that fails at exec with CE0148.
+--
+-- Granting a document access to a module role from a DIFFERENT module is
+-- rejected by Mendix with CE0148 ("reselect roles"). mxcli had a guard for this
+-- (checkDocumentAccessRolesSameModule) wired into all five exec paths, but the
+-- validate path never called it, so:
+--
+--   mxcli check script.mdl -p app.mpr --references
+--     -> "✓ All references valid"  /  "Check passed!"
+--
+--   mxcli exec script.mdl -p app.mpr
+--     -> Created module: ZKT27A
+--        Created module role: ZKT27A.Role1
+--        Created module: ZKT27B
+--        Created module role: ZKT27B.RoleB
+--        Created microflow: ZKT27B.MF_Test
+--        Error: cannot grant microflow ZKT27B.MF_Test access to ZKT27A.Role1 ...
+--
+-- Note where the error lands: five statements had already been applied. mxcli
+-- does not run a script in a single transaction, so a failure that only shows
+-- up at exec time leaves the project half-modified — which is exactly what a
+-- pre-flight check exists to prevent.
+--
+-- Fix: validateWithContext calls the same guard via validateCrossModuleGrant,
+-- covering all five document-access grants (microflow, nanoflow, page, OData
+-- service, published REST service). The document's module comes from the
+-- statement's own qualified name, so the check works before the document
+-- exists — it may be created earlier in the same script, as it is here.
+--
+-- This is a NEGATIVE test: `make check-mdl` expects it to fail.
+-- Verified: check now exits 1 naming statement 6 and CE0148, and the project is
+-- left untouched. Swapping the role to ZKT27B.RoleB passes check, executes, and
+-- gives 0 errors under mx check.
+
+create module ZKT27A;
+create module role ZKT27A.Role1;
+
+create module ZKT27B;
+create module role ZKT27B.RoleB;
+create microflow ZKT27B."MF_Test" ()
+begin
+  declare $X Boolean = true;
+end;
+
+-- ZKT27A.Role1 belongs to a different module than the microflow -> CE0148.
+grant execute on microflow ZKT27B."MF_Test" to ZKT27A.Role1;
