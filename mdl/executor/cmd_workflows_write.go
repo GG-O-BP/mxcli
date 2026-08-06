@@ -113,7 +113,7 @@ func execCreateWorkflow(ctx *ExecContext, s *ast.CreateWorkflowStmt) error {
 	userActivities := buildWorkflowActivities(s.Activities)
 
 	// Auto-bind microflow/workflow parameters and sanitize names
-	autoBindWorkflowParameters(ctx, userActivities)
+	autoBindWorkflowParameters(ctx, userActivities, s.ParameterVar)
 
 	// Deduplicate activity names to avoid CE0495
 	deduplicateActivityNames(userActivities)
@@ -630,25 +630,27 @@ func sanitizeActivityName(name string) string {
 
 // autoBindWorkflowParameters resolves microflow/workflow parameters and generates
 // ParameterMappings, default outcomes, and sanitized names for workflow activities.
-func autoBindWorkflowParameters(ctx *ExecContext, activities []workflows.WorkflowActivity) {
-	autoBindActivitiesInFlow(ctx, activities)
+// declaredContextVar is the variable name from the workflow header's
+// `parameter $X:` clause, used to alias `$X` onto the stored context name.
+func autoBindWorkflowParameters(ctx *ExecContext, activities []workflows.WorkflowActivity, declaredContextVar string) {
+	autoBindActivitiesInFlow(ctx, activities, newContextExprNormalizer(declaredContextVar))
 }
 
-func autoBindActivitiesInFlow(ctx *ExecContext, activities []workflows.WorkflowActivity) {
+func autoBindActivitiesInFlow(ctx *ExecContext, activities []workflows.WorkflowActivity, norm contextExprNormalizer) {
 	for _, act := range activities {
 		switch a := act.(type) {
 		case *workflows.CallMicroflowTask:
-			autoBindCallMicroflow(ctx, a)
+			autoBindCallMicroflow(ctx, a, norm)
 			// Recurse into outcomes
 			for _, outcome := range a.Outcomes {
 				switch o := outcome.(type) {
 				case *workflows.BooleanConditionOutcome:
 					if o.Flow != nil {
-						autoBindActivitiesInFlow(ctx, o.Flow.Activities)
+						autoBindActivitiesInFlow(ctx, o.Flow.Activities, norm)
 					}
 				case *workflows.VoidConditionOutcome:
 					if o.Flow != nil {
-						autoBindActivitiesInFlow(ctx, o.Flow.Activities)
+						autoBindActivitiesInFlow(ctx, o.Flow.Activities, norm)
 					}
 				}
 			}
@@ -657,9 +659,13 @@ func autoBindActivitiesInFlow(ctx *ExecContext, activities []workflows.WorkflowA
 		case *workflows.UserTask:
 			// Sanitize name
 			a.Name = sanitizeActivityName(a.Name)
+			a.DueDate = norm.rewrite(a.DueDate)
+			if xp, ok := a.UserSource.(*workflows.XPathBasedUserSource); ok {
+				xp.XPath = norm.rewrite(xp.XPath)
+			}
 			for _, outcome := range a.Outcomes {
 				if outcome.Flow != nil {
-					autoBindActivitiesInFlow(ctx, outcome.Flow.Activities)
+					autoBindActivitiesInFlow(ctx, outcome.Flow.Activities, norm)
 				}
 			}
 		case *workflows.ParallelSplitActivity:
@@ -667,20 +673,27 @@ func autoBindActivitiesInFlow(ctx *ExecContext, activities []workflows.WorkflowA
 			a.Name = sanitizeActivityName(a.Name)
 			for _, outcome := range a.Outcomes {
 				if outcome.Flow != nil {
-					autoBindActivitiesInFlow(ctx, outcome.Flow.Activities)
+					autoBindActivitiesInFlow(ctx, outcome.Flow.Activities, norm)
 				}
 			}
 		case *workflows.ExclusiveSplitActivity:
 			a.Name = sanitizeActivityName(a.Name)
+			// A decision's condition is an expression over the workflow context,
+			// and the only in-scope variable is that context. It was left verbatim
+			// while call-microflow parameter mappings were normalized, so the
+			// documented `$workflowContext` (and the user's own declared parameter
+			// name) reached Mendix as undefined variables → CE0117 (issuetracker
+			// #17). Normalize it the same way.
+			a.Expression = norm.rewrite(a.Expression)
 			for _, outcome := range a.Outcomes {
 				switch o := outcome.(type) {
 				case *workflows.BooleanConditionOutcome:
 					if o.Flow != nil {
-						autoBindActivitiesInFlow(ctx, o.Flow.Activities)
+						autoBindActivitiesInFlow(ctx, o.Flow.Activities, norm)
 					}
 				case *workflows.VoidConditionOutcome:
 					if o.Flow != nil {
-						autoBindActivitiesInFlow(ctx, o.Flow.Activities)
+						autoBindActivitiesInFlow(ctx, o.Flow.Activities, norm)
 					}
 				}
 			}
@@ -688,6 +701,7 @@ func autoBindActivitiesInFlow(ctx *ExecContext, activities []workflows.WorkflowA
 			a.Name = sanitizeActivityName(a.Name)
 		case *workflows.WaitForTimerActivity:
 			a.Name = sanitizeActivityName(a.Name)
+			a.DelayExpression = norm.rewrite(a.DelayExpression)
 		case *workflows.JumpToActivity:
 			a.Name = sanitizeActivityName(a.Name)
 		}
@@ -700,7 +714,7 @@ func autoBindActivitiesInFlow(ctx *ExecContext, activities []workflows.WorkflowA
 // configured microflow"). The pre-11.9 CallMicroflowTask tolerated a lone
 // VoidConditionOutcome regardless of return type, which is why this used to be
 // hardcoded to Void (FINDINGS #39 regression).
-func autoBindCallMicroflow(ctx *ExecContext, task *workflows.CallMicroflowTask) {
+func autoBindCallMicroflow(ctx *ExecContext, task *workflows.CallMicroflowTask, norm contextExprNormalizer) {
 	// Sanitize name
 	task.Name = sanitizeActivityName(task.Name)
 
@@ -709,7 +723,7 @@ func autoBindCallMicroflow(ctx *ExecContext, task *workflows.CallMicroflowTask) 
 	// case-sensitive on 11.9+, so a user-written `$workflowContext` is an undefined
 	// variable → CE0117 (FINDINGS #39 regression). The pre-11.9 class did not flag it.
 	for _, pm := range task.ParameterMappings {
-		pm.Expression = normalizeWorkflowContextExpr(pm.Expression)
+		pm.Expression = norm.rewrite(pm.Expression)
 	}
 
 	// Look up the target microflow — needed both for return-type-matched outcomes
@@ -767,14 +781,51 @@ func defaultCallMicroflowOutcomes(mf *microflows.Microflow) []workflows.Conditio
 	return []workflows.ConditionOutcome{o}
 }
 
+// workflowContextVar is the name mxcli always gives the workflow context
+// parameter. Mendix expressions are case-sensitive, so every reference to the
+// context has to match it exactly or the build fails CE0117.
+const workflowContextVar = "WorkflowContext"
+
 // normalizeWorkflowContextExpr rewrites a case-insensitive `$workflowContext`
 // reference to the exact context parameter name `$WorkflowContext`. In a workflow
 // the only in-scope variable is the context, so this is unambiguous.
 func normalizeWorkflowContextExpr(expr string) string {
-	return workflowContextRe.ReplaceAllString(expr, "$$WorkflowContext")
+	return workflowContextRe.ReplaceAllString(expr, "$$"+workflowContextVar)
 }
 
 var workflowContextRe = regexp.MustCompile(`(?i)\$workflowcontext`)
+
+// contextExprNormalizer makes every way an author can name the workflow context
+// resolve to the one name it is actually stored under.
+//
+// `create workflow … parameter $Ctx: Module.Entity` lets the author pick a
+// variable name, but mxcli stores the parameter as `WorkflowContext` regardless,
+// so `$Ctx` would reach Mendix as an undefined variable. The declared name is
+// therefore aliased onto the real one, and casing is normalized on top
+// (issuetracker #17).
+type contextExprNormalizer struct{ alias *regexp.Regexp }
+
+// newContextExprNormalizer builds a normalizer for the variable the author
+// declared in the workflow header (with or without the `$` sigil; empty means
+// "no alias, normalize casing only").
+func newContextExprNormalizer(declared string) contextExprNormalizer {
+	name := strings.TrimPrefix(declared, "$")
+	if name == "" || strings.EqualFold(name, workflowContextVar) {
+		return contextExprNormalizer{}
+	}
+	return contextExprNormalizer{alias: regexp.MustCompile(`(?i)\$` + regexp.QuoteMeta(name) + `\b`)}
+}
+
+// rewrite returns expr with every context reference spelled `$WorkflowContext`.
+func (n contextExprNormalizer) rewrite(expr string) string {
+	if expr == "" {
+		return expr
+	}
+	if n.alias != nil {
+		expr = n.alias.ReplaceAllString(expr, "$$"+workflowContextVar)
+	}
+	return normalizeWorkflowContextExpr(expr)
+}
 
 // autoBindCallWorkflow resolves workflow parameters and generates ParameterMappings.
 func autoBindCallWorkflow(ctx *ExecContext, act *workflows.CallWorkflowActivity) {

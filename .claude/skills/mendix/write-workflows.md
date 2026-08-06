@@ -43,6 +43,15 @@ end workflow;
 - The body closer is `end workflow`, **not** `end`. `end;` fails (`missing
   WORKFLOW`).
 
+**The context is always stored as `WorkflowContext`.** Whatever you name the
+variable in the header, mxcli writes the parameter as `WorkflowContext`, so
+`$WorkflowContext/Attribute` is the canonical way to reach it in an expression.
+The name you declared (`$Context` above) and any casing of the canonical name
+(`$workflowContext`) are rewritten to it on write — in decision conditions, user
+task due dates and XPath targeting, wait-for-timer delays, and `with (…)`
+parameter mappings. Anything else is an undefined variable and Mendix fails the
+build with `CE0117 "Error(s) in expression."`.
+
 `create or replace workflow …` and `create or modify workflow …` are supported.
 
 ## Activities
