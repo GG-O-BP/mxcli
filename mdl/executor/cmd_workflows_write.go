@@ -23,6 +23,19 @@ func execCreateWorkflow(ctx *ExecContext, s *ast.CreateWorkflowStmt) error {
 		return mdlerrors.NewNotConnectedWrite()
 	}
 
+	// A standalone `annotation` lands in the workflow's activity flow, which
+	// Mendix loads by constructing every child with a Flow parent — no annotation
+	// type takes one, so the written .mpr cannot be LOADED at all (Studio Pro
+	// won't open the project and `mx check` dies before validating anything).
+	// Refuse here as well as at check time (MDL-WF04): emitting a structurally
+	// invalid unit takes down the whole project, not one document. (issuetracker #15)
+	if hasStandaloneWorkflowAnnotation(s.Activities) {
+		return mdlerrors.NewUnsupported(
+			"a standalone `annotation` in a workflow body would produce a model Mendix cannot load " +
+				"(the annotation is placed in the activity flow, which accepts only flow elements) — " +
+				"remove it, or keep the note as an MDL comment (`-- ...`) [MDL-WF04]")
+	}
+
 	module, err := findOrCreateModule(ctx, s.Name.Module)
 	if err != nil {
 		return err
@@ -806,4 +819,18 @@ func autoBindCallWorkflow(ctx *ExecContext, act *workflows.CallWorkflowActivity)
 		}
 		break
 	}
+}
+
+// hasStandaloneWorkflowAnnotation reports whether any activity flow in the
+// workflow (including nested outcome / path / boundary-event flows) contains a
+// standalone `annotation` statement. See execCreateWorkflow for why it is
+// refused rather than written.
+func hasStandaloneWorkflowAnnotation(acts []ast.WorkflowActivityNode) bool {
+	found := false
+	walkWorkflowActivities(acts, func(a ast.WorkflowActivityNode) {
+		if _, ok := a.(*ast.WorkflowAnnotationActivityNode); ok {
+			found = true
+		}
+	})
+	return found
 }

@@ -93,11 +93,16 @@ begin
 
   -- Call a sub-workflow
   call workflow Module.SubProcess comment 'delegate';
-
-  -- Sticky-note annotation
-  annotation 'Escalation path per policy 4.2';
 end workflow;
 ```
+
+> **Do NOT use `annotation '...'` in a workflow body.** It parses, but the
+> annotation is written into the workflow's activity flow, which Mendix loads by
+> constructing every child with a `Flow` parent — no annotation type takes one, so
+> the resulting `.mpr` **cannot be loaded at all**: Studio Pro will not open the
+> project and `mx check` fails before validating anything. `mxcli` now refuses the
+> statement (MDL-WF04) at both check and exec time. Keep the note as an MDL comment
+> (`-- ...`); workflow canvas annotations are not yet writable.
 
 **Boundary events** attach a timer to a user task / call-microflow / wait:
 
