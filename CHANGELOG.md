@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Default styling — generated apps that look designed on first boot** (`mxcli theme`, `mxcli new --theme`) — three themes ship in the binary: **signal** (the default: cool slate, one teal signal colour, 4px radius, 32px rows, IBM Plex), **ledger** (warm paper, hairline rules instead of card shadows, Source Serif over Source Sans) and **console** (dark-first, Space Grotesk over JetBrains Mono). A theme is files under `theme/` only — the model is never touched, so it hot-applies under `run --local --watch` and cannot affect a build. Atlas Core is untouched, so projects stay upgradable. Re-branding is one line (`--mxt-brand`); Atlas derives the whole colour ramp from it. Fonts are vendored (SIL OFL 1.1) rather than pulled from a CDN, so generated apps render correctly air-gapped. Generated regions are digest-fenced: a block carrying local edits is refused rather than overwritten. `mxcli theme list | show | apply | remove`; `--theme none` opts out. See `docs-site/src/tools/theme.md`.
+- **Light/dark palettes and runtime theme switching** — every theme ships both palettes. `--variant auto` (the default) follows the operating system's `prefers-color-scheme` **before first paint** and honours a `theme-light` / `theme-dark` class on the root element; `--variant light|dark` bakes a single palette. Mendix ships the `:root.theme-dark` slot but nothing that applies it, so `mxcli theme switcher install` adds the JavaScript actions and a nanoflow for a toggle button — the one theme subcommand that writes to the model. Known limit: a reload falls back to the OS preference, because Mendix has no page on-load event and the usual substitute (a data view with a nanoflow data source) is not authorable on either engine yet.
+
+### Fixed
+
+- **JavaScript action sources were written to the wrong directory** — `CREATE JAVASCRIPT ACTION` wrote to `javascriptsource/<ModuleName>/actions/`, but Mendix reads a **lowercased** module directory. MxBuild found nothing there, generated a stub whose body throws `JavaScript action was not implemented`, and bundled that — so the action parsed, passed `mxcli check`, built cleanly, and threw the moment it ran. Only reproduced on a case-sensitive filesystem, which is why it went unnoticed on macOS and Windows.
+
 ## [0.16.0] - 2026-07-12
 
 Headline: **Pluggable chart authoring reaches round-trip fidelity**, plus in-place enum-caption editing, named layout placeholders, and a batch of new pre-build `check` heuristics. Charts gain widget-level datasource attributes, the `LINE`/`SCALECOLOR` object-list keywords, and a `DESCRIBE` that reconstructs them as executable MDL; workflows and widget-less pages now describe cleanly; view-entity OQL is validated before build; and several authoring mistakes are caught at `mxcli check` time instead of only by MxBuild.

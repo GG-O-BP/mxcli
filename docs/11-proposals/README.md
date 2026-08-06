@@ -29,12 +29,13 @@ for display in this README):
 ## Active Proposals (88)
 
 
-### In Progress (partial) (10)
+### In Progress (partial) (11)
 
 | Proposal | Status | Summary |
 |----------|--------|---------|
 | [Add Styling Support to MDL Pages](page-styling-support.md) | Partial | Mendix has four styling mechanisms on every widget, all stored in a BSON Forms$Appearance object: |
 | [Atlas Design System — a skill for visually appealing Mendix apps](PROPOSAL_atlas_design_system.md) | Partial | mxcli can generate a fully-functional Mendix app, but the default output looks bland — it leans |
+| [Default styling — generated apps that look designed on first boot](PROPOSAL_default_styling.md) | Partial | mxcli new produces a blank Atlas app. |
 | [Eval Framework for mxcli + Claude Code](proposal-eval-framework.md) | Partial | An evaluation framework that systematically tests how well Claude Code + mxcli handles real-world Mendix app generation tasks. |
 | [Implement `mxcli structure` Command](mxcli-structure-proposal.md) | Partial | mxcli is a Go CLI tool for working with Mendix projects. |
 | [Multi-Version Support: Consolidated Architecture & Status](MULTI_VERSION_SUPPORT.md) | Partial | Mendix projects vary along three versioning axes, and mxcli must handle all of them correctly: |

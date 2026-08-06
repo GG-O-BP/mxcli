@@ -1,0 +1,135 @@
+-- ============================================================================
+-- Theme Switcher Examples — the MDL behind `mxcli theme switcher install`
+-- ============================================================================
+--
+-- `mxcli theme apply` writes files only; the model is never touched. This is
+-- the exception: a theme's light/dark blocks key off a class on the root
+-- element, Mendix ships the `:root.theme-dark` slot but nothing that applies
+-- it, and there is no theme-level hook to run script before first paint. So a
+-- user-facing toggle needs JavaScript actions the client can run, wrapped in a
+-- nanoflow a button can call.
+--
+-- `mxcli theme switcher install --module <M>` generates and executes exactly
+-- this. Run it with --print to see the script for your own module.
+--
+-- The CSS still does the heavy lifting: `--variant auto` already renders the
+-- right palette before first paint by following the OS. These actions only
+-- cover an explicit user override.
+--
+-- Usage:
+--   mxcli check mdl-examples/doctype-tests/37-theme-switcher-examples.mdl
+--   mxcli exec  mdl-examples/doctype-tests/37-theme-switcher-examples.mdl -p app.mpr
+--
+-- NOTE ON `mxcli check --references`: the two nanoflows call actions created
+-- earlier in this same script, so a reference check against a project that does
+-- not have them yet reports "javascript action not found". That is the known
+-- forward-reference behaviour (see resolve-forward-references.md), not an error
+-- in this script — `exec` runs the statements in order and resolves them.
+-- ============================================================================
+
+-- MARK: Setup
+
+create module ThemeSwitchTest;
+
+-- MARK: Toggle — flip light/dark and remember the choice
+
+-- Resolves "follow the OS" to whatever the OS is currently saying before
+-- flipping, so the first click always visibly changes something.
+create or modify javascript action ThemeSwitchTest.ToggleAppTheme() returns String
+exposed as 'Toggle app theme' in 'Theme'
+as $$
+var root = document.documentElement;
+var effective;
+if (root.classList.contains("theme-dark")) {
+    effective = "dark";
+} else if (root.classList.contains("theme-light")) {
+    effective = "light";
+} else {
+    effective = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+        ? "dark"
+        : "light";
+}
+var next = effective === "dark" ? "light" : "dark";
+root.classList.remove("theme-light", "theme-dark");
+root.classList.add("theme-" + next);
+try {
+    window.localStorage.setItem("mxcli-theme", next);
+} catch (e) {
+    // Private browsing and some embedded webviews reject storage; the class is
+    // already applied, so the only thing lost is persistence across reloads.
+}
+return Promise.resolve(next);
+$$;
+
+-- MARK: Explicit set — "auto" clears the override and follows the OS again
+
+create or modify javascript action ThemeSwitchTest.SetAppTheme(
+  Theme: String not null
+) returns Boolean
+exposed as 'Set app theme' in 'Theme'
+as $$
+var root = document.documentElement;
+root.classList.remove("theme-light", "theme-dark");
+try {
+    if (Theme === "light" || Theme === "dark") {
+        root.classList.add("theme-" + Theme);
+        window.localStorage.setItem("mxcli-theme", Theme);
+    } else {
+        window.localStorage.removeItem("mxcli-theme");
+    }
+} catch (e) {
+    if (Theme === "light" || Theme === "dark") {
+        root.classList.add("theme-" + Theme);
+    }
+}
+return Promise.resolve(true);
+$$;
+
+-- MARK: Restore — ready to wire, but nothing calls it automatically today
+
+create or modify javascript action ThemeSwitchTest.ApplyStoredTheme() returns Boolean
+exposed as 'Apply stored theme' in 'Theme'
+as $$
+var stored = null;
+try {
+    stored = window.localStorage.getItem("mxcli-theme");
+} catch (e) {
+    // No storage available: following the OS is the right fallback.
+}
+var root = document.documentElement;
+root.classList.remove("theme-light", "theme-dark");
+if (stored === "light" || stored === "dark") {
+    root.classList.add("theme-" + stored);
+}
+return Promise.resolve(true);
+$$;
+
+-- MARK: Nanoflows a button can call
+
+create or replace nanoflow ThemeSwitchTest.ACT_ToggleTheme()
+returns String as $Theme
+begin
+  $Theme = call javascript action ThemeSwitchTest.ToggleAppTheme();
+  return $Theme;
+end;
+
+create or replace nanoflow ThemeSwitchTest.ACT_ApplyStoredTheme()
+returns Boolean as $Applied
+begin
+  $Applied = call javascript action ThemeSwitchTest.ApplyStoredTheme();
+  return $Applied;
+end;
+
+-- MARK: Wiring
+--
+-- Put the toggle wherever it belongs — a layout, a settings page, a header:
+--
+--   actionbutton btnTheme (
+--     caption: 'Theme',
+--     action: nanoflow ThemeSwitchTest.ACT_ToggleTheme)
+--
+-- The class is set on <html>, so popups and modals — which Mendix renders at
+-- <body>, outside any page container — follow the theme too.
+
+describe javascript action ThemeSwitchTest.ToggleAppTheme;
+describe nanoflow ThemeSwitchTest.ACT_ToggleTheme;
