@@ -496,7 +496,7 @@ go build -o bin/mxcli ./cmd/mxcli
 | **Full-text search** | `search 'keyword'` | Search across all strings and source |
 | **Linting** | `mxcli lint -p app.mpr [--format json\|sarif]` | 15 built-in rules + 27 Starlark rules (MDL, SEC, QUAL, ARCH, DESIGN, CONV) |
 | **Report** | `mxcli report -p app.mpr [--format markdown\|json\|html]` | Scored best practices report with category breakdown |
-| **Testing** | `mxcli test tests/ -p app.mpr` | `.test.mdl` / `.test.md` files, requires Docker |
+| **Testing** | `mxcli test tests/ -p app.mpr [--local]` | `.test.mdl` / `.test.md` files; `--local` runs on mxcli's own runtime (no Docker daemon), on its own ports + `<project>_test` database |
 | **Diff** | `mxcli diff -p app.mpr changes.mdl` | Compare script against project state |
 | **Diff local** | `mxcli diff-local -p app.mpr --ref head` | Git diff for MPR v2 projects |
 | **Diff revisions** | `mxcli diff-local -p app.mpr --ref main..feature` | Compare two arbitrary git revisions |
