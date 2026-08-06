@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/mendixlabs/mxcli/mdl/types"
 	"github.com/mendixlabs/mxcli/model"
@@ -146,10 +147,19 @@ func rewriteJavaToJavaScriptTypes(v any) {
 	}
 }
 
-// jsActionSourceDir returns javascriptsource/<module>/actions using the original
-// module-name casing Studio Pro writes.
+// jsActionSourceDir returns javascriptsource/<module>/actions with the module
+// name LOWERCASED, which is where Mendix looks: a blank Mendix 11 app ships
+// javascriptsource/nanoflowcommons/, /datawidgets/ and /webactions/ for modules
+// named NanoflowCommons, DataWidgets and WebActions.
+//
+// Writing the original casing instead is silent and total: mxbuild finds no
+// source at the path it reads, generates a stub whose body throws
+// "JavaScript action was not implemented", and bundles that. The action parses,
+// passes `mxcli check` and builds cleanly, then throws when a user clicks it.
+// Only reproduces on a case-sensitive filesystem — on macOS and Windows the two
+// spellings are the same directory, which is why it went unnoticed.
 func (b *Backend) jsActionSourceDir(moduleName string) string {
-	return filepath.Join(filepath.Dir(b.path), "javascriptsource", moduleName, "actions")
+	return filepath.Join(filepath.Dir(b.path), "javascriptsource", strings.ToLower(moduleName), "actions")
 }
 
 // WriteJavaScriptSourceFile writes javascriptsource/<module>/actions/<action>.js.
