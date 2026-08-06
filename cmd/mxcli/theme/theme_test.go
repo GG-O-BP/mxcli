@@ -448,3 +448,52 @@ func TestSwitcherMDL_TargetsTheRequestedModule(t *testing.T) {
 		t.Error("the theme class must be set on the root element")
 	}
 }
+
+// SCSS is not compiled by the Go tests, so a theme whose variant mixin is named
+// differently from the one it includes would ship broken and only fail at the
+// user's next build. Assert the naming contract instead.
+func TestEveryThemeDefinesAndIncludesItsAltPaletteMixin(t *testing.T) {
+	themes, err := List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, th := range themes {
+		body, err := assetsFS.ReadFile(
+			"assets/" + th.Name + "/files/theme/web/_mxcli-" + th.Name + ".scss")
+		if err != nil {
+			t.Fatalf("%s ships no theme partial: %v", th.Name, err)
+		}
+		mixin := "mxcli-" + th.Name + "-" + string(th.AltVariant())
+		src := string(body)
+		if !strings.Contains(src, "@mixin "+mixin+" {") {
+			t.Errorf("%s does not define @mixin %s", th.Name, mixin)
+		}
+		if !strings.Contains(src, "@include "+mixin+";") {
+			t.Errorf("%s defines %s but never includes it", th.Name, mixin)
+		}
+		if !strings.Contains(src, "@include mxcli-atlas-map;") {
+			t.Errorf("%s never includes the Atlas map", th.Name)
+		}
+		// The alt palette must be reachable both ways: from the OS preference
+		// and from an explicit class a switcher sets.
+		if !strings.Contains(src, "prefers-color-scheme: "+string(th.AltVariant())) {
+			t.Errorf("%s does not follow the OS into its alt palette", th.Name)
+		}
+		if !strings.Contains(src, ":root.theme-"+string(th.AltVariant())+" {") {
+			t.Errorf("%s does not honour an explicit theme-%s class", th.Name, th.AltVariant())
+		}
+	}
+}
+
+// The storage key the docs and the switcher's JavaScript refer to must be the
+// same string; before this was templated, the constant could drift from the
+// generated code while the test that checked it still passed.
+func TestSwitcherStorageKeyIsSubstitutedNotHardcoded(t *testing.T) {
+	mdl := SwitcherMDL("Ops")
+	if strings.Contains(mdl, "{{STORAGE_KEY}}") {
+		t.Error("storage-key placeholder left unexpanded")
+	}
+	if got := strings.Count(mdl, `"`+SwitcherStorageKey+`"`); got != 4 {
+		t.Errorf("storage key appears %d times in the generated JavaScript, want 4", got)
+	}
+}

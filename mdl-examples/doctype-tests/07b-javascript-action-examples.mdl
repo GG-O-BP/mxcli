@@ -4,7 +4,8 @@
 --
 -- Demonstrates CREATE / DROP JAVASCRIPT ACTION. A JavaScript action writes both
 -- a model unit (JavaScriptActions$JavaScriptAction) and a source file under
--- javascriptsource/<Module>/actions/<Name>.js. Actions are callable from
+-- javascriptsource/<module>/actions/<Name>.js — note the module directory is
+-- LOWERCASED, which is where Mendix reads it from. Actions are callable from
 -- nanoflows via CALL JAVASCRIPT ACTION.
 --
 -- Syntax:

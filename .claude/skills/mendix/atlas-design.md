@@ -24,9 +24,9 @@ built on the Atlas building blocks every Mendix project already ships.
 4. [Atlas building blocks — the out-of-the-box inventory](#atlas-building-blocks--the-out-of-the-box-inventory)
 5. [Atlas appearance vocabulary — classes & design properties](#atlas-appearance-vocabulary--classes--design-properties)
 6. [Brand re-tune (Layer 1) — where most of the win is](#brand-re-tune-layer-1--where-most-of-the-win-is)
-7. [Layer-1 brand scaffold — copy into theme/web/custom-variables.scss](#layer-1-brand-scaffold--copy-into-themewebcustom-variablesscss)
+7. [Layer 1 in practice — start from the shipped theme](#layer-1-in-practice--start-from-the-shipped-theme)
 8. [Charts — a dataviz-grade theme for the Mendix chart widgets](#charts--a-dataviz-grade-theme-for-the-mendix-chart-widgets)
-9. [Dark mode — commit to one theme](#dark-mode--commit-to-one-theme)
+9. [Dark mode — Mendix 11 makes this cheap](#dark-mode--mendix-11-makes-this-cheap)
 10. [Optional dark-mode Atlas-widget overrides](#optional-dark-mode-atlas-widget-overrides)
 11. [Verify at runtime — this is mandatory](#verify-at-runtime--this-is-mandatory)
 12. [Gotchas catalog](#gotchas-catalog)
@@ -72,7 +72,8 @@ Layer 0  ATLAS       Atlas classes / design properties / building blocks — str
   the building-block inventory below).
 - **Layer 1 — Brand.** Retune Atlas tokens in `theme/web/custom-variables.scss` so
   the whole framework (buttons, backgrounds, form inputs, pluggable widgets like
-  Switch/Slider/ProgressBar) picks up your palette. Scaffold below.
+  Switch/Slider/ProgressBar) picks up your palette. Start from the shipped theme
+  rather than a blank file — see below.
 - **Layer 2 — Identity.** Only the handful of shapes Atlas genuinely can't express.
   Put them in a partial imported from **`theme/web/main.scss`**, which compiles
   *last* — after Atlas Core and after every module theme source — so your rules win
@@ -83,12 +84,13 @@ Layer 0  ATLAS       Atlas classes / design properties / building blocks — str
   must screenshot a *running* build.
 
 **Start from the shipped default, don't start from nothing.** `mxcli new` applies
-the `signal` theme, and `mxcli theme apply -p app.mpr` adds it to an existing
-project. It already carries a full Layer-1 token set, vendored IBM Plex, the focus
-ring, the 32px/44px density scale and the `num` / `pill` / `stat` recipe classes.
-Re-brand it by changing `--brand-primary` in its generated block; the block is
-fenced with a digest, so mxcli will refuse to overwrite your edits. `mxcli theme
-show signal` lists exactly which files it writes.
+the `signal` theme, and `mxcli theme apply -p app.mpr` adds one (`signal`,
+`ledger` or `console`) to an existing project. Each carries a full palette in
+both light and dark, vendored fonts, the focus ring, the density scale and the
+`num` / `pill` / `stat` recipe classes. Re-brand by changing `--mxt-brand` in the
+palette block; the block is digest-fenced, so mxcli refuses to overwrite your
+edits rather than silently discarding them. `mxcli theme show <name>` lists
+exactly which files it writes.
 
 A Layer-1 token retune **cascades down** into Atlas components and pluggable
 widgets for free — that is the headline payoff. A full re-brand (new palette, type,
@@ -426,9 +428,10 @@ more idiomatic form to mirror from a `describe building block`. Notes:
 
 ## Brand re-tune (Layer 1) — where most of the win is
 
-Copy the scaffold below into `theme/web/custom-variables.scss` and set the
-placeholder palette. Because Atlas utilities and pluggable widgets read these tokens,
-one retune re-skins the whole app:
+Retune the palette in `theme/web/custom-variables.scss` — the file
+`mxcli theme apply` writes (see the next section; do not hand-roll one). Because
+Atlas utilities and pluggable widgets read these tokens, one retune re-skins the
+whole app:
 
 - `--brand-primary` → buttons, `background-primary`, links, Switch/Slider/ProgressBar
 - background + semantic (`success`/`warning`/`danger`) tokens → alerts, group boxes,
@@ -441,81 +444,65 @@ only for shapes Atlas can't provide.
 
 ---
 
-## Layer-1 brand scaffold — copy into theme/web/custom-variables.scss
+## Layer 1 in practice — start from the shipped theme
+
+**Do not hand-roll a brand scaffold.** `mxcli theme apply -p app.mpr` writes a
+complete, verified Layer 1 (and Layer 2) into `theme/web/`, and `mxcli new`
+applies one by default. Re-brand it instead of competing with it — the generated
+blocks are digest-fenced, so a hand-written palette in the same file will either
+be refused on the next apply or silently fight the theme in the cascade.
+
+```bash
+mxcli theme list                       # signal (default), ledger, console
+mxcli theme show signal                # palette, and every file it writes
+mxcli theme apply signal -p app.mpr    # --variant auto | light | dark
+```
+
+### The token architecture it gives you
+
+A theme separates the palette from the wiring, and that split is the whole reason
+a light/dark flip or a re-brand is cheap:
+
+| File | Holds | You edit |
+|---|---|---|
+| `theme/web/custom-variables.scss` | the palette — `--mxt-*` tokens for the default variant | **yes, this one** |
+| `theme/web/_mxcli-atlas-map.scss` | ~60 Atlas variables expressed as `var(--mxt-*)` | no |
+| `theme/web/_mxcli-<name>.scss` | the other palette, variant blocks, `@font-face`, recipe classes | rarely |
+
+To re-brand, change one line in the palette:
 
 ```scss
-// =============================================================================
-// Layer 1 — BRAND: retune Atlas tokens
-// -----------------------------------------------------------------------------
-// Copy this into  theme/web/custom-variables.scss  and swap the placeholder
-// palette below for your brand.
-//
-// WHY THIS FILE MATTERS: Atlas classes and pluggable widgets READ these tokens.
-// Retuning them here cascades the palette DOWN into buttons, `background-*`
-// utilities, form inputs, cards, popups, and pluggable widgets (Switch, Slider,
-// RangeSlider, ProgressBar, ProgressCircle, BadgeButton) — with NO per-widget CSS.
-// This is the single highest-leverage styling change you can make.
-//
-// These vars use Atlas's `!default` chain, so they override
-// atlas_core/web/variables.scss. See `theme-styling.md` for the compile order.
-// Reach for THIS layer before writing any custom class in main.scss (Layer 2).
-// =============================================================================
-
-// 1. BRAND PRIMARY — the one colour that defines the app.
-//    Flows into: btn-primary, background-primary, links, active nav, and the
-//    brand-reading pluggable widgets (Switch / Slider / ProgressBar / …).
-$brand-primary:   #2b5170 !default;   // TODO: your brand colour
-$brand-secondary: #5c6a78 !default;   // TODO: muted / secondary accent
-
-// 2. SEMANTIC COLOURS — success / warning / danger / info.
-//    Flows into: btn-*, background-*, groupbox-*, alerts, status surfaces.
-$brand-success: #4a7a5c !default;   // TODO
-$brand-warning: #c9a227 !default;   // TODO
-$brand-danger:  #a13a2c !default;   // TODO
-$brand-info:    #2f6f9f !default;   // TODO
-
-// 3. BACKGROUNDS & INK — the neutral ground the app sits on. Retune these so
-//    Atlas surfaces OUTSIDE your scoped classes (form inputs, popups, modals)
-//    inherit the palette too.
-$bg-color:              #eef1f4 !default;   // TODO: app background
-$background-color-page: $bg-color !default;
-$font-color-default:    #1a2129 !default;   // TODO: body ink
-$font-color-detail:     #5c6a78 !default;   // TODO: secondary / muted text
-$border-color-default:  #dde3ea !default;   // TODO: hairline borders
-
-// Form inputs — keeps inputs on-palette everywhere (incl. popups).
-$form-input-bg:           #ffffff !default;   // TODO
-$form-input-border-color: $border-color-default !default;
-$form-input-color:        $font-color-default !default;
-
-// 4. SHAPE — corner radius. 0 = sharp/industrial; higher = soft/friendly.
-//    Cascades into cards, inputs, buttons, popups.
-$border-radius-default: 8px !default;   // TODO: 0 … 16px
-$card-border-radius:    $border-radius-default !default;
-
-// 5. TYPOGRAPHY — set a brand font. If it is a WEB font, `@import` it as the
-//    FIRST line of main.scss (an @import after any rule is silently dropped), and
-//    ALWAYS keep a system fallback stack so the layout survives a font-load fail.
-$font-family-base: "system-ui", -apple-system, "Segoe UI", sans-serif !default;   // TODO
-
-// Bridge Atlas CSS custom properties to the Sass vars above, so runtime CSS
-// (`var(--brand-primary)`, `background-primary`, etc.) resolves to your palette.
 :root {
-  --brand-primary:   #{$brand-primary};
-  --brand-secondary: #{$brand-secondary};
-  --brand-success:   #{$brand-success};
-  --brand-warning:   #{$brand-warning};
-  --brand-danger:    #{$brand-danger};
-  --brand-info:      #{$brand-info};
-
-  --bg-color:             #{$bg-color};
-  --font-color-default:   #{$font-color-default};
-  --font-color-detail:    #{$font-color-detail};
-  --border-color-default: #{$border-color-default};
-  --card-border-radius:   #{$card-border-radius};
-  --font-family-base:     #{$font-family-base};
+  --mxt-brand: #0f6e6b;      /* the one colour that defines the app */
+  --mxt-ground: #f4f6f8;     /* app background */
+  --mxt-surface: #ffffff;    /* cards, modals, panels */
+  --mxt-ink: #14181f;        /* primary text */
+  --mxt-line: #dce1e7;       /* hairlines */
 }
 ```
+
+Atlas derives `--brand-primary-50` … `-900` from `--brand-primary` with CSS
+`color-mix()`, so buttons, links, active navigation, alerts, group boxes and the
+brand-aware pluggable widgets (Switch, Slider, RangeSlider, ProgressBar,
+ProgressCircle, BadgeButton) all follow — in **both** palettes, with no
+per-widget CSS.
+
+### Two rules that decide whether your styling survives
+
+1. **Mendix 11 Atlas is CSS-custom-property-first.** Write `:root { --x: … }`
+   declarations, not SCSS `$x: … !default;`. The stock `custom-variables.scss` is
+   a `:root` block plus a few SCSS switches (`$font-family-import`,
+   `$btn-bordered`, `$use-css-variables`); legacy Sass variables are still mapped
+   for old modules, but they are not the idiom.
+2. **Never pin an Atlas variable to a literal colour.** Map it to a token
+   (`--bg-color: var(--mxt-ground)`), which is what the Atlas map does. A
+   hardcoded `--font-color-default` is near-black on a near-black ground the
+   moment anything flips the palette — the failure is total and silent.
+
+If you genuinely need a token the theme does not expose, add it to the palette
+block and reference it from your own Layer-2 rules. See `theme-styling.md` for
+the compile order and for why `theme/web/main.scss` is the only correct home for
+app-level rules.
 
 ---
 
@@ -575,20 +562,44 @@ scaffold). The generic `dataviz` skill is the HTML/React analogue of this — sa
 
 ---
 
-## Dark mode — commit to one theme
+## Dark mode — Mendix 11 makes this cheap
 
-A `prefers-color-scheme: dark` flip repaints **your** custom chrome, but Atlas's own
-widgets and Plotly ship **light-only** surfaces — on a dark page they render as white
-boxes with (often) near-invisible text. **Decide theme-count up front:**
+Older guidance here said to commit to a single theme, because a
+`prefers-color-scheme` flip repainted your own classes but left Atlas widgets
+light. **That was Atlas 3. It does not hold on Mendix 11.**
 
-- A **dark-only** app is simpler and more robust — drop the `@media` gate and make
-  the widget overrides **unconditional + global** (this also covers portal-rendered
-  popups/modals that live outside your scoped class).
-- If you can't fund the override recipe, ship **light-only**. A half-dark result
-  (your chrome dark, Atlas widgets light) is **worse** than a consistent light app.
+Measured by adding `theme-dark` to `<html>` on a running 11.13 app and changing
+nothing else: the page ground, cards, form controls, sidebar, buttons and
+DataGrid2 all followed. Atlas is CSS-custom-property-first now, so the token
+cascade genuinely propagates. And because the class lands on `<html>`, popups and
+modals — which Mendix renders at `<body>`, outside any page container — follow it
+too, which was the other half of the old objection.
 
-Charts are the exception — don't CSS them; use the transparent `customLayout` trick
-above, which adapts to light **and** dark automatically.
+The practical route is `mxcli theme apply <name>` with the default
+`--variant auto`: it ships both palettes, follows the OS before first paint, and
+honours a `theme-light` / `theme-dark` class when a switcher sets one. Add
+`mxcli theme switcher install` for a user-facing toggle.
+
+Three things to know if you build this by hand:
+
+1. **Mendix ships the slot, not the switcher.** `theme/web/_theme-dark.scss`
+   declares `:root.theme-dark`; nothing in Atlas ever applies the class.
+2. **Your dark block must come after Mendix's** — same specificity, later wins.
+   Otherwise its stock Mendix blue overrides your brand the moment the class
+   appears.
+3. **Anything you pinned to a literal colour breaks.** This is the whole reason
+   Layer 1 maps Atlas variables to tokens instead of to hex values.
+
+The rail is the one place Atlas still assumes: several topbar widgets paint text
+with `--color-base`, expecting white because they expect a dark navigation rail.
+Keep the rail dark in both palettes, or force `color: inherit` on those widgets.
+
+Charts remain the exception — series colour lives in the model
+(`customSeriesOptions`), not CSS, so it does not follow a runtime flip. Use the
+transparent `paper_bgcolor` trick above, which is correct in both palettes.
+
+The override sheet below is still useful for a hand-rolled dark theme, or for
+Atlas corners a token flip misses.
 
 ---
 

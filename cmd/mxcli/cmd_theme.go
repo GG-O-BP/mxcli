@@ -19,11 +19,26 @@ var themeCmd = &cobra.Command{
 	Short: "Apply mxcli's built-in default styling to a project",
 	Long: `Apply mxcli's built-in default styling to a Mendix project.
 
-A theme is a set of files written into the project's theme/ folder — the model
-(.mpr) is never touched. Atlas Core is left untouched too: the theme is a token
-block in theme/web/custom-variables.scss plus one partial imported from
-theme/web/main.scss, so the project stays upgradable across Mendix releases and
-re-brands by editing a single colour.
+Three themes ship in the binary: signal (the default — cool slate, one teal
+signal colour), ledger (warm paper, hairline rules, serif headings) and console
+(dark-first, geometric). Run 'mxcli theme list' to see them and
+'mxcli theme show <name>' for a theme's palette and the files it writes.
+
+A theme is a set of files under theme/ — the model (.mpr) is never touched, so
+it hot-applies under 'mxcli run --local --watch' and cannot affect a build.
+Atlas Core is left untouched too. Each theme is a palette of --mxt-* tokens in
+theme/web/custom-variables.scss, a shared map wiring those onto ~60 Atlas
+variables, and a partial imported from theme/web/main.scss (which compiles
+last). Re-branding is one line: change --mxt-brand.
+
+Every theme ships light and dark palettes. With --variant auto (the default) the
+app follows the operating system before first paint and honours a theme-light or
+theme-dark class on the root element; --variant light or dark bakes one palette.
+Nothing in Mendix sets that class, so 'mxcli theme switcher install' adds a
+toggle — that subcommand is the only one here that writes to the model.
+
+Only one theme applies at a time: applying removes the previous one, because two
+themes mapping the same Atlas variables would fight in the cascade.
 
 Every generated block is fenced between mxcli:theme markers whose digest records
 what mxcli wrote. Edit inside a fence and a later apply refuses rather than
@@ -173,8 +188,37 @@ Use --print to see the MDL without running it.`,
 }
 
 var themeSwitcherInstallCmd = &cobra.Command{
-	Use:           "install",
-	Short:         "Create the switcher actions and nanoflows in a module",
+	Use:   "install",
+	Short: "Create the switcher actions and nanoflows in a module",
+	Long: `Create the theme switcher's JavaScript actions and nanoflows.
+
+Creates, in the module given by --module:
+
+  ToggleAppTheme      flips light/dark, resolving "follow the OS" first, and
+                      remembers the choice in localStorage
+  SetAppTheme         sets a theme explicitly; pass "auto" to clear the override
+  ApplyStoredTheme    re-applies a remembered choice
+  ACT_ToggleTheme     a nanoflow a button can call
+
+Then wire a button wherever it belongs, typically a layout or settings page:
+
+  actionbutton btnTheme (caption: 'Theme', action: nanoflow <Module>.ACT_ToggleTheme)
+
+A click flips the palette and remembers it. The class is set on <html>, so
+popups and modals — rendered at <body>, outside any page container — follow too.
+
+Reload behaviour: the app goes back to following the OS. Mendix has no page
+on-load event to re-apply the stored value from, and the usual substitute (a
+data view with a nanoflow data source) is not authorable by mxcli on either
+engine yet. ApplyStoredTheme is installed and ready for it — wire it in Studio
+Pro if the choice must survive a reload.
+
+Use --print to see the MDL without running it.
+
+Examples:
+  mxcli theme switcher install -p app.mpr
+  mxcli theme switcher install -p app.mpr --module Ops
+  mxcli theme switcher install --print --module Ops`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {

@@ -8,7 +8,9 @@ import (
 )
 
 // SwitcherMDL returns the MDL that installs a runtime theme switcher into
-// module.
+// module. The browser-storage key is substituted rather than written into the
+// template literally, so SwitcherStorageKey cannot drift from what the
+// generated JavaScript actually reads.
 //
 // This is the one part of theming that cannot be files alone. A theme's
 // light/dark blocks key off a class on the root element, and nothing in Mendix
@@ -23,7 +25,11 @@ import (
 // has to handle the case where a user's stored choice differs from their OS
 // preference — which is also the only case that can flash.
 func SwitcherMDL(module string) string {
-	return strings.ReplaceAll(switcherTemplate, "{{MODULE}}", module)
+	r := strings.NewReplacer(
+		"{{MODULE}}", module,
+		"{{STORAGE_KEY}}", SwitcherStorageKey,
+	)
+	return r.Replace(switcherTemplate)
 }
 
 // SwitcherStorageKey is where an explicit choice is remembered in the browser.
@@ -58,7 +64,7 @@ var next = effective === "dark" ? "light" : "dark";
 root.classList.remove("theme-light", "theme-dark");
 root.classList.add("theme-" + next);
 try {
-    window.localStorage.setItem("mxcli-theme", next);
+    window.localStorage.setItem("{{STORAGE_KEY}}", next);
 } catch (e) {
     // Private browsing and some embedded webviews reject storage; the class is
     // already applied, so the only thing lost is persistence across reloads.
@@ -78,9 +84,9 @@ root.classList.remove("theme-light", "theme-dark");
 try {
     if (Theme === "light" || Theme === "dark") {
         root.classList.add("theme-" + Theme);
-        window.localStorage.setItem("mxcli-theme", Theme);
+        window.localStorage.setItem("{{STORAGE_KEY}}", Theme);
     } else {
-        window.localStorage.removeItem("mxcli-theme");
+        window.localStorage.removeItem("{{STORAGE_KEY}}");
     }
 } catch (e) {
     if (Theme === "light" || Theme === "dark") {
@@ -102,7 +108,7 @@ exposed as 'Apply stored theme' in 'Theme'
 as $$
 var stored = null;
 try {
-    stored = window.localStorage.getItem("mxcli-theme");
+    stored = window.localStorage.getItem("{{STORAGE_KEY}}");
 } catch (e) {
     // No storage available: following the OS is the right fallback.
 }

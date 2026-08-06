@@ -1,0 +1,53 @@
+-- ============================================================================
+-- Bug: a JavaScript action created by mxcli threw at runtime
+-- ============================================================================
+--
+-- Symptom
+--   CREATE JAVASCRIPT ACTION succeeded, `mxcli check` passed and the project
+--   built cleanly, but calling the action in the running app threw
+--
+--     JavaScript action was not implemented
+--
+--   and the calling nanoflow aborted.
+--
+-- Cause
+--   mxcli wrote the source to javascriptsource/<ModuleName>/actions/, using the
+--   module's own casing. Mendix reads a LOWERCASED module directory — a blank
+--   Mendix 11 app ships javascriptsource/nanoflowcommons/, /datawidgets/ and
+--   /webactions/ for modules named NanoflowCommons, DataWidgets, WebActions.
+--   Finding no source at the path it reads, mxbuild generated a stub whose body
+--   is `throw new Error("JavaScript action was not implemented")` and bundled
+--   that. Only reproduces on a case-sensitive filesystem: on macOS and Windows
+--   the two spellings are the same directory.
+--
+-- Verify
+--   mxcli exec mdl-examples/bug-tests/javascript-action-source-dir-case.mdl -p app.mpr
+--
+--   Then check the file landed where Mendix reads it — lowercase, and with the
+--   real body rather than the throwing stub:
+--
+--     test -f javascriptsource/jsdircase/actions/JsDirCase_Echo.js
+--     grep -q "MXCLI_MARKER" javascriptsource/jsdircase/actions/JsDirCase_Echo.js
+--
+--   Before the fix the file was at javascriptsource/JsDirCase/actions/ and the
+--   lowercase path held a generated stub. Nothing short of running the app
+--   caught it: parse, check and build all pass either way.
+-- ============================================================================
+
+create module JsDirCase;
+
+create or modify javascript action JsDirCase.JsDirCase_Echo(
+  Value: String not null
+) returns String
+as $$
+// MXCLI_MARKER — if this text is missing from the deployed bundle, the source
+// was written to a directory Mendix does not read.
+return Promise.resolve(Value);
+$$;
+
+create or replace nanoflow JsDirCase.ACT_Echo()
+returns String as $Echoed
+begin
+  $Echoed = call javascript action JsDirCase.JsDirCase_Echo(Value = 'ok');
+  return $Echoed;
+end;
