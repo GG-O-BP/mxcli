@@ -1121,7 +1121,7 @@ func dataViewSourceToGen(ds pages.DataSource) (element.Element, error) {
 		}
 		assignID(ms)
 		ms.SetForceFullObjects(false)
-		ms.SetMicroflowSettings(microflowSettingsToGen(d.Microflow, nil))
+		ms.SetMicroflowSettings(microflowSettingsToGen(d.Microflow, d.ParameterMappings))
 		return ms, nil
 
 	case *pages.AssociationSource:
@@ -1214,7 +1214,7 @@ func listViewSourceToGen(ds pages.DataSource) (element.Element, error) {
 		}
 		assignID(ms)
 		ms.SetForceFullObjects(false)
-		ms.SetMicroflowSettings(microflowSettingsToGen(d.Microflow, nil))
+		ms.SetMicroflowSettings(microflowSettingsToGen(d.Microflow, d.ParameterMappings))
 		return ms, nil
 	case *pages.AssociationSource:
 		return associationSourceToGen(d), nil
@@ -1268,7 +1268,7 @@ func customWidgetDataSourceToGen(ds pages.DataSource) (element.Element, error) {
 		}
 		assignID(ms)
 		ms.SetForceFullObjects(false)
-		ms.SetMicroflowSettings(microflowSettingsToGen(d.Microflow, nil))
+		ms.SetMicroflowSettings(microflowSettingsToGen(d.Microflow, d.ParameterMappings))
 		return ms, nil
 
 	case *pages.AssociationSource:
@@ -1313,7 +1313,8 @@ func associationSourceToGen(d *pages.AssociationSource) element.Element {
 
 // microflowSettingsToGen builds the Forms$MicroflowSettings shared by the
 // microflow DataView source and the call-microflow action. mappings carries the
-// call-microflow action's argument bindings (nil for a datasource); dropping them
+// argument bindings — for an action's call, and (since #835) for a parameterized
+// source microflow, which Mendix requires arguments for just the same; dropping them
 // left a parameterized button/row invoking its microflow with no argument — the
 // widget no-ops at runtime yet mx check passes clean (Bug 1).
 func microflowSettingsToGen(microflowName string, mappings []*pages.MicroflowParameterMapping) element.Element {

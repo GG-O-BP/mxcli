@@ -1,0 +1,56 @@
+-- Bug #835: a parameterized microflow datasource silently dropped its argument
+-- binding, so the widget failed to build with CE1571.
+--
+--   datagrid dg1 (datasource: microflow ZKT35.GET_ItemByName(Name: 'abc'))
+--
+-- The grammar parsed the arguments into DataSourceV3.Args, but the builder never
+-- read them and pages.MicroflowSource had no field to hold them, so they were
+-- dropped between AST and model. mxcli check and exec both reported success;
+-- mxbuild then reported:
+--
+--   [error] [CE1571] "No argument has been selected for parameter 'Name' and no
+--   default is available. Please select an argument manually." at Data grid 2 'dg1'
+--
+-- The tell was in the writer: microflowSettingsToGen(d.Microflow, nil) passed a
+-- literal nil for the mappings at all three datasource sites, with a comment
+-- asserting datasources never have any — true when only actions could carry
+-- arguments, stale once the grammar accepted them on a datasource.
+--
+-- Fix: MicroflowSource/NanoflowSource carry ParameterMappings, the builder fills
+-- them from ds.Args via the shared flowArgsToParameterMappings (same $-variable
+-- vs expression rule the action path uses), and the writer passes them through.
+--
+-- KNOWN REMAINING GAP: `describe page` does not yet report the parameter
+-- mappings, so a describe → exec round-trip still loses them. The write path is
+-- correct (this script builds clean); the read-back is tracked separately.
+--
+-- Manual verification (needs a project, so `make check-mdl` only syntax-checks this):
+--
+--   mxcli exec 835-datagrid-microflow-datasource-params.mdl -p app.mpr
+--   mx check -p app.mpr
+--
+-- Expect 0 errors. Before the fix this produced CE1571 on the data grid.
+
+create module Issue835;
+create module role Issue835.User;
+
+@position(100, 100)
+create persistent entity Issue835.Item (
+  Name: string(100)
+);
+
+create microflow Issue835.GET_ItemByName ( Name: string )
+returns list of Issue835.Item as $items
+begin
+  retrieve $items from Issue835.Item;
+  return $items;
+end;
+
+create page Issue835."P_Grid" (
+  Title: 'Grid',
+  Layout: Atlas_Core.Atlas_Default
+) {
+  datagrid dg1 (datasource: microflow Issue835.GET_ItemByName(Name: 'abc')) {
+    column c1 (attribute: Name, caption: 'Name')
+  }
+};
