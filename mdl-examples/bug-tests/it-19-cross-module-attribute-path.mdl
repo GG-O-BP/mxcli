@@ -1,0 +1,90 @@
+-- ============================================================================
+-- Issue-tracker finding #19: a widget could not bind through a CROSS-MODULE
+-- association
+-- ============================================================================
+--
+-- Symptom (before fix): `Issue_Assignee/Name` passed `mxcli check`, executed,
+-- and then failed the build:
+--
+--   [error] [CE1613] "The selected attribute
+--   'IT19.Issue.Issue_Assignee/Name' no longer exists." at Text 'txtAssignee'
+--
+-- The error text is literally the raw MDL path glued onto the context entity:
+-- resolution failed and the writer fell back to a flat attribute name instead
+-- of a DomainModels$AttributeRef with an IndirectEntityRef of hops.
+--
+-- Root cause: a domain model keeps associations in TWO lists. `Associations`
+-- holds the intra-module ones (both ends BY_ID); an association whose target is
+-- in another module is a `DomainModels$CrossAssociation` in `CrossAssociations`,
+-- where only the local end is BY_ID and the remote end is the BY_NAME
+-- `ChildRef`. The resolvers searched only the first list.
+--
+-- SCOPE CORRECTION: the finding framed this as a System-module limitation, but
+-- the trigger is cross-module, not System — a plain second app module (the
+-- IT19B hop below) reproduces it identically. Fixing "System" alone would have
+-- left the more common case broken.
+--
+-- Two related quirks in the same finding, also fixed:
+--
+--   * A ComboBox's `Association:` was qualified with the module of its OWN
+--     option list, because the `DataSource:` mapping runs first and moves the
+--     entity context. A bare `Issue_Assignee` on a ComboBox over `System.User`
+--     became `System.Issue_Assignee` → CE1613 "The selected association … no
+--     longer exists". An association belongs to the CONTAINING entity.
+--   * `CreatedDate: AutoCreatedDate` is the spelling mxcli requires when
+--     declaring an audit member (it rejects any other name and tells you to use
+--     this one), but the member is stored as `createdDate` — so binding a
+--     widget to the name you just declared failed CE1613, while the
+--     undocumented lowercase form worked.
+--
+-- Expected after fix: this script executes and `mx check` reports 0 errors.
+-- ============================================================================
+
+create module IT19;
+create module IT19B;
+
+create or modify persistent entity IT19.Project (
+  Code: String(50)
+);
+
+create or modify persistent entity IT19B.Approver (
+  ApproverName: String(100)
+);
+
+create or modify persistent entity IT19.Issue (
+  Title: String(200),
+  CreatedDate: AutoCreatedDate
+);
+
+create or modify association IT19.Issue_Project  from IT19.Issue to IT19.Project;
+create or modify association IT19.Issue_Approver from IT19.Issue to IT19B.Approver;
+create or modify association IT19.Issue_Assignee from IT19.Issue to System.User;
+
+create or replace page IT19.IssuePage
+(
+  Title: 'Issue',
+  Layout: Atlas_Core.Atlas_Default,
+  Params: { $Issue: IT19.Issue }
+)
+{
+  DATAVIEW dvIssue (DataSource: $Issue) {
+    -- same module: worked before the fix, kept as a regression guard
+    DYNAMICTEXT txtProject (Attribute: Issue_Project/Code)
+    -- another app module: CE1613 before the fix
+    DYNAMICTEXT txtApprover (Attribute: Issue_Approver/ApproverName)
+    -- the platform's System module: CE1613 before the fix
+    DYNAMICTEXT txtAssignee (Attribute: Issue_Assignee/Name)
+    -- the audit member under its DECLARED name: CE1613 before the fix
+    DYNAMICTEXT txtCreated (Attribute: CreatedDate)
+
+    -- a ComboBox binds an association on the CONTAINING entity while its own
+    -- datasource is the option list; the bare name must not pick up the option
+    -- list's module
+    COMBOBOX cbAssignee (
+      Label: 'Assignee',
+      Association: Issue_Assignee,
+      DataSource: DATABASE System.User,
+      CaptionAttribute: Name
+    )
+  }
+}

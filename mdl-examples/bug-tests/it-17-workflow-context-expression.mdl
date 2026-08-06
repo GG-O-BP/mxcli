@@ -1,0 +1,61 @@
+-- ============================================================================
+-- Issue-tracker finding #17: a workflow decision's condition failed CE0117
+-- ============================================================================
+--
+-- Symptom (before fix): a `decision '<expression>'` referencing the workflow
+-- context passed `mxcli check` and then failed the Mendix build:
+--
+--   [error] [CE0117] "Error(s) in expression." at Decision 'Decision'
+--
+-- Root cause: mxcli always stores the workflow's context parameter under the
+-- name `WorkflowContext`, and Mendix expressions are case-sensitive. Two ways
+-- of naming the context therefore reached Mendix as undefined variables:
+--
+--   1. `$workflowContext` — the spelling this repo's own workflow skill used
+--      in its examples. Only call-microflow `with (...)` mappings normalized
+--      the casing; a decision's condition was written through verbatim.
+--   2. `$Ctx` — whatever the author declared in `parameter $Ctx:`. The
+--      grammar accepts a variable name there, but it was parsed and then
+--      discarded, so the declared name resolved to nothing.
+--
+-- Fix: one normalizer aliases the declared name onto `WorkflowContext` and
+-- normalizes casing, applied to every expression an author can write in a
+-- workflow — decision conditions, user task due dates and XPath targeting,
+-- wait-for-timer delays, and call-microflow parameter mappings.
+--
+-- Expected after fix: this script executes and `mx check` reports 0 errors.
+-- Verify with `describe workflow` that all three spellings round-trip as
+-- `$WorkflowContext`.
+-- ============================================================================
+
+create module IT17;
+
+create or modify persistent entity IT17.Request (
+  Title: String(200),
+  Total: Decimal
+);
+
+-- The header declares `$Ctx`; every spelling below must resolve to the stored
+-- `WorkflowContext` parameter.
+create or replace workflow IT17.ApprovalFlow
+  parameter $Ctx: IT17.Request
+  display 'IT17 Approval'
+begin
+  -- 1. the author's own declared name
+  decision '$Ctx/Total > 1000'
+    outcomes
+      true  -> { }
+      false -> { };
+
+  -- 2. the canonical name in the casing the skill used to document
+  decision '$workflowContext/Title != '''''
+    outcomes
+      true  -> { }
+      false -> { };
+
+  -- 3. the canonical name, spelled exactly
+  decision '$WorkflowContext/Total > 0'
+    outcomes
+      true  -> { }
+      false -> { };
+end workflow;
