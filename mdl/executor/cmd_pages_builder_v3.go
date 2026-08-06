@@ -797,6 +797,20 @@ func (pb *pageBuilder) buildDataSourceV3(ds *ast.DataSourceV3) (pages.DataSource
 			destEntity = pb.resolveAssociationDestination(path, pb.entityContext)
 		}
 
+		// An empty DestinationEntity is a by-name reference Mendix resolves to
+		// null: the loader throws ArgumentNullException setting DestinationEntityId
+		// and the whole project becomes unopenable — Studio Pro refuses it and
+		// `mx check` dies before validating anything. Refuse instead of writing a
+		// structurally invalid unit; the author can name the destination explicitly
+		// as `Assoc/Module.Entity`. (issuetracker #14)
+		if destEntity == "" {
+			return nil, "", mdlerrors.NewValidationf(
+				"cannot resolve the destination entity of association %q for datasource %q — "+
+					"writing it unresolved would produce a project Mendix cannot open; "+
+					"name the destination explicitly, e.g. `%s/Module.Entity`",
+				path, ds.Reference, path)
+		}
+
 		// Return destEntity as the child context so column bindings inside the
 		// widget can resolve short attribute names against it.
 		return &pages.AssociationSource{
@@ -930,6 +944,20 @@ func (pb *pageBuilder) resolveAssociationDestination(assocQN, contextEntity stri
 				if contextEntity == parentEntity {
 					return childEntity
 				}
+			}
+			// One end may be unresolvable: entityQNByID only sees the project's
+			// own domain models, so an association ending in a System entity
+			// (e.g. `from W.Issue to System.Workflow`) yields "" for that side.
+			// The context then matches neither end and the old code returned the
+			// empty child — an empty DestinationEntity is a by-name reference
+			// Mendix resolves to null, which makes the whole .mpr UNLOADABLE
+			// (issuetracker #14). Prefer whichever end actually resolved and is
+			// not the context.
+			if childEntity == "" && parentEntity != "" && parentEntity != contextEntity {
+				return parentEntity
+			}
+			if parentEntity == "" && childEntity != "" && childEntity != contextEntity {
+				return childEntity
 			}
 			// No context or mismatch — default to the child (TO) side, which
 			// matches the common FROM=context pattern.

@@ -1,0 +1,51 @@
+-- ============================================================================
+-- Issue-tracker finding #14: an association datasource wrote a null
+-- DestinationEntity, making the .mpr unloadable
+-- ============================================================================
+--
+-- Symptom (before fix): a page datasource navigating an association whose other
+-- end is a System entity wrote `DestinationEntity: ""`. That is a by-name
+-- reference Mendix resolves to null, so the project could not be LOADED:
+--
+--   System.InvalidOperationException: An error occurred when trying to set the
+--   'DestinationEntity' property of a Entity ref step in a Page with ID ...
+--   ---> System.ArgumentNullException: Value cannot be null. (Parameter 'value')
+--       at ...DomainModels.Refs.EntityRefStep.set_DestinationEntityId
+--
+-- Not a build error — Studio Pro would not open the project and `mx check` died
+-- before validating anything, taking the whole project down rather than one page.
+--
+-- Narrower than first reported: nesting is irrelevant. The trigger is any
+-- association datasource whose destination cannot be resolved, which happens
+-- when one end lives in System — resolveAssociationDestination only sees the
+-- project's own domain models, so that side came back "" and the fallback
+-- returned the empty end.
+--
+-- Fix: prefer whichever end actually resolved, and — decisively — REFUSE to
+-- write an unresolved destination rather than emit a structurally invalid unit.
+-- Naming the destination explicitly (`Assoc/Module.Entity`) always works and is
+-- what the error suggests; that form is exercised below.
+--
+-- Verified on Mendix 11.12.1: this script checks 0 errors, and the same page
+-- written without the explicit destination is refused instead of corrupting the
+-- project.
+-- ============================================================================
+
+create module IT14;
+create entity IT14.Issue (Title: String);
+create association IT14.Issue_Workflow from IT14.Issue to System.Workflow;
+
+create page IT14.TaskPage (
+  Title: 'Task',
+  Layout: Atlas_Core.Atlas_Default,
+  Params: { $Task: System.WorkflowUserTask }
+) {
+  layoutgrid g { row r { column c (DesktopWidth: 12) {
+    dataview dvWf (datasource: $Task/System.WorkflowUserTask_Workflow) {
+      -- Explicit destination: required when the association ends in System.
+      gallery galIssue (datasource: $currentObject/IT14.Issue_Workflow/IT14.Issue) {
+        dynamictext t (Content: '{1}', ContentParams: [{1} = Title])
+      }
+    }
+  } } }
+}
