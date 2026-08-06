@@ -256,7 +256,10 @@ func serExportValueElement(id string, elem *model.ExportMappingElement, parentPa
 		{Key: "XmlPath", Value: ""},
 		{Key: "Type", Value: dataType},
 		{Key: "MinOccurs", Value: int32(0)},
-		{Key: "MaxOccurs", Value: int32(0)},
+		// Mirror the bound schema element: Mendix cross-validates the two and
+		// reports CE5015 on any mismatch. Hardcoding 0 only worked while the
+		// JSON structure also wrote 0 for every element (#841).
+		{Key: "MaxOccurs", Value: int32(elem.MaxOccurs)},
 		{Key: "Nillable", Value: true},
 		{Key: "IsDefaultType", Value: false},
 		{Key: "ElementType", Value: "Value"},
