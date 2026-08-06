@@ -311,6 +311,26 @@ show security matrix in Shop;
 describe user role AppAdmin;
 ```
 
+### What counts as a member of an entity
+
+An access rule has to cover **every** member of the entity, or Mendix fails the
+build with `CE0066 "Entity access is out of date"` — a partially covered rule is
+worse than no rule at all. `read *` / `write *` cover them all, including the
+ones that are easy to overlook:
+
+| Member | Named in a GRANT as | Notes |
+|--------|--------------------|-------|
+| Attributes (own and inherited) | the attribute name | see "Inherited members" above |
+| Association, `OWNER Default` | the association name | **on the FROM entity only** — adding it to the TO side is itself a CE0066 |
+| Association, `OWNER Both` | the association name | on **both** entities — each end owns it |
+| `createdDate` / `changedDate` | the member name | covered by the rule's **default** only; Mendix stores no per-member access for them |
+| `owner` / `changedBy` | — | emitted automatically as `System.owner` / `System.changedBy` |
+
+Audit members are the one case where naming a member cannot change its rights:
+`grant R on M.E (write *, read (createdDate))` is refused, because Mendix has no
+member access to write for it and a rule that carries one fails CE0066. Let the
+rule's default cover it, or change the default.
+
 ## Common Mistakes
 
 1. **Creating module roles before the module exists** — `create module` must come first

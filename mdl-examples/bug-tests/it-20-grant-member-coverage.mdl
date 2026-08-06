@@ -1,0 +1,71 @@
+-- ============================================================================
+-- Issue-tracker finding #20: GRANT could not cover an entity's full member set
+-- ============================================================================
+--
+-- Two categories of member were rejected by mxcli's own validator:
+--
+--   Error: entity IT.Issue has no member(s) changedDate, createdDate; ...
+--   Error: entity IT.Label has no member(s) Issue_Label; ...
+--
+-- and a `read * / write *` rule that looked complete still failed the build:
+--
+--   [error] [CE0066] "Entity access is out of date. Please update security by
+--   clicking the 'Update security' button in the domain model editor."
+--
+-- which makes partial coverage worse than none.
+--
+-- Root causes — two different things, both about what counts as a member:
+--
+--   1. `OWNER Both` makes a reference set a member of BOTH ends. mxcli emitted
+--      the MemberAccess only for the FROM entity (ParentID), and
+--      ReconcileMemberAccesses independently applied the same FROM-only rule,
+--      so it also stripped the entry back out on every subsequent write. The TO
+--      entity's rule was therefore always incomplete → CE0066. Verified on
+--      mxbuild 11.12.1: the identical model with `OWNER Default` checks clean,
+--      so the owner mode is the trigger, not the reference set.
+--   2. Audit members (createdDate / changedDate) are entity FLAGS, not entries
+--      in the attribute list, so the member walk never yielded them and naming
+--      one was reported as "no member" — which is simply wrong, Mendix does
+--      treat them as members.
+--
+-- What Mendix will NOT accept is a MemberAccess row for an audit member: an
+-- entity storing them checks clean with no entry, and a rule that carries one
+-- fails CE0066 (verified). Their access comes from the rule's default. So
+-- naming one is now accepted, and asking for rights that DIFFER from the
+-- default is refused with that reason rather than silently dropped — see
+-- it-20-grant-audit-member-rights.fail.mdl.
+--
+-- Expected after fix: this script executes and `mx check` reports 0 errors.
+-- ============================================================================
+
+create module IT20;
+
+create or modify persistent entity IT20.Issue (
+  IssueTitle: String(200),
+  CreatedDate: AutoCreatedDate,
+  ChangedDate: AutoChangedDate
+);
+
+create or modify persistent entity IT20.Label (
+  LabelName: String(50)
+);
+
+-- Owned by BOTH ends: the association is a member of Issue AND of Label.
+create or modify association IT20.Issue_Label
+  from IT20.Issue to IT20.Label
+  type ReferenceSet
+  owner Both;
+
+create module role IT20.Admin;
+create user role IT20Admin (IT20.Admin);
+
+-- Wildcards cover every member, including the audit members and the
+-- association on both ends.
+grant IT20.Admin on IT20.Issue (create, delete, read *, write *);
+grant IT20.Admin on IT20.Label (create, delete, read *, write *);
+
+-- The TO-side association can also be named for per-member rights.
+grant IT20.Admin on IT20.Label (create, delete, write *, read (Issue_Label));
+
+-- Naming an audit member at the rule's own default is a no-op, not an error.
+grant IT20.Admin on IT20.Issue (create, delete, read *, read (createdDate, changedDate));

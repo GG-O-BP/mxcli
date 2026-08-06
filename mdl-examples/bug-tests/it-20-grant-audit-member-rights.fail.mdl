@@ -1,0 +1,35 @@
+-- ============================================================================
+-- Issue-tracker finding #20 (companion): per-member rights on an audit member
+-- are refused, not silently dropped
+-- ============================================================================
+--
+-- Mendix stores no MemberAccess for `createdDate` / `changedDate`. An entity
+-- that stores them checks clean with no entry, and a rule that carries one
+-- fails the build with CE0066 (verified on mxbuild 11.12.1). Their access can
+-- therefore only come from the rule's DEFAULT.
+--
+-- Naming one is fine (it is a real member — see
+-- it-20-grant-member-coverage.mdl). Asking for rights that differ from the
+-- default is not expressible, so mxcli refuses with that reason instead of
+-- accepting the statement and quietly writing something else.
+--
+-- Expected: the final GRANT fails with
+--
+--   IT20F.Doc.createdDate is a Mendix audit member: its access follows the
+--   rule's default and cannot be set per member ...
+--
+-- NOT with the old, misleading "entity IT20F.Doc has no member(s) createdDate".
+-- ============================================================================
+
+create module IT20F;
+
+create or modify persistent entity IT20F.Doc (
+  DocTitle: String(200),
+  CreatedDate: AutoCreatedDate
+);
+
+create module role IT20F.Admin;
+create user role IT20FAdmin (IT20F.Admin);
+
+-- Default is ReadWrite (write *), but createdDate is asked for read-only.
+grant IT20F.Admin on IT20F.Doc (create, delete, write *, read (createdDate));
