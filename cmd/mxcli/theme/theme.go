@@ -166,6 +166,68 @@ func Get(name string) (*Theme, error) {
 	return &t, nil
 }
 
+// Installed reports which embedded themes have a block in projectDir, read from
+// the mxcli:theme:begin markers rather than assumed.
+//
+// `theme remove` with no name used to fall back to the default theme, which on a
+// project themed with anything else removed nothing, reported every file as
+// unchanged and exited 0 — a silent no-op on the documented invocation.
+func Installed(projectDir string) ([]string, error) {
+	all, err := List()
+	if err != nil {
+		return nil, err
+	}
+	var found []string
+	for _, t := range all {
+		paths, err := assetPaths(t.Name)
+		if err != nil {
+			return nil, err
+		}
+		if themeHasBlockIn(projectDir, paths, t.Name) {
+			found = append(found, t.Name)
+		}
+	}
+	return found, nil
+}
+
+func themeHasBlockIn(projectDir string, paths map[string]bool, name string) bool {
+	for rel := range paths {
+		if !isBlockFile(rel) {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join(projectDir, filepath.FromSlash(rel)))
+		if err != nil {
+			continue
+		}
+		if _, ok := findBlock(string(body), name); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// Resolve picks the theme a bare `apply` or `remove` should act on: whatever is
+// installed, falling back to fallback when nothing is. A project carrying two
+// themes is reported rather than guessed at.
+func Resolve(projectDir, fallback string) (string, error) {
+	installed, err := Installed(projectDir)
+	if err != nil {
+		return "", err
+	}
+	switch len(installed) {
+	case 0:
+		if fallback == "" {
+			return "", fmt.Errorf("no mxcli theme found in %s (run `mxcli theme apply` to add one)", projectDir)
+		}
+		return fallback, nil
+	case 1:
+		return installed[0], nil
+	default:
+		return "", fmt.Errorf("%s carries more than one theme (%s); name the one you mean",
+			projectDir, strings.Join(installed, ", "))
+	}
+}
+
 // Apply writes a theme's files into projectDir.
 //
 // projectDir is the folder holding the .mpr — the theme/ tree sits beside it.
@@ -295,9 +357,17 @@ func remove(projectDir, name string, opts Options, protect map[string]bool) (*Re
 			return nil
 		}
 		// A file that is entirely ours is deleted rather than left empty — unless
-		// the incoming theme is about to write it, in which case leave the empty
-		// shell for its apply to fill.
+		// the incoming theme is about to write it, in which case the shell is
+		// truncated and left for its apply to fill. Truncating is the point: an
+		// earlier version returned here without writing, so the outgoing theme's
+		// block survived and the incoming apply appended a second one, leaving
+		// two themes mapping the same Atlas variables in one file.
 		if out == "" && protect[rel] {
+			if !opts.DryRun {
+				if err := os.WriteFile(target, nil, 0o644); err != nil {
+					return err
+				}
+			}
 			res.Files = append(res.Files, FileResult{Path: rel, Action: action})
 			return nil
 		}

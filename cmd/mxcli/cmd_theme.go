@@ -103,6 +103,9 @@ the same Atlas variables would fight in the cascade.
 honours a theme-light / theme-dark class on the root element. --variant light or
 dark bakes a single palette with no switching.
 
+With no name, apply refreshes the theme the project already has, and falls back
+to the default only when it has none.
+
 Examples:
   mxcli theme apply -p app.mpr
   mxcli theme apply ledger -p app.mpr
@@ -113,12 +116,16 @@ Examples:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		dir, err := themeProjectDir(cmd)
+		if err != nil {
+			return err
+		}
+		// A bare `apply` refreshes the theme the project already has; only a
+		// project with none falls back to the default.
 		name := theme.DefaultName
 		if len(args) == 1 {
 			name = args[0]
-		}
-		dir, err := themeProjectDir(cmd)
-		if err != nil {
+		} else if name, err = theme.Resolve(dir, theme.DefaultName); err != nil {
 			return err
 		}
 		force, _ := cmd.Flags().GetBool("force")
@@ -146,18 +153,33 @@ Examples:
 }
 
 var themeRemoveCmd = &cobra.Command{
-	Use:           "remove [name]",
-	Short:         "Remove a theme's generated blocks from a project",
+	Use:   "remove [name]",
+	Short: "Remove a theme's generated blocks from a project",
+	Long: `Remove a theme's generated blocks from a project.
+
+With no name, the installed theme is read from the mxcli:theme markers in the
+project; if it has no theme, that is an error rather than a silent no-op.
+
+A block carrying local edits is reported and left alone unless --force is given.
+
+Examples:
+  mxcli theme remove -p app.mpr
+  mxcli theme remove ledger -p app.mpr --dry-run`,
 	Args:          cobra.MaximumNArgs(1),
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		name := theme.DefaultName
-		if len(args) == 1 {
-			name = args[0]
-		}
 		dir, err := themeProjectDir(cmd)
 		if err != nil {
+			return err
+		}
+		// No fallback here. Defaulting to the built-in theme meant that on a
+		// project themed with any other one, remove reported every file as
+		// unchanged and exited 0 — leaving the theme fully installed.
+		name := ""
+		if len(args) == 1 {
+			name = args[0]
+		} else if name, err = theme.Resolve(dir, ""); err != nil {
 			return err
 		}
 		force, _ := cmd.Flags().GetBool("force")

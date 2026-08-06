@@ -13,6 +13,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`mxcli theme remove` with no name removed nothing** — it targeted the built-in default rather than the theme actually installed, so on a project themed with `ledger` or `console` it reported every file as unchanged and exited 0, leaving the theme in place. Both `apply` and `remove` now read the installed theme from the `mxcli:theme` markers; removing from a project with no theme is an error rather than a silent no-op. Reported from the RssReader test build.
+- **Switching themes orphaned the previous theme's block in `_mxcli-atlas-map.scss`** — the file the three themes share was left with both blocks, doubling it. Harmless while the Atlas maps are identical, but it broke the documented "only one theme at a time" invariant. Reported from the RssReader test build.
+- **The topbar language selector was unreadable in every dark palette** (1.13:1 measured contrast, against a WCAG AA target of 4.5). Atlas paints it from `--bg-color-secondary` with a `#fff` fallback at a specificity the theme's guard did not match. Now re-declared at matching specificity and resolved through the rail token — 17.79:1 light, 19.47:1 dark. Reported from the RssReader test build.
 - **JavaScript action sources were written to the wrong directory** — `CREATE JAVASCRIPT ACTION` wrote to `javascriptsource/<ModuleName>/actions/`, but Mendix reads a **lowercased** module directory. MxBuild found nothing there, generated a stub whose body throws `JavaScript action was not implemented`, and bundled that — so the action parsed, passed `mxcli check`, built cleanly, and threw the moment it ran. Only reproduced on a case-sensitive filesystem, which is why it went unnoticed on macOS and Windows.
 
 ## [0.16.0] - 2026-07-12
