@@ -86,10 +86,23 @@ func TestFormatJumpTo_CaptionCommentFormat(t *testing.T) {
 			want:    "jump to target1 comment 'Go Back to Review'",
 		},
 		{
-			name:    "name fallback when caption empty",
+			// Was: fell back to the activity name and rendered
+			// `comment 'jumpAct1'`. That comment was never authored — echoing it
+			// made a plain `jump to X;` round-trip as `jump to X comment '…'`
+			// (issuetracker #16). An absent caption must emit no comment clause.
+			name:    "no comment clause when caption empty",
 			caption: "",
 			actName: "jumpAct1",
-			want:    "jump to target1 comment 'jumpAct1'",
+			want:    "jump to target1;",
+		},
+		{
+			// buildJumpTo defaults Caption to the TARGET name, which is the exact
+			// shape issuetracker #16 reported. It carries no authored information,
+			// so it must not be echoed either.
+			name:    "no comment clause when caption is the derived target name",
+			caption: "target1",
+			actName: "jumpAct2",
+			want:    "jump to target1;",
 		},
 		{
 			name:    "caption with single quote escaped",
