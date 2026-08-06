@@ -37,6 +37,10 @@ type RunOptions struct {
 	// SkipBuild skips the MxBuild step (reuse existing deployment).
 	SkipBuild bool
 
+	// Local runs the app with mxcli's own local runtime (`run --local`) instead
+	// of a Docker container. Everything else about the run is unchanged.
+	Local bool
+
 	// Timeout for runtime startup and test execution.
 	Timeout time.Duration
 
@@ -138,36 +142,18 @@ func Run(opts RunOptions) (*SuiteResult, error) {
 	}
 	fmt.Fprintf(w, "  After-startup set to %s\n", mxTestRunner)
 
-	// Step 4: Build and restart
-	dockerDir := filepath.Join(filepath.Dir(opts.ProjectPath), ".docker")
-	if err := ensureDockerStack(opts.ProjectPath, dockerDir, w); err != nil {
-		reportCleanup(w, cleanup(opts.ProjectPath, state, w))
-		return nil, fmt.Errorf("docker init: %w", err)
+	// Steps 4+5: build, run the app, and capture the runner's log output. The
+	// local and Docker paths differ only in how the app is started and where its
+	// log is read from; everything before and after is shared.
+	var logOutput string
+	if opts.Local {
+		logOutput, err = runLocalAndCapture(opts, timeout, w)
+	} else {
+		logOutput, err = runDockerAndCapture(opts, timeout, w)
 	}
-
-	if !opts.SkipBuild {
-		fmt.Fprintln(w, "Building project...")
-		if err := execMxcli(opts.ProjectPath, "docker", "build", "-p", opts.ProjectPath, "--skip-check"); err != nil {
-			reportCleanup(w, cleanup(opts.ProjectPath, state, w))
-			return nil, fmt.Errorf("docker build: %w", err)
-		}
-	}
-
-	fmt.Fprintln(w, "Restarting runtime...")
-	// Stop existing containers
-	runCompose(dockerDir, "down")
-	// Start fresh
-	if err := runCompose(dockerDir, "up", "--detach", "--force-recreate"); err != nil {
-		reportCleanup(w, cleanup(opts.ProjectPath, state, w))
-		return nil, fmt.Errorf("docker up: %w", err)
-	}
-
-	// Step 5: Wait for runtime and capture logs
-	fmt.Fprintf(w, "Waiting for test execution (timeout: %s)...\n", timeout)
-	logOutput, err := captureRuntimeLogs(dockerDir, timeout, w, opts.Verbose)
 	if err != nil {
 		reportCleanup(w, cleanup(opts.ProjectPath, state, w))
-		return nil, fmt.Errorf("runtime execution: %w", err)
+		return nil, err
 	}
 
 	// Step 6: Parse results from logs
@@ -452,6 +438,37 @@ func reportCleanup(w io.Writer, err error) {
 	}
 	fmt.Fprintf(w, "\nERROR: cleanup failed — the project has been left modified:\n%v\n", err)
 	fmt.Fprintf(w, "Check the after-startup microflow and the %s module before committing.\n", mxTestModule)
+}
+
+// runDockerAndCapture builds the project, restarts the compose stack, and reads
+// the test runner's output from the container log.
+func runDockerAndCapture(opts RunOptions, timeout time.Duration, w io.Writer) (string, error) {
+	dockerDir := filepath.Join(filepath.Dir(opts.ProjectPath), ".docker")
+	if err := ensureDockerStack(opts.ProjectPath, dockerDir, w); err != nil {
+		return "", fmt.Errorf("docker init: %w", err)
+	}
+
+	if !opts.SkipBuild {
+		fmt.Fprintln(w, "Building project...")
+		if err := execMxcli(opts.ProjectPath, "docker", "build", "-p", opts.ProjectPath, "--skip-check"); err != nil {
+			return "", fmt.Errorf("docker build: %w", err)
+		}
+	}
+
+	fmt.Fprintln(w, "Restarting runtime...")
+	runCompose(dockerDir, "down")
+	if err := runCompose(dockerDir, "up", "--detach", "--force-recreate"); err != nil {
+		return "", fmt.Errorf("docker up: %w\n"+
+			"  hint: this environment has no Docker daemon. Pass --local to run the tests "+
+			"against mxcli's own runtime instead — no container needed.", err)
+	}
+
+	fmt.Fprintf(w, "Waiting for test execution (timeout: %s)...\n", timeout)
+	logOutput, err := captureRuntimeLogs(dockerDir, timeout, w, opts.Verbose)
+	if err != nil {
+		return logOutput, fmt.Errorf("runtime execution: %w", err)
+	}
+	return logOutput, nil
 }
 
 // captureRuntimeLogs tails the docker compose logs, waiting for MXTEST:END or timeout.

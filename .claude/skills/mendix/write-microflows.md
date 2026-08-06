@@ -491,6 +491,33 @@ end loop;
 - The loop variable type is **automatically derived** from the list type (e.g., `list of Test.Product` → `Test.Product`)
 - CHANGE statements inside loops use the derived type to resolve attribute names
 
+> **Nothing a loop defines survives past `end loop;`.** The iterator *and*
+> anything the body creates (a `retrieve`, a `$X = create …`, a call output) are
+> visible only inside the body; using one afterwards is
+> `CE0108 "Variable 'X' is defined but not in scope at this location."`
+> (`mxcli check` flags it as **MDL053**).
+>
+> ```mdl
+> -- WRONG: $Last is created inside the loop, read outside it
+> loop $Item in $Items
+> begin
+>   $Last = create Test.Product (Name = $Item/Name);
+> end loop;
+> commit $Last;                        -- MDL053 / CE0108
+>
+> -- RIGHT: declare before the loop, assign inside, read after
+> declare $LastName string = '';
+> loop $Item in $Items
+> begin
+>   set $LastName = $Item/Name;
+> end loop;
+> log info node 'Test' $LastName;
+> ```
+>
+> Visibility and *naming* are separate rules: names must also be unique across
+> the **whole** microflow, so two loops cannot share an iterator name either
+> (`CE0111`, flagged as **MDL052**).
+
 ### Performance: Batch Commit After Loop
 
 **CRITICAL**: Do NOT commit inside a loop. Each `commit` inside a loop issues a separate database transaction, which causes N round-trips for N records and degrades performance significantly.

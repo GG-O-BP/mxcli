@@ -169,20 +169,40 @@ func parseOQLFeedback(rawFeedback json.RawMessage) (*OQLResult, error) {
 		return result, nil
 	}
 
-	// Extract column order from the first row using json.Decoder Token() method
-	columns, err := extractColumnOrder(rows[0])
-	if err != nil {
-		return nil, fmt.Errorf("extracting columns: %w", err)
-	}
-	result.Columns = columns
-
-	// Parse each row preserving column order
+	// The column set is the union of the keys of every row, not the keys of the
+	// first one: the runtime omits a column from a row's JSON object when its
+	// value is null, so a column that happens to be null in row 1 is absent
+	// there and would otherwise be dropped from the whole result — silently
+	// answering a different query than the one that was asked.
+	var columns []string
+	known := make(map[string]bool)
+	rowMaps := make([]map[string]any, 0, len(rows))
 	for _, rawRow := range rows {
 		var rowMap map[string]any
 		if err := json.Unmarshal(rawRow, &rowMap); err != nil {
 			return nil, fmt.Errorf("parsing row: %w", err)
 		}
+		rowMaps = append(rowMaps, rowMap)
 
+		// Re-scanning a row for key order is only needed when it carries a
+		// column not seen yet; the common case (every row has the same keys)
+		// costs one length check.
+		if !hasOnlyKnownKeys(rowMap, known) {
+			keys, err := extractColumnOrder(rawRow)
+			if err != nil {
+				return nil, fmt.Errorf("extracting columns: %w", err)
+			}
+			columns = mergeColumnOrder(columns, keys)
+			for _, col := range columns {
+				known[col] = true
+			}
+		}
+	}
+	result.Columns = columns
+
+	// Project each row onto the merged column order. A column missing from a
+	// row is a null value, which formats as NULL.
+	for _, rowMap := range rowMaps {
 		row := make([]any, len(columns))
 		for i, col := range columns {
 			row[i] = rowMap[col]
@@ -191,6 +211,48 @@ func parseOQLFeedback(rawFeedback json.RawMessage) (*OQLResult, error) {
 	}
 
 	return result, nil
+}
+
+// hasOnlyKnownKeys reports whether every key of rowMap is already a known column.
+func hasOnlyKnownKeys(rowMap map[string]any, known map[string]bool) bool {
+	if len(rowMap) > len(known) {
+		return false
+	}
+	for key := range rowMap {
+		if !known[key] {
+			return false
+		}
+	}
+	return true
+}
+
+// mergeColumnOrder folds one row's key order into the accumulated column list.
+//
+// New keys are inserted directly after the last key that was already known,
+// rather than appended, so a column absent from earlier rows still lands in its
+// SELECT position: merging [A, C] with [A, B, C] yields [A, B, C], not
+// [A, C, B].
+func mergeColumnOrder(columns []string, rowKeys []string) []string {
+	index := make(map[string]int, len(columns))
+	for i, col := range columns {
+		index[col] = i
+	}
+
+	insertAt := 0 // just past the last key of this row found in columns
+	for _, key := range rowKeys {
+		if pos, ok := index[key]; ok {
+			insertAt = pos + 1
+			continue
+		}
+		columns = append(columns, "")
+		copy(columns[insertAt+1:], columns[insertAt:])
+		columns[insertAt] = key
+		for i := insertAt; i < len(columns); i++ {
+			index[columns[i]] = i
+		}
+		insertAt++
+	}
+	return columns
 }
 
 // extractColumnOrder uses json.Decoder to preserve key order from a JSON object.

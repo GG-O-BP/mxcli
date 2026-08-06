@@ -235,6 +235,12 @@ func parseRuntimeSetting(s string) (string, any, error) {
 
 // deriveDBName turns a project file name into a safe Postgres database name:
 // lowercased, non-alphanumerics collapsed to underscores, leading digit prefixed.
+// DeriveDBName is the local-run database name for a project: the .mpr file name
+// lowercased and sanitised to a legal identifier. Exported so callers that boot
+// their own local app (e.g. the test runner, which appends a suffix to keep test
+// data out of the dev database) derive the same base name.
+func DeriveDBName(projectPath string) string { return deriveDBName(projectPath) }
+
 func deriveDBName(projectPath string) string {
 	base := strings.TrimSuffix(filepath.Base(projectPath), filepath.Ext(projectPath))
 	var b strings.Builder

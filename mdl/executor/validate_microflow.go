@@ -88,6 +88,11 @@ func (v *microflowValidator) validate(body []ast.MicroflowStatement) {
 	// Duplicate loop iterator names — a Mendix loop variable is scoped to the whole
 	// microflow, so reusing a name across loops is CE0111 at build time.
 	v.checkDuplicateLoopVariables(body)
+
+	// The other half of that rule: names are unique flow-wide, but a loop's
+	// variables are only VISIBLE inside its body, so using one after the loop
+	// is CE0108.
+	v.checkLoopScoping(body)
 }
 
 // checkDuplicateLoopVariables flags a loop iterator name used by more than one

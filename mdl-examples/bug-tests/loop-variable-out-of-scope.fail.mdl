@@ -1,0 +1,56 @@
+-- ============================================================================
+-- Loop variable used after the loop passed mxcli check (CE0108)
+-- ============================================================================
+--
+-- Symptom (before fix): referencing a loop's variable AFTER `end loop;` passed
+-- `mxcli check` cleanly, and `mx check` then failed with
+--
+--   [error] [CE0108] "Variable 'item' is defined but not in scope at this
+--   location." at Change object activity
+--
+-- Two flavours, both reproduced against mxbuild 11.12.1:
+--   1. the loop ITERATOR itself ($item below)
+--   2. anything the loop BODY introduces ($Inner below) — a retrieve, a create,
+--      a call output
+--
+-- Note the sibling rule: MDL052 rejects two loops REUSING an iterator name,
+-- because Mendix requires variable names to be unique across the whole
+-- microflow (CE0111). Uniqueness and visibility are different things — the name
+-- is reserved flow-wide, but it is only readable inside the loop body.
+--
+-- After fix: MDL053 rejects both flavours at check time and points at the
+-- carry-out idiom (declare before the loop, assign inside, read after).
+--
+-- Usage (expected to FAIL check):
+--   mxcli check mdl-examples/bug-tests/loop-variable-out-of-scope.fail.mdl
+-- ============================================================================
+
+create module S40;
+
+create entity S40.Thing (
+  Label : string(200)
+);
+
+-- (1) The loop iterator, used after the loop → MDL053 / CE0108.
+create microflow S40.MF_IteratorAfterLoop (
+  $Things: list of S40.Thing
+)
+begin
+  loop $item in $Things
+  begin
+    change $item (Label = 'in loop');
+  end loop;
+  change $item (Label = 'after loop');
+end;
+
+-- (2) A variable created inside the loop body, used after the loop → same.
+create microflow S40.MF_BodyVarAfterLoop (
+  $Things: list of S40.Thing
+)
+begin
+  loop $t in $Things
+  begin
+    $Inner = create S40.Thing (Label = 'x');
+  end loop;
+  change $Inner (Label = 'after loop');
+end;

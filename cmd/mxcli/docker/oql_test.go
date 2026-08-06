@@ -316,6 +316,85 @@ func TestExecuteOQL_ColumnOrder(t *testing.T) {
 	}
 }
 
+// TestParseOQLFeedback_ColumnUnionAcrossRows covers the runtime's habit of
+// omitting a column from a row's JSON object when its value is null. Taking the
+// column set from row 1 alone dropped such a column from the entire result, so
+// the table silently answered a narrower query than the one that was asked.
+func TestParseOQLFeedback_ColumnUnionAcrossRows(t *testing.T) {
+	tests := []struct {
+		name     string
+		feedback string
+		want     []string
+		wantRows [][]any
+	}{
+		{
+			name:     "column null in first row survives",
+			feedback: `{"data":[{"Name":"Alice"},{"Name":"Bob","Nickname":"Bobby"}]}`,
+			want:     []string{"Name", "Nickname"},
+			wantRows: [][]any{{"Alice", nil}, {"Bob", "Bobby"}},
+		},
+		{
+			name:     "missing middle column keeps its SELECT position",
+			feedback: `{"data":[{"A":"a1","C":"c1"},{"A":"a2","B":"b2","C":"c2"}]}`,
+			want:     []string{"A", "B", "C"},
+			wantRows: [][]any{{"a1", nil, "c1"}, {"a2", "b2", "c2"}},
+		},
+		{
+			name:     "column null in every row but one is still reported",
+			feedback: `{"data":[{"A":"a1"},{"A":"a2"},{"A":"a3","B":"b3"}]}`,
+			want:     []string{"A", "B"},
+			wantRows: [][]any{{"a1", nil}, {"a2", nil}, {"a3", "b3"}},
+		},
+		{
+			name:     "uniform rows keep first-row order",
+			feedback: `{"data":[{"Zebra":"z","Alpha":"a"},{"Zebra":"z2","Alpha":"a2"}]}`,
+			want:     []string{"Zebra", "Alpha"},
+			wantRows: [][]any{{"z", "a"}, {"z2", "a2"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := parseOQLFeedback(json.RawMessage(tt.feedback))
+			if err != nil {
+				t.Fatalf("parseOQLFeedback: %v", err)
+			}
+			if got := fmt.Sprintf("%v", result.Columns); got != fmt.Sprintf("%v", tt.want) {
+				t.Errorf("columns: got %v, want %v", result.Columns, tt.want)
+			}
+			if got, want := fmt.Sprintf("%v", result.Rows), fmt.Sprintf("%v", tt.wantRows); got != want {
+				t.Errorf("rows: got %s, want %s", got, want)
+			}
+		})
+	}
+}
+
+func TestMergeColumnOrder(t *testing.T) {
+	tests := []struct {
+		name    string
+		columns []string
+		keys    []string
+		want    string
+	}{
+		{"first row seeds the order", nil, []string{"A", "B"}, "[A B]"},
+		{"known keys change nothing", []string{"A", "B"}, []string{"A", "B"}, "[A B]"},
+		{"new key inserted in position", []string{"A", "C"}, []string{"A", "B", "C"}, "[A B C]"},
+		{"new leading key goes first", []string{"B"}, []string{"A", "B"}, "[A B]"},
+		{"new trailing key goes last", []string{"A"}, []string{"A", "B"}, "[A B]"},
+		{"two new keys keep their order", []string{"A", "D"}, []string{"A", "B", "C", "D"}, "[A B C D]"},
+		{"row with only unknown keys appends", []string{"A"}, []string{"B", "C"}, "[B C A]"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := fmt.Sprintf("%v", mergeColumnOrder(tt.columns, tt.keys))
+			if got != tt.want {
+				t.Errorf("mergeColumnOrder(%v, %v) = %s, want %s", tt.columns, tt.keys, got, tt.want)
+			}
+		})
+	}
+}
+
 // parseTestServerAddr extracts host and port from an httptest server URL.
 func parseTestServerAddr(t *testing.T, rawURL string) (string, int) {
 	t.Helper()

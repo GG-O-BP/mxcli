@@ -31,9 +31,14 @@ The test runner:
 1. Parses test files and extracts test blocks with @test/@expect annotations
 2. Generates a TestRunner microflow
 3. Injects it into the project as after-startup microflow
-4. Builds and restarts the Mendix runtime in Docker
+4. Builds and restarts the Mendix runtime (Docker, or --local)
 5. Captures structured log output to determine pass/fail
 6. Restores original project settings
+
+With --local the app runs on mxcli's own runtime instead of a container — the
+same boot as 'mxcli run --local', so no Docker daemon is needed. It uses its own
+ports (8081/8091) and its own '<project>_test' database, so a warm 'run --local'
+loop can keep serving the same project while tests run.
 
 Supports two file formats:
   .test.mdl  — Pure MDL test blocks separated by /
@@ -52,6 +57,9 @@ Examples:
   # List tests without executing
   mxcli test tests/ -p app.mpr --list
 
+  # Run without Docker, on mxcli's own local runtime
+  mxcli test tests/ -p app.mpr --local
+
   # Skip build (reuse existing deployment)
   mxcli test tests/ -p app.mpr --skip-build
 
@@ -64,6 +72,7 @@ Examples:
 		list, _ := cmd.Flags().GetBool("list")
 		junitOutput, _ := cmd.Flags().GetString("junit")
 		skipBuild, _ := cmd.Flags().GetBool("skip-build")
+		local, _ := cmd.Flags().GetBool("local")
 		verbose, _ := cmd.Flags().GetBool("verbose")
 		color, _ := cmd.Flags().GetBool("color")
 		timeoutStr, _ := cmd.Flags().GetString("timeout")
@@ -93,6 +102,7 @@ Examples:
 			ProjectPath: projectPath,
 			TestFiles:   args,
 			SkipBuild:   skipBuild,
+			Local:       local,
 			Timeout:     timeout,
 			JUnitOutput: junitOutput,
 			Verbose:     verbose,

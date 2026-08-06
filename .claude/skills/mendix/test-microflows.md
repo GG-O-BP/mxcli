@@ -16,8 +16,22 @@ For **UI/page testing** (widget rendering, form interactions, browser tests), se
 ## Prerequisites
 
 - Mendix project with microflows to test
-- Docker stack initialized: `mxcli docker init -p app.mpr`
-- App buildable: `mxcli docker build -p app.mpr`
+- A way to run the app — **either** of:
+  - `--local` (no Docker): mxcli boots the runtime itself, the same way
+    `mxcli run --local` does. This is the only option in a container without a
+    Docker daemon, which includes Claude Code web sessions.
+  - Docker: stack initialized (`mxcli docker init -p app.mpr`) and the app
+    buildable (`mxcli docker build -p app.mpr`).
+
+```bash
+mxcli test tests/ -p app.mpr --local     # no daemon needed
+mxcli test tests/ -p app.mpr             # Docker
+```
+
+`--local` uses its own ports (app 8081, admin 8091) and its own
+`<project>_test` database, so a `mxcli run --local` dev loop can keep serving the
+same project while the tests run — the tests never write into the database you
+are looking at in the browser. The database is created on first use.
 
 ---
 
@@ -114,7 +128,7 @@ The test runner uses the **after-startup microflow** pattern:
    module already exists
 3. Generates a `MxTest.TestRunner` microflow with assertion logic and points
    after-startup at it
-4. Builds the project and restarts the Docker runtime
+4. Builds the project and restarts the runtime (Docker, or local with `--local`)
 5. Captures structured `MXTEST:` log lines for pass/fail
 6. Restores the original after-startup setting and removes the generated runner —
    the whole `MxTest` module when the runner created it, otherwise just the
