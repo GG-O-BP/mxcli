@@ -1749,18 +1749,26 @@ func objectTerminatesBeforeMerge(
 
 // formatErrorHandlingSuffix returns the ON ERROR suffix for an activity based on its ErrorHandlingType.
 // Returns empty string if no special error handling.
+//
+// Rollback is deliberately absent: it is what convertErrorHandlingType(nil)
+// stores for an activity written with no clause, and what the parser falls back
+// to when ErrorHandlingType is missing from the BSON. Read-back therefore cannot
+// tell an authored `on error rollback` from the default, and emitting it invents
+// a clause on activities that never had one (#840). Dropping it is lossless —
+// re-executing the output stores Rollback again — while emitting it is not.
+//
+// The remaining values are only ever set explicitly, so their presence in the
+// model always means the author wrote them.
 func formatErrorHandlingSuffix(errType microflows.ErrorHandlingType) string {
 	switch errType {
 	case microflows.ErrorHandlingTypeContinue:
 		return " on error continue"
-	case microflows.ErrorHandlingTypeRollback:
-		return " on error rollback"
 	case microflows.ErrorHandlingTypeCustom:
 		return " on error" // Will be followed by block
 	case microflows.ErrorHandlingTypeCustomWithoutRollback:
 		return " on error without rollback" // Will be followed by block
 	default:
-		return "" // Abort is the default, no suffix needed
+		return "" // Rollback (the stored default) and Abort emit nothing
 	}
 }
 
