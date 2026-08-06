@@ -498,7 +498,7 @@ mxcli add-tool cursor
 - `.ai-context/examples/` - Example MDL scripts
 
 **Tool-Specific:**
-- **Claude Code**: `.claude/settings.json`, `CLAUDE.md`, commands, lint-rules, skills
+- **Claude Code**: `.claude/settings.json`, `CLAUDE.md`, commands, lint-rules, `lint-config.yaml` (System module excluded from lint), skills
 - **Cursor**: `.cursorrules` - Compact MDL reference
 - **Continue.dev**: `.continue/config.json` - Custom commands and slash commands
 - **Windsurf**: `.windsurfrules` - MDL rules for Codeium

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/mendixlabs/mxcli/mdl/linter"
 	"github.com/spf13/cobra"
 )
 
@@ -211,6 +212,12 @@ Container Runtime:
 					os.Exit(1)
 				}
 			}
+		}
+
+		// Seed the lint config. `mxcli lint` reads this regardless of which AI
+		// tool was selected, so it is written outside the per-tool branches.
+		if path, created := writeDefaultLintConfig(absDir); created {
+			fmt.Printf("  Created %s (System module excluded from lint)\n", filepath.Base(path))
 		}
 
 		// Write universal skills to .ai-context/skills/
@@ -577,6 +584,63 @@ Container Runtime:
 		fmt.Println("  ./mxcli search \"pattern\"       - Search project")
 		fmt.Println("  ./mxcli lint                   - Check for issues")
 	},
+}
+
+// defaultLintConfig is the lint configuration written into a freshly
+// initialised project. System is excluded because its contents are Mendix's,
+// not the developer's: you cannot document its entities, give them access
+// rules, or rename their members. Linting it produced ~100 un-actionable
+// findings on a blank app, which buried the handful about the developer's own
+// code (issuetracker finding #9).
+const defaultLintConfig = `# mxcli lint configuration.
+# Docs: mxcli lint --help
+
+# Modules that 'mxcli lint' skips entirely.
+#
+# System is Mendix's own platform module — its entities, members and access
+# rules are not yours to change, so findings against it are noise. On a blank
+# app it accounts for the large majority of all issues.
+#
+# Marketplace modules (Atlas_Core, Atlas_Web_Content, Administration, …) are
+# equally read-only in practice; add them here if their findings distract you.
+#
+# NOTE: this list always wins. It is merged with '--exclude', and a module
+# listed here is skipped even if you ask for it with '--modules'. To lint
+# System, remove it from this list (or delete this file).
+excludeModules:
+  - System
+
+# Per-rule overrides. Examples:
+#
+# rules:
+#   QUAL002:            # missing documentation
+#     enabled: false
+#   CONV009:            # max microflow objects
+#     severity: warning
+#     options:
+#       maxObjects: 20
+rules: {}
+`
+
+// writeDefaultLintConfig creates .claude/lint-config.yaml unless the project
+// already has a lint config in any of the locations linter.FindConfigFile
+// searches. Never overwrites: init is re-runnable, and the config is meant to
+// be edited.
+func writeDefaultLintConfig(projectDir string) (string, bool) {
+	if existing := linter.FindConfigFile(projectDir); existing != "" {
+		return existing, false
+	}
+	claudeDir := filepath.Join(projectDir, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "  Error creating .claude directory for lint config: %v\n", err)
+		return "", false
+	}
+	path := filepath.Join(claudeDir, "lint-config.yaml")
+	if err := os.WriteFile(path, []byte(defaultLintConfig), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "  Error writing lint config: %v\n", err)
+		return "", false
+	}
+	return path, true
 }
 
 func findMprFile(dir string) string {
