@@ -86,7 +86,7 @@ for display in this README):
 | [VS Code Search — Quick Pick + Workspace Symbol](PROPOSAL_vscode_search.md) | Proposed | Full-text search exists in mxcli (mxcli search) but is only accessible via the terminal. |
 | [Workflow Improvements: ALTER WORKFLOW + Cross-References](PROPOSAL_workflow_improvements.md) | Proposed | Workflow support in mxcli has full CREATE/DESCRIBE/DROP/SHOW coverage with 13 activity types and BSON round-trip fidelity. |
 
-### Draft (39)
+### Draft (40)
 
 | Proposal | Status | Summary |
 |----------|--------|---------|
@@ -129,6 +129,7 @@ for display in this README):
 | [Self-Describing Syntax Feature Registry](syntax-feature-registry.md) | Draft | Branch: research/recursive-help-discovery |
 | [Version-Aware Agent Support](PROPOSAL_version_aware_agent_support.md) | Draft | Three use cases require mxcli to be version-aware at the MDL level: |
 | [warm dev loop — Docker-free run and iPad split-screen preview](PROPOSAL_mxcli_dev_warm_loop.md) | Draft | Relates to: PROPOSAL_check_mxbuild_gap_heuristics.md (the static-check gate that |
+| [Workflow / Microflow Syntax Alignment](PROPOSAL_workflow_microflow_syntax_alignment.md) | Draft | MDL spells the same concept differently depending on which document type you are |
 
 
 ## Archived (25)

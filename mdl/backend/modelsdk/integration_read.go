@@ -3,11 +3,15 @@
 package modelsdkbackend
 
 import (
+	"strings"
+
 	"github.com/mendixlabs/mxcli/mdl/dbconnector"
 	"github.com/mendixlabs/mxcli/model"
 	"github.com/mendixlabs/mxcli/modelsdk/element"
 	genBe "github.com/mendixlabs/mxcli/modelsdk/gen/businessevents"
 	genDb "github.com/mendixlabs/mxcli/modelsdk/gen/databaseconnector"
+	genExportMappings "github.com/mendixlabs/mxcli/modelsdk/gen/exportmappings"
+	genImportMappings "github.com/mendixlabs/mxcli/modelsdk/gen/importmappings"
 	genOp "github.com/mendixlabs/mxcli/modelsdk/gen/odatapublish"
 	genRest "github.com/mendixlabs/mxcli/modelsdk/gen/rest"
 	"github.com/mendixlabs/mxcli/modelsdk/mprread"
@@ -177,23 +181,173 @@ func restOperationFromGen(op *genRest.RestOperation) *model.RestClientOperation 
 	switch m := op.Method().(type) {
 	case *genRest.RestOperationMethodWithBody:
 		out.HttpMethod = httpMethodUpper(m.HttpMethod())
+		restBodyFromGen(m.Body(), out)
 	case *genRest.RestOperationMethodWithoutBody:
 		out.HttpMethod = httpMethodUpper(m.HttpMethod())
 	}
 	if pt, ok := op.Path().(*genRest.ValueTemplate); ok && pt != nil {
 		out.Path = pt.Value()
 	}
+	// Path and query parameters are *different* gen types — Rest$OperationParameter
+	// and Rest$QueryParameter, which is what the writer emits. Asserting
+	// Rest$RestParameter (a third type, used by REST call activities) matched
+	// neither, so both lists read back empty and `describe rest client` printed
+	// no Parameters/Query line at all (#843).
 	for _, pEl := range op.ParametersItems() {
-		if p, ok := pEl.(*genRest.RestParameter); ok {
-			out.Parameters = append(out.Parameters, &model.RestClientParameter{Name: p.Name()})
+		if p, ok := pEl.(*genRest.OperationParameter); ok {
+			out.Parameters = append(out.Parameters, &model.RestClientParameter{
+				Name:     p.Name(),
+				DataType: restDataTypeName(p.DataType()),
+			})
 		}
 	}
 	for _, qEl := range op.QueryParametersItems() {
-		if q, ok := qEl.(*genRest.RestParameter); ok {
+		if q, ok := qEl.(*genRest.QueryParameter); ok {
+			// Rest$QueryParameter carries no DataType — Mendix does not model one
+			// for query parameters, so there is nothing to read back here.
 			out.QueryParameters = append(out.QueryParameters, &model.RestClientParameter{Name: q.Name()})
 		}
 	}
+	for _, hEl := range op.HeadersItems() {
+		h, ok := hEl.(*genRest.HeaderWithValueTemplate)
+		if !ok {
+			continue
+		}
+		header := &model.RestClientHeader{Name: h.Name()}
+		if vt, ok := h.Value().(*genRest.ValueTemplate); ok && vt != nil {
+			header.Value = vt.Value()
+		}
+		out.Headers = append(out.Headers, header)
+	}
+	restResponseFromGen(op.ResponseHandling(), out)
 	return out
+}
+
+// restResponseFromGen fills in the response half of the operation, mirroring the
+// legacy parseRestOperation. Without it `describe rest client` reported every
+// operation as `Response: none` regardless of what was stored (#843).
+func restResponseFromGen(handling element.Element, out *model.RestClientOperation) {
+	switch r := handling.(type) {
+	case *genRest.NoResponseHandling:
+		// The writer encodes the declared response type in ContentType so a
+		// no-handling response still round-trips as json/string/file.
+		switch r.ContentType() {
+		case "application/json":
+			out.ResponseType = "JSON"
+		case "text/plain":
+			out.ResponseType = "STRING"
+		case "application/octet-stream":
+			out.ResponseType = "FILE"
+		default:
+			out.ResponseType = "NONE"
+		}
+	case *genRest.ImplicitMappingResponseHandling:
+		out.ResponseType = "MAPPING"
+		if root, ok := r.RootMappingElement().(*genImportMappings.ImportObjectMappingElement); ok && root != nil {
+			out.ResponseEntity = root.EntityQualifiedName()
+			out.ResponseMappings = importMappingChildrenFromGen(root)
+		}
+	}
+}
+
+// restBodyFromGen fills in the body half of the operation. Same read-back gap as
+// the response: a body authored as an implicit export mapping did not describe.
+func restBodyFromGen(body element.Element, out *model.RestClientOperation) {
+	switch b := body.(type) {
+	case *genRest.JsonBody:
+		out.BodyType = "JSON"
+		out.BodyVariable = b.Value()
+	case *genRest.StringBody:
+		out.BodyType = "TEMPLATE"
+		if vt, ok := b.ValueTemplate().(*genRest.ValueTemplate); ok && vt != nil {
+			out.BodyVariable = vt.Value()
+		}
+	case *genRest.ImplicitMappingBody:
+		out.BodyType = "EXPORT_MAPPING"
+		if root, ok := b.RootMappingElement().(*genExportMappings.ExportObjectMappingElement); ok && root != nil {
+			out.BodyVariable = root.EntityQualifiedName()
+			out.BodyMappings = exportMappingChildrenFromGen(root)
+		}
+	}
+}
+
+// importMappingChildrenFromGen walks an ImportMappings object element tree into
+// the semantic mapping entries describe re-emits as `Attr = jsonField`.
+func importMappingChildrenFromGen(parent *genImportMappings.ImportObjectMappingElement) []*model.RestResponseMapping {
+	entityPrefix := parent.EntityQualifiedName() + "."
+	var out []*model.RestResponseMapping
+	for _, childEl := range parent.ChildrenItems() {
+		switch c := childEl.(type) {
+		case *genImportMappings.ImportValueMappingElement:
+			attr, exposed := c.AttributeQualifiedName(), c.ExposedName()
+			if attr == "" || exposed == "" {
+				continue
+			}
+			out = append(out, &model.RestResponseMapping{
+				Attribute:   strings.TrimPrefix(attr, entityPrefix),
+				ExposedName: exposed,
+				JsonPath:    c.JsonPath(),
+			})
+		case *genImportMappings.ImportObjectMappingElement:
+			out = append(out, &model.RestResponseMapping{
+				Entity:      c.EntityQualifiedName(),
+				Association: c.AssociationQualifiedName(),
+				ExposedName: c.ExposedName(),
+				JsonPath:    c.JsonPath(),
+				Children:    importMappingChildrenFromGen(c),
+			})
+		}
+	}
+	return out
+}
+
+// exportMappingChildrenFromGen is the export-direction twin of
+// importMappingChildrenFromGen (ExportMappings$* elements).
+func exportMappingChildrenFromGen(parent *genExportMappings.ExportObjectMappingElement) []*model.RestResponseMapping {
+	entityPrefix := parent.EntityQualifiedName() + "."
+	var out []*model.RestResponseMapping
+	for _, childEl := range parent.ChildrenItems() {
+		switch c := childEl.(type) {
+		case *genExportMappings.ExportValueMappingElement:
+			attr, exposed := c.AttributeQualifiedName(), c.ExposedName()
+			if attr == "" || exposed == "" {
+				continue
+			}
+			out = append(out, &model.RestResponseMapping{
+				Attribute:   strings.TrimPrefix(attr, entityPrefix),
+				ExposedName: exposed,
+				JsonPath:    c.JsonPath(),
+			})
+		case *genExportMappings.ExportObjectMappingElement:
+			out = append(out, &model.RestResponseMapping{
+				Entity:      c.EntityQualifiedName(),
+				Association: c.AssociationQualifiedName(),
+				ExposedName: c.ExposedName(),
+				JsonPath:    c.JsonPath(),
+				Children:    exportMappingChildrenFromGen(c),
+			})
+		}
+	}
+	return out
+}
+
+// restDataTypeName is the inverse of restDataTypeElem: DataTypes$* element back
+// to the MDL type name describe prints.
+func restDataTypeName(dt element.Element) string {
+	if dt == nil {
+		return ""
+	}
+	switch dt.TypeName() {
+	case "DataTypes$IntegerType":
+		return "Integer"
+	case "DataTypes$DecimalType":
+		return "Decimal"
+	case "DataTypes$BooleanType":
+		return "Boolean"
+	case "DataTypes$StringType":
+		return "String"
+	}
+	return ""
 }
 
 // restValueOf extracts a string from a polymorphic Rest$Value (StringValue or

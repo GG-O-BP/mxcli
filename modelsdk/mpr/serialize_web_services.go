@@ -426,7 +426,9 @@ func serWebRestOperation(op *model.RestClientOperation) bson.D {
 	}
 	doc = append(doc, bson.E{Key: "QueryParameters", Value: queryParams})
 
-	if op.ResponseType == "MAPPING" && op.ResponseEntity != "" && len(op.ResponseMappings) > 0 {
+	// Case-insensitive for the same reason as the codec writer: the else-branch
+	// silently downgrades to Rest$NoResponseHandling (#843).
+	if strings.EqualFold(op.ResponseType, "MAPPING") && op.ResponseEntity != "" && len(op.ResponseMappings) > 0 {
 		doc = append(doc, bson.E{Key: "ResponseHandling", Value: serWebRestImplicitMappingResponse(op.ResponseEntity, op.ResponseMappings)})
 	} else {
 		doc = append(doc, bson.E{Key: "ResponseHandling", Value: serWebRestResponseHandling(op.ResponseType)})
@@ -444,7 +446,7 @@ func serWebRestMethod(op *model.RestClientOperation) bson.D {
 			{Key: "$Type", Value: "Rest$RestOperationMethodWithBody"},
 			{Key: "HttpMethod", Value: httpMethod},
 		}
-		if op.BodyType == "EXPORT_MAPPING" && len(op.BodyMappings) > 0 {
+		if strings.EqualFold(op.BodyType, "EXPORT_MAPPING") && len(op.BodyMappings) > 0 {
 			bodyDoc = append(bodyDoc, bson.E{Key: "Body", Value: serWebRestImplicitMappingBody(op.BodyVariable, op.BodyMappings)})
 		} else {
 			bodyDoc = append(bodyDoc, bson.E{Key: "Body", Value: serWebRestBody(op.BodyType, op.BodyVariable)})

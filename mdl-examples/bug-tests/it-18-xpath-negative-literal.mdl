@@ -1,0 +1,82 @@
+-- ============================================================================
+-- Issue-tracker finding #18: a negative numeric literal in an XPath constraint
+-- ============================================================================
+--
+-- Symptom (before fix): an unquoted negative number inside `[...]` failed to
+-- parse:
+--
+--   retrieve $L from M.T where [Amount > -7];
+--   Parse error: extraneous input '7' expecting {',', ')'}
+--
+-- Root cause: `xpathWord` — the rule for a name part inside XPath — is a
+-- negated token set that did not exclude MINUS, so `-` was consumed as a name
+-- and the digits were left stranded. That is why the finding described it as
+-- "negative numeric literals truncate (`-7` becomes `-`)": from the outside the
+-- sign appears to swallow the number.
+--
+-- The lexer deliberately keeps `-` out of NUMBER_LITERAL (a leading sign there
+-- makes `$x -2` tokenise as `$x` `-2`), leaving negation to the parser. The
+-- general expression grammar has `unaryExpression` for exactly this; the XPath
+-- grammar simply never got the equivalent.
+--
+-- Fixing the grammar alone would have been WORSE than the parse error: the
+-- constraint would parse and then serialize to `[Amount > ]`, silently dropping
+-- the operand, because the XPath AST builder had no case for the new
+-- alternative. Both halves are needed.
+--
+-- Expected after fix: this script executes and `mx check` reports 0 errors,
+-- with the signs intact in the stored constraints.
+--
+-- NOT part of this fix — the finding's own example line,
+--
+--   where [DueDate > addDays([%CurrentDateTime%], -7)]
+--
+-- still fails, but for an unrelated reason: `addDays()` is a *microflow
+-- expression* function, not an XPath function. Verified on mxbuild 11.12.1 that
+-- it fails CE0161 with a POSITIVE argument too, so the sign was never the
+-- problem there. Use Mendix XPath date tokens for relative dates.
+-- ============================================================================
+
+create module IT18;
+
+create or modify persistent entity IT18.T (
+  Amount: Decimal,
+  Code: String(50),
+  DueDate: DateTime
+);
+
+-- negative integer, right-hand side
+create or modify microflow IT18.MF_NegInteger ()
+begin
+  retrieve $A from IT18.T where [Amount > -7];
+  return;
+end;
+
+-- negative decimal
+create or modify microflow IT18.MF_NegDecimal ()
+begin
+  retrieve $B from IT18.T where [Amount <= -12.5];
+  return;
+end;
+
+-- negative literal in a compound constraint
+create or modify microflow IT18.MF_Compound ()
+begin
+  retrieve $C from IT18.T where [Amount > -1 and Code != 'X'];
+  return;
+end;
+
+-- regression guard: MINUS was removed from the name-word set, so hyphenated
+-- XPath functions must still parse (they lex as a single HYPHENATED_ID)
+create or modify microflow IT18.MF_HyphenatedFunc ()
+begin
+  retrieve $D from IT18.T where [starts-with(Code, 'AB')];
+  return;
+end;
+
+-- regression guard: positive literals unchanged
+create or modify microflow IT18.MF_Positive ()
+begin
+  retrieve $E from IT18.T where [Amount > 7];
+  return;
+end;

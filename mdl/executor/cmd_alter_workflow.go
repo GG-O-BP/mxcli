@@ -183,6 +183,8 @@ func execAlterWorkflow(ctx *ExecContext, s *ast.AlterWorkflowStmt) error {
 // buildAndBindActivities builds workflow activities from AST nodes and auto-binds parameters.
 func buildAndBindActivities(ctx *ExecContext, nodes []ast.WorkflowActivityNode) []workflows.WorkflowActivity {
 	acts := buildWorkflowActivities(nodes)
-	autoBindActivitiesInFlow(ctx, acts)
+	// ALTER carries no `parameter $X:` header, so there is no author-declared
+	// alias to honour — casing normalization only.
+	autoBindActivitiesInFlow(ctx, acts, contextExprNormalizer{})
 	return acts
 }

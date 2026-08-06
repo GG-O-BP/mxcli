@@ -227,6 +227,14 @@ type BuildContext struct {
 type PluggableWidgetEngine struct {
 	backend     backend.WidgetBuilderBackend
 	pageBuilder *pageBuilder
+
+	// outerEntityContext is the entity context as it stood when the current
+	// widget's Build started, before any of its own DataSource mappings moved
+	// pageBuilder.entityContext to the widget's own data (e.g. a ComboBox's
+	// option list). A property that names something on the *containing* data —
+	// an association the widget binds — must be qualified against this, not
+	// against the widget's own datasource entity. (issuetracker #19)
+	outerEntityContext string
 }
 
 // NewPluggableWidgetEngine creates a new engine with the given backend and page builder.
@@ -242,6 +250,12 @@ func (e *PluggableWidgetEngine) Build(def *WidgetDefinition, w *ast.WidgetV3) (*
 	// Save and restore entity context (DataSource mappings may change it)
 	oldEntityContext := e.pageBuilder.entityContext
 	defer func() { e.pageBuilder.entityContext = oldEntityContext }()
+
+	// Remember the containing context for properties that name members of it
+	// rather than of this widget's own data. Saved/restored for nested widgets.
+	oldOuterEntityContext := e.outerEntityContext
+	e.outerEntityContext = oldEntityContext
+	defer func() { e.outerEntityContext = oldOuterEntityContext }()
 
 	// 1. Load template via backend
 	builder, err := e.backend.LoadWidgetTemplate(def.WidgetID, e.pageBuilder.getProjectPath())
@@ -706,7 +720,18 @@ func (e *PluggableWidgetEngine) resolveMapping(mapping PropertyMapping, w *ast.W
 			attr = w.GetAttribute()
 		}
 		if attr != "" {
-			ctx.AssocPath = e.pageBuilder.resolveAssociationPath(attr)
+			// The association belongs to the CONTAINING entity, not to this
+			// widget's option list. A `DataSource:` mapping listed before this
+			// one has already moved entityContext to the option entity, so
+			// qualifying a bare name against it produced a reference into the
+			// wrong module — `System.Issue_Assignee` for a ComboBox over
+			// `System.User`, which fails CE1613 "The selected association … no
+			// longer exists". (issuetracker #19)
+			outer := e.outerEntityContext
+			if outer == "" {
+				outer = e.pageBuilder.entityContext
+			}
+			ctx.AssocPath = e.pageBuilder.resolveAssociationPathIn(attr, outer)
 		}
 		ctx.EntityName = e.pageBuilder.entityContext
 		if ctx.AssocPath != "" && ctx.EntityName == "" {

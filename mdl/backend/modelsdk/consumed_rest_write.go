@@ -177,7 +177,10 @@ func restOperationToGen(op *model.RestClientOperation) element.Element {
 		addPartList(g, "QueryParameters", queryParams)
 	}
 
-	if op.ResponseType == "MAPPING" && op.ResponseEntity != "" && len(op.ResponseMappings) > 0 {
+	// Case-insensitive on purpose: the else-branch silently downgrades to
+	// Rest$NoResponseHandling, so a producer that spells the token differently
+	// loses the mapping with no error anywhere. That is how #843 happened.
+	if strings.EqualFold(op.ResponseType, "MAPPING") && op.ResponseEntity != "" && len(op.ResponseMappings) > 0 {
 		addPart(g, "ResponseHandling", restImplicitMappingResponseToGen(op.ResponseEntity, op.ResponseMappings))
 	} else {
 		addPart(g, "ResponseHandling", restResponseHandlingToGen(op.ResponseType))
@@ -198,7 +201,7 @@ func restMethodToGen(op *model.RestClientOperation) element.Element {
 	}
 	g := newElem("Rest$RestOperationMethodWithBody", "")
 	addStr(g, "HttpMethod", httpMethod)
-	if op.BodyType == "EXPORT_MAPPING" && len(op.BodyMappings) > 0 {
+	if strings.EqualFold(op.BodyType, "EXPORT_MAPPING") && len(op.BodyMappings) > 0 {
 		addPart(g, "Body", restImplicitMappingBodyToGen(op.BodyVariable, op.BodyMappings))
 	} else {
 		bodyType := op.BodyType

@@ -22,7 +22,10 @@ func TestWorkflowJumpTo_QuotesReservedTarget(t *testing.T) {
 
 	output := strings.Join(formatSingleActivity(activity, ""), "\n")
 
-	if !strings.Contains(output, `jump to "List" comment`) {
+	// The trailing `;` pins the whole clause: an unquoted emit would be
+	// `jump to List;`. (Previously this matched `... comment`, which coupled the
+	// quoting assertion to the phantom comment removed in issuetracker #16.)
+	if !strings.Contains(output, `jump to "List";`) {
 		t.Errorf("expected reserved jump-to target to be quoted, got:\n%s", output)
 	}
 }
@@ -33,7 +36,7 @@ func TestWorkflowJumpTo_LeavesPlainTargetUnquoted(t *testing.T) {
 
 	output := strings.Join(formatSingleActivity(activity, ""), "\n")
 
-	if !strings.Contains(output, "jump to Review comment") {
+	if !strings.Contains(output, "jump to Review;") {
 		t.Errorf("expected non-reserved jump-to target to stay unquoted, got:\n%s", output)
 	}
 }

@@ -615,22 +615,44 @@ func (fb *flowBuilder) addLoopStatement(s *ast.LoopStmt) model.ID {
 	}
 
 	// Process loop body statements and connect them with flows.
+	// pendingCase carries the deferred case value a merge-less split leaves for
+	// the NEXT flow — e.g. the FALSE branch of `if X then break`, whose split has
+	// no merge. Mirrors buildFlowGraph; without it a decision inside a loop loses
+	// its false flow entirely and mx check reports CE0079 (ledger #52).
 	var lastBodyID model.ID
+	pendingCase := ""
 	for _, stmt := range s.Body {
 		actID := loopBuilder.addStatement(stmt)
 		if actID != "" {
 			loopBuilder.applyPendingAnnotations(actID)
 			if lastBodyID != "" {
-				loopBuilder.flows = append(loopBuilder.flows, newHorizontalFlow(lastBodyID, actID))
+				if pendingCase != "" {
+					loopBuilder.flows = append(loopBuilder.flows, newHorizontalFlowWithCase(lastBodyID, actID, pendingCase))
+				} else {
+					loopBuilder.flows = append(loopBuilder.flows, newHorizontalFlow(lastBodyID, actID))
+				}
 			}
+			pendingCase = ""
 			// Handle nextConnectionPoint for compound statements (nested IF, etc.)
 			if loopBuilder.nextConnectionPoint != "" {
 				lastBodyID = loopBuilder.nextConnectionPoint
 				loopBuilder.nextConnectionPoint = ""
+				pendingCase = loopBuilder.nextFlowCase
+				loopBuilder.nextFlowCase = ""
 			} else {
 				lastBodyID = actID
 			}
 		}
+	}
+	// A merge-less split as the last body element (e.g. `if X then break`) leaves a
+	// deferred branch (its FALSE case) with nowhere to go — the loop-body analog of
+	// falling off the microflow end. Wire it to a Continue event: "didn't
+	// break/return, so go to the next iteration" — the valid Mendix representation,
+	// and the missing false flow that made mx check report CE0079 (ledger #52).
+	if pendingCase != "" && lastBodyID != "" {
+		loopBuilder.posX += HorizontalSpacing
+		continueID := loopBuilder.addContinueEvent()
+		loopBuilder.flows = append(loopBuilder.flows, newHorizontalFlowWithCase(lastBodyID, continueID, pendingCase))
 	}
 
 	// Create LoopedActivity with calculated size

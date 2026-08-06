@@ -361,7 +361,19 @@ func (b *Backend) ReconcileMemberAccesses(unitID model.ID, moduleName string) (i
 			}
 		}
 		for _, ae := range dm.AssociationsItems() {
-			if a, ok := ae.(*genDm.Association); ok && string(a.ParentRefID()) == entityID {
+			a, ok := ae.(*genDm.Association)
+			if !ok {
+				continue
+			}
+			// `OWNER Both` makes the association a member of BOTH ends, so the TO
+			// entity's rule needs an entry too. Reconciling on the FROM side alone
+			// stripped it back out on every run — including the one the executor
+			// had just added — leaving the TO entity's rule incomplete, which
+			// Mendix reports as CE0066 "Entity access is out of date"
+			// (issuetracker #20). Verified on mxbuild 11.12.1: the same model with
+			// `OWNER Default` checks clean, so the owner mode is the trigger.
+			if string(a.ParentRefID()) == entityID ||
+				(a.Owner() == "Both" && string(a.ChildRefID()) == entityID) {
 				addAssoc(a.Name())
 			}
 		}
@@ -374,6 +386,12 @@ func (b *Backend) ReconcileMemberAccesses(unitID model.ID, moduleName string) (i
 		// Implicit system associations from NoGeneralization flags.
 		var sysRefs []string
 		sysSet := map[string]bool{}
+		// Audit DATE members (createdDate/changedDate) are stored as flags too, but
+		// they are attributes rather than associations. Mendix has no MemberAccess
+		// for them at all: an entity storing them checks clean with no entry, and
+		// mxbuild rejects a rule that carries one with CE0066 "Entity access is out
+		// of date" (verified on 11.12.1). So they are neither added here nor
+		// preserved — the executor refuses to author one (issuetracker #20).
 		if ng, ok := ent.Generalization().(*genDm.NoGeneralization); ok {
 			if ng.HasOwner() {
 				sysRefs = append(sysRefs, "System.owner")

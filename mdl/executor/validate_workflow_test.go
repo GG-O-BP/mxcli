@@ -146,3 +146,36 @@ end workflow;`
 		t.Fatalf("boolean decision should not trigger MDL-WF03, got %v", vs)
 	}
 }
+
+// MDL-WF04 — a standalone `annotation` in a workflow body is refused.
+//
+// mxcli placed the Annotation in the workflow's activity flow, where Mendix
+// constructs every child with a Flow parent. The result is a project Mendix
+// cannot LOAD ("Type ...Workflows.Model.Annotation does not contain a
+// constructor with a parameter of type ...Flow") — Studio Pro will not open it
+// and `mx check` dies before validating anything. Until the correct container
+// is known, refusing beats emitting an unopenable model. (issuetracker #15)
+func TestValidateWorkflow_StandaloneAnnotationRefused(t *testing.T) {
+	src := wfPreamble + `create workflow WF.Flow
+  parameter $Context: WF.Ctx
+begin
+  annotation 'Escalation path per policy 4.2';
+  user task T 'Do it' page WF.TaskPage outcomes 'Approve' { } 'Reject' { };
+end workflow;`
+	vs := workflowViolations(t, src)
+	if !hasRule(vs, "MDL-WF04") {
+		t.Fatalf("expected MDL-WF04 for a standalone workflow annotation, got %v", vs)
+	}
+}
+
+// A workflow without a standalone annotation must not trip MDL-WF04.
+func TestValidateWorkflow_NoAnnotationNoWF04(t *testing.T) {
+	src := wfPreamble + `create workflow WF.Flow
+  parameter $Context: WF.Ctx
+begin
+  user task T 'Do it' page WF.TaskPage outcomes 'Approve' { } 'Reject' { };
+end workflow;`
+	if vs := workflowViolations(t, src); hasRule(vs, "MDL-WF04") {
+		t.Errorf("MDL-WF04 must not fire without an annotation: %v", vs)
+	}
+}

@@ -86,10 +86,23 @@ func TestFormatJumpTo_CaptionCommentFormat(t *testing.T) {
 			want:    "jump to target1 comment 'Go Back to Review'",
 		},
 		{
-			name:    "name fallback when caption empty",
+			// Was: fell back to the activity name and rendered
+			// `comment 'jumpAct1'`. That comment was never authored — echoing it
+			// made a plain `jump to X;` round-trip as `jump to X comment '…'`
+			// (issuetracker #16). An absent caption must emit no comment clause.
+			name:    "no comment clause when caption empty",
 			caption: "",
 			actName: "jumpAct1",
-			want:    "jump to target1 comment 'jumpAct1'",
+			want:    "jump to target1;",
+		},
+		{
+			// buildJumpTo defaults Caption to the TARGET name, which is the exact
+			// shape issuetracker #16 reported. It carries no authored information,
+			// so it must not be echoed either.
+			name:    "no comment clause when caption is the derived target name",
+			caption: "target1",
+			actName: "jumpAct2",
+			want:    "jump to target1;",
 		},
 		{
 			name:    "caption with single quote escaped",
@@ -193,6 +206,89 @@ func TestFormatCallWorkflowActivity_CaptionCommentFormat(t *testing.T) {
 
 			if !strings.Contains(output, tc.want) {
 				t.Errorf("expected output to contain %q, got:\n%s", tc.want, output)
+			}
+		})
+	}
+}
+
+// TestExclusiveSplit_NormalizesWorkflowContextExpression pins issuetracker #17:
+// a decision's condition was written verbatim while call-microflow parameter
+// mappings were normalized, so the documented `$workflowContext` reached Mendix
+// as an undefined variable and the build failed CE0117 "Error(s) in expression".
+// mxcli always names the context parameter `WorkflowContext`, and Mendix
+// expressions are case-sensitive, so every case variant must normalize to it.
+func TestExclusiveSplit_NormalizesWorkflowContextExpression(t *testing.T) {
+	for _, written := range []string{
+		"$workflowContext/Title = 'x'",
+		"$WORKFLOWCONTEXT/Title = 'x'",
+		"$WorkflowContext/Title = 'x'",
+	} {
+		split := &workflows.ExclusiveSplitActivity{Expression: written}
+		split.Name = "Decision"
+		autoBindActivitiesInFlow(nil, []workflows.WorkflowActivity{split}, contextExprNormalizer{})
+		if want := "$WorkflowContext/Title = 'x'"; split.Expression != want {
+			t.Errorf("expression %q normalized to %q, want %q", written, split.Expression, want)
+		}
+	}
+}
+
+// TestContextExprNormalizer_AliasesDeclaredParameterName pins the other half of
+// issuetracker #17: `create workflow … parameter $Ctx: …` lets the author name
+// the context, but mxcli stores the parameter as `WorkflowContext` regardless —
+// so `$Ctx` in an expression was an undefined variable (CE0117). The declared
+// name must be aliased onto the stored one.
+func TestContextExprNormalizer_AliasesDeclaredParameterName(t *testing.T) {
+	tests := []struct {
+		name     string
+		declared string
+		expr     string
+		want     string
+	}{
+		{
+			name:     "declared alias rewritten",
+			declared: "$Ctx",
+			expr:     "$Ctx/Total > 1000",
+			want:     "$WorkflowContext/Total > 1000",
+		},
+		{
+			name:     "declared alias without sigil",
+			declared: "Request",
+			expr:     "$Request/Status = 'New'",
+			want:     "$WorkflowContext/Status = 'New'",
+		},
+		{
+			name:     "canonical name still normalized when an alias is declared",
+			declared: "$Ctx",
+			expr:     "$workflowContext/Total > 1000",
+			want:     "$WorkflowContext/Total > 1000",
+		},
+		{
+			// A variable that merely starts with the declared name must not be
+			// mangled — the alias is a whole-word match.
+			name:     "longer variable sharing the prefix is untouched",
+			declared: "$Ctx",
+			expr:     "$CtxItem/Total > $Ctx/Limit",
+			want:     "$CtxItem/Total > $WorkflowContext/Limit",
+		},
+		{
+			name:     "no declared name normalizes casing only",
+			declared: "",
+			expr:     "$workflowcontext/Total > 1000",
+			want:     "$WorkflowContext/Total > 1000",
+		},
+		{
+			name:     "empty expression stays empty",
+			declared: "$Ctx",
+			expr:     "",
+			want:     "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := newContextExprNormalizer(tc.declared).rewrite(tc.expr)
+			if got != tc.want {
+				t.Errorf("rewrite(%q) with declared %q = %q, want %q", tc.expr, tc.declared, got, tc.want)
 			}
 		})
 	}
