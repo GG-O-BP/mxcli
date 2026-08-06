@@ -752,8 +752,9 @@ func (pb *pageBuilder) buildDataSourceV3(ds *ast.DataSourceV3) (pages.DataSource
 				ID:       model.ID(types.GenerateID()),
 				TypeName: "Forms$MicroflowSource",
 			},
-			MicroflowID: mfID,
-			Microflow:   ds.Reference,
+			MicroflowID:       mfID,
+			Microflow:         ds.Reference,
+			ParameterMappings: flowArgsToParameterMappings(ds.Args),
 		}, entityName, nil
 
 	case "nanoflow":
@@ -771,8 +772,9 @@ func (pb *pageBuilder) buildDataSourceV3(ds *ast.DataSourceV3) (pages.DataSource
 				ID:       model.ID(types.GenerateID()),
 				TypeName: "Forms$NanoflowSource",
 			},
-			NanoflowID: nfID,
-			Nanoflow:   ds.Reference,
+			NanoflowID:        nfID,
+			Nanoflow:          ds.Reference,
+			ParameterMappings: flowArgsToParameterMappings(ds.Args),
 		}, entityName, nil
 
 	case "association":
@@ -2140,4 +2142,33 @@ func prefixWidgetNames(widgets []*ast.WidgetV3, prefix string) {
 		}
 		prefixWidgetNames(w.Children, prefix)
 	}
+}
+
+// flowArgsToParameterMappings converts parsed datasource/action arguments into
+// model parameter mappings. A microflow or nanoflow used as a widget datasource
+// needs an argument for every parameter exactly as a call action does — Mendix
+// reports CE1571 "No argument has been selected for parameter 'X'" otherwise
+// (#835). The datasource path previously parsed the arguments and dropped them.
+func flowArgsToParameterMappings(args []ast.FlowArgV3) []*pages.MicroflowParameterMapping {
+	var out []*pages.MicroflowParameterMapping
+	for _, arg := range args {
+		mapping := &pages.MicroflowParameterMapping{
+			BaseElement: model.BaseElement{
+				ID:       model.ID(types.GenerateID()),
+				TypeName: "Forms$MicroflowParameterMapping",
+			},
+			ParameterName: arg.Name,
+		}
+		// A leading $ marks a variable reference ($currentObject, a page
+		// parameter); anything else is an expression.
+		if strVal, ok := arg.Value.(string); ok {
+			if strings.HasPrefix(strVal, "$") {
+				mapping.Variable = strVal
+			} else {
+				mapping.Expression = strVal
+			}
+		}
+		out = append(out, mapping)
+	}
+	return out
 }
