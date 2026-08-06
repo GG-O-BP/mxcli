@@ -136,6 +136,48 @@ func TestRegistry_SessionsGroupsAndRetainsOffline(t *testing.T) {
 	}
 }
 
+// A reaped backend that reconnects gets a fresh RegisteredAt, so first-seen must
+// come from the durable log instead — otherwise the overview reports a
+// long-running preview as brand new after every container reap.
+func TestRegistry_SessionsFirstSeenSurvivesReconnect(t *testing.T) {
+	base := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	now := base
+	reg := NewRegistry(RegistryOptions{
+		Domain: "example.com", ExpireFor: 10 * time.Minute,
+		Sessions: NewSessionLog(30 * 24 * time.Hour), Now: func() time.Time { return now },
+	})
+	reg.sessions.now = func() time.Time { return now }
+
+	req := RegisterRequest{Session: "cse_A", Owner: "alice", Project: "Web", Branch: "main"}
+	if _, err := reg.Register(req); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	// Idle past expiry so the live backend is reaped, then reconnect.
+	now = base.Add(3 * time.Hour)
+	if _, err := reg.Register(req); err != nil {
+		t.Fatalf("re-Register: %v", err)
+	}
+
+	sessions := reg.Sessions("")
+	if len(sessions) != 1 || len(sessions[0].Endpoints) != 1 {
+		t.Fatalf("want 1 session with 1 endpoint, got %+v", sessions)
+	}
+	ep := sessions[0].Endpoints[0]
+	if ep.State != "available" {
+		t.Fatalf("endpoint should be live after reconnect, got %q", ep.State)
+	}
+	if !ep.RegisteredAt.Equal(now) {
+		t.Errorf("RegisteredAt = %v, want the reconnect time %v", ep.RegisteredAt, now)
+	}
+	if !ep.FirstSeenAt.Equal(base) {
+		t.Errorf("FirstSeenAt = %v, want the original registration %v", ep.FirstSeenAt, base)
+	}
+	if !sessions[0].FirstSeen.Equal(base) {
+		t.Errorf("session FirstSeen = %v, want %v", sessions[0].FirstSeen, base)
+	}
+}
+
 func TestRegistry_SessionsViewerScoped(t *testing.T) {
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	reg := NewRegistry(RegistryOptions{

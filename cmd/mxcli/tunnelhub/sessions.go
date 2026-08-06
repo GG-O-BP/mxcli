@@ -43,7 +43,14 @@ type EndpointRecord struct {
 // + slot re-registers to the same record (so a reconnect updates rather than
 // duplicates). It mirrors Backend.identity() with the session prepended.
 func (e *EndpointRecord) key() string {
-	return strings.Join([]string{e.Session, e.Owner, e.Prefix, e.Solution, e.Project, e.Branch, e.Worktree}, "\x00")
+	return e.Session + "\x00" + e.slot()
+}
+
+// slot is the identity of the endpoint itself, without the session — it mirrors
+// Backend.identity(), so a record can be matched against a live backend (and
+// against the same endpoint re-exposed by a later session).
+func (e *EndpointRecord) slot() string {
+	return strings.Join([]string{e.Owner, e.Prefix, e.Solution, e.Project, e.Branch, e.Worktree}, "\x00")
 }
 
 // SessionLog is the durable history of endpoints seen per session. Records are
@@ -230,9 +237,13 @@ type EndpointView struct {
 	Worktree     string    `json:"worktree"`
 	State        string    `json:"state"` // "available" | "stale" | "offline"
 	RegisteredAt time.Time `json:"registeredAt"`
-	LastSeenAt   time.Time `json:"lastSeenAt"`
-	LastUsedAt   time.Time `json:"lastUsedAt"`
-	UptimeSec    int64     `json:"uptimeSec"`
+	// FirstSeenAt is the earliest sighting of this endpoint slot across the
+	// durable history — unlike RegisteredAt, which restarts every time a reaped
+	// backend re-registers, so it answers "how long has this URL existed?".
+	FirstSeenAt time.Time `json:"firstSeenAt"`
+	LastSeenAt  time.Time `json:"lastSeenAt"`
+	LastUsedAt  time.Time `json:"lastUsedAt"`
+	UptimeSec   int64     `json:"uptimeSec"`
 }
 
 // SessionView groups the endpoints a single Claude Code session exposed, live
