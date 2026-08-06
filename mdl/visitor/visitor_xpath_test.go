@@ -429,3 +429,57 @@ func TestXPath_ASTTypes(t *testing.T) {
 		}
 	})
 }
+
+// TestXPath_NegativeNumericLiteral pins issuetracker finding #18.
+//
+// `-` was admissible as an xpathWord, so `[Amount > -7]` parsed the sign as a
+// name and left the digits stranded — `extraneous input '7'`. The report called
+// this "negative literals truncate to -", which is what it looks like from the
+// outside. Adding unary minus to the grammar without a matching visitor case
+// would have been worse than the parse error: the constraint would parse and
+// silently serialize to `[Amount > ]`.
+func TestXPath_NegativeNumericLiteral(t *testing.T) {
+	t.Run("round-trips with the sign intact", func(t *testing.T) {
+		tests := []struct {
+			name  string
+			input string
+			want  string
+		}{
+			{"negative integer", "[Amount > -7]", "[Amount > -7]"},
+			{"negative decimal", "[Amount <= -12.5]", "[Amount <= -12.5]"},
+			{"negative on the left", "[-7 < Amount]", "[-7 < Amount]"},
+			{"compound with and", "[Amount > -7 and Code = 'A']", "[Amount > -7 and Code = 'A']"},
+			{"function argument", "[contains(Code, 'A') and Amount > -1]", "[contains(Code, 'A') and Amount > -1]"},
+			// Regression: MINUS was removed from xpathWord, so hyphenated XPath
+			// function names must still resolve (they lex as one HYPHENATED_ID).
+			{"hyphenated function still parses", "[starts-with(Code, 'AB')]", "[starts-with(Code, 'AB')]"},
+			// Regression: positive literals unaffected.
+			{"positive integer", "[Amount > 7]", "[Amount > 7]"},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				if got := roundTripXPath(tc.input); got != tc.want {
+					t.Errorf("roundTripXPath(%q) = %q, want %q", tc.input, got, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("builds a UnaryExpr, not a dropped operand", func(t *testing.T) {
+		expr := parseXPathConstraint("[Amount > -7]")
+		bin, ok := expr.(*ast.BinaryExpr)
+		if !ok {
+			t.Fatalf("expected BinaryExpr, got %T", expr)
+		}
+		unary, ok := bin.Right.(*ast.UnaryExpr)
+		if !ok {
+			t.Fatalf("right operand = %T, want *ast.UnaryExpr — a nil operand serializes to an empty string", bin.Right)
+		}
+		if unary.Operator != "-" {
+			t.Errorf("operator = %q, want -", unary.Operator)
+		}
+		if unary.Operand == nil {
+			t.Error("operand is nil — the literal was dropped")
+		}
+	})
+}
