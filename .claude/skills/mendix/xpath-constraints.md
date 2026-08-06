@@ -33,6 +33,23 @@ This skill provides reference for writing XPath constraint expressions in MDL RE
 > `mxcli check` explains this and shows the workaround when it sees `+`/`*`/`div`/
 > `mod` inside a constraint.
 
+> **A negative literal is fine, though.** A leading `-` on a number is a value,
+> not arithmetic, and needs no quoting:
+> ```mdl
+> retrieve $L from Mod.T where [Amount > -7];
+> retrieve $L from Mod.T where [Amount <= -12.5 and Code != 'X'];
+> ```
+
+> **Date arithmetic is not available in XPath.** `addDays()`, `addMonths()` and
+> friends are *Mendix expression* functions — using one in a constraint fails the
+> build with `CE0161` regardless of its arguments. For relative dates use the
+> date tokens (`[%CurrentDateTime%]`, `[%BeginOfCurrentDay%]`, …), or compute the
+> cut-off in a variable first and compare against that:
+> ```mdl
+> $Cutoff = addDays([%CurrentDateTime%], -7);
+> retrieve $L from Mod.T where [DueDate > $Cutoff];
+> ```
+
 ## Syntax Reference
 
 ### Simple Comparisons

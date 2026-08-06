@@ -105,6 +105,7 @@ xpathComparisonExpr
 
 xpathValueExpr
     : xpathFunctionCall
+    | MINUS xpathValueExpr
     | xpathPath
     | LPAREN xpathExpr RPAREN
     ;
@@ -130,13 +131,19 @@ xpathQualifiedName
     : xpathWord (DOT xpathWord)*
     ;
 
-/** Any single-word token that can appear as part of a name in XPath. */
+/** Any single-word token that can appear as part of a name in XPath.
+ *
+ * MINUS is excluded: a hyphen inside a name is already lexed as a single
+ * HYPHENATED_ID (`starts-with`), so a standalone `-` is never part of a name.
+ * While it was admissible here, `[Amount > -7]` parsed the sign as a name word
+ * and left the digits stranded — reported as "negative literals truncate to -"
+ * (issuetracker finding #18). It is a unary operator; see xpathValueExpr. */
 xpathWord
     : ~( DOT | SLASH | LBRACKET | RBRACKET | LPAREN | RPAREN | COMMA
        | EQUALS | NOT_EQUALS | LESS_THAN | LESS_THAN_OR_EQUAL
        | GREATER_THAN | GREATER_THAN_OR_EQUAL
        | AND | OR | NOT
-       | SEMICOLON
+       | SEMICOLON | MINUS
        | STRING_LITERAL | NUMBER_LITERAL | VARIABLE | MENDIX_TOKEN | DOLLAR_STRING
        )
     ;
