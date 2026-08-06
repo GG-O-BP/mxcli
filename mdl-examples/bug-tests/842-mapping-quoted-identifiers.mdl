@@ -1,0 +1,65 @@
+-- Bug #842: quoted identifiers inside a mapping body were not stripped (CE1613).
+--
+-- Quoting identifiers is the documented way to avoid MDL keyword collisions and
+-- is stripped generically everywhere else. Inside an import/export mapping body
+-- the entity and association names were read with ctx.QualifiedName().GetText(),
+-- which returns the raw parse text — quotes included — so the reference was
+-- stored as `ZZB."Routing"`.
+--
+-- mxcli reported success with no warnings; Mendix then reported, on an
+-- otherwise clean project:
+--
+--   [error] [CE1613] "The selected entity 'ZZB."Routing"' no longer exists."
+--     at Object mapping element 'Root'
+--   [error] [CE1613] "The selected attribute 'ZZB."Routing".RouteId' no longer
+--     exists." at Value mapping element '_id'
+--   [error] [CE1613] "The selected attribute 'ZZB."Routing".RouteName' no longer
+--     exists." at Value mapping element 'Name'
+--
+-- Note the shape of that second message: the attribute half (`RouteId`) already
+-- came through unquoted because it goes via identifierOrKeywordText, so the
+-- stored name was a mix of stripped and unstripped parts. That is the tell for
+-- "one of the two readers is raw".
+--
+-- Fix (mdl/visitor/visitor_import_export_mapping.go): every qualified name in a
+-- mapping body goes through buildQualifiedName, the same helper the rest of the
+-- visitor uses. Five sites across the import and export builders — root entity,
+-- nested association + entity, and the value-transform converter.
+--
+-- Manual verification (needs a project, so `make check-mdl` only syntax-checks this):
+--
+--   mxcli exec 842-mapping-quoted-identifiers.mdl -p app.mpr
+--   mx check -p app.mpr
+--
+-- Expect 0 errors. Before the fix this produced three CE1613 errors.
+
+create module Issue842;
+create module role Issue842.User;
+
+@position(100, 100)
+create persistent entity Issue842."Routing" (
+  "RouteId": string(100),
+  "RouteName": string(100)
+);
+
+create json structure Issue842."JSON_Route"
+  snippet $${"id":"a","name":"b"}$$;
+
+-- Every identifier quoted on purpose: this is the documented style.
+create import mapping Issue842."IMM_Route"
+  with json structure Issue842."JSON_Route"
+{
+  create Issue842."Routing" {
+    "RouteId" = id,
+    "RouteName" = name
+  }
+};
+
+create export mapping Issue842."EMM_Route"
+  with json structure Issue842."JSON_Route"
+{
+  Issue842."Routing" {
+    id = "RouteId",
+    name = "RouteName"
+  }
+};

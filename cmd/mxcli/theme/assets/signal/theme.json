@@ -1,0 +1,43 @@
+{
+  "name": "signal",
+  "title": "Signal",
+  "version": "1",
+  "summary": "Cool slate, one teal signal colour, 4px radius, 32px rows",
+  "description": "mxcli's default styling. Atlas Core is untouched: the theme is a palette in theme/web/custom-variables.scss plus one partial imported from theme/web/main.scss, so a generated app stays upgradable across Mendix releases and is re-brandable by editing a single colour. Ships light and dark palettes that follow the OS and honour a theme-light / theme-dark class on the root element.",
+  "colorway": [
+    "#0F6E6B",
+    "#1F5FA8",
+    "#1F7A4D",
+    "#B45309",
+    "#B42318",
+    "#5A6572"
+  ],
+  "files": [
+    {
+      "path": "theme/web/custom-variables.scss",
+      "mode": "block",
+      "purpose": "Layer 1 \u2014 the Signal palette (light): brand, surfaces, ink, density"
+    },
+    {
+      "path": "theme/web/_mxcli-atlas-map.scss",
+      "mode": "block",
+      "purpose": "the Atlas wiring \u2014 shared by every mxcli theme, identical in each"
+    },
+    {
+      "path": "theme/web/_mxcli-signal.scss",
+      "mode": "block",
+      "purpose": "Layer 2 \u2014 dark palette, variant blocks, fonts, recipes"
+    },
+    {
+      "path": "theme/web/main.scss",
+      "mode": "block",
+      "purpose": "variant switch + imports \u2014 this file compiles last, so the partials win"
+    },
+    {
+      "path": "theme/web/mxcli-fonts/",
+      "mode": "verbatim",
+      "purpose": "vendored IBM Plex Sans + Mono (SIL OFL 1.1) \u2014 no CDN at runtime"
+    }
+  ],
+  "defaultVariant": "light"
+}

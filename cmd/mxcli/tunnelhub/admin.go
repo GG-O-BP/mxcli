@@ -23,6 +23,28 @@ func NewAdmin(_ *Registry) http.Handler {
 	})
 }
 
+// Column layout for the per-session endpoint tables. The widths are declared
+// here rather than derived from content so that a column is the same width in
+// every session card — with table-layout:fixed the colgroup, not the longest
+// cell, decides. URL takes the remainder (it is the column worth seeing in
+// full); tableMinWidth is the sum of the fixed columns plus a usable share for
+// it, and is applied to the card as well as the table so a narrow viewport
+// scrolls every card together in .wrap.
+const (
+	tableMinWidth = "68rem"
+
+	epColgroup = "<colgroup>" +
+		"<col style='width:7.5rem'>" + // Status
+		"<col style='width:18rem'>" + // Project
+		"<col style='width:9rem'>" + // Branch
+		"<col>" + // URL (flexible remainder)
+		"<col style='width:6.5rem'>" + // First seen
+		"<col style='width:6.5rem'>" + // Last seen
+		"<col style='width:6.5rem'>" + // Last used
+		"<col style='width:5rem'>" + // Uptime
+		"</colgroup>"
+)
+
 const adminHTML = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -37,7 +59,8 @@ const adminHTML = `<!doctype html>
   .meta { color:var(--mut); font-size:.85rem; }
   .wrap { padding:1rem 1.4rem; overflow-x:auto; }
   table { border-collapse:collapse; width:100%; min-width:52rem; }
-  th,td { text-align:left; padding:.5rem .7rem; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th,td { text-align:left; padding:.5rem .7rem; border-bottom:1px solid var(--line); white-space:nowrap;
+          overflow:hidden; text-overflow:ellipsis; }
   th { font-size:.72rem; text-transform:uppercase; letter-spacing:.04em; color:var(--mut); cursor:pointer; user-select:none; }
   th.sorted::after { content:" \25BC"; font-size:.7em; }
   tbody tr:nth-child(even){ background:var(--row); }
@@ -48,15 +71,20 @@ const adminHTML = `<!doctype html>
   tr.stale, tr.offline { color:var(--mut); }
   .sol { color:var(--mut); font-size:.82rem; }
   .empty { color:var(--mut); padding:2rem 0; }
-  .ses { border:1px solid var(--line); border-radius:.6rem; margin-bottom:1rem; overflow:hidden; }
+  /* Every session card is the same width and its table is laid out from the
+     colgroup below, so a column lines up across all cards regardless of how long
+     the project names or URLs in any one card happen to be. The shared min-width
+     keeps the cards aligned while .wrap scrolls them horizontally as a unit. */
+  .ses { border:1px solid var(--line); border-radius:.6rem; margin-bottom:1rem; overflow:hidden; min-width:` + tableMinWidth + `; }
   .ses.offline { opacity:.72; }
   .sh { display:flex; align-items:baseline; gap:.7rem; flex-wrap:wrap; padding:.6rem .8rem; background:var(--row); border-bottom:1px solid var(--line); }
   .sh .sid { font-weight:600; font-family:ui-monospace,monospace; font-size:.9rem; }
   .sh .sid a { color:var(--accent); text-decoration:none; } .sh .sid a:hover { text-decoration:underline; }
   .sh .own { color:var(--mut); font-size:.85rem; } .sh .own::before { content:"@"; }
   .sh .cnt { color:var(--mut); font-size:.82rem; }
-  .sh .ls { color:var(--mut); font-size:.82rem; margin-left:auto; }
-  .ses table { min-width:0; }
+  .sh .fs { color:var(--mut); font-size:.82rem; margin-left:auto; }
+  .sh .ls { color:var(--mut); font-size:.82rem; }
+  .ses table { table-layout:fixed; min-width:` + tableMinWidth + `; }
   .ses td, .ses th { white-space:nowrap; }
   code { font-family:ui-monospace,monospace; }
   .who { color:var(--mut); font-size:.85rem; }
@@ -92,31 +120,46 @@ const adminHTML = `<!doctype html>
     if(sec<86400) return Math.floor(sec/3600)+"h"; return Math.floor(sec/86400)+"d";
   }
   function esc(s){ var d=document.createElement("div"); d.textContent=s==null?"":s; return d.innerHTML; }
-  function short(u){ return esc(u.replace(/^https?:\/\//,"")); }
+  // esc() leaves quotes alone, so attribute values need their own escaper.
+  function attr(s){
+    return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+      .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+  }
+  function short(u){ return esc(String(u||"").replace(/^https?:\/\//,"")); }
+  // Cells are ellipsised at a fixed width, so every truncatable one carries the
+  // full value as a tooltip; timestamps show the absolute time behind "3d ago".
+  function at(t){
+    if(!t || String(t).startsWith("0001")) return "";
+    var d = new Date(t);
+    return isNaN(d) ? "" : " title='"+attr(d.toLocaleString())+"'";
+  }
   function epRow(e){
     var name = (e.prefix?esc(e.prefix)+" · ":"")+esc(e.project)+(e.solution?" <span class='sol'>("+esc(e.solution)+")</span>":"");
+    var plain = (e.prefix?e.prefix+" · ":"")+(e.project||"")+(e.solution?" ("+e.solution+")":"");
     var url = e.state==="offline" ? short(e.url)
-      : "<a href='"+esc(e.url)+"' target='_blank' rel='noopener'>"+short(e.url)+"</a>";
-    return "<tr class='"+esc(e.state)+"'>"+
-      "<td><span class='dot "+esc(e.state)+"'></span>"+esc(e.state)+"</td>"+
-      "<td>"+name+"</td>"+
-      "<td><code>"+esc(e.branch||"—")+"</code></td>"+
-      "<td class='url'>"+url+"</td>"+
-      "<td>"+ago(e.lastSeenAt)+"</td>"+
-      "<td>"+ago(e.lastUsedAt)+"</td>"+
+      : "<a href='"+attr(e.url)+"' target='_blank' rel='noopener'>"+short(e.url)+"</a>";
+    return "<tr class='"+attr(e.state)+"'>"+
+      "<td><span class='dot "+attr(e.state)+"'></span>"+esc(e.state)+"</td>"+
+      "<td title='"+attr(plain)+"'>"+name+"</td>"+
+      "<td title='"+attr(e.branch||"")+"'><code>"+esc(e.branch||"—")+"</code></td>"+
+      "<td class='url' title='"+attr(e.url)+"'>"+url+"</td>"+
+      "<td"+at(e.firstSeenAt)+">"+ago(e.firstSeenAt)+"</td>"+
+      "<td"+at(e.lastSeenAt)+">"+ago(e.lastSeenAt)+"</td>"+
+      "<td"+at(e.lastUsedAt)+">"+ago(e.lastUsedAt)+"</td>"+
       "<td>"+(e.uptimeSec?dur(e.uptimeSec):"—")+"</td></tr>";
   }
   function sessionCard(s){
     var eps = s.endpoints||[];
     var label = s.session ? esc(s.session) : "(no session)";
-    var sid = s.sessionUrl ? "<a href='"+esc(s.sessionUrl)+"' target='_blank' rel='noopener'>"+label+"</a>" : label;
+    var sid = s.sessionUrl ? "<a href='"+attr(s.sessionUrl)+"' target='_blank' rel='noopener'>"+label+"</a>" : label;
     var head = "<div class='sh'><span class='dot "+(s.online?"available":"offline")+"'></span>"+
       "<span class='sid'>"+sid+"</span>"+
       (s.owner?"<span class='own'>"+esc(s.owner)+"</span>":"")+
       "<span class='cnt'>"+eps.length+" endpoint"+(eps.length===1?"":"s")+"</span>"+
+      "<span class='fs'"+at(s.firstSeen)+">since "+ago(s.firstSeen)+"</span>"+
       "<span class='ls'>seen "+ago(s.lastSeen)+"</span></div>";
-    var table = "<table><thead><tr><th>Status</th><th>Project</th><th>Branch</th><th>URL</th>"+
-      "<th>Last seen</th><th>Last used</th><th>Uptime</th></tr></thead><tbody>"+
+    var table = "<table>` + epColgroup + `<thead><tr><th>Status</th><th>Project</th><th>Branch</th><th>URL</th>"+
+      "<th>First seen</th><th>Last seen</th><th>Last used</th><th>Uptime</th></tr></thead><tbody>"+
       eps.map(epRow).join("")+"</tbody></table>";
     return "<section class='ses "+(s.online?"online":"offline")+"'>"+head+table+"</section>";
   }

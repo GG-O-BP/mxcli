@@ -1653,6 +1653,10 @@ func xpathExprToString(expr ast.Expression) string {
 			}
 			return "not(" + operand + ")"
 		}
+		// Unary minus binds to its operand: `-7`, not `- 7`.
+		if op == "-" {
+			return "-" + operand
+		}
 		return op + " " + operand
 	case *ast.XPathPathExpr:
 		return xpathPathToString(e)

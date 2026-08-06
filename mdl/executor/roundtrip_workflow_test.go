@@ -5,6 +5,7 @@
 package executor
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -12,7 +13,6 @@ import (
 // TestRoundtripWorkflow_Comprehensive tests all workflow MDL syntax in a single roundtrip.
 //
 // Activity types covered:
-//   - ANNOTATION
 //   - USER TASK (PAGE, TARGETING MICROFLOW, DUE DATE, OUTCOMES with nested, BOUNDARY EVENT x2)
 //   - MULTI USER TASK (PAGE, TARGETING MICROFLOW, OUTCOMES)
 //   - CALL MICROFLOW (WITH params, OUTCOMES TRUE/FALSE)
@@ -69,8 +69,10 @@ end workflow;`); err != nil {
   parameter $WorkflowContext: ` + mod + `.WfCtxEntity
 begin
 
-  annotation 'Comprehensive workflow covering all MDL syntax';
-
+  -- NB: no standalone annotation here. Mendix places it in the activity flow,
+  -- which accepts only flow elements, and the resulting .mpr cannot be LOADED
+  -- (issuetracker #15) — mxcli refuses it, so it cannot appear in a round-trip
+  -- test. See TestCreateWorkflow_StandaloneAnnotationRefused.
   user task ReviewTask 'Review Request'
     page ` + mod + `.ReviewPage
     targeting microflow ` + mod + `.GetSingleReviewer
@@ -111,8 +113,6 @@ begin
 
   wait for notification;
 
-  annotation 'End of flow';
-
 end workflow;`
 
 	if err := env.executeMDL(createMDL); err != nil {
@@ -130,7 +130,6 @@ end workflow;`
 		label   string
 		keyword string
 	}{
-		{"annotation activity", "annotation 'Comprehensive workflow"},
 		{"user task", "user task ReviewTask"},
 		{"outcome approve", "'Approve'"},
 		{"outcome reject", "'Reject'"},
@@ -148,7 +147,6 @@ end workflow;`
 		{"path 2", "path 2"},
 		{"call workflow", "call workflow " + mod + ".SubApprovalFlow"},
 		{"wait for notification", "wait for notification"},
-		{"trailing annotation", "annotation 'End of flow'"},
 		{"parameter", "parameter $WorkflowContext: " + mod + ".WfCtxEntity"},
 	}
 
@@ -259,92 +257,63 @@ end workflow;`
 	}
 }
 
-func TestRoundtripWorkflow_AnnotationActivity(t *testing.T) {
+// TestCreateWorkflow_StandaloneAnnotationRefused replaces the two round-trip
+// tests that used to assert a standalone `annotation` survives write → read →
+// describe → re-execute.
+//
+// It does survive that loop — mxcli's own reader is tolerant — but the loop
+// never loaded the project in Mendix, so it proved nothing about validity. It
+// does not: mxcli writes the annotation into the workflow's activity flow, and
+// Mendix constructs every child of that list with a Flow parent, which no
+// annotation type accepts. The .mpr cannot be LOADED at all — `mx check` dies
+// at "Loading the mpr file" with
+//
+//	System.InvalidOperationException: Type Mendix.Modeler.Workflows.Model.Annotation
+//	does not contain a constructor with a parameter of type
+//	...Workflows.Model.Flow
+//
+// (reproduced on mxbuild 11.12.1 with the guard stubbed out). The old tests
+// were pinning that defect in place. mxcli now refuses the construct, so the
+// behaviour to lock in is the refusal. (issuetracker #15)
+func TestCreateWorkflow_StandaloneAnnotationRefused(t *testing.T) {
 	env := setupTestEnv(t)
 	defer env.teardown()
-
-	createMDL := `create workflow ` + testModule + `.WfAnnotation
-  parameter $WorkflowContext: ` + testModule + `.TestEntityAnnot
-begin
-  annotation 'This is a workflow note';
-end workflow;`
 
 	if err := env.executeMDL(`create or modify persistent entity ` + testModule + `.TestEntityAnnot (Name: String(100));`); err != nil {
 		t.Fatalf("Failed to create entity: %v", err)
 	}
 
-	if err := env.executeMDL(createMDL); err != nil {
-		t.Fatalf("Failed to create workflow: %v", err)
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "annotation alone in the body",
+			body: "  annotation 'This is a workflow note';",
+		},
+		{
+			name: "annotation preceding an activity",
+			body: "  annotation 'I am a note';\n  wait for timer 'addDays([%CurrentDateTime%], 1)' comment 'Timer';",
+		},
 	}
 
-	output, err := env.describeMDL(`describe workflow ` + testModule + `.WfAnnotation;`)
-	if err != nil {
-		t.Fatalf("Failed to describe workflow: %v", err)
-	}
-
-	if !strings.Contains(output, "annotation 'This is a workflow note'") {
-		t.Errorf("Expected describe output to contain \"annotation 'This is a workflow note'\", got:\n%s", output)
-	}
-
-	// Full round-trip: DESCRIBE output must be re-executable (annotation must survive re-create)
-	describeOutput := output
-	// Replace WORKFLOW with CREATE OR REPLACE WORKFLOW for round-trip execution
-	createFromDescribe := strings.Replace(describeOutput, "\nworkflow ", "\ncreate or replace workflow ", 1)
-	// Strip comment header lines (-- ...) before the CREATE OR REPLACE WORKFLOW
-	var mdlLines []string
-	inBody := false
-	for _, line := range strings.Split(createFromDescribe, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "create or replace workflow") {
-			inBody = true
-		}
-		if inBody {
-			mdlLines = append(mdlLines, line)
-		}
-	}
-	roundTripMDL := strings.Join(mdlLines, "\n")
-	if err := env.executeMDL(roundTripMDL); err != nil {
-		t.Errorf("Round-trip execution failed (describe output is not re-executable): %v\nMDL:\n%s", err, roundTripMDL)
-	}
-}
-
-// TestRoundtripWorkflow_AnnotationBeforeActivity tests that a workflow activity's
-// embedded annotation (BaseWorkflowActivity.Annotation) is preserved in DESCRIBE output
-// as a parseable ANNOTATION statement rather than a SQL comment.
-func TestRoundtripWorkflow_AnnotationBeforeActivity(t *testing.T) {
-	env := setupTestEnv(t)
-	defer env.teardown()
-
-	// Create a workflow with an ANNOTATION before a WAIT FOR TIMER.
-	// This mimics the pattern from Studio Pro where an annotation is attached to an activity.
-	createMDL := `create workflow ` + testModule + `.WfAnnotBeforeTimer
-  parameter $WorkflowContext: ` + testModule + `.TestEntityAnnotTimer
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			name := fmt.Sprintf("%s.WfAnnotRefused%d", testModule, i)
+			err := env.executeMDL(`create workflow ` + name + `
+  parameter $WorkflowContext: ` + testModule + `.TestEntityAnnot
 begin
-  annotation 'I am a note';
-  wait for timer 'addDays([%CurrentDateTime%], 1)' comment 'Timer';
-end workflow;`
-
-	if err := env.executeMDL(`create or modify persistent entity ` + testModule + `.TestEntityAnnotTimer (Name: String(100));`); err != nil {
-		t.Fatalf("Failed to create entity: %v", err)
-	}
-
-	if err := env.executeMDL(createMDL); err != nil {
-		t.Fatalf("Failed to create workflow: %v", err)
-	}
-
-	output, err := env.describeMDL(`describe workflow ` + testModule + `.WfAnnotBeforeTimer;`)
-	if err != nil {
-		t.Fatalf("Failed to describe workflow: %v", err)
-	}
-
-	// The annotation must appear as a parseable ANNOTATION statement, not as a SQL comment.
-	if !strings.Contains(output, "annotation 'I am a note'") {
-		t.Errorf("Expected describe to emit annotation statement, got:\n%s", output)
-	}
-	if strings.Contains(output, "-- I am a note") {
-		t.Errorf("describe must not emit annotation as sql comment (not round-trippable), got:\n%s", output)
-	}
-	if !strings.Contains(output, "wait for timer") {
-		t.Errorf("Expected describe to contain wait for timer, got:\n%s", output)
+` + tc.body + `
+end workflow;`)
+			if err == nil {
+				t.Fatal("standalone annotation was accepted — it writes an .mpr Mendix cannot load")
+			}
+			for _, want := range []string{"MDL-WF04", "cannot load"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("refusal should mention %q, got: %v", want, err)
+				}
+			}
+		})
 	}
 }
 

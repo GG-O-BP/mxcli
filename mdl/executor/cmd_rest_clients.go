@@ -159,7 +159,7 @@ func outputRestOperation(w io.Writer, op *model.RestClientOperation) {
 	if len(op.Parameters) > 0 {
 		var params []string
 		for _, p := range op.Parameters {
-			params = append(params, fmt.Sprintf("$%s: %s", p.Name, p.DataType))
+			params = append(params, fmt.Sprintf("$%s: %s", p.Name, restParamTypeOrDefault(p.DataType)))
 		}
 		fmt.Fprintf(w, "    Parameters: (%s),\n", strings.Join(params, ", "))
 	}
@@ -168,7 +168,7 @@ func outputRestOperation(w io.Writer, op *model.RestClientOperation) {
 	if len(op.QueryParameters) > 0 {
 		var params []string
 		for _, q := range op.QueryParameters {
-			params = append(params, fmt.Sprintf("$%s: %s", q.Name, q.DataType))
+			params = append(params, fmt.Sprintf("$%s: %s", q.Name, restParamTypeOrDefault(q.DataType)))
 		}
 		fmt.Fprintf(w, "    Query: (%s),\n", strings.Join(params, ", "))
 	}
@@ -236,6 +236,21 @@ func outputRestOperation(w io.Writer, op *model.RestClientOperation) {
 	}
 
 	fmt.Fprintln(w, "  }")
+}
+
+// restParamTypeOrDefault supplies the type describe prints for a REST parameter.
+//
+// Rest$QueryParameter has no DataType property — Mendix does not model a type
+// for query parameters, so the one written in MDL is dropped at write time and
+// there is nothing to read back. The MDL grammar still requires a type
+// (`$name: Type`), so emitting the empty string produces `$page: `, which does
+// not re-parse. String is the honest stand-in: query parameters travel as text
+// in the URL, and it is the type this same describe output round-trips to.
+func restParamTypeOrDefault(dataType string) string {
+	if dataType == "" {
+		return "String"
+	}
+	return dataType
 }
 
 // writeResponseMappings writes import-direction mappings (JSON → Entity): EntityAttr = jsonField.
@@ -402,7 +417,10 @@ func createRestClient(ctx *ExecContext, stmt *ast.CreateRestClientStmt) error {
 
 	// Operations
 	for _, opDef := range stmt.Operations {
-		op := buildRestClientOperation(opDef)
+		op, err := buildRestClientOperation(opDef)
+		if err != nil {
+			return fmt.Errorf("operation %q: %w", opDef.Name, err)
+		}
 		svc.Operations = append(svc.Operations, op)
 	}
 
@@ -420,29 +438,40 @@ func createRestClient(ctx *ExecContext, stmt *ast.CreateRestClientStmt) error {
 }
 
 // buildRestClientOperation converts an AST RestOperationDef to a model RestClientOperation.
-func buildRestClientOperation(opDef *ast.RestOperationDef) *model.RestClientOperation {
+func buildRestClientOperation(opDef *ast.RestOperationDef) (*model.RestClientOperation, error) {
+	if err := checkInlineMappingBody(opDef); err != nil {
+		return nil, err
+	}
+	// model.RestClientOperation documents BodyType/ResponseType as upper-case
+	// tokens ("JSON", "EXPORT_MAPPING", "MAPPING", ...) and every consumer
+	// compares against that spelling — the serializers in both engines, and the
+	// REST-call microflow builder. The visitor produces the lower-case source
+	// text, so passing it through unchanged silently disabled all of them: a
+	// `Response: MAPPING` operation matched no branch and fell back to
+	// Rest$NoResponseHandling, dropping the mapping without a warning (#843).
+	// Normalize here, at the one place the AST becomes the semantic model.
 	op := &model.RestClientOperation{
 		Name:             opDef.Name,
 		Documentation:    opDef.Documentation,
 		HttpMethod:       opDef.Method,
 		Path:             opDef.Path,
-		BodyType:         opDef.BodyType,
+		BodyType:         strings.ToUpper(opDef.BodyType),
 		BodyVariable:     opDef.BodyVariable,
-		ResponseType:     opDef.ResponseType,
+		ResponseType:     strings.ToUpper(opDef.ResponseType),
 		ResponseVariable: opDef.ResponseVariable,
 		Timeout:          opDef.Timeout,
 	}
 
 	// Convert body mapping (export direction: Left=jsonField, Right=entityAttr)
 	if opDef.BodyMapping != nil {
-		op.BodyType = "export_mapping"
+		op.BodyType = "EXPORT_MAPPING"
 		op.BodyVariable = opDef.BodyMapping.Entity.String()
 		op.BodyMappings = convertMappingEntries(opDef.BodyMapping.Entries, false)
 	}
 
 	// Convert response mapping (import direction: Left=entityAttr, Right=jsonField)
 	if opDef.ResponseMapping != nil {
-		op.ResponseType = "mapping"
+		op.ResponseType = "MAPPING"
 		op.ResponseEntity = opDef.ResponseMapping.Entity.String()
 		op.ResponseMappings = convertMappingEntries(opDef.ResponseMapping.Entries, true)
 	}
@@ -482,7 +511,45 @@ func buildRestClientOperation(opDef *ast.RestOperationDef) *model.RestClientOper
 		op.Headers = append(op.Headers, header)
 	}
 
-	return op
+	return op, nil
+}
+
+// checkInlineMappingBody rejects `Body:`/`Response: MAPPING X` written without a
+// `{ ... }` body.
+//
+// The clause names an *entity* and the braces list the JSON fields to map onto
+// it; Mendix stores the result inline on the operation as
+// Rest$ImplicitMappingResponseHandling / Rest$ImplicitMappingBody. It is not a
+// reference to a mapping document — a consumed REST operation has nowhere to put
+// one, as Rest$RestOperationResponseHandling has exactly two implementations
+// (implicit-mapping and none).
+//
+// So `Response: MAPPING Mod.IMM_Something` parses, names a mapping document
+// where an entity belongs, contributes no field mappings, and used to be written
+// out as "no response handling" — accepted in silence, and only noticed at
+// runtime when nothing was parsed out of the response body (#843). Refuse it
+// instead, and say what to write.
+func checkInlineMappingBody(opDef *ast.RestOperationDef) error {
+	for _, m := range []struct {
+		clause string
+		def    *ast.RestMappingDef
+		syntax string
+	}{
+		{"Response", opDef.ResponseMapping, "Response: mapping Module.Entity { Attribute = jsonField, ... }"},
+		{"Body", opDef.BodyMapping, "Body: mapping Module.Entity { jsonField = Attribute, ... }"},
+	} {
+		if m.def == nil || len(m.def.Entries) > 0 {
+			continue
+		}
+		return fmt.Errorf(
+			"%s: mapping %s has no mapping body.\n"+
+				"  A consumed REST operation cannot reference an import/export mapping document;\n"+
+				"  Mendix stores the mapping inline, so the fields must be listed here.\n"+
+				"  Name the target entity and its fields:\n"+
+				"    %s",
+			m.clause, m.def.Entity.String(), m.syntax)
+	}
+	return nil
 }
 
 // convertMappingEntries converts AST RestMappingEntry slices to model RestResponseMapping slices.

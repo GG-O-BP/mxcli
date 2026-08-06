@@ -1134,6 +1134,35 @@ The following features are NOT implemented in mxcli and require manual configura
 > DYNAMICTEXT spacer (Content: ' ')
 > ```
 
+### Binding across modules and to audit members
+
+An attribute path may cross module boundaries, including into the platform's
+`System` module — the association does not need to live in the same module as
+the entity it targets:
+
+```sql
+create association IT.Issue_Assignee from IT.Issue to System.User;
+
+DATAVIEW dv (DataSource: $Issue) {
+  DYNAMICTEXT txtAssignee (Attribute: Issue_Assignee/Name)   -- into System
+  DYNAMICTEXT txtApprover (Attribute: Issue_Approver/Name)   -- into another module
+}
+```
+
+A bare association name is qualified with the module of the entity the widget
+sits on. On a ComboBox that matters: its `DataSource:` is the *option list*, but
+`Association:` names a reference on the containing entity, so
+`Association: Issue_Assignee` resolves against the dataview's entity, not the
+option list's module.
+
+Audit members declared with the `Auto*` pseudo-types bind under the name you
+declared:
+
+```sql
+create or modify persistent entity IT.Issue ( CreatedDate: AutoCreatedDate );
+DYNAMICTEXT txtCreated (Attribute: CreatedDate)   -- also accepts createdDate
+```
+
 **Script Execution Note:** Script execution stops on the first error. If a page fails to create (e.g., invalid widget syntax), earlier statements in the script will have already been committed. Plan scripts with uncertain syntax in phases.
 
 ## Tips

@@ -29,6 +29,7 @@ var wfOutcomeIdentRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 //   - MDL-WF02: single-outcome user task containing nested activities (CE1876)
 //   - MDL-WF03: decision / call-microflow outcome that is not a valid
 //     enumeration value identifier
+//   - MDL-WF04: standalone `annotation` in a workflow body (unloadable model)
 func ValidateWorkflow(stmt *ast.CreateWorkflowStmt) []linter.Violation {
 	var out []linter.Violation
 	loc := linter.Location{
@@ -64,6 +65,19 @@ func ValidateWorkflow(stmt *ast.CreateWorkflowStmt) []linter.Violation {
 			out = append(out, checkWorkflowOutcomeNames(n.Outcomes, "decision", loc)...)
 		case *ast.WorkflowCallMicroflowNode:
 			out = append(out, checkWorkflowOutcomeNames(n.Outcomes, "call microflow", loc)...)
+		case *ast.WorkflowAnnotationActivityNode:
+			// MDL-WF04 — a standalone annotation is written into the workflow's
+			// activity flow, but Mendix constructs every child of that list with a
+			// Flow parent, and no annotation type takes one. The result is not a
+			// build error but a project Mendix cannot LOAD, so Studio Pro will not
+			// open it and `mx check` dies before validating anything.
+			out = append(out, linter.Violation{
+				RuleID:     "MDL-WF04",
+				Severity:   linter.SeverityError,
+				Location:   loc,
+				Message:    "a standalone `annotation` in a workflow body produces a model Mendix cannot load (the annotation is placed in the activity flow, which accepts only flow elements) — Studio Pro will not open the project",
+				Suggestion: "Remove the `annotation` statement. Use an MDL comment (`-- ...`) to keep the note in the script; workflow canvas annotations are not yet writable.",
+			})
 		}
 	})
 	return out
