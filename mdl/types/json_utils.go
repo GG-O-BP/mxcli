@@ -18,6 +18,25 @@ import (
 // skipped by every import mapping bound to the structure (#841).
 const occursUnbounded = -1
 
+// rootMinOccurs is the MinOccurs written for the root element.
+//
+// It stays 0 even though a document root arguably "always occurs once", because
+// Mendix cross-validates a *mapping* element against its *schema* element and
+// the mapping serializers hardcode `MinOccurs: 0` (serExportMappingElement /
+// serImportMappingElement in both engines) — only MaxOccurs is propagated from
+// the schema. Writing 1 here makes the two sides disagree and every mapping
+// bound to the structure fails to build:
+//
+//	[error] [CE5015] "The mapping does not align with the underlying schema
+//	anymore. Details: Attribute 'MinOccurs' does not match schema element
+//	'(Object)'." at Object mapping element 'Root'
+//
+// MinOccurs=0 ("optional") is harmless — the #841 defect was MaxOccurs=0, which
+// Mendix reads as "never occurs". Making the root genuinely 1..1 would mean
+// propagating MinOccurs through both mapping serializers as well; that is a
+// larger change and wants a Studio Pro reference to confirm the target shape.
+const rootMinOccurs = 0
+
 // iso8601Pattern matches common ISO 8601 datetime strings that Mendix Studio Pro
 // recognizes as DateTime primitive types in JSON structures.
 var iso8601Pattern = regexp.MustCompile(
@@ -91,8 +110,7 @@ func BuildJsonElementsFromSnippet(snippet string, customNameMap map[string]strin
 	switch tok {
 	case json.Delim('{'):
 		root := b.buildElementFromRawObject("Root", "(Object)", snippet, tracker)
-		// The root of a JSON document occurs exactly once.
-		root.MinOccurs = 1
+		root.MinOccurs = rootMinOccurs
 		root.MaxOccurs = 1
 		root.Nillable = true
 		return []*JsonElement{root}, nil
@@ -101,7 +119,7 @@ func BuildJsonElementsFromSnippet(snippet string, customNameMap map[string]strin
 		root := b.buildElementFromRawRootArray("Root", "(Array)", snippet, tracker)
 		// The array element itself occurs once; its item child carries the
 		// repetition, mirroring the nested-array case.
-		root.MinOccurs = 1
+		root.MinOccurs = rootMinOccurs
 		root.MaxOccurs = 1
 		root.Nillable = true
 		return []*JsonElement{root}, nil

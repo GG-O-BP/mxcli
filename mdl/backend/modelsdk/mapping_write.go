@@ -361,7 +361,10 @@ func exportValueElementToGen(id string, elem *model.ExportMappingElement, parent
 	addStr(g, "XmlPath", "")
 	addPart(g, "Type", mappingValueDataTypeToGen(elem.DataType))
 	addInt32(g, "MinOccurs", 0)
-	addInt32(g, "MaxOccurs", 0)
+	// Mirror the bound schema element: Mendix cross-validates the two and
+	// reports CE5015 on any mismatch. Hardcoding 0 only worked while the JSON
+	// structure also wrote 0 for every element (#841).
+	addInt32(g, "MaxOccurs", int32(elem.MaxOccurs))
 	addBool(g, "Nillable", true)
 	addBool(g, "IsDefaultType", false)
 	addStr(g, "ElementType", "Value")

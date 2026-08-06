@@ -42,3 +42,43 @@ create json structure Issue841."JSON_SearchRoutes"
 -- Array root: the other top-level shape, which used a separate builder.
 create json structure Issue841."JSON_RouteList"
   snippet $$[{"id":"a","name":"b"}]$$;
+
+-- Mappings BOUND to a structure. This half guards the follow-up defect: Mendix
+-- cross-validates every mapping element's occurrence against its schema element
+-- and reports CE5015 on a mismatch —
+--
+--   [error] [CE5015] "The mapping does not align with the underlying schema
+--   anymore. Details: Attribute 'MaxOccurs' does not match schema element
+--   '(Object)/id'." at Value mapping element '_id'
+--
+-- The first cut of this fix changed the schema side only. Import writers already
+-- propagated occurrences, but all three EXPORT writers hardcoded `MaxOccurs: 0`
+-- on value elements, so raising the schema to 0..1 broke every export mapping.
+-- Structures alone cannot catch this: the original repro created no mappings, so
+-- it passed mx check while the doctype suite went red.
+create json structure Issue841."JSON_Route"
+  snippet $${"id":"a","name":"b"}$$;
+
+@position(100, 300)
+create non-persistent entity Issue841.Route (
+  RouteId: string(200),
+  RouteName: string(200)
+);
+
+create import mapping Issue841."IMM_Route"
+  with json structure Issue841.JSON_Route
+{
+  create Issue841.Route {
+    RouteId = id,
+    RouteName = name
+  }
+};
+
+create export mapping Issue841."EMM_Route"
+  with json structure Issue841.JSON_Route
+{
+  Issue841.Route {
+    id = RouteId,
+    name = RouteName
+  }
+};

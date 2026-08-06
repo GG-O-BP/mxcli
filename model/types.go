@@ -1022,7 +1022,10 @@ type ExportMappingElement struct {
 	Entity         string `json:"entity,omitempty"`         // qualified entity name
 	Association    string `json:"association,omitempty"`    // qualified association name
 	ObjectHandling string `json:"objectHandling,omitempty"` // "Parameter" for root, "Find" for children
-	MaxOccurs      int    `json:"maxOccurs,omitempty"`      // 1 for Object, -1 for Array; 0 = default (1)
+	// 1 for Object, -1 for Array (unbounded). NOT "0 = default": Mendix reads
+	// MaxOccurs=0 literally as "never occurs", and cross-validates this against
+	// the bound JSON structure element (CE5015). Mirror the schema (#841).
+	MaxOccurs int `json:"maxOccurs,omitempty"`
 	// Value mapping fields
 	Attribute string `json:"attribute,omitempty"` // qualified attribute name (Module.Entity.Attr)
 	DataType  string `json:"dataType,omitempty"`  // "String", "Integer", "Boolean", etc.

@@ -49,16 +49,36 @@ func TestBuildJsonElementsFromSnippet_NoZeroMaxOccurs(t *testing.T) {
 	}
 }
 
-// TestBuildJsonElementsFromSnippet_RootOccursOnce pins the object root to 1..1:
-// the root of a JSON document always occurs exactly once.
+// TestBuildJsonElementsFromSnippet_RootOccursOnce pins the root to 0..1.
+//
+// MaxOccurs=1 is the fix: the root previously carried MaxOccurs=0, which Mendix
+// reads as "never occurs".
+//
+// MinOccurs deliberately stays 0. Mendix cross-validates a mapping element
+// against its schema element, and the mapping serializers hardcode MinOccurs=0
+// (only MaxOccurs is propagated). Writing 1 here makes every mapping bound to
+// the structure fail with CE5015 "Attribute 'MinOccurs' does not match schema
+// element '(Object)'" — caught by the integration suite, not by unit tests,
+// because it needs a mapping bound to the structure and a real mx check.
 func TestBuildJsonElementsFromSnippet_RootOccursOnce(t *testing.T) {
-	elems, err := BuildJsonElementsFromSnippet(`{"a":1}`, nil)
-	if err != nil {
-		t.Fatalf("BuildJsonElementsFromSnippet: %v", err)
-	}
-	root := elems[0]
-	if root.MinOccurs != 1 || root.MaxOccurs != 1 {
-		t.Errorf("object root = %d..%d, want 1..1", root.MinOccurs, root.MaxOccurs)
+	for name, snippet := range map[string]string{
+		"object root": `{"a":1}`,
+		"array root":  `[{"a":1}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			elems, err := BuildJsonElementsFromSnippet(snippet, nil)
+			if err != nil {
+				t.Fatalf("BuildJsonElementsFromSnippet: %v", err)
+			}
+			root := elems[0]
+			if root.MaxOccurs != 1 {
+				t.Errorf("root MaxOccurs = %d, want 1 (0 means \"never occurs\")", root.MaxOccurs)
+			}
+			if root.MinOccurs != 0 {
+				t.Errorf("root MinOccurs = %d, want 0 — the mapping serializers hardcode 0, "+
+					"and a mismatch fails every bound mapping with CE5015", root.MinOccurs)
+			}
+		})
 	}
 }
 
