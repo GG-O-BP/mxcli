@@ -156,8 +156,8 @@ func init() {
 			"body", "response", "mapping", "authentication",
 			"json structure", "import mapping", "export mapping",
 		},
-		Syntax:  "CREATE [OR MODIFY] REST CLIENT Module.Name (\n  BaseUrl: 'https://...',\n  Authentication: NONE | BASIC (...)\n)\n{\n  OPERATION Name {\n    Method: GET|POST|PUT|DELETE|PATCH,\n    Path: '/path/{param}',\n    Parameters: ($param: Type),\n    Headers: ('Key' = 'Value'),\n    Body: JSON FROM $var | MAPPING Entity { ... },\n    Response: JSON AS $var | MAPPING Entity { ... }\n  }\n};",
-		Example: "CREATE REST CLIENT Module.PetStore (\n  BaseUrl: 'https://petstore.example.com/api',\n  Authentication: NONE\n)\n{\n  OPERATION GetPet {\n    Method: GET,\n    Path: '/pets/{id}',\n    Parameters: ($id: String),\n    Response: JSON AS $Result\n  }\n};",
+		Syntax: "CREATE [OR MODIFY] REST CLIENT Module.Name (\n  BaseUrl: 'https://...',\n  Authentication: NONE | BASIC (...)\n)\n{\n  OPERATION Name {\n    Method: GET|POST|PUT|DELETE|PATCH,\n    Path: '/path/{param}',\n    Parameters: ($param: Type),\n    Query: ($param: Type),\n    Headers: ('Key' = 'Value'),\n    Timeout: 30,\n    Body: JSON FROM $var | MAPPING Entity { jsonField = Attribute, ... },\n    Response: JSON AS $var | MAPPING Entity { Attribute = jsonField, ... }\n  }\n};\n\n-- MAPPING takes a target ENTITY plus a body listing the JSON fields; Mendix\n-- stores it inline on the operation. An existing import/export mapping\n-- document cannot be referenced here (rejected as MDL-REST01).",
+		Example: "CREATE REST CLIENT Module.PetStore (\n  BaseUrl: 'https://petstore.example.com/api',\n  Authentication: NONE\n)\n{\n  OPERATION GetPet {\n    Method: GET,\n    Path: '/pets/{id}',\n    Parameters: ($id: String),\n    Query: ($verbose: String),\n    Response: MAPPING Module.Pet {\n      Name = name,\n      Status = status\n    }\n  }\n};",
 		SeeAlso: []string{"rest", "rest.published"},
 	})
 

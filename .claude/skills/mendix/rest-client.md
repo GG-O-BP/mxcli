@@ -133,6 +133,27 @@ response: mapping Module.ResponseEntity {
 }
 ```
 
+**`mapping` takes an ENTITY plus a body — never a mapping document.** The name
+after `mapping` is the target entity, and the `{ ... }` body lists the JSON
+fields; Mendix stores the result inline on the operation
+(`Rest$ImplicitMappingResponseHandling`). A consumed REST operation has nowhere
+to put a reference to a standalone import/export mapping — the metamodel defines
+only the inline handler and "no response handling". So this is **wrong**, and is
+now rejected by `mxcli check` as `MDL-REST01`:
+
+```sql
+response: mapping Module.IMM_Something   -- ✗ names a mapping document, no body
+```
+
+If you already have an import mapping document you want to reuse, call it from
+the microflow instead — `send rest request` with `response: json as $Raw`, then
+`$Obj = import from mapping Module.IMM_Something($Raw)`.
+
+Query parameters carry no type in the Mendix model: `Rest$QueryParameter` stores
+a name only. MDL still requires `$name: Type` for the sake of the grammar, but
+the type is dropped at write time, so `describe` re-emits every query parameter
+as `String`.
+
 ### Step 2 — Call from a Microflow
 
 ```sql
