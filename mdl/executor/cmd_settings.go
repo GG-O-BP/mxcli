@@ -44,9 +44,19 @@ func listSettings(ctx *ExecContext) error {
 		for _, cfg := range ps.Configuration.Configurations {
 			values := []string{}
 			values = append(values, cfg.DatabaseType)
-			values = append(values, cfg.DatabaseUrl)
+			// An empty DatabaseUrl used to render as a bare ", ," — a gap where
+			// a value should be, which reads as a bug in the reader.
+			if cfg.DatabaseUrl != "" {
+				values = append(values, cfg.DatabaseUrl)
+			}
 			values = append(values, "db="+cfg.DatabaseName)
 			values = append(values, fmt.Sprintf("http=%d", cfg.HttpPortNumber))
+			// The root URL decides the host the app answers on, so "did my root
+			// URL land?" is the obvious question to ask this command — and the
+			// summary used to be unable to answer it (mxcli-formula1 #8).
+			if cfg.ApplicationRootUrl != "" {
+				values = append(values, "url="+cfg.ApplicationRootUrl)
+			}
 			if len(cfg.ConstantValues) > 0 {
 				values = append(values, fmt.Sprintf("%d constants", len(cfg.ConstantValues)))
 			}
@@ -85,7 +95,11 @@ func listSettings(ctx *ExecContext) error {
 }
 
 // describeSettings outputs the full MDL description of all settings.
-func describeSettings(ctx *ExecContext) error {
+// describeSettings prints the project settings as re-executable `alter settings`
+// statements. With configName set (DESCRIBE SETTINGS CONFIGURATION 'X') it
+// prints only that configuration — the read form of `alter settings
+// configuration 'X'`, which used to be a parse error.
+func describeSettings(ctx *ExecContext, configName string) error {
 	if !ctx.Connected() {
 		return mdlerrors.NewNotConnected()
 	}
@@ -93,6 +107,10 @@ func describeSettings(ctx *ExecContext) error {
 	ps, err := ctx.Backend.GetProjectSettings()
 	if err != nil {
 		return mdlerrors.NewBackend("read project settings", err)
+	}
+
+	if configName != "" {
+		return describeSettingsConfiguration(ctx, ps, configName)
 	}
 
 	// Model settings
@@ -122,34 +140,7 @@ func describeSettings(ctx *ExecContext) error {
 	// Configuration settings
 	if ps.Configuration != nil {
 		for _, cfg := range ps.Configuration.Configurations {
-			var parts []string
-			parts = append(parts, fmt.Sprintf("  DatabaseType = '%s'", cfg.DatabaseType))
-			parts = append(parts, fmt.Sprintf("  DatabaseUrl = '%s'", cfg.DatabaseUrl))
-			parts = append(parts, fmt.Sprintf("  DatabaseName = '%s'", cfg.DatabaseName))
-			parts = append(parts, fmt.Sprintf("  DatabaseUserName = '%s'", cfg.DatabaseUserName))
-			parts = append(parts, fmt.Sprintf("  DatabasePassword = '%s'", cfg.DatabasePassword))
-			parts = append(parts, fmt.Sprintf("  HttpPortNumber = %d", cfg.HttpPortNumber))
-			parts = append(parts, fmt.Sprintf("  ServerPortNumber = %d", cfg.ServerPortNumber))
-			if cfg.ApplicationRootUrl != "" {
-				parts = append(parts, fmt.Sprintf("  ApplicationRootUrl = '%s'", cfg.ApplicationRootUrl))
-			}
-			fmt.Fprintf(ctx.Output, "alter settings configuration '%s'\n%s;\n\n", cfg.Name, strings.Join(parts, ",\n"))
-
-			// Output constant overrides. A private override has no value in the
-			// model — emitting `value ''` would round-trip into a *shared* empty
-			// override, moving a value that is deliberately kept off the shared model
-			// into it. MDL does not author the shared/private choice, so describe
-			// reports it as a comment instead of a re-executable statement.
-			for _, cv := range cfg.ConstantValues {
-				if cv.IsPrivate {
-					fmt.Fprintf(ctx.Output, "-- constant '%s' has a private value in configuration '%s'\n"+
-						"-- (stored on the developer's workstation; not part of the shared model)\n\n",
-						cv.ConstantId, cfg.Name)
-					continue
-				}
-				fmt.Fprintf(ctx.Output, "alter settings constant '%s' value '%s'\n  in configuration '%s';\n\n",
-					cv.ConstantId, cv.Value, cfg.Name)
-			}
+			writeSettingsConfiguration(ctx, cfg)
 		}
 	}
 
@@ -644,4 +635,53 @@ func settingsValueToString(val any) string {
 	default:
 		return fmt.Sprintf("%v", v)
 	}
+}
+
+// writeSettingsConfiguration emits one configuration as re-executable MDL.
+func writeSettingsConfiguration(ctx *ExecContext, cfg *model.ServerConfiguration) {
+	var parts []string
+	parts = append(parts, fmt.Sprintf("  DatabaseType = '%s'", cfg.DatabaseType))
+	parts = append(parts, fmt.Sprintf("  DatabaseUrl = '%s'", cfg.DatabaseUrl))
+	parts = append(parts, fmt.Sprintf("  DatabaseName = '%s'", cfg.DatabaseName))
+	parts = append(parts, fmt.Sprintf("  DatabaseUserName = '%s'", cfg.DatabaseUserName))
+	parts = append(parts, fmt.Sprintf("  DatabasePassword = '%s'", cfg.DatabasePassword))
+	parts = append(parts, fmt.Sprintf("  HttpPortNumber = %d", cfg.HttpPortNumber))
+	parts = append(parts, fmt.Sprintf("  ServerPortNumber = %d", cfg.ServerPortNumber))
+	if cfg.ApplicationRootUrl != "" {
+		parts = append(parts, fmt.Sprintf("  ApplicationRootUrl = '%s'", cfg.ApplicationRootUrl))
+	}
+	fmt.Fprintf(ctx.Output, "alter settings configuration '%s'\n%s;\n\n", cfg.Name, strings.Join(parts, ",\n"))
+
+	// Output constant overrides. A private override has no value in the
+	// model — emitting `value ''` would round-trip into a *shared* empty
+	// override, moving a value that is deliberately kept off the shared model
+	// into it. MDL does not author the shared/private choice, so describe
+	// reports it as a comment instead of a re-executable statement.
+	for _, cv := range cfg.ConstantValues {
+		if cv.IsPrivate {
+			fmt.Fprintf(ctx.Output, "-- constant '%s' has a private value in configuration '%s'\n"+
+				"-- (stored on the developer's workstation; not part of the shared model)\n\n",
+				cv.ConstantId, cfg.Name)
+			continue
+		}
+		fmt.Fprintf(ctx.Output, "alter settings constant '%s' value '%s'\n  in configuration '%s';\n\n",
+			cv.ConstantId, cv.Value, cfg.Name)
+	}
+}
+
+// describeSettingsConfiguration prints a single named configuration, or names
+// the ones that exist when the requested name is not among them.
+func describeSettingsConfiguration(ctx *ExecContext, ps *model.ProjectSettings, name string) error {
+	var available []string
+	if ps.Configuration != nil {
+		for _, cfg := range ps.Configuration.Configurations {
+			if strings.EqualFold(cfg.Name, name) {
+				writeSettingsConfiguration(ctx, cfg)
+				return nil
+			}
+			available = append(available, "'"+cfg.Name+"'")
+		}
+	}
+	return mdlerrors.NewNotFoundMsg("settings configuration", name,
+		fmt.Sprintf("settings configuration not found: '%s' (available: %s)", name, strings.Join(available, ", ")))
 }

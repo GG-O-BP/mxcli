@@ -76,7 +76,8 @@ This single command:
 3. Sets up AI tooling (`.claude/`, skills, `AGENTS.md`)
 4. Configures a Dev Container (`.devcontainer/`)
 5. Runs one build, so the action stubs MxBuild regenerates are already settled
-6. Downloads the correct Linux mxcli binary for the container
+6. Puts an mxcli binary in the project — a hard link to the one you ran on Linux,
+   a downloaded Linux build on macOS/Windows (the container needs a Linux ELF)
 
 Open the resulting `MyApp/` folder in VS Code and click **"Reopen in Container"** — you're ready to go.
 

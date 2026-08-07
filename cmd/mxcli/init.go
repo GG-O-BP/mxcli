@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"sort"
 	"strings"
 
 	"github.com/mendixlabs/mxcli/mdl/linter"
@@ -134,10 +135,33 @@ Container Runtime:
 			os.Exit(1)
 		}
 
-		// Find .mpr file
+		// Find .mpr file. With none here, look one level down: a solution repo
+		// keeps each app in its own folder, and running `mxcli init` from the
+		// root used to write everything at the root against an invented
+		// `project.mpr` that does not exist — silently wrong, and in a two-app
+		// repo the odds of it being what you meant are zero.
+		// (mxcli-formula1 findings #3.)
 		mprFile := findMprFile(absDir)
 		if mprFile == "" {
-			mprFile = "project.mpr" // Default if not found
+			candidates := findMprFilesInSubdirs(absDir)
+			switch len(candidates) {
+			case 0:
+				fmt.Fprintf(os.Stderr, "Warning: no .mpr file found in %s.\n", absDir)
+				fmt.Fprintln(os.Stderr, "  Generated files will refer to 'project.mpr'; run this from the app folder to get real paths.")
+				mprFile = "project.mpr"
+			case 1:
+				absDir = filepath.Dir(candidates[0])
+				mprFile = filepath.Base(candidates[0])
+				fmt.Printf("No .mpr here; initializing the project found below: %s\n", candidates[0])
+			default:
+				fmt.Fprintf(os.Stderr, "Error: %d Mendix projects found below %s:\n", len(candidates), absDir)
+				for _, c := range candidates {
+					fmt.Fprintf(os.Stderr, "  %s\n", c)
+				}
+				fmt.Fprintln(os.Stderr, "\nName the one you mean, so a solution repo does not get one app's tooling by coin flip:")
+				fmt.Fprintf(os.Stderr, "  mxcli init %s\n", filepath.Dir(candidates[0]))
+				os.Exit(1)
+			}
 		}
 		projectName := filepath.Base(absDir)
 
@@ -672,4 +696,27 @@ func init() {
 	initCmd.Flags().BoolVar(&initAllTools, "all-tools", false, "Initialize for all supported AI tools")
 	initCmd.Flags().BoolVar(&initListTools, "list-tools", false, "List supported AI tools and exit")
 	initCmd.Flags().StringVar(&initContainerRuntime, "container-runtime", "docker", "Container runtime for devcontainer (docker or podman)")
+}
+
+// findMprFilesInSubdirs returns the .mpr files one level below dir, sorted, so
+// the choice is deterministic and the error message lists them in a stable
+// order. One level only: a Mendix app keeps its .mpr at its root, and walking
+// deeper would find deployment copies and backups.
+func findMprFilesInSubdirs(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		sub := filepath.Join(dir, e.Name())
+		if mpr := findMprFile(sub); mpr != "" {
+			out = append(out, filepath.Join(sub, mpr))
+		}
+	}
+	sort.Strings(out)
+	return out
 }

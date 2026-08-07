@@ -212,9 +212,17 @@ Or build from source (Go + Make — `make build` runs the ANTLR parser generatio
 ```bash
 git clone https://github.com/mendixlabs/mxcli.git
 cd mxcli
+make -C mdl/grammar bootstrap        # one-time: installs the pinned ANTLR generator
+export ANTLR4_TOOLS_ANTLR_VERSION=4.13.2
 make build
 # binary is at ./bin/mxcli
 ```
+
+The generator version is pinned and load-bearing: it must match the ANTLR
+runtime in `go.mod`, or the generated parser will not compile. `antlr4-tools`
+downloads the ANTLR jar on first run, so the build needs **network and a JVM**,
+not only Go. Skip the bootstrap if you already have an `antlr4` launcher on
+PATH (e.g. `brew install antlr4`).
 
 > `go install …@latest` is not supported: the generated ANTLR parser isn't committed, so a module-source build fails. Use a pre-built binary or `make build`.
 

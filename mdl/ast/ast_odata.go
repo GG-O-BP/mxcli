@@ -43,6 +43,9 @@ type CreateODataClientStmt struct {
 
 	// Custom HTTP headers
 	Headers []HeaderDef
+
+	// UnknownProperties: see CreateODataServiceStmt.UnknownProperties.
+	UnknownProperties []string
 }
 
 // HeaderDef represents a custom HTTP header entry.
@@ -70,20 +73,32 @@ func (s *DropODataClientStmt) isStatement() {}
 
 // CreateODataServiceStmt represents: CREATE ODATA SERVICE Module.Name (...) AUTHENTICATION ... { ... }
 type CreateODataServiceStmt struct {
-	Name                QualifiedName
-	Path                string
-	Version             string
-	ODataVersion        string
-	Namespace           string
-	ServiceName         string
-	Summary             string
-	Description         string
-	Documentation       string
-	Folder              string // Folder path within module (e.g., "Integration/APIs")
-	PublishAssociations bool
-	AuthenticationTypes []string
-	Entities            []*PublishedEntityDef
-	CreateOrModify      bool // True if CREATE OR MODIFY was used
+	Name          QualifiedName
+	Path          string
+	Version       string
+	ODataVersion  string
+	Namespace     string
+	ServiceName   string
+	Summary       string
+	Description   string
+	Documentation string
+	Folder        string // Folder path within module (e.g., "Integration/APIs")
+	// PublishAssociations selects how associations appear in the metadata:
+	// true = as links, false = as an associated object id. The executor
+	// defaults an unspecified value to true, so PublishAssociationsSet records
+	// whether the author said anything at all — an explicit false is the
+	// author's choice and is written as given.
+	PublishAssociations    bool
+	PublishAssociationsSet bool
+	AuthenticationTypes    []string
+	Entities               []*PublishedEntityDef
+	CreateOrModify         bool // True if CREATE OR MODIFY was used
+
+	// UnknownProperties holds property names the visitor did not recognise, in
+	// source order. The parser accepts any `name: value` pair, so without this
+	// a typo is discarded in silence and the model is quietly missing what the
+	// author asked for.
+	UnknownProperties []string
 }
 
 func (s *CreateODataServiceStmt) isStatement() {}
@@ -99,6 +114,17 @@ type PublishedEntityDef struct {
 	UsePaging   bool
 	PageSize    int
 	Members     []*PublishedMemberDef
+
+	// Query options. nil means "not specified" and stores Mendix's own default
+	// of true. Countable in particular is not free: it forces the read
+	// microflow to take a System.ODataResponse parameter and to compute a count
+	// the caller may never ask for.
+	Countable     *bool
+	SkipSupported *bool
+	TopSupported  *bool
+
+	// UnknownProperties: see CreateODataServiceStmt.UnknownProperties.
+	UnknownProperties []string
 }
 
 // PublishedMemberDef represents an EXPOSE member within a PUBLISH ENTITY block.
@@ -144,6 +170,9 @@ type CreateExternalEntityStmt struct {
 	Attributes               []Attribute // reuse from ast_entity.go
 	Documentation            string
 	CreateOrModify           bool
+
+	// UnknownProperties: see CreateODataServiceStmt.UnknownProperties.
+	UnknownProperties []string
 }
 
 func (s *CreateExternalEntityStmt) isStatement() {}
