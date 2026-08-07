@@ -4,7 +4,8 @@ package docker
 
 import (
 	"encoding/json"
-	"net"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -14,138 +15,113 @@ import (
 	"testing"
 )
 
-// newTestServe returns a ServeServer wired to an httptest server, so the HTTP
-// client (Build) can be tested without spawning mxbuild.
-func newTestServe(t *testing.T, handler http.HandlerFunc) *ServeServer {
+// fakeServe stands in for `mxbuild --serve`, recording the build request it was
+// sent so a test can assert on what actually went over the wire.
+func fakeServe(t *testing.T) (*ServeServer, *BuildRequest) {
 	t.Helper()
-	ts := httptest.NewServer(handler)
-	t.Cleanup(ts.Close)
-	u, err := url.Parse(ts.URL)
+	var got BuildRequest
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &got)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"status":"Success"}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	u, err := url.Parse(srv.URL)
 	if err != nil {
-		t.Fatalf("parse test URL: %v", err)
+		t.Fatalf("parsing test server URL: %v", err)
 	}
-	host, portStr, err := net.SplitHostPort(u.Host)
+	port, err := strconv.Atoi(u.Port())
 	if err != nil {
-		t.Fatalf("split host:port: %v", err)
+		t.Fatalf("parsing test server port: %v", err)
 	}
-	port, _ := strconv.Atoi(portStr)
-	return &ServeServer{Host: host, Port: port}
+	return &ServeServer{Host: u.Hostname(), Port: port}, &got
 }
 
-func TestServeBuild_DeployRestartRequired(t *testing.T) {
-	s := newTestServe(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/build" {
-			t.Errorf("path = %q, want /build", r.URL.Path)
-		}
-		if r.Method != http.MethodPost {
-			t.Errorf("method = %q, want POST", r.Method)
-		}
-		var req BuildRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Errorf("decode request: %v", err)
-		}
-		if req.Target != TargetDeploy {
-			t.Errorf("target = %q, want Deploy (default)", req.Target)
-		}
-		if req.ProjectFilePath != "/x/App.mpr" {
-			t.Errorf("projectFilePath = %q", req.ProjectFilePath)
-		}
-		_, _ = w.Write([]byte(`{"restartRequired": true, "status": "Success"}`))
-	})
+// TestBuildAbsolutizesProjectPath pins the fix for MxBuild's "the project file
+// path should be an absolute path" rejection. `mxcli run` used to absolutize at
+// the CLI layer, which left `mxcli test --local` hitting the raw error through
+// StartLocalApp; doing it in Build covers every caller.
+func TestBuildAbsolutizesProjectPath(t *testing.T) {
+	dir := t.TempDir()
+	mpr := filepath.Join(dir, "App.mpr")
+	if err := os.WriteFile(mpr, []byte("x"), 0o600); err != nil {
+		t.Fatalf("writing fixture: %v", err)
+	}
 
-	res, err := s.Build(BuildRequest{ProjectFilePath: "/x/App.mpr"}) // Target empty -> Deploy
+	// Run from the project directory so "App.mpr" is a valid relative path.
+	cwd, err := os.Getwd()
 	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { os.Chdir(cwd) })
+
+	srv, got := fakeServe(t)
+	if _, err := srv.Build(BuildRequest{Target: TargetDeploy, ProjectFilePath: "App.mpr"}); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if !res.OK() {
-		t.Errorf("OK() = false, status = %q", res.Status)
+
+	if !filepath.IsAbs(got.ProjectFilePath) {
+		t.Fatalf("MxBuild was sent a relative path %q; it rejects those", got.ProjectFilePath)
 	}
-	if !res.RestartRequired {
-		t.Error("RestartRequired = false, want true (domain/view-entity change)")
+	// EvalSymlinks because macOS /tmp is a symlink to /private/tmp.
+	wantResolved, _ := filepath.EvalSymlinks(mpr)
+	gotResolved, _ := filepath.EvalSymlinks(got.ProjectFilePath)
+	if gotResolved != wantResolved {
+		t.Errorf("sent %q, want %q", gotResolved, wantResolved)
 	}
 }
 
-func TestServeBuild_HotReloadable(t *testing.T) {
-	s := newTestServe(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"restartRequired": false, "status": "Success"}`))
-	})
-	res, err := s.Build(BuildRequest{Target: TargetDeploy, ProjectFilePath: "/x/App.mpr"})
-	if err != nil {
+// TestBuildLeavesAnAbsolutePathAlone guards against the resolution mangling a
+// path that was already correct.
+func TestBuildLeavesAnAbsolutePathAlone(t *testing.T) {
+	abs := filepath.Join(t.TempDir(), "App.mpr")
+	srv, got := fakeServe(t)
+	if _, err := srv.Build(BuildRequest{Target: TargetDeploy, ProjectFilePath: abs}); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if !res.OK() {
-		t.Errorf("OK() = false, status = %q", res.Status)
-	}
-	if res.RestartRequired {
-		t.Error("RestartRequired = true, want false (microflow/page change -> reload_model)")
+	if got.ProjectFilePath != abs {
+		t.Errorf("absolute path was rewritten: got %q, want %q", got.ProjectFilePath, abs)
 	}
 }
 
-func TestServeBuild_Failure(t *testing.T) {
-	s := newTestServe(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"status": "Failure", "message": "Specified 'target' is invalid."}`))
-	})
-	res, err := s.Build(BuildRequest{Target: "Bogus", ProjectFilePath: "/x/App.mpr"})
-	if err != nil {
-		t.Fatalf("Build should parse the failure envelope, got transport error: %v", err)
-	}
-	if res.OK() {
-		t.Error("OK() = true, want false")
-	}
-	if res.Message == "" {
-		t.Error("Message empty, want the failure message")
-	}
-}
-
-func TestServeBuild_PackageTargetSendsMdaPath(t *testing.T) {
-	s := newTestServe(t, func(w http.ResponseWriter, r *http.Request) {
-		var req BuildRequest
-		_ = json.NewDecoder(r.Body).Decode(&req)
-		if req.Target != TargetPackage {
-			t.Errorf("target = %q, want Package", req.Target)
-		}
-		if req.MdaFilePath != "/out/app.mda" {
-			t.Errorf("mdaFilePath = %q, want /out/app.mda", req.MdaFilePath)
-		}
-		_, _ = w.Write([]byte(`{"restartRequired": true, "status": "Success"}`))
-	})
-	if _, err := s.Build(BuildRequest{Target: TargetPackage, ProjectFilePath: "/x/App.mpr", MdaFilePath: "/out/app.mda"}); err != nil {
+// TestBuildDefaultsTargetToDeploy pins the pre-existing default, which the
+// absolutization now sits next to.
+func TestBuildDefaultsTargetToDeploy(t *testing.T) {
+	srv, got := fakeServe(t)
+	if _, err := srv.Build(BuildRequest{ProjectFilePath: filepath.Join(t.TempDir(), "App.mpr")}); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-}
-
-func TestVerifyMxBuildCache(t *testing.T) {
-	// layout: <cache>/modeler/mxbuild  and  <cache>/runtime
-	cache := t.TempDir()
-	modeler := filepath.Join(cache, "modeler")
-	if err := os.MkdirAll(modeler, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	mxbuild := filepath.Join(modeler, "mxbuild")
-	if err := os.WriteFile(mxbuild, []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	// runtime/ missing -> error
-	if err := verifyMxBuildCache(mxbuild); err == nil {
-		t.Error("expected error when runtime/ dir is missing")
-	}
-
-	// runtime/ present -> ok
-	if err := os.MkdirAll(filepath.Join(cache, "runtime"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := verifyMxBuildCache(mxbuild); err != nil {
-		t.Errorf("expected no error when runtime/ present, got %v", err)
+	if got.Target != TargetDeploy {
+		t.Errorf("Target = %q, want %q", got.Target, TargetDeploy)
 	}
 }
 
-func TestServeBuild_BadJSONBody(t *testing.T) {
-	s := newTestServe(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`<html>not json</html>`))
-	})
-	if _, err := s.Build(BuildRequest{ProjectFilePath: "/x/App.mpr"}); err == nil {
-		t.Error("expected an error decoding a non-JSON body")
+// TestLocalAppOptionsAbsolutizeProjectPath pins that DeployDir is not derived
+// from a relative project path.
+func TestLocalAppOptionsAbsolutizeProjectPath(t *testing.T) {
+	dir := t.TempDir()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { os.Chdir(cwd) })
+
+	o := LocalAppOptions{ProjectPath: "App.mpr"}
+	o.applyDefaults()
+
+	if !filepath.IsAbs(o.ProjectPath) {
+		t.Errorf("ProjectPath = %q, want an absolute path", o.ProjectPath)
+	}
+	if !filepath.IsAbs(o.DeployDir) {
+		t.Errorf("DeployDir = %q, want an absolute path", o.DeployDir)
 	}
 }

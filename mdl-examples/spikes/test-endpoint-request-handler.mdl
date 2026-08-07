@@ -1,0 +1,185 @@
+-- ============================================================================
+-- SPIKE: custom request handler as a re-invokable test entry point
+-- ============================================================================
+-- Goal: prove that a Java custom request handler registered once at boot can
+-- invoke ANY microflow by name over HTTP, so re-running tests costs one HTTP
+-- round trip instead of a full runtime restart.
+-- ============================================================================
+
+create module MxTest;
+
+-- ----------------------------------------------------------------------------
+-- The handler. Registered once, at boot, from the after-startup microflow.
+-- Generic: it resolves the microflow by name from Core.getMicroflowNames(),
+-- so adding/renaming/removing tests never requires touching this Java code.
+-- ----------------------------------------------------------------------------
+/** Registers the /mxtest/ request handler. Called once from after-startup. */
+create java action MxTest.RegisterTestEndpoint() returns boolean
+as $$
+final com.mendix.logging.ILogNode log = com.mendix.core.Core.getLogger("MxTest");
+
+com.mendix.core.Core.addRequestHandler("mxtest/", new com.mendix.externalinterface.connector.RequestHandler() {
+
+    private String esc(String s) {
+        if (s == null) return "null";
+        StringBuilder b = new StringBuilder("\"");
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '"':  b.append("\\\""); break;
+                case '\\': b.append("\\\\"); break;
+                case '\n': b.append("\\n");  break;
+                case '\r': b.append("\\r");  break;
+                case '\t': b.append("\\t");  break;
+                default:
+                    if (c < 0x20) b.append(String.format("\\u%04x", (int) c));
+                    else b.append(c);
+            }
+        }
+        return b.append('"').toString();
+    }
+
+    @Override
+    protected void processRequest(com.mendix.m2ee.api.IMxRuntimeRequest request,
+                                  com.mendix.m2ee.api.IMxRuntimeResponse response,
+                                  String path) throws Exception {
+        response.setContentType("application/json");
+        java.io.Writer out = response.getWriter();
+
+        java.util.Set<String> known = com.mendix.core.Core.getMicroflowNames();
+
+        // GET /mxtest/list?prefix=MxTest.Test_  -> discover tests at runtime
+        if (path != null && path.startsWith("list")) {
+            String prefix = request.getParameter("prefix");
+            java.util.List<String> names = new java.util.ArrayList<String>();
+            for (String n : known) {
+                if (prefix == null || n.startsWith(prefix)) names.add(n);
+            }
+            java.util.Collections.sort(names);
+            StringBuilder b = new StringBuilder("{\"microflows\":[");
+            for (int i = 0; i < names.size(); i++) {
+                if (i > 0) b.append(',');
+                b.append(esc(names.get(i)));
+            }
+            b.append("]}");
+            out.write(b.toString());
+            out.flush();
+            return;
+        }
+
+        // GET /mxtest/run?mf=Module.Microflow
+        String mf = request.getParameter("mf");
+        if (mf == null || mf.isEmpty()) {
+            response.setStatus(com.mendix.m2ee.api.IMxRuntimeResponse.BAD_REQUEST);
+            out.write("{\"error\":\"missing mf parameter\"}");
+            out.flush();
+            return;
+        }
+        if (!known.contains(mf)) {
+            response.setStatus(com.mendix.m2ee.api.IMxRuntimeResponse.NOT_FOUND);
+            out.write("{\"error\":\"unknown microflow\",\"mf\":" + esc(mf) + "}");
+            out.flush();
+            return;
+        }
+
+        long t0 = System.nanoTime();
+        com.mendix.systemwideinterfaces.core.IContext ctx = com.mendix.core.Core.createSystemContext();
+        Object result = null;
+        String error = null;
+        try {
+            result = com.mendix.core.Core.microflowCall(mf).execute(ctx);
+        } catch (Throwable t) {
+            Throwable root = t;
+            while (root.getCause() != null && root.getCause() != root) root = root.getCause();
+            error = root.getClass().getName() + ": " + root.getMessage();
+            log.warn("test microflow " + mf + " threw: " + error);
+        }
+        long micros = (System.nanoTime() - t0) / 1000L;
+
+        StringBuilder b = new StringBuilder("{");
+        b.append("\"mf\":").append(esc(mf));
+        b.append(",\"ok\":").append(error == null);
+        b.append(",\"durationMicros\":").append(micros);
+        b.append(",\"result\":").append(result == null ? "null" : esc(String.valueOf(result)));
+        if (error != null) b.append(",\"error\":").append(esc(error));
+        b.append('}');
+        out.write(b.toString());
+        out.flush();
+    }
+});
+
+log.info("MxTest request handler registered at /mxtest/");
+return true;
+$$;
+/
+
+-- ----------------------------------------------------------------------------
+-- Boot hook: the ONLY thing that runs at startup. Registration, not tests.
+-- ----------------------------------------------------------------------------
+/** Registers the test endpoint at boot. */
+create microflow MxTest.AfterStartup ()
+returns boolean as $Registered
+begin
+  $Registered = call java action MxTest.RegisterTestEndpoint();
+  return $Registered;
+end;
+/
+
+alter settings model AfterStartupMicroflow = 'MxTest.AfterStartup';
+
+-- ----------------------------------------------------------------------------
+-- Sample tests. Each is its own microflow -> per-test invocation and filtering
+-- come for free, and a throwing test is an HTTP 200 with ok:false, not a
+-- failed runtime boot.
+-- ----------------------------------------------------------------------------
+create persistent entity MxTest.Widget (
+  Label: string(100),
+  Amount: integer
+);
+/
+
+/** Passing test: creates and reads back an object. */
+create microflow MxTest.Test_CreateWidget ()
+returns string as $Outcome
+begin
+  declare $Outcome String = 'FAIL amount was not 41';
+  $W = create MxTest.Widget (Label = 'alpha', Amount = 41);
+  commit $W;
+  if $W/Amount = 41 then
+    set $Outcome = 'PASS created widget with amount 41';
+  end if;
+  return $Outcome;
+end;
+/
+
+/** Passing test: pure arithmetic, no database. */
+create microflow MxTest.Test_Arithmetic ()
+returns string as $Outcome
+begin
+  declare $Outcome String = '';
+  declare $Sum Integer = 0;
+  set $Sum = 2 + 2;
+  if $Sum = 4 then
+    set $Outcome = 'PASS 2+2=4';
+  else
+    set $Outcome = 'FAIL arithmetic broken';
+  end if;
+  return $Outcome;
+end;
+/
+
+/** Throws, to prove a failing test is reported not fatal. */
+create java action MxTest.Boom() returns string
+as $$
+throw new com.mendix.systemwideinterfaces.MendixRuntimeException("deliberate failure from Test_Failing");
+$$;
+/
+
+/** Failing test: propagates a Java exception out of the microflow. */
+create microflow MxTest.Test_Failing ()
+returns string as $Outcome
+begin
+  $Outcome = call java action MxTest.Boom();
+  return $Outcome;
+end;
+/

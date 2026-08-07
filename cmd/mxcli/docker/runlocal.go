@@ -29,6 +29,17 @@ import (
 // serve build's restartRequired flag decides which. See
 // docs/11-proposals/PROPOSAL_mxcli_dev_warm_loop.md.
 
+// LocalAppInfo is what a running local app exposes to another process: the
+// loopback ports it serves on, and the admin password needed to drive its M2EE
+// API. The admin password is separate from any application-level credential —
+// conflating the two is an authentication failure at the first admin call.
+type LocalAppInfo struct {
+	AppPort   int
+	AdminPort int
+	ServePort int
+	AdminPass string
+}
+
 // LocalRunOptions configures RunLocal.
 type LocalRunOptions struct {
 	// ProjectPath is the .mpr file.
@@ -120,6 +131,15 @@ type LocalRunOptions struct {
 	// charts, since the console exporter omits timestamps/parent span IDs.
 	// Implies Trace.
 	TraceOTLP string
+	// Env are extra "KEY=value" entries for the runtime JVM (see
+	// LocalRuntimeOptions.Env) — how a secret reaches the runtime without being
+	// written to disk. `--test-endpoint` passes the test-endpoint token this way.
+	Env []string
+	// OnReady, when set, is called once the app is serving, with everything a
+	// second process needs to drive it. Used by `--test-endpoint` to publish its
+	// handshake only after there is something for `mxcli test --attach` to
+	// connect to.
+	OnReady func(LocalAppInfo)
 	// RuntimeSettings are raw "Key=Value" runtime settings merged into the boot
 	// update_configuration payload (Value is parsed as JSON, else a string), e.g.
 	// 'Metrics.Registries=[{"type":"otlp"}]' or
@@ -692,6 +712,7 @@ func RunLocal(opts LocalRunOptions) error {
 		Trace:              opts.Trace,
 		TraceServiceName:   traceService,
 		TraceOTLPEndpoint:  opts.TraceOTLP,
+		Env:                opts.Env,
 		Stdout:             w,
 		Stderr:             stderr,
 	})
@@ -699,6 +720,15 @@ func RunLocal(opts LocalRunOptions) error {
 		return err
 	}
 	defer rt.Stop()
+
+	if opts.OnReady != nil {
+		opts.OnReady(LocalAppInfo{
+			AppPort:   opts.AppPort,
+			AdminPort: opts.AdminPort,
+			ServePort: opts.ServePort,
+			AdminPass: opts.AdminPass,
+		})
+	}
 
 	fmt.Fprintf(w, "\nApp is running at %s\n", rt.AppURL())
 	// The local runtime boots with the live-preview dev flags (see

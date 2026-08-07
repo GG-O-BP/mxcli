@@ -9,6 +9,7 @@ import (
 
 	"github.com/mendixlabs/mxcli/cmd/mxcli/docker"
 	"github.com/mendixlabs/mxcli/cmd/mxcli/hubauth"
+	"github.com/mendixlabs/mxcli/cmd/mxcli/testrunner"
 	"github.com/spf13/cobra"
 )
 
@@ -47,6 +48,20 @@ subscriber after start, so the application log lands there too (a standalone
 runtime attaches no subscriber by default). The path is printed at boot;
 override with --runtime-log <path>, or "-" to disable.
 
+With --test-endpoint, the app hosts mxcli's token-guarded test endpoint, so
+'mxcli test <files> -p <app.mpr> --attach' runs a suite against this already-warm
+app instead of booting a runtime of its own — a couple of seconds instead of ~30.
+The endpoint has to be installed before the boot (its handler is registered by
+the after-startup microflow, which only runs at startup), so it cannot be added
+to an app that is already up. Your project's own after-startup microflow is
+chained, not displaced, so the app still boots the way you expect. The endpoint
+is removed and the project restored when the app stops.
+
+Two things to know: tests then run against THIS app's database, not a scratch
+one, and while the app is up its model carries a microflow-executing endpoint —
+guarded by a per-run token, loopback-only, and limited to the generated
+MxTest.Test_* microflows, but present. Leave the flag off for a normal dev loop.
+
 With --debug, the microflow debugger is enabled at boot and a session is started,
 so 'mxcli debug break/paused/step/continue' works from another terminal (use the
 same -p). No breakpoints exist until you set one, so --debug alone does not change
@@ -66,6 +81,7 @@ custom OpenTelemetry span filters.
 Examples:
   mxcli run --local -p app.mpr
   mxcli run --local -p app.mpr --watch
+  mxcli run --local -p app.mpr --test-endpoint   # then: mxcli test tests/ -p app.mpr --attach
   mxcli run --local -p app.mpr --debug          # then: mxcli debug break … -p app.mpr
   mxcli run --local -p app.mpr --app-port 8081 --db-name myapp
   mxcli run --hub https://hub.example.com -p app.mpr            # browser preview
@@ -109,6 +125,7 @@ Examples:
 		}
 
 		watch, _ := cmd.Flags().GetBool("watch")
+		testEndpoint, _ := cmd.Flags().GetBool("test-endpoint")
 		ensureDB, _ := cmd.Flags().GetBool("ensure-db")
 		setupOnly, _ := cmd.Flags().GetBool("setup")
 		appPort, _ := cmd.Flags().GetInt("app-port")
@@ -175,8 +192,40 @@ Examples:
 			Stderr: os.Stderr,
 		}
 
+		// --test-endpoint installs the token-guarded test endpoint into the project
+		// so `mxcli test --attach` can run tests against this app without booting
+		// its own runtime. It must be installed before the boot (the handler is
+		// registered by the after-startup microflow, which only runs at startup)
+		// and removed on the way out.
+		var hosted *testrunner.HostedEndpoint
+		if testEndpoint {
+			if setupOnly {
+				fmt.Fprintln(os.Stderr, "Error: --test-endpoint has nothing to do with --setup (which never boots the app)")
+				os.Exit(1)
+			}
+			var err error
+			hosted, err = testrunner.InstallHostedEndpoint(projectPath, os.Stdout)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			// Ctrl-C is the normal way to stop a dev loop, and it must not leave the
+			// endpoint in the project. RunLocal returns on SIGINT, so the deferred
+			// removal runs — but os.Exit below would skip it, hence the explicit
+			// removal on the error path too. Remove is idempotent.
+			defer hosted.Remove()
+			opts.Env = append(opts.Env, hosted.Env...)
+			opts.OnReady = func(info docker.LocalAppInfo) {
+				if err := hosted.Publish(info); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: could not publish the test-endpoint handshake: %v\n", err)
+				}
+			}
+		}
+
 		if err := docker.RunLocal(opts); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			// os.Exit skips deferred calls, so remove explicitly here.
+			hosted.Remove()
 			os.Exit(1)
 		}
 	},
@@ -193,6 +242,7 @@ func init() {
 	runCmd.Flags().String("hub-worktree", "", "Worktree label to distinguish multiple worktrees of one branch")
 	runCmd.Flags().String("hub-session", "", "Session id to group this preview under in the hub overview (default: CLAUDE_CODE_REMOTE_SESSION_ID / MXCLI_HUB_SESSION)")
 	runCmd.Flags().Bool("watch", false, "Rebuild and hot-apply on every project change")
+	runCmd.Flags().Bool("test-endpoint", false, "Host mxcli's token-guarded test endpoint so 'mxcli test --attach' can run tests against this app without booting its own runtime (removed on exit)")
 	runCmd.Flags().Bool("ensure-db", false, "Provision the local Postgres + app database if missing (fresh-session bootstrap)")
 	runCmd.Flags().Bool("setup", false, "Prepare prerequisites (cache MxBuild+runtime, ensure DB) and exit without booting — for a SessionStart hook")
 	runCmd.Flags().Int("app-port", 0, "HTTP port for the app (default 8080)")

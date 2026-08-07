@@ -13,7 +13,7 @@ The testing framework supports two test file formats:
 
 ## Prerequisites
 
-Running tests requires **Docker** for Mendix runtime validation. The test runner:
+Tests execute against a real Mendix runtime. **Docker is one way to get one, not the only one** — `--local` uses mxcli's own runtime with no daemon, and is the faster path (see [Running Tests](running-tests.md) for the mode comparison and the `--watch` / `--attach` loops). On the Docker path the test runner:
 
 1. Creates a fresh Mendix project using `mx create-project`
 2. Executes the MDL test script against the project
