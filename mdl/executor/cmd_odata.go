@@ -1320,6 +1320,10 @@ func createODataService(ctx *ExecContext, stmt *ast.CreateODataServiceStmt) erro
 					}
 					if stmt.ServiceName != "" {
 						svc.ServiceName = stmt.ServiceName
+					} else if svc.ServiceName == "" {
+						// Heal a service written before ServiceName was defaulted:
+						// re-running the script repairs a model that cannot build.
+						svc.ServiceName = svc.Name
 					}
 					if stmt.Summary != "" {
 						svc.Summary = stmt.Summary
@@ -1327,7 +1331,9 @@ func createODataService(ctx *ExecContext, stmt *ast.CreateODataServiceStmt) erro
 					if stmt.Description != "" {
 						svc.Description = stmt.Description
 					}
-					svc.PublishAssociations = stmt.PublishAssociations
+					if stmt.PublishAssociationsSet {
+						svc.PublishAssociations = stmt.PublishAssociations
+					}
 					if len(stmt.AuthenticationTypes) > 0 {
 						svc.AuthenticationTypes = stmt.AuthenticationTypes
 					}
@@ -1353,6 +1359,17 @@ func createODataService(ctx *ExecContext, stmt *ast.CreateODataServiceStmt) erro
 		containerID = folderID
 	}
 
+	// Name (the document) and ServiceName (the name in the OData metadata
+	// document) are different properties, and Mendix requires the second to be
+	// non-empty — an empty one fails the build with CE0729 "The service name
+	// should not be empty", which `mxcli check` cannot see. Default it to the
+	// document name, exactly as the CONSUMED path does for CE0339 above.
+	// (mxcli-formula1 findings #10.1.)
+	serviceName := stmt.ServiceName
+	if serviceName == "" {
+		serviceName = stmt.Name.Name
+	}
+
 	newSvc := &model.PublishedODataService{
 		ContainerID:         containerID,
 		Name:                stmt.Name.Name,
@@ -1361,10 +1378,10 @@ func createODataService(ctx *ExecContext, stmt *ast.CreateODataServiceStmt) erro
 		Version:             stmt.Version,
 		ODataVersion:        stmt.ODataVersion,
 		Namespace:           stmt.Namespace,
-		ServiceName:         stmt.ServiceName,
+		ServiceName:         serviceName,
 		Summary:             stmt.Summary,
 		Description:         stmt.Description,
-		PublishAssociations: stmt.PublishAssociations,
+		PublishAssociations: publishAssociationsFor(stmt),
 		AuthenticationTypes: stmt.AuthenticationTypes,
 	}
 
@@ -1376,6 +1393,18 @@ func createODataService(ctx *ExecContext, stmt *ast.CreateODataServiceStmt) erro
 		entityType, entitySet := astEntityDefToModel(ctx, entityDef)
 		newSvc.EntityTypes = append(newSvc.EntityTypes, entityType)
 		newSvc.EntitySets = append(newSvc.EntitySets, entitySet)
+	}
+
+	// An explicit false on a non-persistable entity is unbuildable whatever the
+	// key is: object-id mode needs a published ID, and Mendix forbids publishing
+	// the ID of a non-persistable entity. Say so rather than let CE7375 be the
+	// first anyone hears of it.
+	if !newSvc.PublishAssociations {
+		if nonPersistable := nonPersistablePublishedEntities(ctx, stmt.Entities); len(nonPersistable) > 0 {
+			fmt.Fprintf(ctx.Output,
+				"  Warning: PublishAssociations is false, but %s %s non-persistable — associations-as-object-id requires a published ID, which Mendix forbids there. The build will fail with CE7375; remove the property to get the default (true).\n",
+				strings.Join(nonPersistable, ", "), pluralIsAre(len(nonPersistable)))
+		}
 	}
 
 	if err := ctx.Backend.CreatePublishedODataService(newSvc); err != nil {
@@ -1782,3 +1811,64 @@ func fetchODataMetadata(metadataUrl string) (metadata string, hash string, err e
 }
 
 // Executor wrappers for unmigrated callers.
+// nonPersistablePublishedEntities returns the qualified names of the published
+// entities that are non-persistable, in statement order. Entities it cannot
+// resolve are treated as persistable: this drives a silent default correction,
+// so an unreadable entity must not change what gets written.
+func nonPersistablePublishedEntities(ctx *ExecContext, defs []*ast.PublishedEntityDef) []string {
+	if ctx == nil || ctx.Backend == nil {
+		return nil
+	}
+	var out []string
+	seen := make(map[string]bool)
+	for _, def := range defs {
+		if def == nil || seen[def.Entity.String()] {
+			continue
+		}
+		seen[def.Entity.String()] = true
+		module, err := findModule(ctx, def.Entity.Module)
+		if err != nil {
+			continue
+		}
+		dm, err := ctx.Backend.GetDomainModel(module.ID)
+		if err != nil {
+			continue
+		}
+		for _, e := range dm.Entities {
+			if e.Name == def.Entity.Name && !e.Persistable {
+				out = append(out, def.Entity.String())
+				break
+			}
+		}
+	}
+	return out
+}
+
+// pluralIsAre picks the verb for a list of n names.
+func pluralIsAre(n int) string {
+	if n == 1 {
+		return "is"
+	}
+	return "are"
+}
+
+// publishAssociationsFor picks the PublishAssociations value to store.
+//
+// false means "expose associations as an associated object id", and Mendix then
+// requires the system ID attribute to be published as the entity key — so a
+// service whose key is an ordinary attribute (what MDL's `expose (Attr (KEY))`
+// writes) fails the build with CE7375, and a non-persistable entity cannot
+// satisfy it at all because publishing its ID is forbidden. Verified on 11.12.1:
+// the identical service builds 0 errors with true and CE7375 with false, for a
+// persistent entity with a unique key.
+//
+// Defaulting to true therefore does not pick a preference; it picks the value
+// that can build from the MDL people actually write. An explicit
+// `PublishAssociations: false` is still honoured — that author has published an
+// ID key, or wants to know. (mxcli-formula1 findings #10.4.)
+func publishAssociationsFor(stmt *ast.CreateODataServiceStmt) bool {
+	if !stmt.PublishAssociationsSet {
+		return true
+	}
+	return stmt.PublishAssociations
+}

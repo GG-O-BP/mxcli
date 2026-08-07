@@ -119,6 +119,7 @@ func (b *Builder) ExitCreateODataServiceStatement(ctx *parser.CreateODataService
 			stmt.Description = value
 		case "publishassociations":
 			stmt.PublishAssociations = strings.EqualFold(value, "true") || strings.EqualFold(value, "yes")
+			stmt.PublishAssociationsSet = true
 		case "folder":
 			stmt.Folder = value
 		}

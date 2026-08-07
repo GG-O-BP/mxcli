@@ -70,20 +70,26 @@ func (s *DropODataClientStmt) isStatement() {}
 
 // CreateODataServiceStmt represents: CREATE ODATA SERVICE Module.Name (...) AUTHENTICATION ... { ... }
 type CreateODataServiceStmt struct {
-	Name                QualifiedName
-	Path                string
-	Version             string
-	ODataVersion        string
-	Namespace           string
-	ServiceName         string
-	Summary             string
-	Description         string
-	Documentation       string
-	Folder              string // Folder path within module (e.g., "Integration/APIs")
-	PublishAssociations bool
-	AuthenticationTypes []string
-	Entities            []*PublishedEntityDef
-	CreateOrModify      bool // True if CREATE OR MODIFY was used
+	Name          QualifiedName
+	Path          string
+	Version       string
+	ODataVersion  string
+	Namespace     string
+	ServiceName   string
+	Summary       string
+	Description   string
+	Documentation string
+	Folder        string // Folder path within module (e.g., "Integration/APIs")
+	// PublishAssociations selects how associations appear in the metadata:
+	// true = as links, false = as an associated object id. The executor
+	// defaults an unspecified value to true, so PublishAssociationsSet records
+	// whether the author said anything at all — an explicit false is the
+	// author's choice and is written as given.
+	PublishAssociations    bool
+	PublishAssociationsSet bool
+	AuthenticationTypes    []string
+	Entities               []*PublishedEntityDef
+	CreateOrModify         bool // True if CREATE OR MODIFY was used
 }
 
 func (s *CreateODataServiceStmt) isStatement() {}

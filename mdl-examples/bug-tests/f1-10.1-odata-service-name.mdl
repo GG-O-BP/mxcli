@@ -1,0 +1,55 @@
+-- ============================================================================
+-- mxcli-formula1 finding #10.1: every published OData service failed to build
+-- ============================================================================
+--
+-- Symptom (before fix): a service created purely from MDL passed `mxcli check`
+-- and then failed the build:
+--
+--   [error] [CE0729] "The service name should not be empty."
+--   at Published OData service 'ProbeOData.ProbeApi'
+--
+-- `Name` (the document name) and `ServiceName` (the name in the OData metadata
+-- document) are different properties, and CREATE ODATA SERVICE only set the
+-- first. So the failure hit EVERY published service, not just the exotic ones
+-- — and it was invisible until a build ran, because check does not resolve it.
+--
+-- The consumed path had defaulted the same field to the document name for
+-- CE0339 all along; the published path just never got the same line.
+--
+-- After fix: ServiceName falls back to the document name. An explicit
+-- `ServiceName: 'X'` still wins. `create or modify` on a service written before
+-- the fix heals an empty one, so re-running a script repairs the model.
+--
+-- Usage:
+--   mxcli exec mdl-examples/bug-tests/f1-10.1-odata-service-name.mdl -p app.mpr
+--   then a real build must report 0 errors:
+--   scripts/mx-check.sh -p app.mpr
+-- ============================================================================
+
+create module F1SVCNAME;
+
+create persistent entity F1SVCNAME.Driver (
+  -- The published key needs a unique validation rule, or Mendix answers
+  -- CE6624 "Add a unique validation rule to attribute 'Code' … to be able to
+  -- use it as the key".
+  Code: string(10) unique error 'Code must be unique',
+  Name: string(120)
+);
+
+-- No ServiceName: — the shape that used to fail CE0729.
+create odata service F1SVCNAME.DriverApi (
+  path: 'odata/f1svcname/',
+  version: '1.0.0',
+  ODataVersion: OData4,
+  namespace: 'F1SVCNAME.Drivers'
+)
+authentication basic
+{
+  publish entity F1SVCNAME.Driver as 'Drivers' (
+    ReadMode: source
+  )
+  expose (
+    Code as 'code' (KEY, Filterable, Sortable),
+    Name (Filterable, Sortable)
+  );
+};
