@@ -59,6 +59,16 @@ type LocalApp struct {
 }
 
 func (o *LocalAppOptions) applyDefaults() {
+	// Resolve the project path before anything is derived from it: DeployDir
+	// below, and the runtime's own working directory, both hang off it, and a
+	// relative value would leave them relative to whatever cwd the caller
+	// happened to have. ServeServer.Build absolutizes too — that is the backstop
+	// for MxBuild's own requirement; this is so the paths around it agree.
+	if o.ProjectPath != "" && !filepath.IsAbs(o.ProjectPath) {
+		if abs, err := filepath.Abs(o.ProjectPath); err == nil {
+			o.ProjectPath = abs
+		}
+	}
 	if o.DeployDir == "" {
 		o.DeployDir = filepath.Join(filepath.Dir(o.ProjectPath), "deployment")
 	}

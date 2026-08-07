@@ -97,6 +97,15 @@ func Run(opts RunOptions) (*SuiteResult, error) {
 		timeout = 5 * time.Minute
 	}
 
+	// Resolve the project path up front so everything derived from it — the
+	// runtime log path, the deployment directory, the paths named in error
+	// messages — is absolute and agrees.
+	if opts.ProjectPath != "" && !filepath.IsAbs(opts.ProjectPath) {
+		if abs, err := filepath.Abs(opts.ProjectPath); err == nil {
+			opts.ProjectPath = abs
+		}
+	}
+
 	fmt.Fprintln(w, "Parsing test files...")
 	suite, err := parseTestFiles(opts.TestFiles)
 	if err != nil {
