@@ -76,14 +76,31 @@ end;
 
 ### Supported Database Types
 
-| Database | TYPE Value |
-|----------|------------|
-| Oracle | `'Oracle'` |
-| PostgreSQL | `'PostgreSQL'` |
-| MySQL | `'MySQL'` |
-| SQL Server | `'MSSQL'` or `'SQLServer'` |
-| Snowflake | `'Snowflake'` |
-| Amazon Redshift | `'Redshift'` |
+These are the values Studio Pro's own connector editor offers — read out of the
+shipped bundle at `modeler/ide-client/database-connector-editor/`, identical on
+11.10.0, 11.12.1 and 11.13.0.
+
+| Database | TYPE Value | Studio Pro label |
+|----------|------------|------------------|
+| SQL Server | `'MSSQL'` | Microsoft SQL |
+| MySQL | `'MySQL'` | MySQL |
+| Oracle | `'Oracle'` | Oracle |
+| PostgreSQL | `'PostgreSQL'` | PostgreSQL |
+| Snowflake | `'Snowflake'` | Snowflake |
+| *anything else* | `'BYOD'` | Other |
+
+**`'BYOD'` — bring your own driver.** Selecting it forces connection-string
+configuration and **skips the driver-presence check**; its only validation is
+that the connection string is non-empty. That is the hook for any JDBC driver
+Mendix ships no picker entry for (DuckDB, SQLite, ClickHouse, …). Drop the
+driver JAR in `userlib/` and give the connection its JDBC URL.
+
+**`'Redshift'` and `'SQLServer'` are not real values.** Both appeared in an
+earlier version of this table and neither is in the picker on any version
+checked. mxcli writes the type string through unchanged and **mxbuild does not
+validate it** — `type 'Redshift'` builds 0 errors and simply does not connect —
+so `mxcli check` warns about an unrecognised type (MDL-DB01) rather than letting
+a green build hide it.
 
 ## Query Definition Syntax
 

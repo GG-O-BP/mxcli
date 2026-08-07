@@ -173,6 +173,11 @@ Examples:
 		// not row-scoped, so the argument is unbound (CE1571) at build time.
 		violations = append(violations, executor.ValidatePageButtonContext(prog)...)
 
+		// Flag a database-connection TYPE Studio Pro does not offer. mxcli writes
+		// the string through and mxbuild does not check it, so a wrong value
+		// builds green and simply does not connect.
+		violations = append(violations, executor.ValidateDatabaseConnectionType(prog)...)
+
 		// Flag OData property names nothing below will act on. The grammar takes
 		// any `name: value` pair, so a typo used to be discarded in silence and
 		// the model quietly lacked what the author asked for.
