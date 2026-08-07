@@ -808,37 +808,13 @@ func buildSetStatement(ctx parser.ISetStatementContext) ast.MicroflowStatement {
 				InputVariable:  extractVariableName(funcCall.Arguments, 0),
 			}
 		case "SUM":
-			inputVar, attr := extractVariableAndAttribute(funcCall.Arguments, 0)
-			return &ast.AggregateListStmt{
-				OutputVariable: targetVar,
-				Operation:      ast.AggregateSum,
-				InputVariable:  inputVar,
-				Attribute:      attr,
-			}
+			return buildSetAggregate(targetVar, ast.AggregateSum, funcCall.Arguments)
 		case "AVERAGE":
-			inputVar, attr := extractVariableAndAttribute(funcCall.Arguments, 0)
-			return &ast.AggregateListStmt{
-				OutputVariable: targetVar,
-				Operation:      ast.AggregateAverage,
-				InputVariable:  inputVar,
-				Attribute:      attr,
-			}
+			return buildSetAggregate(targetVar, ast.AggregateAverage, funcCall.Arguments)
 		case "MINIMUM":
-			inputVar, attr := extractVariableAndAttribute(funcCall.Arguments, 0)
-			return &ast.AggregateListStmt{
-				OutputVariable: targetVar,
-				Operation:      ast.AggregateMinimum,
-				InputVariable:  inputVar,
-				Attribute:      attr,
-			}
+			return buildSetAggregate(targetVar, ast.AggregateMinimum, funcCall.Arguments)
 		case "MAXIMUM":
-			inputVar, attr := extractVariableAndAttribute(funcCall.Arguments, 0)
-			return &ast.AggregateListStmt{
-				OutputVariable: targetVar,
-				Operation:      ast.AggregateMaximum,
-				InputVariable:  inputVar,
-				Attribute:      attr,
-			}
+			return buildSetAggregate(targetVar, ast.AggregateMaximum, funcCall.Arguments)
 		}
 	}
 
@@ -903,31 +879,45 @@ func getArgumentExpression(args []ast.Expression, index int) ast.Expression {
 	return args[index]
 }
 
-// extractVariableAndAttribute extracts variable and attribute from $Var/Attr or $Var, Attr.
-func extractVariableAndAttribute(args []ast.Expression, index int) (varName string, attrName string) {
-	if index >= len(args) {
-		return "", ""
+// buildSetAggregate builds an aggregate activity from a SET whose value is a
+// SUM/AVERAGE/MINIMUM/MAXIMUM call.
+//
+// It mirrors buildAggregateListStatement, which handles the same two spellings
+// when they arrive through the aggregateListStatement rule: one argument is a
+// list plus an attribute (`sum($List.Price)`), two arguments are a list plus an
+// expression evaluated per item (`sum($List, $currentObject/Price * 0.21)`).
+// Two conversions for one syntax is how the attribute went missing in the first
+// place, so the two must agree.
+func buildSetAggregate(targetVar string, op ast.AggregateListOperationType, args []ast.Expression) *ast.AggregateListStmt {
+	stmt := &ast.AggregateListStmt{OutputVariable: targetVar, Operation: op}
+	if len(args) == 0 {
+		return stmt
 	}
-	// Check for attribute path like $Var/Attr
-	if pathExpr, ok := args[index].(*ast.AttributePathExpr); ok {
-		varName = pathExpr.Variable
-		if len(pathExpr.Path) > 0 {
-			attrName = pathExpr.Path[len(pathExpr.Path)-1]
+
+	switch arg := args[0].(type) {
+	case *ast.AttributePathExpr:
+		stmt.InputVariable = arg.Variable
+		if len(arg.Path) > 0 {
+			stmt.Attribute = arg.Path[len(arg.Path)-1]
 		}
-		return
-	}
-	// Check for simple variable
-	if varExpr, ok := args[index].(*ast.VariableExpr); ok {
-		varName = varExpr.Name
-		// Look for attribute in next argument
-		if index+1 < len(args) {
-			if identExpr, ok := args[index+1].(*ast.IdentifierExpr); ok {
-				attrName = identExpr.Name
-			}
+	case *ast.VariableExpr:
+		// `sum($List.Price)` reaches the expression parser as one variable whose
+		// name carries the dot, not as an attribute path. Left joined, mxbuild
+		// reports the whole thing as an undefined variable (CE0109).
+		stmt.InputVariable = arg.Name
+		if list, attr, ok := strings.Cut(arg.Name, "."); ok {
+			stmt.InputVariable, stmt.Attribute = list, attr
 		}
-		return
 	}
-	return "", ""
+
+	// Any second argument is the per-item expression. Dropping it leaves an
+	// aggregate with nothing to aggregate, which mxbuild rejects with CE0015.
+	if len(args) > 1 {
+		stmt.IsExpression = true
+		stmt.Expression = args[1]
+		stmt.Attribute = ""
+	}
+	return stmt
 }
 
 // extractSortSpecs extracts sort specifications from function arguments.
