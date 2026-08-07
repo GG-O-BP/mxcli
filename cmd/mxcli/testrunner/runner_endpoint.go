@@ -62,6 +62,38 @@ func (s *testAppSession) stop() {
 	}
 }
 
+// testTarget is an app the runner can run tests against and push model changes
+// into. Two things satisfy it: a runtime the runner booted itself, and one
+// already running that it attached to. The watch loop is written against this
+// so it does not care which.
+type testTarget interface {
+	// endpoint is the client for the app's test endpoint.
+	endpoint() *endpointClient
+	// applyModelChange rebuilds the project and applies it, returning a label for
+	// what it took ("reload"/"restart"). It returns only once the endpoint is
+	// reachable again, so the caller can invoke a test straight after.
+	applyModelChange(projectPath string) (string, error)
+}
+
+func (s *testAppSession) endpoint() *endpointClient { return s.client }
+
+// applyModelChange rebuilds through the serve server this session owns.
+//
+// A restart is fine here — the session owns the runtime — but it re-runs
+// after-startup, so the endpoint has to be waited for before the next test.
+func (s *testAppSession) applyModelChange(projectPath string) (string, error) {
+	action, _, err := s.app.Rebuild(projectPath)
+	if err != nil {
+		return action.String(), err
+	}
+	if action == docker.ActionRestart {
+		if err := s.client.waitReady(endpointReadyTimeout(0)); err != nil {
+			return action.String(), fmt.Errorf("the test endpoint did not come back after a restart: %w", err)
+		}
+	}
+	return action.String(), nil
+}
+
 // runViaEndpoint boots the app once and drives the suite over HTTP.
 //
 // The contrast with the after-startup path is the whole point: there, tests run

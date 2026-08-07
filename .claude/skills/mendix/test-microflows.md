@@ -178,6 +178,43 @@ behind reporting a stale pass.
 `--watch` requires `--local`. The Docker and `--legacy-runner` paths can only
 re-run tests by restarting, which is the thing being avoided.
 
+#### `--attach`: no boot at all
+
+If you already have the app running, tests can skip the boot entirely. The dev
+loop has to opt into hosting the endpoint, because the handler is registered by
+the after-startup microflow and so cannot be added to an app that is already up:
+
+```bash
+# terminal 1 — the app you are working in
+mxcli run --local --test-endpoint -p app.mpr
+
+# terminal 2 — runs in ~2s, no boot, repeatable
+mxcli test tests/ -p app.mpr --attach
+mxcli test tests/ -p app.mpr --attach --watch    # ...and re-run on every change
+```
+
+The hosting app chains your project's own after-startup microflow rather than
+displacing it, so it still boots normally. The endpoint and the handshake file
+(`.mxcli/test-endpoint.json`, mode 0600) are removed when the app stops.
+
+Three things to know before reaching for it:
+
+- **Tests run against the running app's database**, not a scratch one, so they
+  can leave data behind in the app you are looking at. `--local` uses a separate
+  `<project>_test` database; `--attach` does not.
+- **An attach only owns its own test microflows.** The endpoint and the
+  after-startup setting belong to the app hosting them, and cleanup never
+  touches them.
+- **A change needing a runtime restart is refused** — a new entity or
+  association. That runtime belongs to the other process. Restart it, or drop
+  `--attach`.
+
+| | Boot | Database | Owns the runtime |
+|---|---|---|---|
+| `--local` | ~30s each run | `<project>_test` | yes |
+| `--local --watch` | ~30s once, then ~2s | `<project>_test` | yes |
+| `--attach` | none | the running app's | no |
+
 #### Security of the endpoint
 
 It executes microflows under a system context, so it is gated four ways:

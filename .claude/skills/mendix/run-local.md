@@ -133,6 +133,7 @@ Launch `run --local` as the **sole** command in its invocation (don't chain a tr
 | `--screenshot-path` / `--screenshot-url` | `.mxcli/run-local.png` / app root | Screenshot output / page (URL or `/path`) |
 | `--screenshot-user` / `--screenshot-password` | — | Log in once, reuse session (pages behind login) |
 | `--runtime-log` | `.mxcli/runtime.log` | Runtime log file: JVM stdout/stderr **and** the application log (microflow `LOG` output + server stack traces, via an attached file log subscriber). `-` disables. |
+| `--test-endpoint` | off | Host mxcli's token-guarded test endpoint so `mxcli test … --attach` can run a suite against this app with no boot of its own. Installed **before** the boot (the handler registers from after-startup), your own after-startup microflow is chained not displaced, and both are removed on exit. See `test-microflows.md`. |
 | `--debug` | off | Enable the microflow debugger at boot + start a session, so `mxcli debug break/paused/…` works from another terminal (see `debug-microflows.md`). No breakpoints = no behaviour change; disabled on shutdown. |
 | `--debug-pass` | `mxdebug` | Debugger password when `--debug` is set |
 | `--metrics` | off | Register a Prometheus meter registry at boot; the runtime serves metrics at `http://127.0.0.1:<admin-port>/prometheus` |

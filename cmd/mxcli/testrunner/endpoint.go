@@ -62,7 +62,16 @@ func testFlowName(tc TestCase) string { return testFlowPrefix + tc.ID }
 //     constant-time equality so a wrong guess leaks no timing signal.
 //  3. Non-loopback callers are refused outright. mxcli always talks to
 //     127.0.0.1; nothing legitimate reaches this handler from off-box.
-func GenerateEndpointMDL() string {
+//
+// chainAfterStartup, when non-empty, is a microflow the generated startup flow
+// calls after registering the endpoint — the project's own after-startup
+// microflow, which this one displaces.
+//
+// The test runner passes "" : a test run wants a known starting state, and the
+// suite is the only thing that should execute. A dev loop hosting the endpoint
+// (`run --local --test-endpoint`) passes the real one, because the developer's
+// app must still seed its data and do whatever else it does at boot.
+func GenerateEndpointMDL(chainAfterStartup string) string {
 	var b strings.Builder
 
 	b.WriteString("CREATE MODULE " + mxTestModule + ";\n\n")
@@ -77,6 +86,12 @@ func GenerateEndpointMDL() string {
 	b.WriteString("RETURNS Boolean AS $Registered\n")
 	b.WriteString("BEGIN\n")
 	b.WriteString("  $Registered = CALL JAVA ACTION " + endpointRegisterAction + "();\n")
+	if chainAfterStartup != "" {
+		// Register first, then hand over: if the project's own startup microflow
+		// fails, the endpoint is already up and the failure is diagnosable over
+		// HTTP instead of only in the log.
+		b.WriteString("  $Chained = CALL MICROFLOW " + chainAfterStartup + "();\n")
+	}
 	b.WriteString("  RETURN $Registered;\n")
 	b.WriteString("END;\n")
 	b.WriteString("/\n")

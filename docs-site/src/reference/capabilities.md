@@ -126,7 +126,7 @@ Everything mxcli can do, organized by use case.
 | Stdin piping | `echo "CMD" \| mxcli -p app.mpr` | Quiet mode, no prompts |
 | Docker build | `mxcli docker build -p app.mpr` | Build MDA in container |
 | Docker check | `mxcli docker check -p app.mpr` | Validate in container |
-| Testing | `mxcli test tests/ -p app.mpr` | `.test.mdl` / `.test.md` |
+| Testing | `mxcli test tests/ -p app.mpr [--local] [--watch] [--attach]` | `.test.mdl` / `.test.md`; `--local` needs no Docker, `--watch` keeps the runtime warm (~2s per run), `--attach` runs against an app already up |
 | SARIF output | `mxcli lint --format sarif` | For CI integration |
 | New project | `mxcli new <name> --version X.Y.Z` | Create project from scratch with all tooling |
 | Init project | `mxcli init` | Set up `.claude/` with skills |

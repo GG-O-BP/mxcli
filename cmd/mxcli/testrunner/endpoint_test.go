@@ -56,7 +56,7 @@ func TestEndpointJavaNeverEmbedsASecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newEndpointToken: %v", err)
 	}
-	mdl := GenerateEndpointMDL()
+	mdl := GenerateEndpointMDL("")
 	if strings.Contains(mdl, tok) {
 		t.Fatal("the generated MDL contains the token")
 	}
@@ -134,7 +134,7 @@ func TestEndpointRejectsBeforeItActs(t *testing.T) {
 }
 
 func TestGenerateEndpointMDLShape(t *testing.T) {
-	mdl := GenerateEndpointMDL()
+	mdl := GenerateEndpointMDL("")
 	for _, want := range []string{
 		"CREATE MODULE " + mxTestModule + ";",
 		"CREATE OR REPLACE JAVA ACTION " + endpointRegisterAction + "() RETURNS Boolean",
@@ -156,8 +156,8 @@ func TestGenerateEndpointMDLShape(t *testing.T) {
 // rests on: the endpoint MDL does not mention any test, so it never has to be
 // regenerated when tests change.
 func TestGenerateEndpointMDLIsTestIndependent(t *testing.T) {
-	a := GenerateEndpointMDL()
-	b := GenerateEndpointMDL()
+	a := GenerateEndpointMDL("")
+	b := GenerateEndpointMDL("")
 	if a != b {
 		t.Fatal("GenerateEndpointMDL is not deterministic")
 	}

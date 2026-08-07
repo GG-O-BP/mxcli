@@ -53,6 +53,11 @@ type RunOptions struct {
 	// with the Docker path — both of which can only re-run by restarting.
 	Watch bool
 
+	// Attach runs against an app already started with
+	// `mxcli run --local --test-endpoint`, skipping the boot entirely. The tests
+	// then run against that app's database rather than a scratch one.
+	Attach bool
+
 	// Timeout for runtime startup and test execution.
 	Timeout time.Duration
 
@@ -127,6 +132,9 @@ func Run(opts RunOptions) (*SuiteResult, error) {
 		return nil, fmt.Errorf("no tests found in the provided files")
 	}
 
+	if opts.Attach {
+		return runAttached(opts, suite, timeout, w)
+	}
 	if opts.Local && !opts.LegacyRunner {
 		return runEndpoint(opts, suite, timeout, w)
 	}
@@ -137,6 +145,16 @@ func Run(opts RunOptions) (*SuiteResult, error) {
 // says what to do instead. Watching depends on re-invoking tests without a
 // restart, which only the test endpoint can do.
 func validateOptions(opts RunOptions) error {
+	if opts.Attach {
+		if opts.LegacyRunner {
+			return fmt.Errorf("--attach cannot be combined with --legacy-runner: the after-startup runner can only run tests by restarting, which is what attaching avoids")
+		}
+		if opts.SkipBuild {
+			return fmt.Errorf("--attach cannot be combined with --skip-build: the attached app must be rebuilt to pick up the test microflows")
+		}
+		// --attach implies a local app; requiring --local as well would be noise.
+		return nil
+	}
 	if !opts.Watch {
 		return nil
 	}
@@ -161,7 +179,9 @@ func runEndpoint(opts RunOptions, suite *TestSuite, timeout time.Duration, w io.
 	}
 
 	fmt.Fprintln(w, "Generating test endpoint and test microflows...")
-	endpointMDL := GenerateEndpointMDL()
+	// "" : a test run wants a known starting state, so the project's own
+	// after-startup is not chained here (a hosted endpoint does chain it).
+	endpointMDL := GenerateEndpointMDL("")
 	flowsMDL := GenerateTestFlows(suite)
 
 	if opts.Verbose {

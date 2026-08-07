@@ -48,7 +48,17 @@ func runEndpointWatch(opts RunOptions, suite *TestSuite, token string, timeout t
 		sess.stop()
 		return finish(result, runErr)
 	}
+	return watchLoop(opts, sess, suite, w, shutdown, onInject)
+}
 
+// runAttachedWatch is the same loop against an app someone else owns. Nothing is
+// stopped on the way out — only the injected test microflows are removed.
+func runAttachedWatch(opts RunOptions, app *attachedApp, suite *TestSuite, timeout time.Duration, w io.Writer, finish finishFunc, onInject func(*TestSuite)) (*SuiteResult, error) {
+	return watchLoop(opts, app, suite, w, finish, onInject)
+}
+
+// watchLoop re-runs the suite on every change until interrupted.
+func watchLoop(opts RunOptions, target testTarget, suite *TestSuite, w io.Writer, shutdown finishFunc, onInject func(*TestSuite)) (*SuiteResult, error) {
 	// Ctrl-C has to reach the cleanup, not kill the process with the project
 	// still carrying the test endpoint and an after-startup pointing at it.
 	sigCh := make(chan os.Signal, 1)
@@ -64,7 +74,7 @@ func runEndpointWatch(opts RunOptions, suite *TestSuite, token string, timeout t
 
 	for {
 		gen++
-		result, err := runSuite(sess.client, injected, opts, w)
+		result, err := runSuite(target.endpoint(), injected, opts, w)
 		if err != nil {
 			// The endpoint stopped answering — the runtime is probably gone, and
 			// nothing further will work. Bail rather than spin.
@@ -115,18 +125,12 @@ func runEndpointWatch(opts RunOptions, suite *TestSuite, token string, timeout t
 		}
 		injected = reparsed
 
-		action, _, err := sess.app.Rebuild(opts.ProjectPath)
+		action, err := target.applyModelChange(opts.ProjectPath)
 		if err != nil {
+			// Not fatal: a build error is usually the edit that just happened, and
+			// the next save is likely to fix it. Report and keep watching.
 			fmt.Fprintf(w, "  %v\n", err)
 			continue
-		}
-		// A restart re-runs after-startup, so the endpoint has to register again
-		// before the next request. A reload leaves the handler in place — that is
-		// the property the spike established.
-		if action == docker.ActionRestart {
-			if err := sess.client.waitReady(endpointReadyTimeout(timeout)); err != nil {
-				return shutdown(last, fmt.Errorf("the test endpoint did not come back after a restart: %w", err))
-			}
 		}
 		fmt.Fprintf(w, "  rebuilt and applied via %s in %s\n", action, time.Since(start).Round(time.Millisecond))
 	}

@@ -136,10 +136,7 @@ Beyond the speed, three structural problems in `cmd/mxcli/testrunner/` dissolve:
   neither of which is wired through docker-compose. No Docker daemon was
   available to verify a change there, so it was left alone rather than shipped
   untested.
-- **`--attach` to an already-running `run --local`.** `--watch` (below) keeps
-  the runtime warm within a session, but a session still starts with a cold
-  boot. Attaching to an app the developer already has running would remove even
-  that, at the cost of writing test fixtures into the dev database.
+- ~~`--attach` to an already-running `run --local`~~ — **shipped**, see below.
 
 ## The warm loop, realised (`--watch`)
 
@@ -170,3 +167,62 @@ Two hazards this loop has that the `run --local` dev loop does not:
    mid-session is left in the user's project. A deleted test's microflow is
    dropped explicitly, since `CREATE OR REPLACE` says nothing about removal and
    a lingering flow would keep reporting a stale pass.
+
+## `--attach`: no boot at all
+
+`mxcli test --attach` runs against an app already up, skipping the boot entirely.
+Measured on the same 11.13.0 app: **2.83s** for the first attached run and
+**2.30s** for a repeat, against ~30s cold — with the dev app still serving
+throughout.
+
+### Why it has to be cooperative
+
+The obvious reading of "attach to a running app" does not work, and the reason is
+worth recording because it constrains the design completely:
+
+- The handler is registered by the **after-startup microflow**, which runs only
+  at boot. It cannot be added to an app that is already up.
+- Its token comes from the **runtime's environment**, which a second process
+  cannot change either.
+
+So the app has to opt in *before* it boots: `mxcli run --local --test-endpoint`.
+That is also the right place for the decision, since hosting the endpoint means
+the developer's own app carries a microflow-executing endpoint and tests will
+write to the database they are looking at.
+
+What a second process *can* do, and does, is drive the dev loop's **serve server
+and admin API** over loopback — both are plain HTTP. So an attach applies its own
+injections deterministically instead of waiting to see whether someone else's
+`--watch` noticed; `--attach` does not require the dev loop to be watching.
+
+### The handshake
+
+`run --local --test-endpoint` publishes `<project>/.mxcli/test-endpoint.json`
+(mode 0600, written-then-renamed) carrying the app/admin/serve ports, the
+endpoint token, the admin password, and its own PID. `--attach` reads it and
+refuses a stale one by checking the PID — a dev loop killed with SIGKILL leaves
+the file behind, and without the check that surfaces much later as a confusing
+connection error.
+
+The project's own after-startup microflow is **chained**, not displaced, so the
+dev app still seeds its data and does whatever else it does at boot.
+
+### Two bugs the live run caught that review had not
+
+1. **The admin API and the endpoint use different secrets.** The first attempt
+   passed the endpoint token to the M2EE admin API, which failed with
+   `Authentication failed` — *after* the test microflows had already been
+   injected. The handshake now carries the admin password separately.
+2. **`DROP JAVA ACTION` leaves the generated `.java` behind** (found earlier, in
+   the same family): the model document is the model's, the source file is not.
+
+### Ownership boundary
+
+An attach adds and removes only its own test microflows. The endpoint, the
+after-startup setting and the `MxTest` module belong to the hosting dev loop and
+are removed when *it* exits. Verified live: after an attached run the test
+microflows were gone, `MxTest.RegisterEndpoint` was still installed, and the app
+was still serving HTTP 200.
+
+A change needing a runtime restart (a new entity or association) is refused
+rather than half-applied — that runtime belongs to the other process.

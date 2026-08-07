@@ -58,6 +58,18 @@ The first run pays the cold boot (~30s); each one after it is a warm rebuild
 whether it still passes is the loop this exists for. Ctrl-C stops watching and
 restores the project.
 
+--attach skips the boot entirely and runs against an app already started with
+'mxcli run --local --test-endpoint'. That app's runtime is already warm, so a run
+costs only the test-microflow injection, a warm rebuild, and the tests: about two
+seconds, with no cold boot at all. It combines with --watch.
+
+The trade is deliberate and worth knowing: the tests run against the running
+app's database, not a scratch one, so they can leave data behind in the app you
+are looking at. An attach only ever adds and removes its own test microflows —
+the endpoint and the after-startup setting belong to the app hosting them. A
+change that needs a runtime restart (a new entity or association) is refused,
+since that runtime belongs to the other process.
+
 Without --local the Docker path is used instead: the suite is compiled into a
 single after-startup microflow, the container is restarted, and results are
 parsed out of its log. Pass --legacy-runner to use that mechanism on a local run
@@ -86,6 +98,12 @@ Examples:
   # Keep the runtime warm and re-run on every change
   mxcli test tests/ -p app.mpr --local --watch
 
+  # Run against an app already up (mxcli run --local --test-endpoint) — no boot
+  mxcli test tests/ -p app.mpr --attach
+
+  # ...and re-run on every change, still without owning the runtime
+  mxcli test tests/ -p app.mpr --attach --watch
+
   # Skip build (reuse existing deployment)
   mxcli test tests/ -p app.mpr --skip-build
 
@@ -101,6 +119,7 @@ Examples:
 		local, _ := cmd.Flags().GetBool("local")
 		legacyRunner, _ := cmd.Flags().GetBool("legacy-runner")
 		watch, _ := cmd.Flags().GetBool("watch")
+		attach, _ := cmd.Flags().GetBool("attach")
 		verbose, _ := cmd.Flags().GetBool("verbose")
 		color, _ := cmd.Flags().GetBool("color")
 		timeoutStr, _ := cmd.Flags().GetString("timeout")
@@ -133,6 +152,7 @@ Examples:
 			Local:        local,
 			LegacyRunner: legacyRunner,
 			Watch:        watch,
+			Attach:       attach,
 			Timeout:      timeout,
 			JUnitOutput:  junitOutput,
 			Verbose:      verbose,
