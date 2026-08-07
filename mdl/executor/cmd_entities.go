@@ -29,6 +29,9 @@ func buildEventHandlers(ctx *ExecContext, defs []ast.EventHandlerDef) ([]*domain
 		if err != nil {
 			return nil, mdlerrors.NewNotFound("microflow", mfQN)
 		}
+		if err := checkBeforeCreateHandlerHasNoParameters(ctx, d, mfQN, mfID); err != nil {
+			return nil, err
+		}
 		handlers = append(handlers, &domainmodel.EventHandler{
 			BaseElement: model.BaseElement{
 				ID:       model.ID(types.GenerateID()),
@@ -43,6 +46,42 @@ func buildEventHandlers(ctx *ExecContext, defs []ast.EventHandlerDef) ([]*domain
 		})
 	}
 	return handlers, nil
+}
+
+// checkBeforeCreateHandlerHasNoParameters refuses to wire a microflow that takes
+// parameters to a BEFORE CREATE event handler.
+//
+// Mendix passes no object to a before-create handler — the object does not exist
+// yet — so the build fails with
+//
+//	[CE7247] "Microflow should not have parameters" at Event handler of entity …
+//
+// which `mxcli check` had no way to see. The handler a defaulting microflow
+// actually wants is AFTER CREATE, which does receive the object.
+// (mxcli-todo findings #14a)
+func checkBeforeCreateHandlerHasNoParameters(ctx *ExecContext, d ast.EventHandlerDef, mfQN string, mfID model.ID) error {
+	if !strings.EqualFold(d.Moment, "Before") || !strings.EqualFold(d.Event, "Create") {
+		return nil
+	}
+	mf, err := ctx.Backend.GetMicroflow(mfID)
+	// A microflow created earlier in this same script is not readable back yet;
+	// skip rather than guess. mxbuild still catches it, and refusing on a failed
+	// read would break a legitimate script.
+	if err != nil || mf == nil {
+		return nil
+	}
+	if len(mf.Parameters) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(mf.Parameters))
+	for _, p := range mf.Parameters {
+		names = append(names, "$"+p.Name)
+	}
+	return mdlerrors.NewValidationf(
+		"microflow %s takes %d parameter(s) (%s), but a BEFORE CREATE event handler is called with none — "+
+			"Mendix has no object to pass yet, so this builds as CE7247 \"Microflow should not have parameters\"\n"+
+			"hint: use ON AFTER CREATE, which does receive the object, or remove the parameters",
+		mfQN, len(mf.Parameters), strings.Join(names, ", "))
 }
 
 func execCreateEntity(ctx *ExecContext, s *ast.CreateEntityStmt) error {
