@@ -526,6 +526,13 @@ func buildListAggregateAsFunction(ctx parser.IListAggregateOperationContext) ast
 		}
 	}
 
+	// The per-item expression of `sum($List, $currentObject/Price * 0.21)`.
+	// Without it the call reads as a one-argument aggregate, and whoever
+	// consumes it builds an aggregate with nothing to aggregate — CE0015.
+	if exprCtx := aggrCtx.Expression(); exprCtx != nil {
+		funcExpr.Arguments = append(funcExpr.Arguments, buildSourceExpression(exprCtx))
+	}
+
 	return funcExpr
 }
 

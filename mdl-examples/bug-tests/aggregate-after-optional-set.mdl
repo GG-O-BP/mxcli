@@ -1,0 +1,62 @@
+-- Aggregates must survive SET becoming optional.
+--
+-- `$Sum = sum($List.Price)` used to reach the dedicated aggregateListStatement
+-- rule. Making SET optional put `$X = <expr>` ahead of it in the grammar, so the
+-- statement fell through to the generic SET conversion, which joined the list
+-- and the attribute into one name and dropped the per-item expression:
+--
+--   [CE0109] "Undefined variable 'ProductList.Price'."
+--   [CE0015] "Aggregate function must specify a valid attribute."
+--
+-- Every aggregate below must build with 0 errors, in both spellings.
+
+create entity Bug.Product (
+  Name: string(200),
+  Price: decimal
+);
+
+-- Bare form (no SET keyword) — this is what regressed.
+create microflow Bug.AggregatesBare (
+  $ProductList: list of Bug.Product
+)
+returns decimal as $Total
+begin
+  $Count = count($ProductList);
+  $Total = sum($ProductList.Price);
+  $Average = average($ProductList.Price);
+  $Lowest = minimum($ProductList.Price);
+  $Highest = maximum($ProductList.Price);
+  -- Aggregate over a value computed per item.
+  $Tax = sum($ProductList, $currentObject/Price * 0.21);
+  return $Total;
+end;
+/
+
+-- The SET keyword must produce exactly the same activities. It routes through a
+-- different conversion in the visitor, and that one was wrong even before the
+-- bare form ever reached it.
+create microflow Bug.AggregatesWithSetKeyword (
+  $ProductList: list of Bug.Product
+)
+returns decimal as $Total
+begin
+  set $Count = count($ProductList);
+  set $Total = sum($ProductList.Price);
+  set $Average = average($ProductList.Price);
+  set $Lowest = minimum($ProductList.Price);
+  set $Highest = maximum($ProductList.Price);
+  set $Tax = sum($ProductList, $currentObject/Price * 0.21);
+  return $Total;
+end;
+/
+
+-- A plain value assignment must still be a Change Variable, not an aggregate.
+create microflow Bug.PlainAssignment ()
+returns integer as $N
+begin
+  declare $N integer = 0;
+  $N = 5;
+  $N = $N + 1;
+  return $N;
+end;
+/
