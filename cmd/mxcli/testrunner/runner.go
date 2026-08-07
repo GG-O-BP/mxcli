@@ -38,8 +38,14 @@ type RunOptions struct {
 	SkipBuild bool
 
 	// Local runs the app with mxcli's own local runtime (`run --local`) instead
-	// of a Docker container. Everything else about the run is unchanged.
+	// of a Docker container, and drives the tests over the test endpoint.
 	Local bool
+
+	// LegacyRunner forces the after-startup mechanism on a local run — the suite
+	// compiled into one startup microflow, results read back from the runtime
+	// log. An escape hatch for the case where the endpoint misbehaves; the
+	// Docker path uses this mechanism regardless.
+	LegacyRunner bool
 
 	// Timeout for runtime startup and test execution.
 	Timeout time.Duration
@@ -60,14 +66,22 @@ type RunOptions struct {
 	Stderr io.Writer
 }
 
-// Run executes the test suite using the after-startup pattern:
-// 1. Parse test files
-// 2. Generate TestRunner microflow
-// 3. Inject into project, set as after-startup
-// 4. Build and restart runtime
-// 5. Parse logs for results
-// 6. Cleanup (restore original settings)
-// 7. Output results
+// Run executes the test suite.
+//
+// There are two mechanisms, and which one is used follows from opts.Local:
+//
+//   - Local runs go through the test endpoint (runEndpoint). Boot registers an
+//     HTTP handler and nothing else; each test is then invoked by name against a
+//     runtime that stays up, and returns its verdict in the response.
+//   - Docker runs go through the after-startup runner (runAfterStartup), which
+//     compiles the suite into the project's after-startup microflow, restarts the
+//     container, and recovers results from its log.
+//
+// The endpoint is the better mechanism — a re-run is an HTTP call rather than a
+// restart, a failing test is a result rather than a failed boot, and results are
+// returned rather than scraped. It is confined to the local path because it
+// needs to hand the runtime a secret through its environment and to reach it on
+// loopback, neither of which is wired through docker-compose yet.
 func Run(opts RunOptions) (*SuiteResult, error) {
 	w := opts.Stdout
 	if w == nil {
@@ -83,7 +97,6 @@ func Run(opts RunOptions) (*SuiteResult, error) {
 		timeout = 5 * time.Minute
 	}
 
-	// Step 1: Parse test files
 	fmt.Fprintln(w, "Parsing test files...")
 	suite, err := parseTestFiles(opts.TestFiles)
 	if err != nil {
@@ -95,7 +108,87 @@ func Run(opts RunOptions) (*SuiteResult, error) {
 		return nil, fmt.Errorf("no tests found in the provided files")
 	}
 
-	// Step 2: Generate TestRunner microflow MDL
+	if opts.Local && !opts.LegacyRunner {
+		return runEndpoint(opts, suite, timeout, w)
+	}
+	return runAfterStartup(opts, suite, timeout, w)
+}
+
+// runEndpoint injects the test endpoint plus one microflow per test, boots the
+// app once, and drives the suite over HTTP.
+func runEndpoint(opts RunOptions, suite *TestSuite, timeout time.Duration, w io.Writer) (*SuiteResult, error) {
+	token, err := newEndpointToken()
+	if err != nil {
+		return nil, err
+	}
+
+	fmt.Fprintln(w, "Generating test endpoint and test microflows...")
+	endpointMDL := GenerateEndpointMDL()
+	flowsMDL := GenerateTestFlows(suite)
+
+	if opts.Verbose {
+		fmt.Fprintln(w, "--- Generated MDL ---")
+		fmt.Fprintln(w, endpointMDL)
+		fmt.Fprintln(w, flowsMDL)
+		fmt.Fprintln(w, "--- End MDL ---")
+	}
+
+	// Capture what cleanup will need to restore, before touching anything. This
+	// must succeed: without it cleanup cannot tell an existing MxTest module from
+	// the one it is about to create, nor restore the original after-startup.
+	fmt.Fprintln(w, "Injecting test endpoint into project...")
+	state, err := captureProjectState(opts.ProjectPath)
+	if err != nil {
+		return nil, fmt.Errorf("capturing project state: %w", err)
+	}
+
+	// From here on the project is modified, so every exit runs cleanup.
+	finish := func(result *SuiteResult, runErr error) (*SuiteResult, error) {
+		fmt.Fprintln(w, "Cleaning up...")
+		cleanupErr := cleanupEndpoint(opts.ProjectPath, state, suite, w)
+		removeGeneratedJavaSource(opts.ProjectPath, w)
+		reportCleanup(w, cleanupErr)
+		if runErr != nil {
+			return nil, runErr
+		}
+		if cleanupErr != nil {
+			return result, fmt.Errorf("cleanup failed, project left modified: %w", cleanupErr)
+		}
+		return result, nil
+	}
+
+	if err := execMDLScript(opts.ProjectPath, endpointMDL, "mxtest-endpoint-*.mdl"); err != nil {
+		return finish(nil, fmt.Errorf("injecting test endpoint: %w", err))
+	}
+	if err := execMDLScript(opts.ProjectPath, flowsMDL, "mxtest-flows-*.mdl"); err != nil {
+		return finish(nil, fmt.Errorf("injecting test microflows: %w", err))
+	}
+	for _, cmd := range setupCommands(endpointStartupFlow) {
+		if err := execMxcliCmd(opts.ProjectPath, cmd); err != nil {
+			return finish(nil, fmt.Errorf("preparing project for the test run (%s): %w", cmd, err))
+		}
+	}
+	fmt.Fprintf(w, "  After-startup set to %s (registers the endpoint; runs no tests)\n", endpointStartupFlow)
+
+	result, err := runViaEndpoint(opts, suite, token, timeout, w)
+	if err != nil {
+		return finish(nil, err)
+	}
+
+	result, err = finish(result, nil)
+	if result != nil {
+		PrintResults(w, result, opts.Color)
+		if jerr := writeJUnit(opts, result, w); jerr != nil && err == nil {
+			err = jerr
+		}
+	}
+	return result, err
+}
+
+// runAfterStartup is the original mechanism: compile the suite into the
+// after-startup microflow, restart the runtime, and read results out of the log.
+// Always the Docker path, and the local path under --legacy-runner.
+func runAfterStartup(opts RunOptions, suite *TestSuite, timeout time.Duration, w io.Writer) (*SuiteResult, error) {
 	fmt.Fprintln(w, "Generating test runner microflow...")
 	runnerMDL := GenerateTestRunner(suite)
 
@@ -105,46 +198,25 @@ func Run(opts RunOptions) (*SuiteResult, error) {
 		fmt.Fprintln(w, "--- End MDL ---")
 	}
 
-	// Step 3: Save original settings and inject test runner
+	// Save original settings and inject the test runner.
 	fmt.Fprintln(w, "Injecting test runner into project...")
-	// Capture what cleanup will need to restore, before touching anything. This
-	// must succeed: without it cleanup cannot tell an existing MxTest module from
-	// the one it is about to create, nor restore the original after-startup.
 	state, err := captureProjectState(opts.ProjectPath)
 	if err != nil {
 		return nil, fmt.Errorf("capturing project state: %w", err)
 	}
 
-	// Write the runner MDL to a temp file and execute it
-	tmpFile, err := os.CreateTemp("", "mxtest-runner-*.mdl")
-	if err != nil {
-		return nil, fmt.Errorf("creating temp file: %w", err)
-	}
-	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
-
-	if _, err := tmpFile.WriteString(runnerMDL); err != nil {
-		tmpFile.Close()
-		return nil, fmt.Errorf("writing runner MDL: %w", err)
-	}
-	tmpFile.Close()
-
-	// Execute the MDL to create the TestRunner microflow
-	if err := execMxcli(opts.ProjectPath, "exec", tmpPath, "-p", opts.ProjectPath); err != nil {
+	if err := execMDLScript(opts.ProjectPath, runnerMDL, "mxtest-runner-*.mdl"); err != nil {
 		return nil, fmt.Errorf("injecting test runner: %w", err)
 	}
 
 	// Set after-startup microflow
-	for _, cmd := range setupCommands() {
+	for _, cmd := range setupCommands(mxTestRunner) {
 		if err := execMxcliCmd(opts.ProjectPath, cmd); err != nil {
 			return nil, fmt.Errorf("preparing project for the test run (%s): %w", cmd, err)
 		}
 	}
 	fmt.Fprintf(w, "  After-startup set to %s\n", mxTestRunner)
 
-	// Steps 4+5: build, run the app, and capture the runner's log output. The
-	// local and Docker paths differ only in how the app is started and where its
-	// log is read from; everything before and after is shared.
 	var logOutput string
 	if opts.Local {
 		logOutput, err = runLocalAndCapture(opts, timeout, w)
@@ -156,29 +228,17 @@ func Run(opts RunOptions) (*SuiteResult, error) {
 		return nil, err
 	}
 
-	// Step 6: Parse results from logs
 	fmt.Fprintln(w, "Parsing test results...")
 	result := ParseLogResults(strings.NewReader(logOutput), suite)
 
-	// Step 7: Cleanup
 	fmt.Fprintln(w, "Cleaning up...")
 	cleanupErr := cleanup(opts.ProjectPath, state, w)
 	reportCleanup(w, cleanupErr)
 
-	// Step 8: Output results
 	PrintResults(w, result, opts.Color)
 
-	// Write JUnit XML if requested
-	if opts.JUnitOutput != "" {
-		f, err := os.Create(opts.JUnitOutput)
-		if err != nil {
-			return result, fmt.Errorf("creating JUnit output: %w", err)
-		}
-		defer f.Close()
-		if err := WriteJUnitXML(f, result); err != nil {
-			return result, fmt.Errorf("writing JUnit XML: %w", err)
-		}
-		fmt.Fprintf(w, "JUnit XML written to: %s\n", opts.JUnitOutput)
+	if err := writeJUnit(opts, result, w); err != nil {
+		return result, err
 	}
 
 	// A failed cleanup leaves the project modified, so the run must not be
@@ -187,6 +247,23 @@ func Run(opts RunOptions) (*SuiteResult, error) {
 		return result, fmt.Errorf("cleanup failed, project left modified: %w", cleanupErr)
 	}
 	return result, nil
+}
+
+// writeJUnit writes the JUnit XML report when one was asked for.
+func writeJUnit(opts RunOptions, result *SuiteResult, w io.Writer) error {
+	if opts.JUnitOutput == "" {
+		return nil
+	}
+	f, err := os.Create(opts.JUnitOutput)
+	if err != nil {
+		return fmt.Errorf("creating JUnit output: %w", err)
+	}
+	defer f.Close()
+	if err := WriteJUnitXML(f, result); err != nil {
+		return fmt.Errorf("writing JUnit XML: %w", err)
+	}
+	fmt.Fprintf(w, "JUnit XML written to: %s\n", opts.JUnitOutput)
+	return nil
 }
 
 // ListTests parses test files and prints the test names without executing.
@@ -360,17 +437,53 @@ func moduleExists(projectPath, name string) (bool, error) {
 }
 
 // setupCommands returns the MDL statements Run issues to put the project into its
-// testing state. The project's Security Level is deliberately absent: the
-// after-startup microflow runs in an administrative context and is not subject to
-// it, so forcing it OFF bought nothing — while breaking any project with a
-// published REST/OData service using custom authentication ("App security is off,
-// but custom authentication is enabled for this service"), and the restore
-// hardcoded PRODUCTION, silently changing projects that run at another level
-// (mendixlabs/mxcli#802).
-func setupCommands() []string {
+// testing state, pointing after-startup at startupFlow. The project's Security
+// Level is deliberately absent: the after-startup microflow runs in an
+// administrative context and is not subject to it, so forcing it OFF bought
+// nothing — while breaking any project with a published REST/OData service using
+// custom authentication ("App security is off, but custom authentication is
+// enabled for this service"), and the restore hardcoded PRODUCTION, silently
+// changing projects that run at another level (mendixlabs/mxcli#802).
+func setupCommands(startupFlow string) []string {
 	return []string{
-		"ALTER SETTINGS MODEL AfterStartupMicroflow = " + quoteMDLString(mxTestRunner),
+		"ALTER SETTINGS MODEL AfterStartupMicroflow = " + quoteMDLString(startupFlow),
 	}
+}
+
+// runMDLCommands executes each statement, attempting all of them even after one
+// fails, and joins the failures. Restores must not stop at the first error: a
+// half-restored project is worse than a fully failed one, because it looks fine
+// (#803).
+func runMDLCommands(projectPath string, cmds []string) error {
+	var errs []error
+	for _, cmd := range cmds {
+		if err := execMxcliCmd(projectPath, cmd); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", cmd, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// lowerModule maps a module name to the javasource/ directory Mendix generates
+// for it, which is always lowercased.
+func lowerModule(name string) string { return strings.ToLower(name) }
+
+// execMDLScript writes MDL to a temp file and executes it against the project.
+func execMDLScript(projectPath, mdl, namePattern string) error {
+	f, err := os.CreateTemp("", namePattern)
+	if err != nil {
+		return fmt.Errorf("creating temp file: %w", err)
+	}
+	path := f.Name()
+	defer os.Remove(path)
+
+	if _, err := f.WriteString(mdl); err != nil {
+		f.Close()
+		return fmt.Errorf("writing MDL: %w", err)
+	}
+	f.Close()
+
+	return execMxcli(projectPath, "exec", path, "-p", projectPath)
 }
 
 // cleanupCommands returns the MDL statements that put the project back the way it
@@ -418,16 +531,7 @@ func cleanup(projectPath string, st projectState, w io.Writer) error {
 		fmt.Fprintf(w, "  %s module already existed; dropping only %s\n", mxTestModule, mxTestRunner)
 	}
 
-	var errs []error
-	for _, cmd := range cleanupCommands(st, mxTestPresent) {
-		if err := execMxcliCmd(projectPath, cmd); err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", cmd, err))
-		}
-	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
-	return nil
+	return runMDLCommands(projectPath, cleanupCommands(st, mxTestPresent))
 }
 
 // reportCleanup prints a cleanup failure prominently. The project is left mutated,

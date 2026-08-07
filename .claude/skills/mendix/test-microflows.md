@@ -121,19 +121,66 @@ mxcli test tests/ -p app.mpr --verbose
 
 ## How It Works
 
-The test runner uses the **after-startup microflow** pattern:
+There are two mechanisms. `--local` uses the **test endpoint**; Docker uses the
+older **after-startup microflow** pattern.
+
+### `--local`: the test endpoint
 
 1. Parses test files and extracts test blocks with annotations
 2. Records the project's current after-startup microflow, and whether an `MxTest`
    module already exists
-3. Generates a `MxTest.TestRunner` microflow with assertion logic and points
-   after-startup at it
-4. Builds the project and restarts the runtime (Docker, or local with `--local`)
+3. Generates **one `MxTest.Test_<id>` microflow per test**, plus a Java action
+   that registers an HTTP endpoint, and points after-startup at a microflow whose
+   only job is to call it — **no test runs during startup**
+4. Builds and boots the app once
+5. Invokes each test by name over HTTP; each returns its own verdict in the
+   response
+6. Restores the original after-startup setting and removes everything generated
+7. Outputs results (console, JUnit XML)
+
+Two consequences worth knowing when reading a failing run:
+
+- **A test that throws fails only itself.** It is reported as `ERROR` with the
+  root-cause message, and the next test still runs. Under the after-startup
+  mechanism an uncaught error ends the whole flow — and because that flow *is*
+  the startup action, it also fails the boot.
+- **Results are returned, not scraped**, so a test cannot be lost to log
+  buffering or a runtime that stopped echoing to the console.
+
+Each test is a separate microflow with its own variable scope, so `$result` in
+one test never collides with `$result` in another.
+
+#### Security of the endpoint
+
+It executes microflows under a system context, so it is gated four ways:
+
+| Guard | Behaviour |
+|---|---|
+| No `MXCLI_TEST_TOKEN` in the runtime's environment | The handler is **not registered at all** (404) |
+| Missing or wrong `X-MxTest-Token` header | 401, compared in constant time |
+| Non-loopback caller | 403 |
+| `mf` outside `MxTest.Test_*` | 403 — it is not a general microflow-invocation API |
+
+The token is generated per run and reaches the runtime through its **environment**,
+never written into the project. Combined with fail-closed registration, that means
+a project which kept the `MxTest` module through a failed cleanup exposes nothing
+when deployed anywhere else.
+
+### Docker: the after-startup microflow
+
+1. Parses test files and extracts test blocks with annotations
+2. Records the project's current after-startup microflow, and whether an `MxTest`
+   module already exists
+3. Generates a single `MxTest.TestRunner` microflow containing every test, and
+   points after-startup at it
+4. Builds the project and restarts the container
 5. Captures structured `MXTEST:` log lines for pass/fail
 6. Restores the original after-startup setting and removes the generated runner —
    the whole `MxTest` module when the runner created it, otherwise just the
    `TestRunner` microflow
 7. Outputs results (console, JUnit XML)
+
+### Both mechanisms
 
 The project's **Security Level is not modified**. The after-startup microflow runs
 in an administrative context and is not subject to it, and forcing it off breaks

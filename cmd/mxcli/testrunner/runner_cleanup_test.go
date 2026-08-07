@@ -107,10 +107,14 @@ func TestQuoteMDLString(t *testing.T) {
 }
 
 // TestNoSecurityLevelManipulation pins #802: the Security Level is the project's
-// business. Neither setup nor cleanup may touch it.
+// business. Neither setup nor cleanup may touch it — on either mechanism.
 func TestNoSecurityLevelManipulation(t *testing.T) {
-	all := append(setupCommands(), cleanupCommands(projectState{}, true)...)
+	suite := &TestSuite{Tests: []TestCase{{ID: "test_1"}}}
+	all := append(setupCommands(mxTestRunner), setupCommands(endpointStartupFlow)...)
+	all = append(all, cleanupCommands(projectState{}, true)...)
 	all = append(all, cleanupCommands(projectState{afterStartup: "Mod.Flow", createdMxTest: true}, true)...)
+	all = append(all, endpointCleanupCommands(projectState{}, suite, true)...)
+	all = append(all, endpointCleanupCommands(projectState{afterStartup: "Mod.Flow", createdMxTest: true}, suite, true)...)
 	for _, cmd := range all {
 		if strings.Contains(strings.ToUpper(cmd), "SECURITY LEVEL") {
 			t.Errorf("the runner still alters the project Security Level: %q (#802)", cmd)

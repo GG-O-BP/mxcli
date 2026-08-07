@@ -1,7 +1,13 @@
 # Spike: custom request handler as a re-invokable test entry point
 
-**Status**: spike complete, measured end-to-end on Mendix **11.13.0**.
-**Reproduce with**: [`mdl-examples/spikes/test-endpoint-request-handler.mdl`](../../mdl-examples/spikes/test-endpoint-request-handler.mdl)
+**Status**: **shipped** for `mxcli test --local` — see `cmd/mxcli/testrunner/endpoint.go`.
+Measured end-to-end on Mendix **11.13.0**.
+**Reproduce the bare spike with**: [`mdl-examples/spikes/test-endpoint-request-handler.mdl`](../../mdl-examples/spikes/test-endpoint-request-handler.mdl)
+
+> The "open issues" at the bottom were what stood between the spike and the
+> implementation. The token gate, the loopback check, the test-namespace
+> restriction and the javasource cleanup are all now in `endpoint.go`; the
+> remaining unresolved items are called out as still open.
 
 ## Question
 
@@ -83,25 +89,57 @@ Beyond the speed, three structural problems in `cmd/mxcli/testrunner/` dissolve:
    message, and the runtime stays up and serves the next test. Compare
    `runner_local.go:58-71`, which has to special-case boot failure today.
 
-## Open issues before this becomes a feature
+## Issues found by the spike, and how they were resolved
 
-- **The endpoint is unauthenticated.** Verified: `curl` with no cookies and no
-  session executed a microflow. A handler that runs arbitrary microflows by
-  name under a **system context** is a remote code execution primitive. It must
-  be gated on a per-run random token (header or query param) that mxcli
-  generates and passes, and it should refuse to register unless the runtime is
-  a local dev/test instance. Non-negotiable before this ships.
+- **The endpoint was unauthenticated.** Verified in the spike: `curl` with no
+  cookies and no session executed a microflow. **Resolved** — four gates, each
+  verified against a live 11.13.0 runtime:
+
+  | Guard | Verified behaviour |
+  |---|---|
+  | No `MXCLI_TEST_TOKEN` in the environment | Handler not registered; `/mxtest/list` → 404 |
+  | Missing / wrong `X-MxTest-Token` | 401 (constant-time compare) |
+  | Non-loopback caller | 403 |
+  | `mf` outside `MxTest.Test_*` | 403 |
+
+  The token is generated per run and passed through the runtime's **environment**
+  (`LocalRuntimeOptions.Env`), never written into the project — so a failed
+  cleanup cannot leave a live credential in `javasource/`.
+
+- **`/list` disclosed the whole app.** Found only by probing the live runtime:
+  with no `prefix` the handler returned every microflow in the app,
+  `Administration.*` included. **Resolved** — the prefix is clamped to
+  `MxTest.Test_`; a caller-supplied prefix can only narrow further. The endpoint
+  will not run those microflows, so it must not enumerate them either.
+
+- **Path dispatch was loose** — anything that was not `list` was treated as
+  `run`. **Resolved**: exact matches, anything else 404.
+
+- **`DROP JAVA ACTION` leaves the `.java` file behind.** The model document goes;
+  the generated source in `javasource/mxtest/` is not the model's to delete.
+  **Resolved** — `removeGeneratedJavaSource` removes it, non-fatally.
+
+### Still open
+
 - **There is no `Core.removeRequestHandler`.** The API only offers
-  `addRequestHandler`. The handler cannot be unregistered for the life of the
-  JVM — a further reason to gate registration rather than rely on removal.
-  Re-registering the same path was never exercised (after-startup does not
-  re-run), so its behaviour is unknown.
-- **Path dispatch is loose.** Anything that is not `list` is treated as `run`.
-  Real routing needed.
-- **Test parameters and setup/teardown are unexplored.** The spike only ran
-  no-argument microflows. `MicroflowCallBuilder.withParams(Map)` exists, and
+  `addRequestHandler`, so the handler cannot be unregistered for the life of the
+  JVM. This is why registration is gated rather than reversed. Re-registering
+  the same path is still unexercised — after-startup does not re-run on
+  `reload_model`, so nothing in the current design hits it.
+- **Test parameters and setup/teardown.** Only no-argument microflows are
+  invoked. `MicroflowCallBuilder.withParams(Map)` exists, and
   `inTransaction(boolean)` looks directly relevant to rolling back a test's
-  database writes — neither was exercised.
-- **Which project owns the Java action.** The spike wrote `MxTest` into the
-  project under test. Whether the runner injects it per-run, or it is shipped
-  as a small module, is a design decision this spike does not settle.
+  database writes — the `@cleanup rollback` annotation is parsed but not yet
+  honoured by either mechanism.
+- **The Docker path still uses after-startup.** The endpoint needs to hand the
+  runtime a secret through its environment and to be reached on loopback,
+  neither of which is wired through docker-compose. No Docker daemon was
+  available to verify a change there, so it was left alone rather than shipped
+  untested.
+- **The warm-loop win is not yet realised.** The runner still boots once per
+  invocation, so a re-run costs a cold boot as before; what the endpoint buys
+  *today* is per-test isolation, returned results, and a failing test that is no
+  longer a failed boot. Keeping the runtime up across invocations (a
+  `test --watch`, or `--attach` to a running `run --local`) is what turns the
+  measured 30.55s → 0.084s into an everyday number, and is the natural next
+  slice.

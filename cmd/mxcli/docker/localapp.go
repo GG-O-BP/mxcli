@@ -36,6 +36,10 @@ type LocalAppOptions struct {
 	// RuntimeLogPath tees the runtime JVM output and the runtime's own
 	// application log to this file.
 	RuntimeLogPath string
+	// Env are extra "KEY=value" entries for the runtime JVM (see
+	// LocalRuntimeOptions.Env) — how a secret reaches the runtime without being
+	// written to disk.
+	Env []string
 	// Stdout/Stderr receive progress messages.
 	Stdout io.Writer
 	Stderr io.Writer
@@ -166,6 +170,7 @@ func StartLocalApp(opts LocalAppOptions) (*LocalApp, error) {
 		AdminPass:      opts.AdminPass,
 		DB:             opts.DB,
 		RuntimeLogPath: opts.RuntimeLogPath,
+		Env:            opts.Env,
 		Stdout:         opts.Stdout,
 		Stderr:         opts.Stderr,
 	})
