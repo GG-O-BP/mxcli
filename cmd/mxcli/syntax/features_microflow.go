@@ -34,8 +34,12 @@ func init() {
 			"declare", "variable", "set", "assign", "change",
 			"attribute", "expression",
 		},
-		Syntax:  "DECLARE $Var Type;\nDECLARE $Var Type = expression;\nSET $Var = expression;\nSET $Var/Attribute = expression;",
-		Example: "DECLARE $Count Integer = 0;\nDECLARE $Name String;\nSET $Name = 'Hello';\nSET $Order/Status = 'Pending';",
+		Syntax: "DECLARE $Var Type;                 -- a variable must be declared before it is assigned\n" +
+			"DECLARE $Var Type = expression;\n" +
+			"$Var = expression;                -- assign; SET is optional\n" +
+			"$Var/Attribute = expression;\n" +
+			"SET $Var = expression;            -- same statement, explicit form",
+		Example: "DECLARE $Count Integer = 0;\nDECLARE $Name String;\n$Count = $Count + 1;\n$Name = 'Hello';\nSET $Order/Status = 'Pending';",
 		SeeAlso: []string{"microflow.object-operations"},
 	})
 
