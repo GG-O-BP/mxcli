@@ -15,7 +15,7 @@ import (
 )
 
 var checkCmd = &cobra.Command{
-	Use:   "check <file>",
+	Use:   "check <file|->",
 	Short: "Check an MDL script for errors without executing it",
 	Long: `Check an MDL script file for syntax errors and optionally validate references.
 
@@ -46,6 +46,9 @@ Examples:
   # Output as JSON or SARIF
   mxcli check script.mdl --format json
   mxcli check script.mdl --format sarif
+
+  # Read the script from stdin
+  cat script.mdl | mxcli check -
 `,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
@@ -59,8 +62,8 @@ Examples:
 		outputFormat := linter.OutputFormat(format)
 		formatter := linter.GetFormatter(outputFormat, !isStructured)
 
-		// Read the file
-		content, err := os.ReadFile(filePath)
+		// Read the script (a path, or "-" for stdin)
+		content, err := readMDLSource(filePath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error reading file: %v\n", err)
 			os.Exit(1)
@@ -68,7 +71,7 @@ Examples:
 
 		// Parse the script
 		if !isStructured {
-			fmt.Printf("Checking syntax: %s\n", filePath)
+			fmt.Printf("Checking syntax: %s\n", mdlSourceLabel(filePath))
 		}
 		prog, errs := visitor.Build(string(content))
 		if len(errs) > 0 {
