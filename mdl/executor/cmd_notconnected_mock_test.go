@@ -93,7 +93,7 @@ func TestDescribeMermaid_Mock_NotConnected(t *testing.T) {
 
 func TestDescribeSettings_Mock_NotConnected(t *testing.T) {
 	ctx, _ := newMockCtx(t, withBackend(disconnectedBackend()))
-	assertError(t, describeSettings(ctx))
+	assertError(t, describeSettings(ctx, ""))
 }
 
 func TestDescribeBusinessEventService_Mock_NotConnected(t *testing.T) {

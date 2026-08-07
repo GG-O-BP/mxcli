@@ -71,7 +71,7 @@ CALL MICROFLOW Sales.ACT_Order_CalculateTotal ($Order = $Order);
 ```
 
 ```bash
-# Run tests (requires Docker)
+# Run tests (Docker, or --local for mxcli's own runtime)
 mxcli test tests/ -p app.mpr
 ```
 

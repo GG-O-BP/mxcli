@@ -15,7 +15,7 @@ import (
 )
 
 var checkCmd = &cobra.Command{
-	Use:   "check <file>",
+	Use:   "check <file|->",
 	Short: "Check an MDL script for errors without executing it",
 	Long: `Check an MDL script file for syntax errors and optionally validate references.
 
@@ -46,6 +46,9 @@ Examples:
   # Output as JSON or SARIF
   mxcli check script.mdl --format json
   mxcli check script.mdl --format sarif
+
+  # Read the script from stdin
+  cat script.mdl | mxcli check -
 `,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
@@ -59,8 +62,8 @@ Examples:
 		outputFormat := linter.OutputFormat(format)
 		formatter := linter.GetFormatter(outputFormat, !isStructured)
 
-		// Read the file
-		content, err := os.ReadFile(filePath)
+		// Read the script (a path, or "-" for stdin)
+		content, err := readMDLSource(filePath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error reading file: %v\n", err)
 			os.Exit(1)
@@ -68,7 +71,7 @@ Examples:
 
 		// Parse the script
 		if !isStructured {
-			fmt.Printf("Checking syntax: %s\n", filePath)
+			fmt.Printf("Checking syntax: %s\n", mdlSourceLabel(filePath))
 		}
 		prog, errs := visitor.Build(string(content))
 		if len(errs) > 0 {
@@ -169,6 +172,23 @@ Examples:
 		// Flag control-bar buttons that pass $currentObject — a control bar is
 		// not row-scoped, so the argument is unbound (CE1571) at build time.
 		violations = append(violations, executor.ValidatePageButtonContext(prog)...)
+
+		// Flag a database-connection TYPE Studio Pro does not offer. mxcli writes
+		// the string through and mxbuild does not check it, so a wrong value
+		// builds green and simply does not connect.
+		violations = append(violations, executor.ValidateDatabaseConnectionType(prog)...)
+
+		// Flag OData property names nothing below will act on. The grammar takes
+		// any `name: value` pair, so a typo used to be discarded in silence and
+		// the model quietly lacked what the author asked for.
+		violations = append(violations, executor.ValidateODataProperties(prog)...)
+
+		// Flag a page whose widgets point at a page created further down the same
+		// script. `exec` resolves page references in statement order and is not
+		// transactional, so this fails after earlier statements are already
+		// written. --references catches it too, but the ordering needs no project
+		// when the target is created by a plain CREATE (#9).
+		violations = append(violations, executor.ValidateScriptPageOrder(prog)...)
 
 		// Flag a document-access GRANT naming a role from another module — Mendix
 		// rejects it with CE0148. Needs no project, so it runs here rather than

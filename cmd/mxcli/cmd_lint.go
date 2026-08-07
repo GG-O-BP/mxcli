@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/mendixlabs/mxcli/mdl/linter"
 	"github.com/mendixlabs/mxcli/mdl/linter/rules"
@@ -186,6 +187,20 @@ Examples:
 			if len(cfg.ExcludeModules) > 0 {
 				merged := append(excludeModules, cfg.ExcludeModules...)
 				ctx.SetExcludedModules(merged)
+				// An exclude always wins over --modules (LintContext.IsExcluded
+				// checks the exclude set first), so asking for a module the
+				// config excludes yields zero findings with no explanation.
+				// `mxcli init` now ships a config excluding System, which makes
+				// `lint -m System` exactly that trap — say so rather than
+				// returning a silent empty result.
+				if shadowed := intersect(moduleFilter, cfg.ExcludeModules); len(shadowed) > 0 {
+					fmt.Fprintf(os.Stderr,
+						"Warning: --modules names %s, but %s excluded by %s — no findings will be reported for %s. Remove it from excludeModules to lint it.\n",
+						strings.Join(shadowed, ", "),
+						pluralIsAre(len(shadowed)),
+						configPath,
+						pluralItThem(len(shadowed)))
+				}
 			}
 			cfg.ApplyConfig(lint)
 		} else {
@@ -251,4 +266,39 @@ func catalogRefreshCommand(mode linter.CatalogMode) string {
 	default:
 		return "REFRESH CATALOG"
 	}
+}
+
+// intersect returns the values of want that appear in have, preserving want's
+// order and dropping duplicates.
+func intersect(want, have []string) []string {
+	if len(want) == 0 || len(have) == 0 {
+		return nil
+	}
+	inHave := make(map[string]bool, len(have))
+	for _, h := range have {
+		inHave[h] = true
+	}
+	seen := make(map[string]bool, len(want))
+	var out []string
+	for _, w := range want {
+		if inHave[w] && !seen[w] {
+			seen[w] = true
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+func pluralIsAre(n int) string {
+	if n == 1 {
+		return "it is"
+	}
+	return "they are"
+}
+
+func pluralItThem(n int) string {
+	if n == 1 {
+		return "it"
+	}
+	return "them"
 }

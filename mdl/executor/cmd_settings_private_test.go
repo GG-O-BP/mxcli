@@ -110,7 +110,7 @@ func TestDescribeSettings_PrivateOverrideIsNotReExecutable(t *testing.T) {
 	wrote := false
 	ctx, out := newMockCtx(t, withBackend(privateConstantBackend(&wrote)))
 
-	if err := describeSettings(ctx); err != nil {
+	if err := describeSettings(ctx, ""); err != nil {
 		t.Fatalf("describeSettings: %v", err)
 	}
 	got := out.String()

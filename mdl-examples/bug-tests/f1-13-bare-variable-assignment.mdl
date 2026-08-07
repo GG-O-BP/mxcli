@@ -1,0 +1,41 @@
+-- ============================================================================
+-- mxcli-formula1 finding #13: `$N = 0;` did not parse
+-- ============================================================================
+--
+-- Symptom (before fix):
+--
+--   $Total = 5;
+--   -> no viable alternative at input '$Total=5'
+--
+-- while `DECLARE $Total Integer = 0;` worked, and so did every other assignment
+-- form in MDL: `$X = HEAD($List)`, `$X = create M.E (...)`,
+-- `$X = execute database query ...`. Assignment was only a PREFIX on specific
+-- activity statements; a plain value needed the `SET` keyword, and the error
+-- named the token rather than the missing keyword — so the rule was not
+-- guessable from the message.
+--
+-- After fix: `SET` is optional. `$Total = 5;` and `set $Total = 5;` are the same
+-- statement and produce the same ChangeVariableAction. The keyword form is
+-- unchanged; existing scripts are full of it.
+--
+-- Usage:
+--   mxcli check mdl-examples/bug-tests/f1-13-bare-variable-assignment.mdl
+--   mxcli exec  mdl-examples/bug-tests/f1-13-bare-variable-assignment.mdl -p app.mpr
+--   then a real build must report 0 errors:
+--   scripts/mx-check.sh -p app.mpr
+-- ============================================================================
+
+create module F1ASSIGN;
+create persistent entity F1ASSIGN.Item (Name: string(50), Qty: integer);
+create microflow F1ASSIGN.MF ($Item: F1ASSIGN.Item)
+begin
+  declare $Total integer = 0;
+  $Total = 5;
+  $Total = -1;
+  $Total = $Total + 1;
+  set $Total = 7;
+  $Item/Qty = 3;
+  $New = create F1ASSIGN.Item (Name = 'x');
+  retrieve $Items from F1ASSIGN.Item;
+  $First = HEAD($Items);
+end;

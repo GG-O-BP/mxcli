@@ -10,8 +10,10 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"sort"
 	"strings"
 
+	"github.com/mendixlabs/mxcli/mdl/linter"
 	"github.com/spf13/cobra"
 )
 
@@ -37,6 +39,9 @@ const mendixGitignore = `# Mendix project
 /packages/
 /project-settings.user.json
 /releases/
+# Compiled theme output. MxBuild regenerates it on every build, so tracking it
+# means a fresh clone goes dirty the first time anyone builds. (mxcli-todo #7)
+/theme-cache/
 *.mpr.lock
 *.mpr.bak
 /vendorlib/temp/
@@ -130,10 +135,33 @@ Container Runtime:
 			os.Exit(1)
 		}
 
-		// Find .mpr file
+		// Find .mpr file. With none here, look one level down: a solution repo
+		// keeps each app in its own folder, and running `mxcli init` from the
+		// root used to write everything at the root against an invented
+		// `project.mpr` that does not exist — silently wrong, and in a two-app
+		// repo the odds of it being what you meant are zero.
+		// (mxcli-formula1 findings #3.)
 		mprFile := findMprFile(absDir)
 		if mprFile == "" {
-			mprFile = "project.mpr" // Default if not found
+			candidates := findMprFilesInSubdirs(absDir)
+			switch len(candidates) {
+			case 0:
+				fmt.Fprintf(os.Stderr, "Warning: no .mpr file found in %s.\n", absDir)
+				fmt.Fprintln(os.Stderr, "  Generated files will refer to 'project.mpr'; run this from the app folder to get real paths.")
+				mprFile = "project.mpr"
+			case 1:
+				absDir = filepath.Dir(candidates[0])
+				mprFile = filepath.Base(candidates[0])
+				fmt.Printf("No .mpr here; initializing the project found below: %s\n", candidates[0])
+			default:
+				fmt.Fprintf(os.Stderr, "Error: %d Mendix projects found below %s:\n", len(candidates), absDir)
+				for _, c := range candidates {
+					fmt.Fprintf(os.Stderr, "  %s\n", c)
+				}
+				fmt.Fprintln(os.Stderr, "\nName the one you mean, so a solution repo does not get one app's tooling by coin flip:")
+				fmt.Fprintf(os.Stderr, "  mxcli init %s\n", filepath.Dir(candidates[0]))
+				os.Exit(1)
+			}
 		}
 		projectName := filepath.Base(absDir)
 
@@ -211,6 +239,12 @@ Container Runtime:
 					os.Exit(1)
 				}
 			}
+		}
+
+		// Seed the lint config. `mxcli lint` reads this regardless of which AI
+		// tool was selected, so it is written outside the per-tool branches.
+		if path, created := writeDefaultLintConfig(absDir); created {
+			fmt.Printf("  Created %s (System module excluded from lint)\n", filepath.Base(path))
 		}
 
 		// Write universal skills to .ai-context/skills/
@@ -579,6 +613,63 @@ Container Runtime:
 	},
 }
 
+// defaultLintConfig is the lint configuration written into a freshly
+// initialised project. System is excluded because its contents are Mendix's,
+// not the developer's: you cannot document its entities, give them access
+// rules, or rename their members. Linting it produced ~100 un-actionable
+// findings on a blank app, which buried the handful about the developer's own
+// code (issuetracker finding #9).
+const defaultLintConfig = `# mxcli lint configuration.
+# Docs: mxcli lint --help
+
+# Modules that 'mxcli lint' skips entirely.
+#
+# System is Mendix's own platform module — its entities, members and access
+# rules are not yours to change, so findings against it are noise. On a blank
+# app it accounts for the large majority of all issues.
+#
+# Marketplace modules (Atlas_Core, Atlas_Web_Content, Administration, …) are
+# equally read-only in practice; add them here if their findings distract you.
+#
+# NOTE: this list always wins. It is merged with '--exclude', and a module
+# listed here is skipped even if you ask for it with '--modules'. To lint
+# System, remove it from this list (or delete this file).
+excludeModules:
+  - System
+
+# Per-rule overrides. Examples:
+#
+# rules:
+#   QUAL002:            # missing documentation
+#     enabled: false
+#   CONV009:            # max microflow objects
+#     severity: warning
+#     options:
+#       maxObjects: 20
+rules: {}
+`
+
+// writeDefaultLintConfig creates .claude/lint-config.yaml unless the project
+// already has a lint config in any of the locations linter.FindConfigFile
+// searches. Never overwrites: init is re-runnable, and the config is meant to
+// be edited.
+func writeDefaultLintConfig(projectDir string) (string, bool) {
+	if existing := linter.FindConfigFile(projectDir); existing != "" {
+		return existing, false
+	}
+	claudeDir := filepath.Join(projectDir, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "  Error creating .claude directory for lint config: %v\n", err)
+		return "", false
+	}
+	path := filepath.Join(claudeDir, "lint-config.yaml")
+	if err := os.WriteFile(path, []byte(defaultLintConfig), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "  Error writing lint config: %v\n", err)
+		return "", false
+	}
+	return path, true
+}
+
 func findMprFile(dir string) string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -605,4 +696,27 @@ func init() {
 	initCmd.Flags().BoolVar(&initAllTools, "all-tools", false, "Initialize for all supported AI tools")
 	initCmd.Flags().BoolVar(&initListTools, "list-tools", false, "List supported AI tools and exit")
 	initCmd.Flags().StringVar(&initContainerRuntime, "container-runtime", "docker", "Container runtime for devcontainer (docker or podman)")
+}
+
+// findMprFilesInSubdirs returns the .mpr files one level below dir, sorted, so
+// the choice is deterministic and the error message lists them in a stable
+// order. One level only: a Mendix app keeps its .mpr at its root, and walking
+// deeper would find deployment copies and backups.
+func findMprFilesInSubdirs(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		sub := filepath.Join(dir, e.Name())
+		if mpr := findMprFile(sub); mpr != "" {
+			out = append(out, filepath.Join(sub, mpr))
+		}
+	}
+	sort.Strings(out)
+	return out
 }

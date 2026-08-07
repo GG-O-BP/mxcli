@@ -4,9 +4,11 @@ package docker
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -65,8 +67,11 @@ const { chromium } = require(require.resolve("playwright-core", { paths: [pkgDir
   const ctx = await b.newContext();
   const p = await ctx.newPage();
   await p.goto(appURL, { waitUntil: "load", timeout: 30000 });
+  let sawForm = false;
+  let failure = "";
   try {
     await p.waitForSelector("#usernameInput", { timeout: 8000 });
+    sawForm = true;
     await p.fill("#usernameInput", username);
     await p.fill("#passwordInput", password);
     await Promise.all([
@@ -78,8 +83,21 @@ const { chromium } = require(require.resolve("playwright-core", { paths: [pkgDir
     // No login form within the timeout: anonymous or already authenticated.
     process.stderr.write("login: no login form detected (" + e.message.split("\n")[0] + ")\n");
   }
+  // Mendix answers a rejected sign-in by re-rendering the same form, so the
+  // username field still being there is the signal that login did not complete.
+  // Without this the script saved an anonymous session and every later
+  // screenshot silently showed the login page instead of the requested page.
+  if (sawForm && (await p.locator("#usernameInput").count()) > 0) {
+    const alert = ((await p.locator(".alert").first().textContent().catch(() => "")) || "")
+      .replace(/\s+/g, " ").trim().slice(0, 200);
+    failure = alert || "still on the login page after submitting";
+  }
   await ctx.storageState({ path: storagePath });
   await b.close();
+  if (failure) {
+    process.stderr.write("login: sign-in did not complete: " + failure + "\n");
+    process.exit(2);
+  }
 })().catch((e) => { process.stderr.write(String(e) + "\n"); process.exit(1); });
 `
 
@@ -88,9 +106,58 @@ type LoginOptions struct {
 	AppURL      string
 	Username    string
 	Password    string
-	StoragePath string        // where to write the Playwright storage state JSON
-	MxBuildPath string        // fallback node source
-	Timeout     time.Duration // default 60s
+	StoragePath string // where to write the Playwright storage state JSON
+	MxBuildPath string // fallback node source
+	// RuntimeLogPath is consulted when a sign-in is rejected: the runtime
+	// records why, and the page does not.
+	RuntimeLogPath string
+	Timeout        time.Duration // default 60s
+}
+
+// sessionCapMarker is what the unlicensed runtime logs when it refuses a sign-in
+// because every session slot is taken. The browser only ever says "Sign in
+// failed", which points at the credentials — so the cause is invisible unless
+// someone thinks to open the runtime log.
+const sessionCapMarker = "Maximum number of sessions exceeded"
+
+// loginFailureHint returns an explanation to append to a failed sign-in, read
+// from the tail of the runtime log. Empty when the log says nothing useful.
+func loginFailureHint(runtimeLogPath string) string {
+	if runtimeLogPath == "" || runtimeLogPath == "-" {
+		return ""
+	}
+	tail, err := readLogTail(runtimeLogPath, 64*1024)
+	if err != nil || !strings.Contains(tail, sessionCapMarker) {
+		return ""
+	}
+	return "\nThe runtime log reports: " + sessionCapMarker + " — the unlicensed local\n" +
+		"runtime allows only a handful of concurrent sessions, and the login page reports\n" +
+		"that as \"Sign in failed\" as if the password were wrong. Sessions are released by\n" +
+		"restarting `mxcli run --local`; a script that drives the app through a browser\n" +
+		"should sign out when it finishes so it does not consume a slot per run."
+}
+
+// readLogTail reads at most the last n bytes of a file.
+func readLogTail(path string, n int64) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	if off := info.Size() - n; off > 0 {
+		if _, err := f.Seek(off, io.SeekStart); err != nil {
+			return "", err
+		}
+	}
+	b, err := io.ReadAll(f)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
 
 // LoginAndSaveStorage logs into the app and writes a Playwright storage-state
@@ -137,7 +204,7 @@ func LoginAndSaveStorage(opts LoginOptions) error {
 	select {
 	case err := <-done:
 		if err != nil {
-			return fmt.Errorf("login failed: %w\n%s", err, out.String())
+			return fmt.Errorf("login failed: %w\n%s%s", err, out.String(), loginFailureHint(opts.RuntimeLogPath))
 		}
 	case <-time.After(timeout):
 		_ = cmd.Process.Kill()

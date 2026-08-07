@@ -125,7 +125,7 @@ DISCONNECT;`,
 			"settings", "project settings", "configuration",
 			"startup", "shutdown", "hash algorithm", "java version",
 		},
-		Syntax:  "SHOW SETTINGS;\nDESCRIBE SETTINGS;\nALTER SETTINGS MODEL <key> = <value>;\nALTER SETTINGS CONFIGURATION '<name>' <key> = <value>;",
+		Syntax:  "SHOW SETTINGS;\nDESCRIBE SETTINGS;\nDESCRIBE SETTINGS CONFIGURATION '<name>';   -- just one configuration\nALTER SETTINGS MODEL <key> = <value>;\nALTER SETTINGS CONFIGURATION '<name>' <key> = <value>;",
 		Example: "SHOW SETTINGS;\nALTER SETTINGS MODEL AfterStartupMicroflow = 'Module.MF_Startup';",
 		SeeAlso: []string{"settings.show", "settings.alter"},
 	})
@@ -136,8 +136,8 @@ DISCONNECT;`,
 		Keywords: []string{
 			"show settings", "describe settings", "list settings",
 		},
-		Syntax:  "SHOW SETTINGS;\nDESCRIBE SETTINGS;",
-		Example: "SHOW SETTINGS;\nDESCRIBE SETTINGS;",
+		Syntax:  "SHOW SETTINGS;\nDESCRIBE SETTINGS;\nDESCRIBE SETTINGS CONFIGURATION '<name>';",
+		Example: "SHOW SETTINGS;\nDESCRIBE SETTINGS;\nDESCRIBE SETTINGS CONFIGURATION 'Default';",
 	})
 
 	Register(SyntaxFeature{
@@ -265,18 +265,25 @@ SEARCH 'word*';`,
 
 	Register(SyntaxFeature{
 		Path:    "test",
-		Summary: "Microflow testing — run .test.mdl or .test.md files against a Mendix project in Docker",
+		Summary: "Microflow testing — run .test.mdl or .test.md files against a Mendix project (local warm loop, or Docker)",
 		Keywords: []string{
 			"test", "testing", "microflow test", "nanoflow test",
 			"test.mdl", "test.md", "junit", "docker",
 			"@test", "@expect", "@throws", "@cleanup",
+			"watch", "attach", "test endpoint", "warm",
 		},
 		Syntax: `mxcli test <file|dir> -p app.mpr [flags]
 
 Flags:
   -l, --list          List tests without executing
   -j, --junit FILE    Write JUnit XML results
-  -s, --skip-build    Skip Docker build (reuse existing)
+  -s, --skip-build    Skip the build (reuse existing deployment)
+      --local         Run on mxcli's own runtime — no Docker daemon needed
+  -w, --watch         With --local: keep the runtime warm and re-run on
+                      every test or model change (Ctrl-C to stop)
+      --attach        Run against an app already started with
+                      'mxcli run --local --test-endpoint' — no boot at all
+      --legacy-runner With --local: use the old after-startup runner
   -v, --verbose       Show runtime log lines
   -t, --timeout DUR   Runtime startup timeout (default: 5m)
 
@@ -285,7 +292,17 @@ Annotations:
   @expect $var = value      Assert variable equals value
   @expect $obj/Attr = val   Assert entity attribute
   @throws 'message'         Expect error
-  @cleanup rollback|none    Cleanup strategy (default: rollback)`,
+  @cleanup rollback|none    Cleanup strategy (default: rollback)
+
+How --local runs tests: one microflow per test, invoked by name over a
+token-guarded HTTP endpoint the app registers at boot. A test that throws
+fails only itself, and results are returned rather than scraped from the log.
+Docker still uses the older after-startup runner.
+
+Cost of a run:
+  cold (--local)            ~30s   boots a runtime on its own ports + DB
+  warm (--local --watch)    ~2s    runtime stays up between runs
+  attached (--attach)       ~2s    no boot; uses the running app's database`,
 		Example: `-- .test.mdl file format
 /**
  * @test String concatenation
@@ -297,8 +314,14 @@ $result = CALL MICROFLOW MyModule.ConcatNames(
 /
 
 -- Run tests
-mxcli test tests/ -p app.mpr
-mxcli test tests/ -p app.mpr --junit results.xml`,
+mxcli test tests/ -p app.mpr                      -- Docker
+mxcli test tests/ -p app.mpr --local              -- no Docker daemon
+mxcli test tests/ -p app.mpr --local --watch      -- warm loop, re-runs on change
+mxcli test tests/ -p app.mpr --junit results.xml
+
+-- Or attach to an app you already have running:
+mxcli run  --local --test-endpoint -p app.mpr     -- terminal 1
+mxcli test tests/ -p app.mpr --attach             -- terminal 2`,
 	})
 
 	// ── Errors ──────────────────────────────────────────────────────────

@@ -473,6 +473,12 @@ type PublishedEntitySet struct {
 	DeleteMode     string `json:"deleteMode,omitempty"`
 	UsePaging      bool   `json:"usePaging,omitempty"`
 	PageSize       int    `json:"pageSize,omitempty"`
+
+	// OData query options. nil means "not specified" and is written as Mendix's
+	// own default of true; only an explicit false turns one off.
+	Countable     *bool `json:"countable,omitempty"`
+	SkipSupported *bool `json:"skipSupported,omitempty"`
+	TopSupported  *bool `json:"topSupported,omitempty"`
 }
 
 // PublishedMember represents a member (attribute/association/id) published in an OData entity type.

@@ -127,6 +127,13 @@ func publishedEntitySetFromRaw(raw map[string]any, byID map[string]*model.Publis
 		UpdateMode:  parseODataModeRaw(raw["UpdateMode"]),
 		DeleteMode:  parseODataModeRaw(raw["DeleteMode"]),
 	}
+	// Query options round-trip so DESCRIBE can print a turned-off one. Absent
+	// (or true, the default) is left nil so DESCRIBE stays quiet about it.
+	if qo := jsToMap(raw["QueryOptions"]); qo != nil {
+		es.Countable = falseOnly(qo["Countable"])
+		es.SkipSupported = falseOnly(qo["SkipSupported"])
+		es.TopSupported = falseOnly(qo["TopSupported"])
+	}
 	if et, ok := byID[jsExtractBsonID(raw["EntityTypePointer"])]; ok {
 		es.EntityTypeName = et.Entity
 	}
@@ -171,4 +178,15 @@ func jsExtractInt(v any) int {
 		return int(n)
 	}
 	return 0
+}
+
+// falseOnly returns a pointer to false when v is present and false, else nil.
+// A stored true is the default, and printing every default back would make
+// DESCRIBE output noisier than what the author wrote.
+func falseOnly(v any) *bool {
+	if v == nil || jsExtractBool(v) {
+		return nil
+	}
+	f := false
+	return &f
 }

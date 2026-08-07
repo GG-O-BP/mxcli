@@ -13,7 +13,7 @@ import (
 )
 
 var execCmd = &cobra.Command{
-	Use:   "exec <file>",
+	Use:   "exec <file|->",
 	Short: "Execute an MDL script file",
 	Long: `Execute an MDL script file containing MDL commands.
 
@@ -24,10 +24,16 @@ makes a partially-applied domain script re-runnable — the already-applied
 statements (e.g. "attribute already exists") error individually while the not-
 yet-applied ones still run — without a failure masking later work.
 
+Pass "-" as the file to read the script from standard input, so MDL can be
+piped or written inline as a heredoc without a temporary file.
+
 Example:
   mxcli exec setup.mdl
   mxcli exec -p app.mpr script.mdl
   mxcli exec -p app.mpr script.mdl --continue-on-error
+  mxcli exec -p app.mpr - <<'EOF'
+  SHOW STRUCTURE DEPTH 1;
+  EOF
 `,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
@@ -35,8 +41,8 @@ Example:
 		projectPath, _ := cmd.Flags().GetString("project")
 		continueOnError, _ := cmd.Flags().GetBool("continue-on-error")
 
-		// Read the file
-		content, err := os.ReadFile(filePath)
+		// Read the script (a path, or "-" for stdin)
+		content, err := readMDLSource(filePath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error reading file: %v\n", err)
 			os.Exit(1)

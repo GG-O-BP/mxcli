@@ -4,23 +4,26 @@ The `mxcli test` command executes test files and reports results.
 
 ## Prerequisites
 
-Running tests requires **Docker** for Mendix runtime validation. The test runner uses:
+Tests need a Mendix runtime to execute against. There are two ways to get one,
+and **Docker is only needed for the first**:
 
-- `mx create-project` to create a fresh blank Mendix project
-- `mx check` to validate the project after applying MDL changes
+- **Docker** — the container path. Requires a running Docker daemon.
+- **`--local`** — mxcli's own runtime, no daemon involved. It uses its own ports
+  (8081/8091) and its own `<project>_test` database, so a `mxcli run --local`
+  dev loop can keep serving the same project while tests run.
 
-The `mx` binary is located at:
+`--local` also downloads what it needs on first use. To pre-cache it:
+
+```bash
+mxcli setup mxbuild -p app.mpr
+```
+
+The `mx` binary, when you need it directly:
 
 | Environment | Path |
 |-------------|------|
 | Dev container | `~/.mxcli/mxbuild/{version}/modeler/mx` |
 | Repository | `reference/mxbuild/modeler/mx` |
-
-To auto-download mxbuild for the project's Mendix version:
-
-```bash
-mxcli setup mxbuild -p app.mpr
-```
 
 ## Basic Usage
 
@@ -35,12 +38,61 @@ mxcli test tests/sales.test.mdl -p app.mpr
 mxcli test tests/integration.test.md -p app.mpr
 ```
 
-## Test Execution Flow
+## Choosing a mode
 
-1. **Create project** -- A fresh Mendix project is created in a temporary directory using `mx create-project`
-2. **Execute MDL** -- The test script is executed against the fresh project using `mxcli exec`
-3. **Validate** -- `mx check` validates the resulting project for errors
-4. **Report** -- Results are reported with pass/fail status per test case
+|  | Boot cost per run | Database | Needs Docker |
+|---|---|---|---|
+| `mxcli test …` | container restart | the container's | yes |
+| `--local` | ~30s | `<project>_test` | no |
+| `--local --watch` | ~30s once, then ~2s | `<project>_test` | no |
+| `--attach` | none | **the running app's** | no |
+
+```bash
+# No Docker daemon needed
+mxcli test tests/ -p app.mpr --local
+
+# Keep the runtime warm; re-runs on every test or model change (Ctrl-C to stop)
+mxcli test tests/ -p app.mpr --local --watch
+
+# Attach to an app you already have running — no boot at all
+mxcli run  --local --test-endpoint -p app.mpr    # terminal 1
+mxcli test tests/ -p app.mpr --attach            # terminal 2
+```
+
+`--watch` is the everyday loop: edit a test *or* the microflow under test, and
+the verdict lands in about two seconds.
+
+`--attach` skips even the first boot, at one cost worth knowing: the tests run
+against the running app's database rather than a scratch one, so they can leave
+data behind in the app you are looking at. It needs the dev loop to have been
+started with `--test-endpoint`, because the endpoint's handler is registered by
+the after-startup microflow and cannot be added to an app that is already up.
+
+## How tests execute
+
+**`--local` — the test endpoint.** One microflow is generated per test, plus a
+Java action that registers a token-guarded HTTP endpoint. The app boots once;
+startup only registers the endpoint and runs no tests. Each test is then invoked
+by name over HTTP and returns its verdict in the response.
+
+Two consequences when reading a failing run:
+
+- A test that throws fails **only itself** and is reported as an error with the
+  root-cause message; the next test still runs.
+- Results are **returned**, not recovered from the runtime log.
+
+The endpoint executes microflows under a system context, so it is gated: it is
+not registered at all without a per-run token in the runtime's environment,
+every request must present that token, non-loopback callers are refused, and it
+will only ever invoke the generated `MxTest.Test_*` microflows. The token is
+never written into your project.
+
+**Docker — the after-startup runner.** The whole suite is compiled into the
+project's after-startup microflow, the container is restarted, and results are
+parsed out of its log. `--legacy-runner` selects this on a local run too.
+
+Both paths restore the project when they finish, and both report loudly if that
+restore fails — a modified project must never read as a clean pass.
 
 ## Isolated Testing Pattern
 
