@@ -29,28 +29,34 @@ Ask all of these in ONE message, numbered, each with the default you would pick,
 can reply "defaults" or answer only the ones I care about. Do not start provisioning
 until I have replied.
 
-1. **App name.** Becomes the `.mpr` file name, the app name in Studio Pro, and the
+1. **One app, or a solution of several?** One Mendix app is the default. Say
+   "solution" if this is several apps in one repo — e.g. a backend that owns the data
+   and publishes OData/REST, and a frontend that consumes it. If so, ask for each
+   app's name and one line on what it owns, and follow the multi-app deltas below.
+2. **App name.** Becomes the `.mpr` file name, the app name in Studio Pro, and the
    path in the session hook, so it is awkward to change later. One PascalCase word,
    letters and digits only — `OrderPortal`, `FieldService`, `ClubAdmin`. Propose one
-   from my answer to Q2.
-2. **What is the app for?** One or two sentences: who uses it, and what it lets them
+   from my answer to Q3.
+3. **What is the app for?** One or two sentences: who uses it, and what it lets them
    do. If my answer is vague ("a tool for work"), ask one follow-up — everything below
    is derived from this.
-3. **What does it keep track of?** Three to six nouns that will become entities, and a
-   word on how they relate (e.g. "a Job has many Visits; each Visit has Photos").
-4. **Who logs in?** The user roles, and roughly what each may do (e.g. "Requester
+4. **What does it keep track of?** Three to six nouns that will become entities, and a
+   word on how they relate (e.g. "a Job has many Visits; each Visit has Photos"). For
+   a solution, also ask which app owns each noun.
+5. **Who logs in?** The user roles, and roughly what each may do (e.g. "Requester
    creates and sees their own; Approver sees everything and approves").
-5. **Look and feel.** One of the bundled themes: `signal` (light, high contrast),
+6. **Look and feel.** One of the bundled themes: `signal` (light, high contrast),
    `ledger` (light, dense, data-heavy), `console` (dark), or `none` for stock Atlas.
    Default `signal`.
-6. **Mendix version.** Default `11.6.3`.
+7. **Mendix version.** Default `11.13.0`.
 
 If I say "defaults" or ignore a question, choose something sensible for it, tell me
 what you chose in one line, and keep going — do not block on me twice.
 
 ## Then provision
 
-Substitute my answers for `<AppName>`, `<version>` and `<theme>` throughout.
+Substitute my answers for `<AppName>`, `<version>` and `<theme>` throughout. For a
+solution, do steps 2–4 once per app and read "If this is a solution" first.
 
 1. Ensure `mxcli` is available. It should be pre-installed by the environment; if
    not, download a prebuilt binary for your OS/arch and put it at `./mxcli`, e.g.:
@@ -85,8 +91,9 @@ Substitute my answers for `<AppName>`, `<version>` and `<theme>` throughout.
    skills and commands are in place).
 4. Bring prerequisites up: `./mxcli run --local --setup --ensure-db -p <AppName>.mpr`
    (caches MxBuild + runtime, starts Postgres, creates the app database).
-5. Write the brief to `README.md` at the repo root: the app name, my answers to Q2–Q4
-   in my words, and the theme and Mendix version you used. This is what tells the next
+5. Write the brief to `README.md` at the repo root: the app name(s), my answers to
+   Q3–Q5 in my words, and the theme and Mendix version you used. For a solution, say
+   which app owns what and how they talk to each other. This is what tells the next
    session — after an idle reap, with none of this conversation — what it is building.
    Keep it short enough that it stays true.
 6. Create a `FINDINGS.md` at the repo root and keep appending to it as you work.
@@ -104,14 +111,51 @@ Substitute my answers for `<AppName>`, `<version>` and `<theme>` throughout.
    URL it prints. This needs `MXCLI_HUB_KEY` set on the environment (see the workflow
    page); without it, continue as a normal local run.
 
+## If this is a solution (several apps in one repo)
+
+Each app is a full Mendix project — one `.mpr`, one runtime, one database. Same steps,
+with these deltas:
+
+- **Layout.** One subfolder per app, nothing at the repo root but `README.md`,
+  `FINDINGS.md` and `.claude/`. Run `mxcli new <AppName> --version <version> --theme
+  <theme>` once per app and leave each where it lands; do not move anything up.
+- **Ports.** Every app defaults to 8080/8090/6543 and they will collide. Give the
+  first app the defaults and the second `--app-port 8180 --admin-port 8190
+  --serve-port 6643`. Avoid 8081/8091/6544 — `mxcli test --local` uses those.
+- **Databases** need no action: the name is derived from the `.mpr` file name, so
+  differently-named apps get different databases.
+- **The session hook.** `mxcli init` writes `.claude/settings.json` inside each app
+  folder, but Claude Code reads the one at the **repo root** — and it will not add a
+  second entry for you (it dedupes on the command, not on the project). Write the root
+  one yourself, one line per app, e.g.
+  `test -x backend/mxcli && (cd backend && ./mxcli run --local --setup --ensure-db -p Backend.mpr) || true`.
+  Verify it by checking that a fresh shell can boot each app.
+- **Previews.** Pass `--hub-solution <SolutionName>` to every `run --hub` so the apps
+  appear grouped in the hub overview instead of as unrelated previews.
+
+**Wire the integration in dependency order — the producer must be running first.**
+`CREATE ODATA CLIENT` fetches the `$metadata` at the moment you create it and caches
+it in the model; if the URL is unreachable it warns and leaves the client unvalidated,
+with no external entities to import. So: publish on the producer
+(`CREATE ODATA SERVICE … publish entity …`), boot it (`run --local`), and only then,
+on the consumer, `CREATE ODATA CLIENT … MetadataUrl: 'http://localhost:8080/odata/…/$metadata'`
+followed by `CREATE EXTERNAL ENTITIES FROM …`. Point `ServiceUrl` at a **constant**
+(`ServiceUrl: @Module.SvcUrl`) so the address can be changed per environment without
+touching the model — it will not stay `localhost`. `mxcli syntax odata.publish` and
+`mxcli syntax odata.consume` have the full syntax; business events
+(`mxcli syntax business-events`) are the alternative when the link should be
+asynchronous.
+
 ## Then propose the model — do not build it yet
 
 The blank template ships a `MyFirstModule`; the app's own work belongs in a module
 named after it. From the brief, propose in chat:
 
-- a module name, and the entities from Q3 with their attributes and associations
-- the user roles from Q4 and what each may read/write
+- a module name, and the entities from Q4 with their attributes and associations
+- the user roles from Q5 and what each may read/write
 - the handful of pages that make it usable
+- for a solution: which app owns each entity, and what crosses the boundary — publish
+  only what the other app actually needs
 
 Show me that as MDL I can read, and wait for my go-ahead before executing it. If I
 gave you a design to work from, use it as the source of truth for the model and the
@@ -144,6 +188,22 @@ tag (latest is v0.16.0) **and** as a rolling `nightly` pre-release, with assets 
   `make grammar` first). Enabling `go install` would require committing the generated
   parser (or generating it during module build) — a maintainer decision.
 
+## Which Mendix version to ask for
+
+The prompt defaults to the newest version that has a published MxBuild — everything
+mxcli does starts with downloading it, so "supported" means "on the CDN". Check before
+bumping the default:
+
+```bash
+curl -sI -o /dev/null -w '%{http_code}\n' https://cdn.mendix.com/runtime/mxbuild-11.13.0.tar.gz   # 200
+curl -sI -o /dev/null -w '%{http_code}\n' https://cdn.mendix.com/runtime/mendix-11.13.0.tar.gz    # 200 (runtime)
+```
+
+Both have to answer `200` — `run --local` needs the runtime tarball as well as
+MxBuild. In a solution, give every app the **same** version: they share the
+`~/.mxcli/mxbuild` cache, and a mismatch means a second multi-hundred-MB download and
+two runtimes to keep straight.
+
 ## Two rules that make this robust
 
 - **Committing the config (step 7) is mandatory.** The prompt is a *one-time seed*.
@@ -162,6 +222,16 @@ tag (latest is v0.16.0) **and** as a rolling `nightly` pre-release, with assets 
 ```bash
 ./mxcli run --local -p <AppName>.mpr --watch --screenshot   # warm dev loop + screenshots
 ./mxcli exec change.mdl -p <AppName>.mpr                     # edit the model; the loop hot-applies
+```
+
+In a solution, run one loop per app from its own folder, with the second app on the
+alternate ports, and start the producer first so the consumer's external entities
+resolve:
+
+```bash
+(cd backend  && ./mxcli run --local -p Backend.mpr --watch)
+(cd frontend && ./mxcli run --local -p Frontend.mpr --watch \
+                  --app-port 8180 --admin-port 8190 --serve-port 6643)
 ```
 
 See [mxcli run --local](run-local.md) for the warm loop, `--watch`, `--ensure-db`, and
