@@ -1,0 +1,60 @@
+-- ============================================================================
+-- mxcli-todo finding #9: check passed, exec then rejected a forward page ref
+-- ============================================================================
+--
+-- Symptom (before fix): `mxcli check` — with no project — answered
+--
+--   ✓ Syntax OK (3 statements)
+--   Check passed!
+--
+-- and `mxcli exec` on the same script then failed partway through:
+--
+--   Error: failed to build page: failed to build widget: failed to build
+--   action: failed to resolve page: page not found: FWD9.TaskEdit
+--     hint: FWD9.TaskEdit is defined later in this script — move its create
+--           statement before this one
+--
+-- The hint is precise, but it arrives after earlier statements have already
+-- been written: `exec` is not transactional, so recovery is a git checkout of
+-- the .mpr back to a checkpoint commit. Commit before executing a large script.
+--
+-- After fix: plain `mxcli check` (no project needed) reports MDL-PAGE01 and
+-- exits 1. Soundness without a project comes from the target being created by
+-- a PLAIN create: that create would fail if the page already existed, so the
+-- earlier reference cannot resolve against the project either. A later
+-- `create or modify page` says nothing of the kind and is left to
+-- `check --references`, which can look at the project.
+--
+-- A CYCLE cannot be fixed by ordering — if two pages link to each other, no
+-- order satisfies both. Create one without the linking widget and add it
+-- afterwards with `alter page … insert`.
+--
+-- Usage (this script is expected to FAIL the check):
+--   mxcli check mdl-examples/bug-tests/todo-9-forward-page-reference.fail.mdl
+--   -> MDL-PAGE01, exit 1
+-- ============================================================================
+
+create module FWD9;
+
+-- References FWD9.TaskEdit, which is created below.
+create page FWD9.Board
+(
+  title: 'Board',
+  layout: Atlas_Core.Atlas_Default
+)
+{
+  container ctnMain {
+    linkbutton btnNew (caption: 'New', action: SHOW_PAGE FWD9.TaskEdit)
+  }
+}
+
+create page FWD9.TaskEdit
+(
+  title: 'Edit',
+  layout: Atlas_Core.Atlas_Default
+)
+{
+  container ctnEdit {
+    dynamictext txtEdit (content: 'edit')
+  }
+}

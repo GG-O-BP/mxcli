@@ -691,6 +691,7 @@ func (b *Builder) ExitAlterEntityAction(ctx *parser.AlterEntityActionContext) {
 							Name:         name,
 							Operation:    ast.AlterEntityAddEventHandler,
 							EventHandler: eh,
+							IfNotExists:  ctx.IfNotExists() != nil,
 						})
 					}
 				}
@@ -720,6 +721,7 @@ func (b *Builder) ExitAlterEntityAction(ctx *parser.AlterEntityActionContext) {
 					Name:         name,
 					Operation:    ast.AlterEntityDropEventHandler,
 					EventHandler: eh,
+					IfExists:     ctx.IfExists() != nil,
 				})
 				return
 			}
