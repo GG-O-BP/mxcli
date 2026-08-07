@@ -132,17 +132,26 @@ with these deltas:
   127.0.0.1  backend.local frontend.local
   ```
 
-  — and browse `http://backend.local:8080/` and `http://frontend.local:8180/`. No
-  mxcli flag is involved: the runtime binds `127.0.0.1` and serves any `Host` you
-  send it, and the client uses relative URLs, so it works under any name that
-  resolves to loopback. (`*.nip.io` works too if you would rather not touch
-  `/etc/hosts`; prefer `/etc/hosts` in a locked-down container, where public wildcard
-  DNS may not resolve — `localtest.me` resolves to `::1` in some of them.)
+  — and browse `http://backend.local:8080/` and `http://frontend.local:8180/`. The
+  runtime binds `127.0.0.1` and serves any `Host` you send it, and the client uses
+  relative URLs, so it works under any name that resolves to loopback. (`*.nip.io`
+  works too if you would rather not touch `/etc/hosts`; prefer `/etc/hosts` in a
+  locked-down container, where public wildcard DNS may not resolve — `localtest.me`
+  resolves to `::1` in some of them.)
 
-  One limit worth knowing before you design around it: the app's
-  `ApplicationRootUrl` is only set by `--hub`, so anything needing an **absolute**
-  URL — an OIDC/SAML redirect URI, a deep link in an email — still points at the
-  listen address rather than your chosen hostname.
+  Then record the name in each app's own configuration, so the runtime knows the URL
+  it is reached at and generates absolute URLs — OIDC/SAML redirect URIs, deep links
+  — against the host name rather than the listen address:
+
+  ```sql
+  alter settings configuration 'Default'
+    ApplicationRootUrl = 'http://backend.local:8080/';
+  ```
+
+  `run --local` picks that up at boot and prints which configuration it came from.
+  A blank app ships `http://localhost:8080/` there, and that stock loopback value is
+  deliberately ignored — otherwise every project would start advertising a URL, and
+  the wrong port under `--app-port`. Only a real host name is passed through.
 - **Databases** need no action: the name is derived from the `.mpr` file name, so
   differently-named apps get different databases.
 - **The session hook.** `mxcli init` writes `.claude/settings.json` inside each app

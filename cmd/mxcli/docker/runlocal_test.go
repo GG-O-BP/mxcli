@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mendixlabs/mxcli/model"
 )
 
 func TestDeriveDBName(t *testing.T) {
@@ -487,5 +489,93 @@ func TestCheckTargetPortsFree(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "already in use") {
 		t.Errorf("error should explain the port is in use; got: %v", err)
+	}
+}
+
+// The app's host name belongs in the project's configuration (App Settings ->
+// Configurations), not on the command line. These pin the selection rule.
+func TestApplicationRootURLFrom(t *testing.T) {
+	cfg := func(name, url string) *model.ServerConfiguration {
+		return &model.ServerConfiguration{Name: name, ApplicationRootUrl: url}
+	}
+	settings := func(cfgs ...*model.ServerConfiguration) *model.ProjectSettings {
+		return &model.ProjectSettings{Configuration: &model.ConfigurationSettings{Configurations: cfgs}}
+	}
+
+	tests := []struct {
+		name       string
+		in         *model.ProjectSettings
+		wantURL    string
+		wantConfig string
+	}{
+		{"no settings at all", nil, "", ""},
+		{"no configuration part", &model.ProjectSettings{}, "", ""},
+		{"no configurations", settings(), "", ""},
+		{"configuration without a URL", settings(cfg("Default", "")), "", ""},
+		{
+			"single configuration",
+			settings(cfg("Default", "http://backend.local:8080/")),
+			"http://backend.local:8080/", "Default",
+		},
+		{
+			// No "active configuration" marker exists in the model, so Default wins
+			// wherever it sits in the list.
+			"Default wins over others",
+			settings(cfg("Acceptance", "https://acc.example.com/"), cfg("Default", "http://backend.local:8080/")),
+			"http://backend.local:8080/", "Default",
+		},
+		{"Default match is case-insensitive", settings(cfg("default", "http://x/")), "http://x/", "default"},
+		{
+			"first one that sets a URL when there is no Default",
+			settings(cfg("Local", ""), cfg("Test", "https://test.example.com/"), cfg("Acc", "https://acc.example.com/")),
+			"https://test.example.com/", "Test",
+		},
+		{"nil entries are skipped", settings(nil, cfg("Default", "http://y/")), "http://y/", "Default"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			url, name := applicationRootURLFrom(tt.in)
+			if url != tt.wantURL || name != tt.wantConfig {
+				t.Errorf("got (%q, %q), want (%q, %q)", url, name, tt.wantURL, tt.wantConfig)
+			}
+		})
+	}
+}
+
+// A blank Mendix app already sets ApplicationRootUrl to http://localhost:8080/,
+// so honouring every configured value would change behaviour for every existing
+// project — and name the wrong port under --app-port. Only a real host name is
+// worth passing to the runtime.
+func TestCustomHostRootURL(t *testing.T) {
+	tests := map[string]bool{
+		"":                                  false,
+		"http://localhost:8080/":            false, // the stock value in a blank app
+		"http://LOCALHOST:8080/":            false,
+		"http://127.0.0.1:8080/":            false,
+		"http://127.0.0.2:8080/":            false,
+		"http://[::1]:8080/":                false,
+		"not a url":                         false,
+		"http://backend.local:8080/":        true,
+		"https://app.example.com/":          true,
+		"http://app.127.0.0.1.nip.io:8080/": true, // a name, even if it resolves to loopback
+	}
+	for in, want := range tests {
+		if got := customHostRootURL(in); got != want {
+			t.Errorf("customHostRootURL(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestURLPort(t *testing.T) {
+	tests := map[string]string{
+		"http://backend.local:8080/": "8080",
+		"https://app.example.com/":   "",
+		"":                           "",
+	}
+	for in, want := range tests {
+		if got := urlPort(in); got != want {
+			t.Errorf("urlPort(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
