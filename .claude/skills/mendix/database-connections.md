@@ -361,6 +361,30 @@ $ResultList = execute database query Module.Connection.QueryName
   dynamic 'SELECT id, name FROM employees WHERE active = true LIMIT 10';
 ```
 
+**A dynamic override still requires a value for every declared parameter** —
+including the ones the replacement SQL does not use. The parameter list belongs
+to the query *definition*, not to the SQL string, so Mendix asks for all of them
+whatever you substitute. Pass a placeholder for the unused ones:
+
+```sql
+-- The definition declares $driverId; this SQL ignores it, and the call still
+-- has to supply it.
+$Count = execute database query F1.DuckDB.CountAllDrivers
+  dynamic 'SELECT count(*) AS n FROM read_csv(''/data/f1db-drivers.csv'')'
+  ( driverId = 'unused' );
+```
+
+**A `{param}` placeholder can be concatenated into a path**, which is what keeps
+absolute paths out of the model — bind the data directory as one constant and
+build the file name around it:
+
+```sql
+--   read_csv({dataDir} || '/f1db-drivers.csv')
+```
+
+Verified against DuckDB through the connector on Mendix 11.13, and against a
+standalone JDBC harness before that.
+
 ### Parameterized Queries
 
 Pass values for query parameters defined with `parameter` in the query definition:
