@@ -80,12 +80,15 @@ solution, do steps 2–4 once per app and read "If this is a solution" first.
 
    ```bash
    ./mxcli new <AppName> --version <version> --theme <theme>
+   rm -f <AppName>/mxcli        # a hardlink to the ./mxcli you just ran; mv would
+                                # refuse it as "the same file"
    shopt -s dotglob && mv <AppName>/* . && rmdir <AppName>
    ```
 
    (Use `mxcli init` instead if an `.mpr` already exists.) `mxcli new` also runs
-   `mxcli init`, which writes `.claude/settings.json` with a SessionStart hook
-   pointing at `-p <AppName>.mpr` — check that the path in it is right after the move.
+   `mxcli init`, which writes `.claude/settings.json` with a SessionStart hook plus
+   the `.claude/bootstrap-mxcli.sh` it runs — check that the `.mpr` named in the
+   script is right after the move.
 3. Confirm the Claude tooling: `./mxcli init --tool claude` (idempotent — it is what
    step 2 already ran, and re-running it is the cheapest way to be sure the hook,
    skills and commands are in place).
@@ -101,9 +104,12 @@ solution, do steps 2–4 once per app and read "If this is a solution" first.
    applied, a `mxcli check` that passed but a real `mx check` later flagged. Note the
    Mendix + mxcli versions and how each finding was verified. This is durable context
    for the next session, and the most useful thing to share back to improve mxcli.
-7. COMMIT everything now — `<AppName>.mpr`, `.devcontainer/`, `.claude/` (including the
-   SessionStart hook), `README.md` and `FINDINGS.md` — so that after idle reaping the
-   next session bootstraps from files, not from re-running this prompt.
+7. COMMIT everything now — `<AppName>.mpr`, `.devcontainer/`, `.claude/` (the
+   SessionStart hook **and** `.claude/bootstrap-mxcli.sh`), `README.md` and
+   `FINDINGS.md` — so that after idle reaping the next session bootstraps from files,
+   not from re-running this prompt. The `mxcli` binary itself stays git-ignored (~85
+   MB); the bootstrap script is what fetches it back into a fresh clone, so committing
+   the script is what makes the hook survive a reap.
 8. Boot and verify: `./mxcli run --local -p <AppName>.mpr` in the background, then
    confirm the app answers HTTP 200 at http://localhost:8080/ and report.
 9. (Optional) For a browser preview from this cloud session, run
@@ -238,10 +244,10 @@ two runtimes to keep straight.
 ## Two rules that make this robust
 
 - **Committing the config (step 7) is mandatory.** The prompt is a *one-time seed*.
-  Its output — `.mpr` + `.devcontainer/` + `.claude/` with the SessionStart hook — must
-  be committed so the steady state is file-driven and deterministic. After that, every
-  new session runs the hook (`run --local --setup --ensure-db`) automatically; you
-  never re-paste the prompt.
+  Its output — `.mpr` + `.devcontainer/` + `.claude/` with the SessionStart hook and
+  `bootstrap-mxcli.sh` — must be committed so the steady state is file-driven and
+  deterministic. After that, every new session runs the hook automatically; you never
+  re-paste the prompt. Miss the script and the hook has nothing to run after a reap.
 - **mxcli delivery is an environment concern, not the prompt's.** Step 1 is the fragile
   part in a gated web session (a GitHub release `curl` may be blocked). The robust fix
   is for the Claude Code Web **environment image / setup script to pre-install mxcli**

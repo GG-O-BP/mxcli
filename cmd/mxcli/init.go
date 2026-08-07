@@ -38,6 +38,9 @@ const mendixGitignore = `# Mendix project
 /packages/
 /project-settings.user.json
 /releases/
+# Compiled theme output. MxBuild regenerates it on every build, so tracking it
+# means a fresh clone goes dirty the first time anyone builds. (mxcli-todo #7)
+/theme-cache/
 *.mpr.lock
 *.mpr.bak
 /vendorlib/temp/
