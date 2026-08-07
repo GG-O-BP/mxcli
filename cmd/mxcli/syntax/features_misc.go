@@ -292,7 +292,13 @@ Annotations:
   @expect $var = value      Assert variable equals value
   @expect $obj/Attr = val   Assert entity attribute
   @throws 'message'         Expect error
-  @cleanup rollback|none    Cleanup strategy (default: rollback)
+  @cleanup rollback|none    What happens to the test's database writes.
+                            rollback (the default) wraps the test in a
+                            transaction and rolls it back, so nothing it
+                            wrote survives — including when it throws.
+                            none lets the writes commit. --local only:
+                            the Docker path always commits. An unknown
+                            value is a parse error, not a silent commit.
 
 How --local runs tests: one microflow per test, invoked by name over a
 token-guarded HTTP endpoint the app registers at boot. A test that throws

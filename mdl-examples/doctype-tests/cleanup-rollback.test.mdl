@@ -1,0 +1,56 @@
+-- ============================================================================
+-- @cleanup rollback — worked example
+-- ============================================================================
+-- Demonstrates what happens to a test's database writes.
+--
+--   @cleanup rollback  (the default) the writes are rolled back
+--   @cleanup none                    the writes commit and persist
+--
+-- Rollback needs the test endpoint, which owns the context each test runs in,
+-- so it applies to `--local` and `--attach`. The Docker / --legacy-runner path
+-- runs tests inside the after-startup action and always commits.
+--
+-- Setup — these are the microflows under test:
+--
+--   create persistent entity App.Person (FirstName: string(100));
+--
+--   create microflow App.CreatePerson (FirstName: string)
+--   returns string as $Stored
+--   begin
+--     declare $Stored String = '';
+--     $P = create App.Person (FirstName = $FirstName);
+--     commit $P;
+--     set $Stored = $P/FirstName;
+--     return $Stored;
+--   end;
+--   /
+--
+-- Run:  mxcli test cleanup-rollback.test.mdl -p app.mpr --local --verbose
+--
+-- --verbose tags each result [rolled back] / [committed], and afterwards only
+-- the PersistedProbe row is in the database.
+-- ============================================================================
+
+/**
+ * @test the default is rollback — this Person does not survive the run
+ * @expect $result = 'RollbackProbe'
+ */
+$result = CALL MICROFLOW App.CreatePerson(FirstName = 'RollbackProbe');
+/
+
+/**
+ * @test stating rollback explicitly does the same thing
+ * @expect $result = 'ExplicitRollbackProbe'
+ * @cleanup rollback
+ */
+$result = CALL MICROFLOW App.CreatePerson(FirstName = 'ExplicitRollbackProbe');
+/
+
+/**
+ * @test @cleanup none commits — the control that proves rollback is doing the
+ *       work above, and the way to seed a fixture you want to keep
+ * @expect $result = 'PersistedProbe'
+ * @cleanup none
+ */
+$result = CALL MICROFLOW App.CreatePerson(FirstName = 'PersistedProbe');
+/

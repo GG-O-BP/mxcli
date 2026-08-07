@@ -46,6 +46,12 @@ Because each test is its own microflow invoked on its own, a test that throws
 fails only itself instead of ending the run, and results are returned rather
 than recovered from the runtime log.
 
+It also makes @cleanup real. By default (@cleanup rollback) each test runs in a
+transaction the endpoint rolls back afterwards, so its database writes do not
+survive — use @cleanup none when the writes are the point. The Docker path
+always commits: it runs tests inside the after-startup action and has no
+context of its own to roll back.
+
 The endpoint is only reachable from loopback, only with a per-run token passed
 to the runtime through its environment (never written into your project), and
 will only ever invoke the generated MxTest.Test_* microflows. With no token in

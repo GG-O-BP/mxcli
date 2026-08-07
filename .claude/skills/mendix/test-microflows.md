@@ -93,6 +93,48 @@ The markdown format turns your tests into living documentation.
 | `@throws` | Expect error | `@throws 'validation failed'` |
 | `@cleanup` | Rollback strategy | `@cleanup rollback` (default) or `@cleanup none` |
 
+### `@cleanup` — what happens to a test's data
+
+**`rollback` is the default**, so by default a test's database writes do not
+survive it. The endpoint opens a transaction around the call and rolls it back
+afterwards, including when the test throws.
+
+```mdl
+/**
+ * @test creating an order does not leak
+ * @expect $result = 'ok'
+ */
+$result = CALL MICROFLOW Sales.CreateOrder(Amount = 100);
+/
+
+/**
+ * @test seed data the next test needs
+ * @cleanup none
+ */
+$result = CALL MICROFLOW Sales.SeedCatalogue();
+/
+```
+
+Use `@cleanup none` when the writes are the point — seeding a fixture, or
+inspecting the result in the running app afterwards.
+
+Two things worth knowing:
+
+- **`--local` only.** Rollback needs the test endpoint, which owns the context
+  the test runs in. The Docker / `--legacy-runner` path executes tests inside
+  the after-startup action and has no such seam, so it always commits.
+- **A rollback that fails is reported, loudly.** The run prints a `WARNING` per
+  affected test and a summary line, because the alternative — data left behind
+  while the suite still says PASS — is the failure mode this annotation exists
+  to prevent. `--verbose` tags every test with `[rolled back]`, `[committed]` or
+  `[ROLLBACK FAILED]`.
+
+A misspelled strategy (`@cleanup rollbak`) is a **parse error**, not a silent
+fallback to committing.
+
+Rollback matters most under `--attach`, where the database is the one your dev
+app is using.
+
 ---
 
 ## Running Tests

@@ -129,6 +129,9 @@ func runSuite(client *endpointClient, suite *TestSuite, opts RunOptions, w io.Wr
 	result := &SuiteResult{Name: suite.Name, Started: time.Now()}
 	fmt.Fprintf(w, "Running %d test(s) over the test endpoint...\n", len(suite.Tests))
 
+	// leaked counts tests whose requested rollback did not happen.
+	leaked := 0
+
 	for _, tc := range suite.Tests {
 		flow := testFlowName(tc)
 		if !present[flow] {
@@ -141,7 +144,8 @@ func runSuite(client *endpointClient, suite *TestSuite, opts RunOptions, w io.Wr
 			continue
 		}
 
-		rr, err := client.run(flow)
+		rollback := rollsBack(tc)
+		rr, err := client.run(flow, rollback)
 		if err != nil {
 			// A transport failure is not a verdict. Report it against this test
 			// and keep going; if the runtime died the rest will say so too.
@@ -154,11 +158,25 @@ func runSuite(client *endpointClient, suite *TestSuite, opts RunOptions, w io.Wr
 			continue
 		}
 
+		// A rollback that was asked for and did not happen leaves the test's data
+		// in the database while the verdict still says PASS. The test itself is
+		// not wrong, so its verdict stands — but this must not pass in silence.
+		if rollback && !rr.RolledBack {
+			leaked++
+			reportRollbackFailure(w, tc, rr)
+		}
+
 		res := toResult(tc, rr)
 		result.Tests = append(result.Tests, res)
 		if opts.Verbose {
-			fmt.Fprintf(w, "  %s %s (%s)\n", res.Status, res.Name, res.Duration.Round(time.Millisecond))
+			fmt.Fprintf(w, "  %s %s (%s)%s\n", res.Status, res.Name,
+				res.Duration.Round(time.Millisecond), rollbackNote(rollback, rr))
 		}
+	}
+
+	if leaked > 0 {
+		fmt.Fprintf(w, "\nWARNING: %d test(s) asked for @cleanup rollback and did not get it — "+
+			"their writes are still in the database.\n", leaked)
 	}
 
 	result.Duration = time.Since(result.Started)
