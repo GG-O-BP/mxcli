@@ -43,6 +43,9 @@ type CreateODataClientStmt struct {
 
 	// Custom HTTP headers
 	Headers []HeaderDef
+
+	// UnknownProperties: see CreateODataServiceStmt.UnknownProperties.
+	UnknownProperties []string
 }
 
 // HeaderDef represents a custom HTTP header entry.
@@ -90,6 +93,12 @@ type CreateODataServiceStmt struct {
 	AuthenticationTypes    []string
 	Entities               []*PublishedEntityDef
 	CreateOrModify         bool // True if CREATE OR MODIFY was used
+
+	// UnknownProperties holds property names the visitor did not recognise, in
+	// source order. The parser accepts any `name: value` pair, so without this
+	// a typo is discarded in silence and the model is quietly missing what the
+	// author asked for.
+	UnknownProperties []string
 }
 
 func (s *CreateODataServiceStmt) isStatement() {}
@@ -105,6 +114,9 @@ type PublishedEntityDef struct {
 	UsePaging   bool
 	PageSize    int
 	Members     []*PublishedMemberDef
+
+	// UnknownProperties: see CreateODataServiceStmt.UnknownProperties.
+	UnknownProperties []string
 }
 
 // PublishedMemberDef represents an EXPOSE member within a PUBLISH ENTITY block.
@@ -150,6 +162,9 @@ type CreateExternalEntityStmt struct {
 	Attributes               []Attribute // reuse from ast_entity.go
 	Documentation            string
 	CreateOrModify           bool
+
+	// UnknownProperties: see CreateODataServiceStmt.UnknownProperties.
+	UnknownProperties []string
 }
 
 func (s *CreateExternalEntityStmt) isStatement() {}

@@ -173,6 +173,11 @@ Examples:
 		// not row-scoped, so the argument is unbound (CE1571) at build time.
 		violations = append(violations, executor.ValidatePageButtonContext(prog)...)
 
+		// Flag OData property names nothing below will act on. The grammar takes
+		// any `name: value` pair, so a typo used to be discarded in silence and
+		// the model quietly lacked what the author asked for.
+		violations = append(violations, executor.ValidateODataProperties(prog)...)
+
 		// Flag a page whose widgets point at a page created further down the same
 		// script. `exec` resolves page references in statement order and is not
 		// transactional, so this fails after earlier statements are already

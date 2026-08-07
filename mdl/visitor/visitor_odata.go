@@ -70,6 +70,8 @@ func (b *Builder) ExitCreateODataClientStatement(ctx *parser.CreateODataClientSt
 			stmt.ProxyPassword = value
 		case "folder":
 			stmt.Folder = value
+		default:
+			stmt.UnknownProperties = append(stmt.UnknownProperties, name)
 		}
 	}
 
@@ -122,6 +124,8 @@ func (b *Builder) ExitCreateODataServiceStatement(ctx *parser.CreateODataService
 			stmt.PublishAssociationsSet = true
 		case "folder":
 			stmt.Folder = value
+		default:
+			stmt.UnknownProperties = append(stmt.UnknownProperties, name)
 		}
 	}
 
@@ -189,6 +193,8 @@ func (b *Builder) ExitCreateExternalEntityStatement(ctx *parser.CreateExternalEn
 			stmt.Updatable = &boolVal
 		case "allowcreatechangelocally", "allowcreatingandchanginglocally", "createchangelocally":
 			stmt.AllowCreateChangeLocally = &boolVal
+		default:
+			stmt.UnknownProperties = append(stmt.UnknownProperties, name)
 		}
 	}
 
@@ -356,6 +362,8 @@ func parsePublishEntityBlock(ctx parser.IPublishEntityBlockContext) *ast.Publish
 			if n, err := strconv.Atoi(value); err == nil {
 				entity.PageSize = n
 			}
+		default:
+			entity.UnknownProperties = append(entity.UnknownProperties, name)
 		}
 	}
 
