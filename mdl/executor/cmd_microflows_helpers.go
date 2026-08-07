@@ -333,12 +333,91 @@ func expressionToString(expr ast.Expression) string {
 		return "if " + cond + " then " + thenStr + " else " + elseStr
 	case *ast.SourceExpr:
 		if e.Source != "" {
-			return e.Source
+			return normalizeMendixOperatorCase(e.Source)
 		}
 		return expressionToString(e.Expression)
 	default:
 		return ""
 	}
+}
+
+// mendixLowercaseOperators are the word operators Mendix requires in lowercase.
+// A rebuilt BinaryExpr/UnaryExpr already gets this via strings.ToLower on the
+// operator; preserved source text does not, which is the whole bug below.
+var mendixLowercaseOperators = map[string]bool{
+	"and": true, "or": true, "not": true, "div": true, "mod": true,
+}
+
+// normalizeMendixOperatorCase lowercases word operators in preserved expression
+// source, leaving everything else — including string literals and member names —
+// byte-identical.
+//
+// Some conditions are kept as a SourceExpr (original text plus the parsed tree)
+// rather than rebuilt from the AST, and the raw branch skipped the lowercasing
+// that a rebuilt expression gets. So `IF A != x AND B != empty` stored `AND`
+// verbatim and the build failed with
+//
+//	[CE0117] "Error(s) in expression."
+//
+// while the same condition written with `=` was rebuilt as a BinaryExpr and
+// normalised — which is why it looked like `!=` inside a conjunction was
+// unsupported. It is the casing, not the operator. (mxcli-todo findings #14b)
+//
+// A word preceded by `.`, `/` or `$` is a member or variable name, never an
+// operator, so `Module.Enum.And` and `$Task/Mod` are left alone.
+func normalizeMendixOperatorCase(src string) string {
+	var b strings.Builder
+	b.Grow(len(src))
+
+	inString := false
+	for i := 0; i < len(src); {
+		c := src[i]
+		if inString {
+			b.WriteByte(c)
+			if c == '\'' {
+				// '' is an escaped quote inside a Mendix string literal.
+				if i+1 < len(src) && src[i+1] == '\'' {
+					b.WriteByte(src[i+1])
+					i += 2
+					continue
+				}
+				inString = false
+			}
+			i++
+			continue
+		}
+		if c == '\'' {
+			inString = true
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		if !isWordByte(c) {
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		j := i
+		for j < len(src) && isWordByte(src[j]) {
+			j++
+		}
+		word := src[i:j]
+		prev := byte(0)
+		if i > 0 {
+			prev = src[i-1]
+		}
+		if prev != '.' && prev != '/' && prev != '$' && mendixLowercaseOperators[strings.ToLower(word)] {
+			b.WriteString(strings.ToLower(word))
+		} else {
+			b.WriteString(word)
+		}
+		i = j
+	}
+	return b.String()
+}
+
+func isWordByte(c byte) bool {
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
 }
 
 // expressionToXPath converts an AST Expression to an XPath constraint string.

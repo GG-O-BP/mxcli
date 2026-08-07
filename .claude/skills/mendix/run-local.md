@@ -248,6 +248,27 @@ marker); the subscriber is re-attached on every restart and never rotates the fi
 the JVM tee's handle stays valid). Override the path with `--runtime-log <path>`, or
 pass `--runtime-log -` to disable the file (and the subscriber) entirely.
 
+## "Sign in failed" that is not about the password
+
+The local runtime is **unlicensed**, and an unlicensed runtime caps concurrent
+sessions at a handful. Past the cap it refuses the sign-in, and the login page
+reports that as a plain **"Sign in failed"** — exactly what a wrong password
+looks like. The real reason is written only to the runtime log:
+
+```
+Maximum number of sessions exceeded! (You are currently using a trial license)
+```
+
+So: when a login you know is correct starts failing, `grep -c "Maximum number of
+sessions" .mxcli/runtime.log` before touching the credentials or the user's
+password in the model. `--screenshot-user` does this for you — a rejected sign-in
+now reads the log and says so instead of quietly screenshotting the login page.
+
+Sessions are held until they expire; restarting `run --local` clears them all.
+A script that drives the app through a browser should **sign out at the end**,
+otherwise each run leaks a slot and the fifth or sixth run is the one that fails —
+which makes it look like a change you just made broke authentication.
+
 ## External browser preview (`--hub`)
 
 `--hub <url>` exposes the running app in a **browser at a public URL** without the app

@@ -173,6 +173,13 @@ Examples:
 		// not row-scoped, so the argument is unbound (CE1571) at build time.
 		violations = append(violations, executor.ValidatePageButtonContext(prog)...)
 
+		// Flag a page whose widgets point at a page created further down the same
+		// script. `exec` resolves page references in statement order and is not
+		// transactional, so this fails after earlier statements are already
+		// written. --references catches it too, but the ordering needs no project
+		// when the target is created by a plain CREATE (#9).
+		violations = append(violations, executor.ValidateScriptPageOrder(prog)...)
+
 		// Flag a document-access GRANT naming a role from another module — Mendix
 		// rejects it with CE0148. Needs no project, so it runs here rather than
 		// under --references, where it would only fire with -p (#836).
