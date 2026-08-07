@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mendixlabs/mxcli/model"
 	"github.com/mendixlabs/mxcli/sdk/mpr"
 )
 
@@ -235,6 +237,80 @@ func parseRuntimeSetting(s string) (string, any, error) {
 
 // deriveDBName turns a project file name into a safe Postgres database name:
 // lowercased, non-alphanumerics collapsed to underscores, leading digit prefixed.
+// configuredApplicationRootURL returns the ApplicationRootUrl set on the
+// project's server configuration, plus the name of the configuration it came
+// from. Empty when no configuration sets one, which is the default.
+//
+// The model has no "active configuration" marker — Studio Pro remembers the
+// selection per developer — so the one named "Default" wins, falling back to
+// the first configuration that actually sets a URL. A settings read failure is
+// not fatal: the run simply proceeds without a root URL, exactly as before.
+func configuredApplicationRootURL(reader *mpr.Reader) (rootURL, configName string) {
+	settings, err := reader.GetProjectSettings()
+	if err != nil {
+		return "", ""
+	}
+	return applicationRootURLFrom(settings)
+}
+
+// applicationRootURLFrom implements the selection rule over already-read
+// settings, so it is testable without a project on disk.
+func applicationRootURLFrom(settings *model.ProjectSettings) (rootURL, configName string) {
+	if settings == nil || settings.Configuration == nil {
+		return "", ""
+	}
+	first, firstName := "", ""
+	for _, cfg := range settings.Configuration.Configurations {
+		if cfg == nil || cfg.ApplicationRootUrl == "" {
+			continue
+		}
+		if strings.EqualFold(cfg.Name, "Default") {
+			return cfg.ApplicationRootUrl, cfg.Name
+		}
+		if first == "" {
+			first, firstName = cfg.ApplicationRootUrl, cfg.Name
+		}
+	}
+	return first, firstName
+}
+
+// customHostRootURL reports whether an ApplicationRootUrl names a host worth
+// telling the runtime about.
+//
+// A blank Mendix app already ships `http://localhost:8080/`, so "set" does not
+// mean "chosen". Passing that back would be a behaviour change for every
+// existing project — and an actively wrong one under --app-port, where the
+// stock value names a port the app is not serving on. A loopback host also adds
+// nothing: with no ApplicationRootUrl the runtime derives one from the listen
+// address, which is the same thing. So only a real host name — the case this
+// exists for, giving each app in a solution its own name — is honoured.
+func customHostRootURL(rootURL string) bool {
+	if rootURL == "" {
+		return false
+	}
+	u, err := url.Parse(rootURL)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "localhost" || host == "::1" {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return false
+	}
+	return true
+}
+
+// urlPort returns the explicit port of a URL, or "" when it has none.
+func urlPort(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return u.Port()
+}
+
 // DeriveDBName is the local-run database name for a project: the .mpr file name
 // lowercased and sanitised to a legal identifier. Exported so callers that boot
 // their own local app (e.g. the test runner, which appends a suffix to keep test
@@ -457,6 +533,11 @@ func RunLocal(opts LocalRunOptions) error {
 		return fmt.Errorf("opening project: %w", err)
 	}
 	pv := reader.ProjectVersion()
+	// Read the configured application root URL while the project is open — the
+	// app's own configuration is where a custom host name belongs (App Settings ->
+	// Configurations in Studio Pro, `alter settings` in MDL), versioned with the
+	// app rather than repeated on every command line.
+	modelRootURL, modelRootConfig := configuredApplicationRootURL(reader)
 	reader.Close()
 	version := pv.ProductVersion
 	fmt.Fprintf(w, "  Mendix version: %s\n", version)
@@ -563,6 +644,22 @@ func RunLocal(opts LocalRunOptions) error {
 			err = nil
 		} else {
 			appRootURL = hubReg.URL
+		}
+	}
+
+	// No hub URL: fall back to the one configured in the project. This is what
+	// makes "give each app its own host name" work for a local run — Mendix needs
+	// to know the URL it is reached at to generate absolute URLs (OIDC/SAML
+	// redirect URIs, deep links) that point at the host name rather than the
+	// listen address. A hub assignment wins, since that URL is the one actually
+	// serving the app.
+	if appRootURL == "" && customHostRootURL(modelRootURL) {
+		appRootURL = modelRootURL
+		fmt.Fprintf(w, "Application root URL from configuration %q: %s\n", modelRootConfig, appRootURL)
+		if port := urlPort(appRootURL); port != "" && port != fmt.Sprint(opts.AppPort) {
+			fmt.Fprintf(stderr, "Warning: configuration %q says port %s but the app is serving on %d — "+
+				"absolute URLs will point at %s. Update the configuration or pass --app-port %s.\n",
+				modelRootConfig, port, opts.AppPort, appRootURL, port)
 		}
 	}
 

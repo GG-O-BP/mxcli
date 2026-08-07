@@ -13,7 +13,7 @@ func init() {
 			"widget", "layout", "screen",
 		},
 		Syntax:  "CREATE PAGE Module.Name\n  (\n    Title: 'Page Title',\n    Layout: Module.LayoutName\n    [, Params: { $Param: Module.Entity }]\n    [, Url: 'page-url']\n    [, Folder: 'FolderPath']\n    [, Variables: { $var: Boolean = 'true' }]\n    [, PopupWidth: 800, PopupHeight: 480, PopupResizable: true]\n    [, Class: 'css-class', Style: 'css: rule']\n  )\n  {\n    -- widgets\n  }",
-		Example: "CREATE PAGE MyModule.EditCustomer\n  (\n    Params: { $Customer: MyModule.Customer },\n    Title: 'Edit Customer',\n    Layout: Atlas_Core.PopupLayout,\n    Class: 'container-fluid'\n  )\n  {\n    DATAVIEW dvCustomer (DataSource: $Customer) {\n      TEXTBOX txtName (Label: 'Name', Binds: Name)\n      FOOTER footer1 {\n        ACTIONBUTTON btnSave (Caption: 'Save', Action: SAVE_CHANGES, ButtonStyle: Primary)\n        ACTIONBUTTON btnCancel (Caption: 'Cancel', Action: CANCEL_CHANGES)\n      }\n    }\n  }",
+		Example: "CREATE PAGE MyModule.EditCustomer\n  (\n    Params: { $Customer: MyModule.Customer },\n    Title: 'Edit Customer',\n    Layout: Atlas_Core.PopupLayout,\n    Class: 'container-fluid'\n  )\n  {\n    DATAVIEW dvCustomer (DataSource: $Customer) {\n      TEXTBOX txtName (Label: 'Name', Attribute: Name)\n      FOOTER footer1 {\n        ACTIONBUTTON btnSave (Caption: 'Save', Action: SAVE_CHANGES, ButtonStyle: Primary)\n        ACTIONBUTTON btnCancel (Caption: 'Cancel', Action: CANCEL_CHANGES)\n      }\n    }\n  }",
 		SeeAlso: []string{"page.create", "page.widgets", "page.alter", "snippet"},
 	})
 
@@ -39,8 +39,8 @@ func init() {
 			"dynamictext", "snippetcall", "navigationlist",
 			"column", "row", "footer", "header", "controlbar",
 		},
-		Syntax:  "-- Containers\nLAYOUTGRID name { ROW r { COLUMN c (DesktopWidth: 6) { ... } } }\nCONTAINER name (Class: 'cls') { ... }\nCONTAINER name (OnClick: MICROFLOW Module.MF) { ... }   -- clickable container\n\n-- Data widgets\nDATAVIEW name (DataSource: $Param) { ... FOOTER f { ... } }\nDATAGRID name (DataSource: DATABASE Module.Entity) { COLUMN c (Attribute: A) }\nGALLERY name (DataSource: DATABASE Module.Entity, DesktopColumns: 3) { ... }\nLISTVIEW name (DataSource: DATABASE Module.Entity) { ... }\n\n-- Inputs\nTEXTBOX name (Label: 'L', Binds: Attr)\nTEXTAREA | DATEPICKER | COMBOBOX | CHECKBOX | RADIOBUTTONS\n\n-- Actions\nACTIONBUTTON name (Caption: 'C', Action: SAVE_CHANGES, ButtonStyle: Primary)\n\n-- Display\nDYNAMICTEXT name (Content: 'Hello, {1}!', ContentParams: [{1} = Name])",
-		Example: "DATAVIEW dvCustomer (DataSource: $Customer) {\n  TEXTBOX txtName (Label: 'Name', Binds: Name)\n  COMBOBOX cbStatus (Label: 'Status', Binds: Status)\n  FOOTER footer1 {\n    ACTIONBUTTON btnSave (Caption: 'Save', Action: SAVE_CHANGES, ButtonStyle: Primary)\n    ACTIONBUTTON btnCancel (Caption: 'Cancel', Action: CANCEL_CHANGES)\n  }\n}",
+		Syntax:  "-- Containers\nLAYOUTGRID name { ROW r { COLUMN c (DesktopWidth: 6) { ... } } }\nCONTAINER name (Class: 'cls') { ... }\nCONTAINER name (OnClick: MICROFLOW Module.MF) { ... }   -- clickable container\n\n-- Data widgets\nDATAVIEW name (DataSource: $Param) { ... FOOTER f { ... } }\nDATAGRID name (DataSource: DATABASE Module.Entity) { COLUMN c (Attribute: A) }\nGALLERY name (DataSource: DATABASE Module.Entity, DesktopColumns: 3) { ... }\nLISTVIEW name (DataSource: DATABASE Module.Entity) { ... }\n\n-- Inputs\nTEXTBOX name (Label: 'L', Attribute: Attr)\nTEXTAREA | DATEPICKER | COMBOBOX | CHECKBOX | RADIOBUTTONS\n\n-- Actions\nACTIONBUTTON name (Caption: 'C', Action: SAVE_CHANGES, ButtonStyle: Primary)\n\n-- Display\nDYNAMICTEXT name (Content: 'Hello, {1}!', ContentParams: [{1} = Name])",
+		Example: "DATAVIEW dvCustomer (DataSource: $Customer) {\n  TEXTBOX txtName (Label: 'Name', Attribute: Name)\n  COMBOBOX cbStatus (Label: 'Status', Attribute: Status)\n  FOOTER footer1 {\n    ACTIONBUTTON btnSave (Caption: 'Save', Action: SAVE_CHANGES, ButtonStyle: Primary)\n    ACTIONBUTTON btnCancel (Caption: 'Cancel', Action: CANCEL_CHANGES)\n  }\n}",
 		SeeAlso: []string{"page.create", "page.datasource"},
 	})
 
@@ -51,7 +51,7 @@ func init() {
 			"datasource", "data source", "database", "microflow",
 			"selection", "variable", "binding", "binds", "association", "data from context",
 		},
-		Syntax:  "DataSource: $Variable                    -- Parameter/variable binding\nDataSource: DATABASE Module.Entity        -- Database query\nDataSource: MICROFLOW Module.MF()         -- Microflow datasource\nDataSource: SELECTION widgetName          -- Selection from another widget\nDataSource: $currentObject/Module.Assoc   -- Over an association (\"data from context\")\n                                          --   list widget → to-many collection\n                                          --   nested DATAVIEW → the to-one referenced object\nBinds: AttributeName                      -- Attribute binding (inputs)",
+		Syntax:  "DataSource: $Variable                    -- Parameter/variable binding\nDataSource: DATABASE Module.Entity        -- Database query\nDataSource: MICROFLOW Module.MF           -- Microflow datasource (no parens when it takes no arguments)\nDataSource: SELECTION widgetName          -- Selection from another widget\nDataSource: $currentObject/Module.Assoc   -- Over an association (\"data from context\")\n                                          --   list widget → to-many collection\n                                          --   nested DATAVIEW → the to-one referenced object\nAttribute: AttributeName                  -- Attribute binding (inputs)",
 		Example: "-- Database datasource with grid\nDATAGRID grid (DataSource: DATABASE Module.Customer) {\n  COLUMN colName (Attribute: Name, Caption: 'Name')\n}\n\n-- Microflow datasource\nDATAVIEW dv (DataSource: MICROFLOW Module.GetData()) { ... }\n\n-- Over an association: a nested DataView shows the referenced (to-one) object\nDATAVIEW dvOrder (DataSource: $Order) {\n  DATAVIEW dvCustomer (DataSource: $currentObject/Order_Customer) {\n    TEXTBOX (Label: 'Name', Attribute: Name)\n  }\n}\n\n-- Over an association: a list widget shows the (to-many) collection\nLISTVIEW lvLines (DataSource: $currentObject/Order_OrderLine) { ... }",
 		SeeAlso: []string{"page.widgets", "page.create"},
 	})
@@ -90,7 +90,7 @@ func init() {
 			"popup width", "popup height", "popup resizable",
 		},
 		Syntax:  "ALTER PAGE Module.Name {\n  SET property = value ON widgetName;\n  SET (prop1 = val1, prop2 = val2) ON widgetName;\n  SET Title = 'New Title';  -- page-level (case-sensitive)\n  SET Class = 'css-class';  -- page-level CSS class / style\n  SET Style = 'css: rule';\n  SET PopupWidth = 800;     -- page-level pop-up dimensions\n  SET PopupHeight = 480;\n  SET PopupResizable = true;\n  INSERT AFTER widgetName { <widgets> };\n  INSERT BEFORE widgetName { <widgets> };\n  INSERT INTO containerName { <widgets> };\n  DROP WIDGET name1, name2;\n  REPLACE widgetName WITH { <widgets> };\n};",
-		Example: "ALTER PAGE Module.EditPage {\n  SET (Caption = 'Save & Close', ButtonStyle = Success) ON btnSave;\n  INSERT AFTER txtName {\n    TEXTBOX txtMiddleName (Label: 'Middle Name', Binds: MiddleName)\n  };\n  DROP WIDGET txtUnused;\n};",
+		Example: "ALTER PAGE Module.EditPage {\n  SET (Caption = 'Save & Close', ButtonStyle = Success) ON btnSave;\n  INSERT AFTER txtName {\n    TEXTBOX txtMiddleName (Label: 'Middle Name', Attribute: MiddleName)\n  };\n  DROP WIDGET txtUnused;\n};",
 		SeeAlso: []string{"page.create", "page.show", "snippet.alter"},
 	})
 
@@ -153,7 +153,7 @@ func init() {
 			"alter snippet", "modify snippet", "update snippet",
 		},
 		Syntax:  "ALTER SNIPPET Module.Name {\n  SET property = value ON widgetName;\n  INSERT AFTER widgetName { <widgets> };\n  INSERT BEFORE widgetName { <widgets> };\n  INSERT INTO containerName { <widgets> };\n  DROP WIDGET name1, name2;\n  REPLACE widgetName WITH { <widgets> };\n};",
-		Example: "ALTER SNIPPET Module.NavSnippet {\n  REPLACE navItem1 WITH {\n    ACTIONBUTTON btnHome (Caption: 'Home', Action: SHOW_PAGE Module.HomePage)\n  };\n  DROP WIDGET txtOldField;\n  INSERT AFTER txtName {\n    TEXTBOX txtNewField (Label: 'New Field', Binds: NewAttr)\n  };\n};",
+		Example: "ALTER SNIPPET Module.NavSnippet {\n  REPLACE navItem1 WITH {\n    ACTIONBUTTON btnHome (Caption: 'Home', Action: SHOW_PAGE Module.HomePage)\n  };\n  DROP WIDGET txtOldField;\n  INSERT AFTER txtName {\n    TEXTBOX txtNewField (Label: 'New Field', Attribute: NewAttr)\n  };\n};",
 		SeeAlso: []string{"snippet", "page.alter"},
 	})
 
@@ -192,7 +192,7 @@ func init() {
 			"use fragment", "template", "script scope",
 		},
 		Syntax:  "DEFINE FRAGMENT Name AS { <widgets> };\nDEFINE FRAGMENT Name AS { <widgets> SLOT [name] <widgets> };\nDEFINE FRAGMENT Name ($d: datasource, $a: action) AS { <widgets> };\nUSE FRAGMENT Name [(args)] [AS prefix_];\nUSE FRAGMENT Name [(args)] [AS prefix_] { <payload widgets> };\nSHOW FRAGMENTS;\nDESCRIBE FRAGMENT Name;\nDESCRIBE FRAGMENT FROM PAGE Module.Page WIDGET widgetName;",
-		Example: "DEFINE FRAGMENT SaveCancelFooter AS {\n  FOOTER footer1 {\n    ACTIONBUTTON btnSave (Caption: 'Save', Action: SAVE_CHANGES, ButtonStyle: Primary)\n    ACTIONBUTTON btnCancel (Caption: 'Cancel', Action: CANCEL_CHANGES)\n  }\n};\n\nCREATE PAGE Module.EditPage (...) {\n  DATAVIEW dv (DataSource: $Param) {\n    TEXTBOX txtName (Label: 'Name', Binds: Name)\n    USE FRAGMENT SaveCancelFooter\n  }\n};",
+		Example: "DEFINE FRAGMENT SaveCancelFooter AS {\n  FOOTER footer1 {\n    ACTIONBUTTON btnSave (Caption: 'Save', Action: SAVE_CHANGES, ButtonStyle: Primary)\n    ACTIONBUTTON btnCancel (Caption: 'Cancel', Action: CANCEL_CHANGES)\n  }\n};\n\nCREATE PAGE Module.EditPage (...) {\n  DATAVIEW dv (DataSource: $Param) {\n    TEXTBOX txtName (Label: 'Name', Attribute: Name)\n    USE FRAGMENT SaveCancelFooter\n  }\n};",
 		SeeAlso: []string{"fragment.define", "fragment.use", "fragment.slot", "fragment.params", "snippet"},
 	})
 
@@ -203,7 +203,7 @@ func init() {
 			"define fragment", "declare fragment", "create fragment",
 		},
 		Syntax:  "DEFINE FRAGMENT Name AS {\n  <widgets>\n};",
-		Example: "DEFINE FRAGMENT FormFields AS {\n  TEXTBOX txtName (Label: 'Name', Binds: Name)\n  TEXTBOX txtEmail (Label: 'Email', Binds: Email)\n};",
+		Example: "DEFINE FRAGMENT FormFields AS {\n  TEXTBOX txtName (Label: 'Name', Attribute: Name)\n  TEXTBOX txtEmail (Label: 'Email', Attribute: Email)\n};",
 		SeeAlso: []string{"fragment", "fragment.use"},
 	})
 

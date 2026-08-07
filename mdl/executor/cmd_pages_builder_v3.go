@@ -1681,7 +1681,14 @@ func (pb *pageBuilder) resolveAssociationAttributePath(attrRef string) (finalQN 
 		current = dest
 	}
 
-	return current + "." + storedSystemMemberName(attrName), steps, true
+	// The final attribute is qualified with the entity that DECLARES it, which
+	// for an inherited attribute is an ancestor of the association's destination
+	// — same rule (and same CE1613 when broken) as a direct binding.
+	stored := storedSystemMemberName(attrName)
+	if declaring, ok := pb.declaringEntityFor(current, stored); ok {
+		return declaring + "." + stored, steps, true
+	}
+	return current + "." + stored, steps, true
 }
 
 // associationDestination returns the entity reached by navigating assocQN from

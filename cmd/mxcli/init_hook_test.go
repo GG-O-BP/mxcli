@@ -24,14 +24,36 @@ func TestAddSessionStartHook_Empty(t *testing.T) {
 
 func TestAddSessionStartHook_Idempotent(t *testing.T) {
 	s := map[string]any{}
-	addSessionStartHook(s, "x run --local --setup y")
-	// A second add with the marker present must be a no-op.
-	if addSessionStartHook(s, "run --local --setup --ensure-db -p App.mpr") {
-		t.Error("expected no change when the marker is already present")
+	cmd := sessionStartHookCommand()
+	addSessionStartHook(s, cmd)
+	// Re-adding the identical command is a no-op.
+	if addSessionStartHook(s, cmd) {
+		t.Error("expected no change when the current command is already present")
 	}
 	ss := s["hooks"].(map[string]any)["SessionStart"].([]any)
 	if len(ss) != 1 {
 		t.Errorf("SessionStart len = %d, want 1 (no duplicate)", len(ss))
+	}
+}
+
+// A project written by an older mxcli inlined the whole command in the hook.
+// Re-running init must REWRITE that entry, not add a second one that runs the
+// same bring-up twice. (mxcli-todo findings #2)
+func TestAddSessionStartHook_MigratesLegacyCommand(t *testing.T) {
+	s := map[string]any{}
+	addSessionStartHook(s, "test -x ./mxcli && ./mxcli run --local --setup --ensure-db -p App.mpr || true")
+
+	want := sessionStartHookCommand()
+	if !addSessionStartHook(s, want) {
+		t.Fatal("expected the legacy hook to be migrated")
+	}
+	ss := s["hooks"].(map[string]any)["SessionStart"].([]any)
+	if len(ss) != 1 {
+		t.Fatalf("SessionStart len = %d, want 1 (migrated in place, not duplicated)", len(ss))
+	}
+	inner := ss[0].(map[string]any)["hooks"].([]any)
+	if got := inner[0].(map[string]any)["command"].(string); got != want {
+		t.Errorf("command = %q, want %q", got, want)
 	}
 }
 
@@ -72,8 +94,24 @@ func TestEnsureSessionStartHook_WritesFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "run --local --setup --ensure-db -p App.mpr") {
+	if !strings.Contains(string(data), sessionStartHookCommand()) {
 		t.Errorf("settings.json missing the hook command:\n%s", data)
+	}
+	// The hook delegates to a committed script, which must exist, name the
+	// project's .mpr, and be executable.
+	scriptPath := filepath.Join(dir, filepath.Base(bootstrapScriptName))
+	script, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("bootstrap script not written: %v", err)
+	}
+	if !strings.Contains(string(script), "MPR='App.mpr'") {
+		t.Errorf("bootstrap script does not name the project:\n%s", script)
+	}
+	if !strings.Contains(string(script), "releases/download/") {
+		t.Error("bootstrap script must be able to fetch mxcli after a reap")
+	}
+	if info, err := os.Stat(scriptPath); err == nil && info.Mode().Perm()&0o100 == 0 {
+		t.Errorf("bootstrap script is not executable: %v", info.Mode())
 	}
 	// Valid JSON round-trips.
 	var check map[string]any
@@ -95,9 +133,7 @@ func TestEnsureSessionStartHook_InvalidJSONUntouched(t *testing.T) {
 	if err == nil {
 		t.Error("expected an error for invalid existing settings.json")
 	}
-	if changed {
-		t.Error("must not report a change when leaving invalid JSON untouched")
-	}
+	_ = changed // the script may be (re)written even when settings.json is not
 	// The original content is preserved.
 	data, _ := os.ReadFile(path)
 	if string(data) != "{ not json" {

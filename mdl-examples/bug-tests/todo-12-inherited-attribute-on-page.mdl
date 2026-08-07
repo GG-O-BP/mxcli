@@ -1,0 +1,68 @@
+-- ============================================================================
+-- mxcli-todo finding #12: a page bound to an INHERITED attribute failed the build
+-- ============================================================================
+--
+-- Symptom (before fix): a widget bound to an attribute the context entity
+-- inherits rather than declares passed `mxcli check --references` AND `mxcli
+-- lint`, and then the real MxBuild rejected the project:
+--
+--   [error] [CE1613] "The selected attribute 'TaskBoard.Person.FullName' no
+--   longer exists." at Columns (n/n) of data grid 2 'gridTasks'
+--
+-- The message reads as if the attribute had been deleted. It never existed
+-- there: Mendix stores the reference against the entity that DECLARES the
+-- attribute, and mxcli qualified it with the entity in context.
+--
+-- Both shapes were affected, and they go through different resolvers:
+--   1. a direct binding on a grid over the specialization
+--   2. the final attribute of an association path ending at the specialization
+--
+-- Entity access rules were never affected — `grant … on TaskBoard.Person`
+-- resolves inherited members correctly — so this was the page layer alone.
+--
+-- After fix: the reference is qualified with the declaring entity found by
+-- walking the generalization chain. An own attribute is unaffected, and an
+-- unknown name keeps its previous (context) qualification rather than being
+-- silently re-pointed.
+--
+-- Usage:
+--   mxcli exec mdl-examples/bug-tests/todo-12-inherited-attribute-on-page.mdl -p app.mpr
+--   then a real build must report 0 errors:
+--   scripts/mx-check.sh -p app.mpr
+-- ============================================================================
+
+create module TODO12;
+
+-- Person inherits FullName/Email from Administration.Account and adds one of
+-- its own, so a single page can bind both kinds.
+create persistent entity TODO12.Person extends Administration.Account (
+  IsAvailable : boolean
+);
+
+create persistent entity TODO12.Task (
+  Title : string(200)
+);
+
+create association TODO12.Task_Assignee
+  from TODO12.Task to TODO12.Person;
+
+-- (1) Direct binding: the grid's data source IS the specialization.
+create or replace page TODO12.People
+( Title: 'People', Layout: Atlas_Core.Atlas_Default )
+{
+  datagrid gridPeople (datasource: database from TODO12.Person) {
+    column colOwn       (caption: 'Available', attribute: IsAvailable)
+    column colInherited (caption: 'Full name', attribute: FullName)
+  }
+}
+
+-- (2) Association path: the final hop lands on the specialization.
+create or replace page TODO12.Tasks
+( Title: 'Tasks', Layout: Atlas_Core.Atlas_Default )
+{
+  datagrid gridTasks (datasource: database from TODO12.Task) {
+    column colTitle    (caption: 'Title',     attribute: Title)
+    column colOwnHop   (caption: 'Available', attribute: Task_Assignee/IsAvailable)
+    column colInhHop   (caption: 'Full name', attribute: Task_Assignee/FullName)
+  }
+}
