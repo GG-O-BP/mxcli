@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/mendixlabs/mxcli/cmd/mxcli/testrunner"
@@ -147,7 +148,7 @@ Examples:
 
 		opts := testrunner.RunOptions{
 			ProjectPath:  projectPath,
-			TestFiles:    args,
+			TestFiles:    resolveTestPaths(args, projectPath),
 			SkipBuild:    skipBuild,
 			Local:        local,
 			LegacyRunner: legacyRunner,
@@ -176,4 +177,42 @@ Examples:
 			os.Exit(1)
 		}
 	},
+}
+
+// resolveTestPaths lets a relative test path be relative to the PROJECT as well
+// as to the working directory.
+//
+// `mxcli test tests/ -p app/App.mpr` used to fail with "no such file or
+// directory" for a tests/ that sits right next to the .mpr — the path resolved
+// against the process CWD only. That is defensible on its own, but mxcli
+// otherwise encourages naming the project rather than standing in its
+// directory, so the two conventions collide (mxcli-formula1 findings #13).
+//
+// The working directory still wins: a tests/ in both places resolves to the one
+// the user is standing in, which is what every other tool does.
+func resolveTestPaths(paths []string, projectPath string) []string {
+	if projectPath == "" || len(paths) == 0 {
+		return paths
+	}
+	projectDir := filepath.Dir(projectPath)
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if filepath.IsAbs(p) {
+			out = append(out, p)
+			continue
+		}
+		if _, err := os.Stat(p); err == nil {
+			out = append(out, p)
+			continue
+		}
+		if alt := filepath.Join(projectDir, p); alt != p {
+			if _, err := os.Stat(alt); err == nil {
+				out = append(out, alt)
+				continue
+			}
+		}
+		// Neither exists: keep the original so the error names what was typed.
+		out = append(out, p)
+	}
+	return out
 }

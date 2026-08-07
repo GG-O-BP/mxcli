@@ -207,8 +207,13 @@ castObjectStatement
     | VARIABLE EQUALS CAST VARIABLE
     ;
 
+// SET is optional: `$Total = 5;` is what everyone writes, and every other
+// assignment form in MDL already works bare (`$X = HEAD($List)`,
+// `$X = execute database query …`). Requiring the keyword only here made the
+// rule unguessable — and the parse error named the token, not the missing
+// keyword (mxcli-formula1 findings #13).
 setStatement
-    : SET (VARIABLE | attributePath) EQUALS expression
+    : SET? (VARIABLE | attributePath) EQUALS expression
     ;
 
 // $NewProduct = CREATE MfTest.Product (Name = $Name, Code = $Code);
