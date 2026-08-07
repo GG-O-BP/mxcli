@@ -412,6 +412,17 @@ func outputPublishedODataServiceMDL(ctx *ExecContext, svc *model.PublishedODataS
 					modeProps = append(modeProps, "UsePaging: Yes")
 					modeProps = append(modeProps, fmt.Sprintf("PageSize: %d", es.PageSize))
 				}
+				// Only a turned-off query option is worth printing; true is the
+				// default and would be noise on every resource.
+				if es.Countable != nil && !*es.Countable {
+					modeProps = append(modeProps, "Countable: No")
+				}
+				if es.SkipSupported != nil && !*es.SkipSupported {
+					modeProps = append(modeProps, "SkipSupported: No")
+				}
+				if es.TopSupported != nil && !*es.TopSupported {
+					modeProps = append(modeProps, "TopSupported: No")
+				}
 				if len(modeProps) > 0 {
 					fmt.Fprintf(ctx.Output, " (\n    %s\n  )", strings.Join(modeProps, ",\n    "))
 				}
@@ -1751,6 +1762,9 @@ func astEntityDefToModel(ctx *ExecContext, def *ast.PublishedEntityDef) (*model.
 		UpdateMode:     def.UpdateMode,
 		DeleteMode:     def.DeleteMode,
 		UsePaging:      def.UsePaging,
+		Countable:      def.Countable,
+		SkipSupported:  def.SkipSupported,
+		TopSupported:   def.TopSupported,
 		PageSize:       def.PageSize,
 	}
 

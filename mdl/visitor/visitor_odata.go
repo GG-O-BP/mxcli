@@ -362,6 +362,12 @@ func parsePublishEntityBlock(ctx parser.IPublishEntityBlockContext) *ast.Publish
 			if n, err := strconv.Atoi(value); err == nil {
 				entity.PageSize = n
 			}
+		case "countable":
+			entity.Countable = odataBoolPtr(value)
+		case "skipsupported":
+			entity.SkipSupported = odataBoolPtr(value)
+		case "topsupported":
+			entity.TopSupported = odataBoolPtr(value)
 		default:
 			entity.UnknownProperties = append(entity.UnknownProperties, name)
 		}
@@ -439,4 +445,12 @@ func parseExposeMembers(ctx parser.IExposeClauseContext) []*ast.PublishedMemberD
 	}
 
 	return members
+}
+
+// odataBoolPtr parses an OData property value as a bool, keeping "specified"
+// distinct from "true": these properties default to true, so only an explicit
+// value may turn one off.
+func odataBoolPtr(value string) *bool {
+	b := strings.EqualFold(value, "true") || strings.EqualFold(value, "yes")
+	return &b
 }

@@ -115,6 +115,14 @@ type PublishedEntityDef struct {
 	PageSize    int
 	Members     []*PublishedMemberDef
 
+	// Query options. nil means "not specified" and stores Mendix's own default
+	// of true. Countable in particular is not free: it forces the read
+	// microflow to take a System.ODataResponse parameter and to compute a count
+	// the caller may never ask for.
+	Countable     *bool
+	SkipSupported *bool
+	TopSupported  *bool
+
 	// UnknownProperties: see CreateODataServiceStmt.UnknownProperties.
 	UnknownProperties []string
 }
