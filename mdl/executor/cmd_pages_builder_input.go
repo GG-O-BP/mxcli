@@ -40,11 +40,87 @@ func (pb *pageBuilder) resolveAttributePath(attr string) string {
 	if strings.Contains(attr, ".") {
 		return attr
 	}
-	// If we have an entity context, prefix the attribute with it
+	// If we have an entity context, prefix the attribute with it — but with the
+	// entity that actually DECLARES it, which for an inherited attribute is an
+	// ancestor rather than the context entity itself.
 	if pb.entityContext != "" {
+		if declaring, ok := pb.declaringEntityFor(pb.entityContext, attr); ok {
+			return declaring + "." + attr
+		}
 		return pb.entityContext + "." + attr
 	}
 	return attr
+}
+
+// declaringEntityFor returns the entity in entityQN's generalization chain that
+// declares attrName — entityQN itself when the attribute is its own.
+//
+// Mendix stores a page's attribute reference against the declaring entity. A
+// reference qualified with a specialization that merely inherits the attribute
+// is dangling, and the build fails with
+//
+//	[CE1613] "The selected attribute 'Module.Sub.Attr' no longer exists."
+//
+// which reads as if the attribute had been deleted; it never existed there.
+// Entity access rules resolve inherited members correctly, so this was the page
+// layer alone. (mxcli-todo findings #12)
+//
+// ok is false when nothing in the chain declares the name — an unknown
+// attribute, or a domain model we cannot read. The caller then keeps today's
+// behaviour rather than inventing a qualification.
+func (pb *pageBuilder) declaringEntityFor(entityQN, attrName string) (string, bool) {
+	if entityQN == "" || attrName == "" {
+		return "", false
+	}
+	// Resolution is best-effort: without a model to consult (no backend and
+	// nothing cached — e.g. a unit test building widgets in isolation) keep the
+	// caller's plain context qualification rather than panicking on the lookup.
+	if pb.backend == nil && (pb.execCache == nil || pb.execCache.domainModels == nil) {
+		return "", false
+	}
+	owners, parents, err := pb.entityAttributeOwners()
+	if err != nil {
+		return "", false
+	}
+	lower := strings.ToLower(attrName)
+	seen := map[string]bool{}
+	for cur := entityQN; cur != "" && !seen[cur]; cur = parents[cur] {
+		seen[cur] = true
+		if attrs, ok := owners[cur]; ok && attrs[lower] {
+			return cur, true
+		}
+	}
+	return "", false
+}
+
+// entityAttributeOwners indexes, for every entity in the project, the set of
+// attribute names it declares itself, plus each entity's direct parent.
+func (pb *pageBuilder) entityAttributeOwners() (owners map[string]map[string]bool, parents map[string]string, err error) {
+	dms, err := pb.getDomainModels()
+	if err != nil {
+		return nil, nil, err
+	}
+	h, err := pb.getHierarchy()
+	if err != nil {
+		return nil, nil, err
+	}
+	owners = make(map[string]map[string]bool, len(dms)*8)
+	parents = make(map[string]string)
+	for _, dm := range dms {
+		mod := h.GetModuleName(dm.ContainerID)
+		for _, e := range dm.Entities {
+			qn := mod + "." + e.Name
+			attrs := make(map[string]bool, len(e.Attributes))
+			for _, a := range e.Attributes {
+				attrs[strings.ToLower(a.Name)] = true
+			}
+			owners[qn] = attrs
+			if e.GeneralizationRef != "" {
+				parents[qn] = e.GeneralizationRef
+			}
+		}
+	}
+	return owners, parents, nil
 }
 
 // systemMemberBindingNames maps the name an audit member is DECLARED under to
