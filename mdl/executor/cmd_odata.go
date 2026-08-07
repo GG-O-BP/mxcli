@@ -392,21 +392,31 @@ func outputPublishedODataServiceMDL(ctx *ExecContext, svc *model.PublishedODataS
 				es = entitySetByEntityName[et.Entity]
 			}
 
-			// PUBLISH ENTITY line with modes
-			fmt.Fprintf(ctx.Output, "  publish entity %s as '%s'", et.Entity, et.ExposedName)
+			// PUBLISH ENTITY line with modes.
+			//
+			// `AS '<name>'` is the ENTITY SET's exposed name — that is what the
+			// served $metadata calls the set, and what re-executing this output
+			// must reproduce. Printing the entity TYPE's exposed name here
+			// silently renamed the set on a describe -> exec round trip
+			// (mxcli-formula1 findings #10.5).
+			exposedName := et.ExposedName
+			if es != nil && es.ExposedName != "" {
+				exposedName = es.ExposedName
+			}
+			fmt.Fprintf(ctx.Output, "  publish entity %s as '%s'", et.Entity, exposedName)
 			if es != nil {
 				var modeProps []string
 				if es.ReadMode != "" {
-					modeProps = append(modeProps, fmt.Sprintf("ReadMode: %s", es.ReadMode))
+					modeProps = append(modeProps, fmt.Sprintf("ReadMode: %s", odataModeToMDL(es.ReadMode)))
 				}
 				if es.InsertMode != "" {
-					modeProps = append(modeProps, fmt.Sprintf("InsertMode: %s", es.InsertMode))
+					modeProps = append(modeProps, fmt.Sprintf("InsertMode: %s", odataModeToMDL(es.InsertMode)))
 				}
 				if es.UpdateMode != "" {
-					modeProps = append(modeProps, fmt.Sprintf("UpdateMode: %s", es.UpdateMode))
+					modeProps = append(modeProps, fmt.Sprintf("UpdateMode: %s", odataModeToMDL(es.UpdateMode)))
 				}
 				if es.DeleteMode != "" {
-					modeProps = append(modeProps, fmt.Sprintf("DeleteMode: %s", es.DeleteMode))
+					modeProps = append(modeProps, fmt.Sprintf("DeleteMode: %s", odataModeToMDL(es.DeleteMode)))
 				}
 				if es.UsePaging {
 					modeProps = append(modeProps, "UsePaging: Yes")
@@ -441,10 +451,17 @@ func outputPublishedODataServiceMDL(ctx *ExecContext, svc *model.PublishedODataS
 						modifiers = append(modifiers, "Sortable")
 					}
 					if m.IsPartOfKey {
-						modifiers = append(modifiers, "IsPartOfKey")
+						// KEY is the spelling the syntax help documents;
+						// IsPartOfKey parses too, but only one belongs in
+						// output meant to be re-executed.
+						modifiers = append(modifiers, "KEY")
 					}
 
-					line := fmt.Sprintf("    %s as '%s'", m.Name, m.ExposedName)
+					// The member is stored fully qualified
+					// (Module.Entity.Member), while `expose (...)` takes a bare
+					// member name — so emitting the stored form produced MDL
+					// that does not parse (mxcli-formula1 findings #10.5).
+					line := fmt.Sprintf("    %s as '%s'", bareMemberName(m.Name), m.ExposedName)
 					if len(modifiers) > 0 {
 						line += fmt.Sprintf(" (%s)", strings.Join(modifiers, ", "))
 					}
@@ -1885,4 +1902,27 @@ func publishAssociationsFor(stmt *ast.CreateODataServiceStmt) bool {
 		return true
 	}
 	return stmt.PublishAssociations
+}
+
+// odataModeToMDL turns a stored Read/Change mode into the MDL spelling that
+// parses back. The backend stores a microflow-backed mode as
+// "CallMicroflow:Module.Name" (and accepts "MICROFLOW Module.Name" on the way
+// in), but a bare `CallMicroflow:Qualified.Name` matches no MDL value — so
+// DESCRIBE was emitting something it could not read (mxcli-formula1 #10.5).
+func odataModeToMDL(mode string) string {
+	for _, prefix := range []string{"CallMicroflow:", "MICROFLOW ", "microflow "} {
+		if rest := strings.TrimPrefix(mode, prefix); rest != mode {
+			return "microflow " + strings.TrimSpace(rest)
+		}
+	}
+	return mode
+}
+
+// bareMemberName strips a Module.Entity. prefix from a published member name,
+// leaving the member name `expose (...)` accepts.
+func bareMemberName(name string) string {
+	if i := strings.LastIndex(name, "."); i >= 0 {
+		return name[i+1:]
+	}
+	return name
 }
