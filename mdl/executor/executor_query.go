@@ -226,7 +226,7 @@ func execDescribe(ctx *ExecContext, s *ast.DescribeStmt) error {
 		case ast.DescribeDatabaseConnection:
 			return describeDatabaseConnection(ctx, s.Name)
 		case ast.DescribeSettings:
-			return describeSettings(ctx)
+			return describeSettings(ctx, s.Qualifier)
 		case ast.DescribeFragment:
 			return describeFragment(ctx, s.Name)
 		case ast.DescribeImageCollection:

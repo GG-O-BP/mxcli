@@ -800,11 +800,18 @@ func (b *Builder) ExitDescribeStatement(ctx *parser.DescribeStatementContext) {
 		return
 	}
 
-	// Handle DESCRIBE SETTINGS
+	// Handle DESCRIBE SETTINGS [CONFIGURATION 'Name']
 	if ctx.SETTINGS() != nil {
-		b.statements = append(b.statements, &ast.DescribeStmt{
-			ObjectType: ast.DescribeSettings,
-		})
+		stmt := &ast.DescribeStmt{ObjectType: ast.DescribeSettings}
+		// `alter settings configuration 'X'` is the write form, so the read
+		// form has to accept the same shape — reaching for it and getting a
+		// parse error is the wrong lesson (mxcli-formula1 findings #8).
+		if ctx.CONFIGURATION() != nil {
+			if sl := ctx.STRING_LITERAL(); sl != nil {
+				stmt.Qualifier = unquoteString(sl.GetText())
+			}
+		}
+		b.statements = append(b.statements, stmt)
 		return
 	}
 
