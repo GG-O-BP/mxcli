@@ -47,6 +47,12 @@ type RunOptions struct {
 	// Docker path uses this mechanism regardless.
 	LegacyRunner bool
 
+	// Watch keeps the runtime and the build server up and re-runs the suite on
+	// every change to a test file or to the project's model, until interrupted.
+	// Requires the test endpoint, so it is incompatible with LegacyRunner and
+	// with the Docker path — both of which can only re-run by restarting.
+	Watch bool
+
 	// Timeout for runtime startup and test execution.
 	Timeout time.Duration
 
@@ -92,6 +98,10 @@ func Run(opts RunOptions) (*SuiteResult, error) {
 		stderr = os.Stderr
 	}
 
+	if err := validateOptions(opts); err != nil {
+		return nil, err
+	}
+
 	timeout := opts.Timeout
 	if timeout == 0 {
 		timeout = 5 * time.Minute
@@ -123,6 +133,25 @@ func Run(opts RunOptions) (*SuiteResult, error) {
 	return runAfterStartup(opts, suite, timeout, w)
 }
 
+// validateOptions rejects combinations that cannot work, with a message that
+// says what to do instead. Watching depends on re-invoking tests without a
+// restart, which only the test endpoint can do.
+func validateOptions(opts RunOptions) error {
+	if !opts.Watch {
+		return nil
+	}
+	if !opts.Local {
+		return fmt.Errorf("--watch requires --local: the Docker path can only re-run tests by restarting the container")
+	}
+	if opts.LegacyRunner {
+		return fmt.Errorf("--watch cannot be combined with --legacy-runner: the after-startup runner can only re-run tests by restarting the runtime")
+	}
+	if opts.SkipBuild {
+		return fmt.Errorf("--watch cannot be combined with --skip-build: watching exists to rebuild on every change")
+	}
+	return nil
+}
+
 // runEndpoint injects the test endpoint plus one microflow per test, boots the
 // app once, and drives the suite over HTTP.
 func runEndpoint(opts RunOptions, suite *TestSuite, timeout time.Duration, w io.Writer) (*SuiteResult, error) {
@@ -152,11 +181,20 @@ func runEndpoint(opts RunOptions, suite *TestSuite, timeout time.Duration, w io.
 	}
 
 	// From here on the project is modified, so every exit runs cleanup.
+	//
+	// cleanupSuite, not the suite captured here: --watch re-parses on every
+	// change, so by the time cleanup runs the set of injected test microflows may
+	// differ from the one injected at boot. Dropping the wrong list would leave
+	// generated microflows in the user's project.
+	cleanupSuite := suite
 	finish := func(result *SuiteResult, runErr error) (*SuiteResult, error) {
 		fmt.Fprintln(w, "Cleaning up...")
-		cleanupErr := cleanupEndpoint(opts.ProjectPath, state, suite, w)
+		cleanupErr := cleanupEndpoint(opts.ProjectPath, state, cleanupSuite, w)
 		removeGeneratedJavaSource(opts.ProjectPath, w)
 		reportCleanup(w, cleanupErr)
+		if cleanupErr == nil {
+			fmt.Fprintln(w, "  project restored")
+		}
 		if runErr != nil {
 			return nil, runErr
 		}
@@ -178,6 +216,14 @@ func runEndpoint(opts RunOptions, suite *TestSuite, timeout time.Duration, w io.
 		}
 	}
 	fmt.Fprintf(w, "  After-startup set to %s (registers the endpoint; runs no tests)\n", endpointStartupFlow)
+
+	// --watch keeps the runtime and the build server up and re-runs on every
+	// change, so it owns the loop — including printing each run's results, which
+	// it must do before cleanup rather than after. It reports each re-injected
+	// suite back so cleanup drops what is actually in the project.
+	if opts.Watch {
+		return runEndpointWatch(opts, suite, token, timeout, w, finish, func(s *TestSuite) { cleanupSuite = s })
+	}
 
 	result, err := runViaEndpoint(opts, suite, token, timeout, w)
 	if err != nil {

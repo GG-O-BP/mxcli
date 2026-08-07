@@ -192,6 +192,40 @@ func StartLocalApp(opts LocalAppOptions) (*LocalApp, error) {
 	return app, nil
 }
 
+// Rebuild rebuilds the project through the warm serve server and applies the
+// result to the running runtime, returning whether that was a hot reload or a
+// restart. This is the warm loop: the serve server keeps the model loaded, so a
+// rebuild is ~1s instead of the ~15s cold build, and the runtime is only
+// restarted when the build says the metamodel changed.
+//
+// A restart re-spawns the JVM from the same options, so anything passed via Env
+// — notably the test runner's endpoint token — survives it.
+//
+// Returns an error if the app was started with SkipBuild: there is no serve
+// server to rebuild through.
+func (a *LocalApp) Rebuild(projectPath string) (ApplyAction, *BuildResult, error) {
+	if a.serve == nil {
+		return ActionReload, nil, fmt.Errorf("this app was started without a build server (SkipBuild); nothing to rebuild through")
+	}
+	if a.Runtime == nil {
+		return ActionReload, nil, fmt.Errorf("the runtime is not running")
+	}
+	build, err := a.serve.Build(BuildRequest{Target: TargetDeploy, ProjectFilePath: projectPath})
+	if err != nil {
+		return ActionReload, nil, err
+	}
+	if !build.OK() {
+		return ActionReload, build, fmt.Errorf("build failed: %s", build.Message)
+	}
+	action, err := a.Runtime.Controller().ApplyBuild(build, a.Runtime.Restart)
+	return action, build, err
+}
+
+// ProjectSourceMTime is the newest modification time across a project's model
+// source — the change signal a warm loop polls. Exported for callers outside
+// this package that run their own watch loop (the test runner).
+func ProjectSourceMTime(projectPath string) time.Time { return projectSourceMTime(projectPath) }
+
 // Stop shuts down the runtime and the build server. Safe to call more than once
 // and on a partially-started app.
 func (a *LocalApp) Stop() error {

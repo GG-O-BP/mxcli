@@ -51,6 +51,13 @@ will only ever invoke the generated MxTest.Test_* microflows. With no token in
 the environment it is not registered at all, so a project that kept the MxTest
 module through a failed cleanup exposes nothing when deployed elsewhere.
 
+--local --watch keeps the runtime and the build server up between runs and
+re-runs the suite on every change — to a test file, or to the project's model.
+The first run pays the cold boot (~30s); each one after it is a warm rebuild
+(~1-4s) plus the tests themselves (milliseconds). Editing a microflow and seeing
+whether it still passes is the loop this exists for. Ctrl-C stops watching and
+restores the project.
+
 Without --local the Docker path is used instead: the suite is compiled into a
 single after-startup microflow, the container is restarted, and results are
 parsed out of its log. Pass --legacy-runner to use that mechanism on a local run
@@ -76,6 +83,9 @@ Examples:
   # Run without Docker, on mxcli's own local runtime
   mxcli test tests/ -p app.mpr --local
 
+  # Keep the runtime warm and re-run on every change
+  mxcli test tests/ -p app.mpr --local --watch
+
   # Skip build (reuse existing deployment)
   mxcli test tests/ -p app.mpr --skip-build
 
@@ -90,6 +100,7 @@ Examples:
 		skipBuild, _ := cmd.Flags().GetBool("skip-build")
 		local, _ := cmd.Flags().GetBool("local")
 		legacyRunner, _ := cmd.Flags().GetBool("legacy-runner")
+		watch, _ := cmd.Flags().GetBool("watch")
 		verbose, _ := cmd.Flags().GetBool("verbose")
 		color, _ := cmd.Flags().GetBool("color")
 		timeoutStr, _ := cmd.Flags().GetString("timeout")
@@ -121,6 +132,7 @@ Examples:
 			SkipBuild:    skipBuild,
 			Local:        local,
 			LegacyRunner: legacyRunner,
+			Watch:        watch,
 			Timeout:      timeout,
 			JUnitOutput:  junitOutput,
 			Verbose:      verbose,
@@ -135,6 +147,11 @@ Examples:
 			os.Exit(1)
 		}
 
+		// A --watch session interrupted before any run completed has no result to
+		// report. Exiting 0 is right: nothing failed, the user just stopped watching.
+		if result == nil {
+			return
+		}
 		if !result.AllPassed() {
 			os.Exit(1)
 		}

@@ -12,13 +12,16 @@ import (
 	"github.com/mendixlabs/mxcli/cmd/mxcli/docker"
 )
 
-// runViaEndpoint boots the app once and drives the suite over HTTP.
-//
-// The contrast with the after-startup path is the whole point: there, tests run
-// during boot, so every re-run is a restart and a result is something recovered
-// from the log. Here boot only registers the endpoint, and each test is a
-// request against a runtime that stays up.
-func runViaEndpoint(opts RunOptions, suite *TestSuite, token string, timeout time.Duration, w io.Writer) (*SuiteResult, error) {
+// testAppSession is a booted app plus a client for its test endpoint. It is what
+// the warm loop keeps alive between runs.
+type testAppSession struct {
+	app     *docker.LocalApp
+	client  *endpointClient
+	logPath string
+}
+
+// bootForTests boots the app and waits for the test endpoint to register.
+func bootForTests(opts RunOptions, token string, timeout time.Duration, w io.Writer) (*testAppSession, error) {
 	logPath := filepath.Join(filepath.Dir(opts.ProjectPath), ".mxcli", "test-runtime.log")
 
 	fmt.Fprintln(w, "Starting local runtime (no Docker)...")
@@ -44,16 +47,44 @@ func runViaEndpoint(opts RunOptions, suite *TestSuite, token string, timeout tim
 		// result — no test has run yet. It is always a real error.
 		return nil, fmt.Errorf("local runtime: %w", err)
 	}
-	defer app.Stop()
 
 	client := newEndpointClient(localTestAppPort, token)
 	if err := client.waitReady(endpointReadyTimeout(timeout)); err != nil {
+		app.Stop()
 		return nil, fmt.Errorf("%w\n  hint: check %s for a registration failure", err, logPath)
 	}
+	return &testAppSession{app: app, client: client, logPath: logPath}, nil
+}
 
+func (s *testAppSession) stop() {
+	if s != nil && s.app != nil {
+		s.app.Stop()
+	}
+}
+
+// runViaEndpoint boots the app once and drives the suite over HTTP.
+//
+// The contrast with the after-startup path is the whole point: there, tests run
+// during boot, so every re-run is a restart and a result is something recovered
+// from the log. Here boot only registers the endpoint, and each test is a
+// request against a runtime that stays up.
+func runViaEndpoint(opts RunOptions, suite *TestSuite, token string, timeout time.Duration, w io.Writer) (*SuiteResult, error) {
+	sess, err := bootForTests(opts, token, timeout, w)
+	if err != nil {
+		return nil, err
+	}
+	defer sess.stop()
+	return runSuite(sess.client, suite, opts, w)
+}
+
+// runSuite invokes every test in the suite against a booted app and collects the
+// verdicts. It never returns an error for a test-level problem — a missing
+// microflow or a failed request is that test's result, so one bad test cannot
+// hide every other.
+func runSuite(client *endpointClient, suite *TestSuite, opts RunOptions, w io.Writer) (*SuiteResult, error) {
 	// Ask the app which test microflows it actually has. A test whose microflow
 	// is missing is reported as an error against that test rather than failing
-	// the run, so one bad test block does not hide every other result.
+	// the run.
 	present := make(map[string]bool)
 	names, err := client.list()
 	if err != nil {

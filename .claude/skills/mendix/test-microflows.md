@@ -150,6 +150,34 @@ Two consequences worth knowing when reading a failing run:
 Each test is a separate microflow with its own variable scope, so `$result` in
 one test never collides with `$result` in another.
 
+#### `--watch`: keep the runtime warm
+
+```bash
+mxcli test tests/ -p app.mpr --local --watch
+```
+
+The first run pays the cold boot; after that the runtime and the build server
+stay up, and the suite re-runs on every change — to a test file **or** to the
+project's model. Measured on an 11.13.0 app:
+
+| | |
+|---|---|
+| First run (cold boot) | ~30s |
+| Edit a test → verdict on screen | **~2s** |
+| Edit a microflow → verdict on screen | **~2s** |
+| The tests themselves | 20–70ms |
+
+Editing a microflow and seeing straight away whether it still passes is the loop
+this exists for. Ctrl-C stops watching and restores the project — the shutdown
+prints `project restored` when it has.
+
+Adding, editing and deleting tests all work mid-session: the suite is re-parsed
+on every change, and a deleted test's microflow is dropped rather than left
+behind reporting a stale pass.
+
+`--watch` requires `--local`. The Docker and `--legacy-runner` paths can only
+re-run tests by restarting, which is the thing being avoided.
+
 #### Security of the endpoint
 
 It executes microflows under a system context, so it is gated four ways:

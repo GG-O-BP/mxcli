@@ -372,6 +372,7 @@ func init() {
 	testRunCmd.Flags().BoolP("skip-build", "s", false, "Skip build step (reuse existing deployment)")
 	testRunCmd.Flags().Bool("local", false, "Run on mxcli's local runtime instead of Docker (no daemon needed)")
 	testRunCmd.Flags().Bool("legacy-runner", false, "With --local, run tests from the after-startup microflow and parse the log, instead of over the test endpoint")
+	testRunCmd.Flags().BoolP("watch", "w", false, "With --local, keep the runtime warm and re-run the suite on every test or model change (Ctrl-C to stop)")
 	testRunCmd.Flags().BoolP("verbose", "v", false, "Show all runtime log output")
 	testRunCmd.Flags().BoolP("color", "", false, "Use colored output")
 	testRunCmd.Flags().StringP("timeout", "t", "5m", "Timeout for runtime startup and test execution")

@@ -136,10 +136,37 @@ Beyond the speed, three structural problems in `cmd/mxcli/testrunner/` dissolve:
   neither of which is wired through docker-compose. No Docker daemon was
   available to verify a change there, so it was left alone rather than shipped
   untested.
-- **The warm-loop win is not yet realised.** The runner still boots once per
-  invocation, so a re-run costs a cold boot as before; what the endpoint buys
-  *today* is per-test isolation, returned results, and a failing test that is no
-  longer a failed boot. Keeping the runtime up across invocations (a
-  `test --watch`, or `--attach` to a running `run --local`) is what turns the
-  measured 30.55s → 0.084s into an everyday number, and is the natural next
-  slice.
+- **`--attach` to an already-running `run --local`.** `--watch` (below) keeps
+  the runtime warm within a session, but a session still starts with a cold
+  boot. Attaching to an app the developer already has running would remove even
+  that, at the cost of writing test fixtures into the dev database.
+
+## The warm loop, realised (`--watch`)
+
+`mxcli test --local --watch` keeps the runtime and the build server up and
+re-runs the suite on every change to a test file or to the model. Measured on
+the same 11.13.0 app:
+
+| | |
+|---|---|
+| First run (cold boot) | ~30s |
+| Edit a test → verdict on screen | **~2.0s** |
+| Edit a microflow under test → verdict on screen | **~2.1s** |
+| The tests themselves | 20–70ms |
+
+Every re-run in the session applied via **reload**, not restart — the property
+the spike established. Verified live across a session that edited a test,
+deleted a test, added a test, and changed the microflow under test.
+
+Two hazards this loop has that the `run --local` dev loop does not:
+
+1. **The runner writes to the project it is watching.** Injecting the test
+   microflows moves the very mtime being polled, so the baseline is taken after
+   the injection and rebuild settle. Getting it wrong is an infinite rebuild
+   loop; verified by idling a session and confirming the run counter does not
+   advance.
+2. **The injected set changes during the session.** Cleanup drops what is
+   *currently* injected, not what was injected at boot — otherwise a test added
+   mid-session is left in the user's project. A deleted test's microflow is
+   dropped explicitly, since `CREATE OR REPLACE` says nothing about removal and
+   a lingering flow would keep reporting a stale pass.
