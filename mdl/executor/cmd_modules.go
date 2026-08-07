@@ -5,6 +5,8 @@ package executor
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -1058,7 +1060,54 @@ func execAlterModuleJarDep(ctx *ExecContext, s *ast.AlterModuleJarDepStmt) error
 	}
 
 	fmt.Fprintf(ctx.Output, "Updated jar dependencies for module '%s'\n", s.ModuleName)
+	warnUnvendoredJarDependencies(ctx, ms)
 	return nil
+}
+
+// warnUnvendoredJarDependencies says so when a declared dependency has no jar in
+// the project's vendorlib/.
+//
+// Declaring and resolving are separate steps: this writes the coordinate to the
+// model, and `list jar dependencies` will report it, but nothing downloads the
+// jar — and MxBuild does not resolve it either, so the build stays green and the
+// first symptom is a runtime "no driver found" exception from code that looks
+// correctly configured. Studio Pro runs the resolution when you edit Module
+// Settings; headless it has to be asked for. (mxcli-formula1 findings #12.)
+func warnUnvendoredJarDependencies(ctx *ExecContext, ms *types.ModuleSettings) {
+	if ctx == nil || ctx.Backend == nil || ms == nil {
+		return
+	}
+	projectPath := ctx.Backend.Path()
+	if projectPath == "" {
+		return
+	}
+	vendorlib := filepath.Join(filepath.Dir(projectPath), "vendorlib")
+
+	var missing []string
+	for _, d := range ms.JarDependencies {
+		if d == nil || d.ArtifactID == "" || d.Version == "" {
+			continue
+		}
+		jar := filepath.Join(vendorlib, fmt.Sprintf("%s-%s.jar", d.ArtifactID, d.Version))
+		if _, err := os.Stat(jar); err != nil {
+			missing = append(missing, fmt.Sprintf("%s:%s:%s", d.GroupID, d.ArtifactID, d.Version))
+		}
+	}
+	if len(missing) == 0 {
+		return
+	}
+	fmt.Fprintf(ctx.Output,
+		"  Note: %s not in vendorlib/, so %s not on the classpath yet — the build will still succeed and fail at runtime.\n",
+		strings.Join(missing, ", "), pluralItIsTheyAre(len(missing)))
+	fmt.Fprintf(ctx.Output, "  Run: mxcli sync-java-deps -p %s\n", projectPath)
+}
+
+// pluralItIsTheyAre picks the pronoun+verb for a list of n coordinates.
+func pluralItIsTheyAre(n int) string {
+	if n == 1 {
+		return "it is"
+	}
+	return "they are"
 }
 
 func applyJarDepAction(ms *types.ModuleSettings, action ast.JarDepAction, moduleName string) error {

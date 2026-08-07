@@ -92,8 +92,37 @@ shipped bundle at `modeler/ide-client/database-connector-editor/`, identical on
 **`'BYOD'` — bring your own driver.** Selecting it forces connection-string
 configuration and **skips the driver-presence check**; its only validation is
 that the connection string is non-empty. That is the hook for any JDBC driver
-Mendix ships no picker entry for (DuckDB, SQLite, ClickHouse, …). Drop the
-driver JAR in `userlib/` and give the connection its JDBC URL.
+Mendix ships no picker entry for (DuckDB, SQLite, ClickHouse, …). Verified end to
+end on Mendix 11.13: a booted runtime opened `jdbc:duckdb:` through a `BYOD`
+connection and returned real rows — the runtime accepts it, not just the editor.
+
+### Getting the driver onto the classpath
+
+The driver JAR has to be *resolved*, and declaring it is not resolving it:
+
+```sql
+ALTER MODULE MyModule ADD JAR DEPENDENCY (
+  group = 'org.duckdb', artifact = 'duckdb_jdbc', version = '1.5.5.1', included = true
+);
+```
+
+writes the coordinate to the model — `list jar dependencies` will report it — and
+downloads **nothing**. MxBuild does not resolve it either: a full
+`mxbuild --target=deploy` emits a `build.gradle` with no dependencies block. The
+first symptom is a runtime `SQLException: No JDBC driver found in app for URL`,
+from a connection that looks correctly configured.
+
+Studio Pro runs the resolution when you edit Module Settings. Headless, ask for it:
+
+```bash
+mxcli sync-java-deps -p app.mpr          # download into vendorlib/
+mxcli sync-java-deps -p app.mpr --check  # report what is missing, exit 1 (build gate)
+```
+
+`mxcli run --local` does this automatically for anything not already in
+`vendorlib/`, so the warm loop works from a fresh clone. Dropping the jar into
+`userlib/` by hand works too — it is the same classpath — but then the model and
+the file system disagree about where the dependency comes from.
 
 **`'Redshift'` and `'SQLServer'` are not real values.** Both appeared in an
 earlier version of this table and neither is in the picker on any version
