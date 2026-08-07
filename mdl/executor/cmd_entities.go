@@ -1077,9 +1077,18 @@ func execAlterEntity(ctx *ExecContext, s *ast.AlterEntityStmt) error {
 		// Reject duplicate (same Moment + Event)
 		for _, existing := range entity.EventHandlers {
 			if existing.Moment == ehs[0].Moment && existing.Event == ehs[0].Event {
+				// An event handler has no other re-run route: a defensive
+				// drop-then-add fails on the drop when it is absent and on the
+				// add when it is present. IF NOT EXISTS makes the script
+				// idempotent, like ADD ATTRIBUTE. (mxcli-todo findings #18)
+				if s.IfNotExists {
+					fmt.Fprintf(ctx.Output, "Event handler %s %s already exists on %s, skipping\n",
+						s.EventHandler.Moment, s.EventHandler.Event, s.Name)
+					return nil
+				}
 				return mdlerrors.NewAlreadyExistsMsg("event handler",
 					fmt.Sprintf("%s %s", s.EventHandler.Moment, s.EventHandler.Event),
-					fmt.Sprintf("event handler already exists for %s %s on %s", s.EventHandler.Moment, s.EventHandler.Event, s.Name))
+					fmt.Sprintf("event handler already exists for %s %s on %s (use ADD EVENT HANDLER IF NOT EXISTS to make the script re-runnable)", s.EventHandler.Moment, s.EventHandler.Event, s.Name))
 			}
 		}
 		entity.EventHandlers = append(entity.EventHandlers, ehs[0])
@@ -1104,9 +1113,14 @@ func execAlterEntity(ctx *ExecContext, s *ast.AlterEntityStmt) error {
 			}
 		}
 		if idx < 0 {
+			if s.IfExists {
+				fmt.Fprintf(ctx.Output, "Event handler %s %s not present on %s, skipping\n",
+					s.EventHandler.Moment, s.EventHandler.Event, s.Name)
+				return nil
+			}
 			return mdlerrors.NewNotFoundMsg("event handler",
 				fmt.Sprintf("%s %s", s.EventHandler.Moment, s.EventHandler.Event),
-				fmt.Sprintf("event handler %s %s not found on %s", s.EventHandler.Moment, s.EventHandler.Event, s.Name))
+				fmt.Sprintf("event handler %s %s not found on %s (use DROP EVENT HANDLER IF EXISTS to make the script re-runnable)", s.EventHandler.Moment, s.EventHandler.Event, s.Name))
 		}
 		entity.EventHandlers = append(entity.EventHandlers[:idx], entity.EventHandlers[idx+1:]...)
 		if err := ctx.Backend.UpdateEntity(dm.ID, entity); err != nil {
