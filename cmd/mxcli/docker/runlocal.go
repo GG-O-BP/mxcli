@@ -831,7 +831,7 @@ func RunLocal(opts LocalRunOptions) error {
 		fmt.Fprintf(w, "Logging in as %q for authenticated screenshots...\n", opts.ScreenshotUser)
 		if err := LoginAndSaveStorage(LoginOptions{
 			AppURL: rt.AppURL(), Username: opts.ScreenshotUser, Password: opts.ScreenshotPassword,
-			StoragePath: storage, MxBuildPath: mxbuildPath,
+			StoragePath: storage, MxBuildPath: mxbuildPath, RuntimeLogPath: runtimeLog,
 		}); err != nil {
 			fmt.Fprintf(stderr, "  screenshot login failed (continuing unauthenticated): %v\n", err)
 		} else {

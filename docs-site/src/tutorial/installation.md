@@ -75,14 +75,16 @@ This single command:
 2. Creates a blank Mendix project (`App.mpr`)
 3. Sets up AI tooling (`.claude/`, skills, `AGENTS.md`)
 4. Configures a Dev Container (`.devcontainer/`)
-5. Downloads the correct Linux mxcli binary for the container
+5. Runs one build, so the action stubs MxBuild regenerates are already settled
+6. Downloads the correct Linux mxcli binary for the container
 
 Open the resulting `MyApp/` folder in VS Code and click **"Reopen in Container"** — you're ready to go.
 
 Options:
 ```bash
 mxcli new MyApp --version 10.24.0 --output-dir ./projects/my-app
-mxcli new MyApp --version 11.8.0 --skip-init   # Skip AI tooling setup
+mxcli new MyApp --version 11.8.0 --skip-init    # Skip AI tooling setup
+mxcli new MyApp --version 11.8.0 --skip-build   # Skip the first build
 ```
 
 ## Dev Container for existing projects

@@ -29,6 +29,9 @@ func buildEventHandlers(ctx *ExecContext, defs []ast.EventHandlerDef) ([]*domain
 		if err != nil {
 			return nil, mdlerrors.NewNotFound("microflow", mfQN)
 		}
+		if err := checkBeforeCreateHandlerHasNoParameters(ctx, d, mfQN, mfID); err != nil {
+			return nil, err
+		}
 		handlers = append(handlers, &domainmodel.EventHandler{
 			BaseElement: model.BaseElement{
 				ID:       model.ID(types.GenerateID()),
@@ -43,6 +46,42 @@ func buildEventHandlers(ctx *ExecContext, defs []ast.EventHandlerDef) ([]*domain
 		})
 	}
 	return handlers, nil
+}
+
+// checkBeforeCreateHandlerHasNoParameters refuses to wire a microflow that takes
+// parameters to a BEFORE CREATE event handler.
+//
+// Mendix passes no object to a before-create handler — the object does not exist
+// yet — so the build fails with
+//
+//	[CE7247] "Microflow should not have parameters" at Event handler of entity …
+//
+// which `mxcli check` had no way to see. The handler a defaulting microflow
+// actually wants is AFTER CREATE, which does receive the object.
+// (mxcli-todo findings #14a)
+func checkBeforeCreateHandlerHasNoParameters(ctx *ExecContext, d ast.EventHandlerDef, mfQN string, mfID model.ID) error {
+	if !strings.EqualFold(d.Moment, "Before") || !strings.EqualFold(d.Event, "Create") {
+		return nil
+	}
+	mf, err := ctx.Backend.GetMicroflow(mfID)
+	// A microflow created earlier in this same script is not readable back yet;
+	// skip rather than guess. mxbuild still catches it, and refusing on a failed
+	// read would break a legitimate script.
+	if err != nil || mf == nil {
+		return nil
+	}
+	if len(mf.Parameters) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(mf.Parameters))
+	for _, p := range mf.Parameters {
+		names = append(names, "$"+p.Name)
+	}
+	return mdlerrors.NewValidationf(
+		"microflow %s takes %d parameter(s) (%s), but a BEFORE CREATE event handler is called with none — "+
+			"Mendix has no object to pass yet, so this builds as CE7247 \"Microflow should not have parameters\"\n"+
+			"hint: use ON AFTER CREATE, which does receive the object, or remove the parameters",
+		mfQN, len(mf.Parameters), strings.Join(names, ", "))
 }
 
 func execCreateEntity(ctx *ExecContext, s *ast.CreateEntityStmt) error {
@@ -1077,9 +1116,18 @@ func execAlterEntity(ctx *ExecContext, s *ast.AlterEntityStmt) error {
 		// Reject duplicate (same Moment + Event)
 		for _, existing := range entity.EventHandlers {
 			if existing.Moment == ehs[0].Moment && existing.Event == ehs[0].Event {
+				// An event handler has no other re-run route: a defensive
+				// drop-then-add fails on the drop when it is absent and on the
+				// add when it is present. IF NOT EXISTS makes the script
+				// idempotent, like ADD ATTRIBUTE. (mxcli-todo findings #18)
+				if s.IfNotExists {
+					fmt.Fprintf(ctx.Output, "Event handler %s %s already exists on %s, skipping\n",
+						s.EventHandler.Moment, s.EventHandler.Event, s.Name)
+					return nil
+				}
 				return mdlerrors.NewAlreadyExistsMsg("event handler",
 					fmt.Sprintf("%s %s", s.EventHandler.Moment, s.EventHandler.Event),
-					fmt.Sprintf("event handler already exists for %s %s on %s", s.EventHandler.Moment, s.EventHandler.Event, s.Name))
+					fmt.Sprintf("event handler already exists for %s %s on %s (use ADD EVENT HANDLER IF NOT EXISTS to make the script re-runnable)", s.EventHandler.Moment, s.EventHandler.Event, s.Name))
 			}
 		}
 		entity.EventHandlers = append(entity.EventHandlers, ehs[0])
@@ -1104,9 +1152,14 @@ func execAlterEntity(ctx *ExecContext, s *ast.AlterEntityStmt) error {
 			}
 		}
 		if idx < 0 {
+			if s.IfExists {
+				fmt.Fprintf(ctx.Output, "Event handler %s %s not present on %s, skipping\n",
+					s.EventHandler.Moment, s.EventHandler.Event, s.Name)
+				return nil
+			}
 			return mdlerrors.NewNotFoundMsg("event handler",
 				fmt.Sprintf("%s %s", s.EventHandler.Moment, s.EventHandler.Event),
-				fmt.Sprintf("event handler %s %s not found on %s", s.EventHandler.Moment, s.EventHandler.Event, s.Name))
+				fmt.Sprintf("event handler %s %s not found on %s (use DROP EVENT HANDLER IF EXISTS to make the script re-runnable)", s.EventHandler.Moment, s.EventHandler.Event, s.Name))
 		}
 		entity.EventHandlers = append(entity.EventHandlers[:idx], entity.EventHandlers[idx+1:]...)
 		if err := ctx.Backend.UpdateEntity(dm.ID, entity); err != nil {

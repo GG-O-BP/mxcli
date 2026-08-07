@@ -1132,7 +1132,25 @@ func execCreateDemoUser(ctx *ExecContext, s *ast.CreateDemoUserStmt) error {
 	}
 
 	fmt.Fprintf(ctx.Output, "Created demo user: %s (entity: %s)\n", s.UserName, entity)
+	warnDemoUsersInert(ctx, ps.SecurityLevel)
 	return nil
+}
+
+// warnDemoUsersInert says so when demo users cannot materialise.
+//
+// With Security Level Off — the level a blank mxcli template ships with — the
+// runtime creates no accounts, serves no login page and enforces none of the
+// row-level rules, so the demo users sit in the model and never appear. Nothing
+// said this: `CREATE DEMO USER` reported success and `SHOW PROJECT SECURITY`
+// reported "Demo Users Enabled: true", while the running app had zero accounts.
+// (mxcli-todo findings #15)
+func warnDemoUsersInert(ctx *ExecContext, level string) {
+	if level != security.SecurityLevelOff {
+		return
+	}
+	fmt.Fprintf(ctx.Output, "  Note: project security level is Off, so the runtime creates no accounts "+
+		"and this demo user will not appear in the app.\n"+
+		"  Raise it first: alter project security level prototype;\n")
 }
 
 // detectUserEntity finds the entity that generalizes System.User.

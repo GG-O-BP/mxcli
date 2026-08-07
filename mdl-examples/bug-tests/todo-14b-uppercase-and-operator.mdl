@@ -1,0 +1,66 @@
+-- ============================================================================
+-- mxcli-todo finding #14b: an uppercase AND reached the model verbatim (CE0117)
+-- ============================================================================
+--
+-- Symptom (before fix): a decision written with uppercase keywords —
+--
+--   IF $Task/Status != M.Status.Done AND $Task/CompletedOn != empty THEN
+--
+-- passed `mxcli check` and then failed the build:
+--
+--   [error] [CE0117] "Error(s) in expression." at Decision
+--   '$Task/Status != NEQ.Status.Done AND $Task/CompletedOn != empty'
+--
+-- Mendix requires its word operators in lowercase, and the stored expression
+-- kept the author's `AND`.
+--
+-- Why it looked like something else: the reporter's probe table concluded that
+-- "any != appearing as an operand of AND fails", because the `=` form of the
+-- same condition builds cleanly. It does — but for an unrelated reason. A `=`
+-- condition is rebuilt from the AST, and that path already lowercases the
+-- operator; the `!=` form is kept as preserved source text, which skipped it.
+-- The trigger is the CASING, not the operator, and it is invisible in a
+-- lowercase script.
+--
+-- After fix: preserved source has its word operators (and, or, not, div, mod)
+-- lowercased on the way to the model, leaving string literals and member names
+-- byte-identical.
+--
+-- Usage:
+--   mxcli exec mdl-examples/bug-tests/todo-14b-uppercase-and-operator.mdl -p app.mpr
+--   then a real build must report 0 errors:
+--   scripts/mx-check.sh -p app.mpr
+-- ============================================================================
+
+create module TODO14B;
+
+create enumeration TODO14B.Status ( ToDo, Done );
+
+create persistent entity TODO14B.Task (
+  Status      : TODO14B.Status,
+  CompletedOn : datetime
+);
+
+-- Uppercase keywords throughout — the shape that used to fail.
+create or modify microflow TODO14B.MF_UppercaseAnd ( $Task: TODO14B.Task )
+begin
+  IF $Task/Status != TODO14B.Status.Done AND $Task/CompletedOn != empty THEN
+    change $Task (CompletedOn = empty);
+  END IF;
+end;
+
+-- The lowercase spelling of the same condition, which always worked.
+create or modify microflow TODO14B.MF_LowercaseAnd ( $Task: TODO14B.Task )
+begin
+  if $Task/Status != TODO14B.Status.Done and $Task/CompletedOn != empty then
+    change $Task (CompletedOn = empty);
+  end if;
+end;
+
+-- A string literal containing the word AND must survive untouched.
+create or modify microflow TODO14B.MF_LiteralAnd ( $Task: TODO14B.Task )
+begin
+  IF $Task/Status != TODO14B.Status.Done AND $Task/CompletedOn != empty THEN
+    log info node 'TODO14B' 'AND OR NOT stay as written';
+  END IF;
+end;

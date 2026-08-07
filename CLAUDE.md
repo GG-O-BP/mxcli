@@ -520,7 +520,7 @@ mxcli new MyApp --version 11.8.0
 mxcli new MyApp --version 10.24.0 --output-dir ./projects/my-app
 ```
 
-Steps performed: downloads MxBuild → `mx create-project` → `mxcli theme apply` → `mxcli init` → downloads correct Linux mxcli binary for devcontainer. The result is a ready-to-open project with `.devcontainer/`, AI tooling, mxcli's default styling, and a working `./mxcli` binary. Pass `--theme none` for plain Atlas.
+Steps performed: downloads MxBuild → `mx create-project` → `mxcli theme apply` → `mxcli init` → one `mxbuild --target=deploy` run (`--skip-build` to skip) → downloads correct Linux mxcli binary for devcontainer. That build settles the JS/Java action stubs MxBuild rewrites on first build (48 tracked files in a blank 11.12 app), so a fresh clone does not go dirty the first time anyone builds it. The result is a ready-to-open project with `.devcontainer/`, AI tooling, mxcli's default styling, and a working `./mxcli` binary. Pass `--theme none` for plain Atlas.
 
 ### Slash Command Namespaces
 
