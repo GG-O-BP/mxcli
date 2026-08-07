@@ -122,6 +122,27 @@ with these deltas:
 - **Ports.** Every app defaults to 8080/8090/6543 and they will collide. Give the
   first app the defaults and the second `--app-port 8180 --admin-port 8190
   --serve-port 6643`. Avoid 8081/8091/6544 — `mxcli test --local` uses those.
+- **Give each app its own hostname**, not just its own port. Cookies are keyed on
+  host name and **ignore the port**, so two apps on `localhost:8080` and
+  `localhost:8180` share one cookie jar: logging into one can silently replace the
+  other's `XASSESSIONID`. Two hostnames give two jars, and the differing ports do no
+  harm. Add them to `/etc/hosts` —
+
+  ```
+  127.0.0.1  backend.local frontend.local
+  ```
+
+  — and browse `http://backend.local:8080/` and `http://frontend.local:8180/`. No
+  mxcli flag is involved: the runtime binds `127.0.0.1` and serves any `Host` you
+  send it, and the client uses relative URLs, so it works under any name that
+  resolves to loopback. (`*.nip.io` works too if you would rather not touch
+  `/etc/hosts`; prefer `/etc/hosts` in a locked-down container, where public wildcard
+  DNS may not resolve — `localtest.me` resolves to `::1` in some of them.)
+
+  One limit worth knowing before you design around it: the app's
+  `ApplicationRootUrl` is only set by `--hub`, so anything needing an **absolute**
+  URL — an OIDC/SAML redirect URI, a deep link in an email — still points at the
+  listen address rather than your chosen hostname.
 - **Databases** need no action: the name is derived from the `.mpr` file name, so
   differently-named apps get different databases.
 - **The session hook.** `mxcli init` writes `.claude/settings.json` inside each app
@@ -138,8 +159,9 @@ with these deltas:
 it in the model; if the URL is unreachable it warns and leaves the client unvalidated,
 with no external entities to import. So: publish on the producer
 (`CREATE ODATA SERVICE … publish entity …`), boot it (`run --local`), and only then,
-on the consumer, `CREATE ODATA CLIENT … MetadataUrl: 'http://localhost:8080/odata/…/$metadata'`
-followed by `CREATE EXTERNAL ENTITIES FROM …`. Point `ServiceUrl` at a **constant**
+on the consumer, `CREATE ODATA CLIENT … MetadataUrl: 'http://backend.local:8080/odata/…/$metadata'`
+followed by `CREATE EXTERNAL ENTITIES FROM …`. Use the hostname here too, so the
+cached contract and the constant below agree with what the browser sees. Point `ServiceUrl` at a **constant**
 (`ServiceUrl: @Module.SvcUrl`) so the address can be changed per environment without
 touching the model — it will not stay `localhost`. `mxcli syntax odata.publish` and
 `mxcli syntax odata.consume` have the full syntax; business events
@@ -233,6 +255,10 @@ resolve:
 (cd frontend && ./mxcli run --local -p Frontend.mpr --watch \
                   --app-port 8180 --admin-port 8190 --serve-port 6643)
 ```
+
+With `127.0.0.1 backend.local frontend.local` in `/etc/hosts`, browse them at
+`http://backend.local:8080/` and `http://frontend.local:8180/` so each app gets its
+own cookie jar.
 
 See [mxcli run --local](run-local.md) for the warm loop, `--watch`, `--ensure-db`, and
 the screenshot flags.
