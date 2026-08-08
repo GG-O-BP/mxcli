@@ -1127,9 +1127,15 @@ Got: %s`, stmt.ServiceUrl)
 		}
 		newSvc.MetadataUrl = normalizedUrl
 
-		metadata, hash, err := fetchODataMetadata(normalizedUrl)
+		auth := metadataAuthFromStmt(ctx, stmt)
+		metadata, hash, err := fetchODataMetadata(normalizedUrl, auth)
 		if err != nil {
 			fmt.Fprintf(ctx.Output, "Warning: could not fetch $metadata: %v\n", err)
+			for _, hint := range auth.hints() {
+				fmt.Fprintf(ctx.Output, "  %s\n", hint)
+			}
+			fmt.Fprintf(ctx.Output, "  The client is created with no cached entity types, so a following\n")
+			fmt.Fprintf(ctx.Output, "  'create external entities from %s.%s' will import nothing.\n", stmt.Name.Module, stmt.Name.Name)
 		} else if metadata != "" {
 			newSvc.Metadata = metadata
 			newSvc.MetadataHash = hash
@@ -1333,6 +1339,8 @@ func createODataService(ctx *ExecContext, stmt *ast.CreateODataServiceStmt) erro
 			modName := h.GetModuleName(modID)
 			if strings.EqualFold(modName, stmt.Name.Module) && strings.EqualFold(svc.Name, stmt.Name.Name) {
 				if stmt.CreateOrModify {
+					// Snapshot the grants before anything below can clear them.
+					existingRoles := append([]string(nil), svc.AllowedModuleRoles...)
 					svc.Documentation = stmt.Documentation
 					if stmt.Path != "" {
 						svc.Path = stmt.Path
@@ -1364,6 +1372,38 @@ func createODataService(ctx *ExecContext, stmt *ast.CreateODataServiceStmt) erro
 					}
 					if len(stmt.AuthenticationTypes) > 0 {
 						svc.AuthenticationTypes = stmt.AuthenticationTypes
+					}
+					// Published entities are replaced wholesale when the statement
+					// supplies any. Previously the modify branch ignored them
+					// entirely: editing a `publish entity` block and re-running
+					// left the served $metadata unchanged, so `Filterable` or
+					// `Countable` changes appeared to do nothing and the only
+					// thing that worked was drop + create. Replacing rather than
+					// merging is what makes the script the description of the
+					// service — a member removed from the script is removed from
+					// the service, which merging could never express.
+					if len(stmt.Entities) > 0 {
+						svc.EntityTypes = nil
+						svc.EntitySets = nil
+						for _, entityDef := range stmt.Entities {
+							entityType, entitySet := astEntityDefToModel(ctx, entityDef)
+							svc.EntityTypes = append(svc.EntityTypes, entityType)
+							svc.EntitySets = append(svc.EntitySets, entitySet)
+						}
+					}
+					// AllowedModuleRoles is granted by a separate statement
+					// (`grant access on odata service …`) and cannot be expressed
+					// here, so a modify must carry it through or the build fails
+					// with "At least one allowed role must be selected for the
+					// published OData service to be accessible."
+					//
+					// A guard, not a fix for an observed defect: the loss was
+					// reported (mxcli-formula1 #26) but did not reproduce on
+					// 11.12.1 — grants survived a modify on both the current and
+					// the previous build. Kept because the invariant is real and
+					// the cost is a slice copy; if it never fires, nothing is lost.
+					if len(svc.AllowedModuleRoles) == 0 && len(existingRoles) > 0 {
+						svc.AllowedModuleRoles = existingRoles
 					}
 					if err := ctx.Backend.UpdatePublishedODataService(svc); err != nil {
 						return mdlerrors.NewBackend("update OData service", err)
@@ -1620,8 +1660,12 @@ type assocMembership struct {
 // return empty collections rather than failing the whole publish.
 // mendixAttrTypeToEdm maps a Mendix attribute type to the OData EDM type Studio
 // Pro publishes it as (the PublishedAttribute.EdmType field). Inverse of
-// edmToDomainModelAttrType. String/Decimal/Boolean/DateTimeOffset verified
-// against Studio Pro output; the rest follow the standard OData mapping.
+// edmToDomainModelAttrType.
+//
+// Every case here has been adjudicated by mxbuild rather than assumed: an
+// attribute published as the wrong EDM type is CE5016 ("has type Integer, but is
+// published as Edm.Int32"), one error per attribute. Verified on 11.12.1 by
+// publishing one attribute of each type and reading the errors.
 func mendixAttrTypeToEdm(t domainmodel.AttributeType) string {
 	if t == nil {
 		return ""
@@ -1629,9 +1673,10 @@ func mendixAttrTypeToEdm(t domainmodel.AttributeType) string {
 	switch t.GetTypeName() {
 	case "String", "HashedString":
 		return "Edm.String"
-	case "Integer":
-		return "Edm.Int32"
-	case "Long", "AutoNumber":
+	case "Integer", "Long", "AutoNumber":
+		// Mendix publishes Integer as Int64 too, not Int32 — an Integer is
+		// 64-bit in the Mendix type system, and Int32 is CE5016 on every whole
+		// number in the service.
 		return "Edm.Int64"
 	case "Decimal":
 		return "Edm.Decimal"
@@ -1640,18 +1685,38 @@ func mendixAttrTypeToEdm(t domainmodel.AttributeType) string {
 	case "DateTime", "Date":
 		return "Edm.DateTimeOffset"
 	case "Binary":
+		// Kept so the mapping is total, but a Binary attribute cannot actually
+		// be exposed over OData — Mendix rejects it outright with CE5013
+		// regardless of the published type.
 		return "Edm.Binary"
 	case "Enumeration":
-		// Enums exposed as string (EnumerationAsString path). A non-string enum
-		// exposure would use the enum's own type — not yet modelled.
+		// Paired with EnumerationAsString=true (see enumPublishedAsString).
+		// Edm.String with that flag false is rejected: Mendix then wants the
+		// enumeration published in the service and typed as its own EDM enum.
 		return "Edm.String"
 	default:
 		return "Edm.String"
 	}
 }
 
-func lookupEntityMembers(ctx *ExecContext, entityQN ast.QualifiedName) (map[string]string, map[string]*assocMembership) {
-	attrs := make(map[string]string) // attr name -> OData EDM type (for the published EdmType)
+// publishedAttrType is how one Mendix attribute publishes over OData: the EDM
+// type, plus whether it is an enumeration flattened to a string. The two travel
+// together because Edm.String alone is ambiguous — a String and an
+// EnumerationAsString enum both carry it, and only the flag tells them apart.
+type publishedAttrType struct {
+	Edm      string
+	AsString bool
+}
+
+// enumPublishedAsString reports whether a published attribute needs the
+// EnumerationAsString flag — i.e. whether it is an enumeration at all. The flag
+// and the Edm.String type are a matched pair; see mendixAttrTypeToEdm.
+func enumPublishedAsString(t domainmodel.AttributeType) bool {
+	return t != nil && t.GetTypeName() == "Enumeration"
+}
+
+func lookupEntityMembers(ctx *ExecContext, entityQN ast.QualifiedName) (map[string]publishedAttrType, map[string]*assocMembership) {
+	attrs := make(map[string]publishedAttrType) // attr name -> how it publishes
 	assocs := make(map[string]*assocMembership)
 	if ctx == nil || ctx.Backend == nil {
 		return attrs, assocs
@@ -1676,7 +1741,10 @@ func lookupEntityMembers(ctx *ExecContext, entityQN ast.QualifiedName) (map[stri
 	}
 	if thisEntity != nil {
 		for _, a := range thisEntity.Attributes {
-			attrs[a.Name] = mendixAttrTypeToEdm(a.Type)
+			attrs[a.Name] = publishedAttrType{
+				Edm:      mendixAttrTypeToEdm(a.Type),
+				AsString: enumPublishedAsString(a.Type),
+			}
 		}
 	}
 	for _, a := range dm.Associations {
@@ -1741,9 +1809,10 @@ func astEntityDefToModel(ctx *ExecContext, def *ast.PublishedEntityDef) (*model.
 			member.ExposedName = member.Name
 		}
 		// Auto-detect kind: attribute first, association as fallback.
-		if edmType, ok := entityAttrs[m.Name]; ok {
+		if pub, ok := entityAttrs[m.Name]; ok {
 			member.Kind = "attribute"
-			member.EdmType = edmType
+			member.EdmType = pub.Edm
+			member.EnumerationAsString = pub.AsString
 		} else if assoc := moduleAssocs[m.Name]; assoc != nil {
 			member.Kind = "association"
 			member.ExposedAssociationName = m.Name
@@ -1796,7 +1865,156 @@ func astEntityDefToModel(ctx *ExecContext, def *ast.PublishedEntityDef) (*model.
 // Returns the metadata XML and its SHA-256 hash, or empty strings if the fetch fails.
 // Note: metadataUrl is expected to be already normalized by NormalizeURL() in createODataClient,
 // so all relative paths have been converted to absolute file:// URLs.
-func fetchODataMetadata(metadataUrl string) (metadata string, hash string, err error) {
+// metadataFetchAuth carries the credentials and headers used for the
+// design-time $metadata fetch.
+//
+// Only *literal* values are usable here. MDL stores a quoted literal with its
+// quotes ('f1api') and a constant reference bare (Module.ApiUser); at design
+// time mxcli has no runtime to resolve a constant against, so a reference is
+// reported rather than sent as if it were the value itself.
+type metadataFetchAuth struct {
+	Username string            // literal, quotes already stripped
+	Password string            // literal, quotes already stripped
+	Headers  map[string]string // literal values only
+	// Unresolved names the caller referenced by constant, for the message.
+	Unresolved []string
+}
+
+// apply sets basic auth and headers on the request. A nil receiver is a no-op,
+// so an unauthenticated fetch needs no special case at the call site.
+func (a *metadataFetchAuth) apply(req *http.Request) {
+	if a == nil {
+		return
+	}
+	if a.Username != "" || a.Password != "" {
+		req.SetBasicAuth(a.Username, a.Password)
+	}
+	for k, v := range a.Headers {
+		req.Header.Set(k, v)
+	}
+}
+
+// metadataAuthFromStmt collects the statement's own credentials and headers for
+// the design-time fetch, keeping only the literals.
+func metadataAuthFromStmt(ctx *ExecContext, stmt *ast.CreateODataClientStmt) *metadataFetchAuth {
+	auth := &metadataFetchAuth{Headers: map[string]string{}}
+	consts := designTimeConstants(ctx)
+
+	if v, ok := resolveCredential(stmt.HttpUsername, stmt.HttpUsernameIsLiteral, consts); ok {
+		auth.Username = v
+	} else if stmt.HttpUsername != "" {
+		auth.Unresolved = append(auth.Unresolved, "HttpUsername ("+stmt.HttpUsername+")")
+	}
+	if v, ok := resolveCredential(stmt.HttpPassword, stmt.HttpPasswordIsLiteral, consts); ok {
+		auth.Password = v
+	} else if stmt.HttpPassword != "" {
+		// Named, not printed: a constant reference is a name, but the value it
+		// resolves to is a secret and this line goes to the console.
+		auth.Unresolved = append(auth.Unresolved, "HttpPassword ("+stmt.HttpPassword+")")
+	}
+	for _, h := range stmt.Headers {
+		if v, ok := resolveCredential(h.Value, h.ValueIsLiteral, consts); ok {
+			auth.Headers[h.Key] = v
+		} else if h.Value != "" {
+			auth.Unresolved = append(auth.Unresolved, "header "+h.Key+" ("+h.Value+")")
+		}
+	}
+	sort.Strings(auth.Unresolved)
+	return auth
+}
+
+// resolveCredential turns an MDL property value into the string to send on the
+// design-time fetch.
+//
+// Three spellings reach here and all three have to work, because the shape MDL
+// pushes users towards is the constant reference — mxcli requires a constant for
+// ServiceUrl, so a client written the documented way has constants for its
+// credentials too (mxcli-formula1 #23 follow-up):
+//
+//	HttpUsername: 'f1api'            a literal
+//	HttpUsername: @Module.ApiUser    a constant reference
+//	HttpUsername: '@Module.ApiUser'  the same reference, quoted
+//
+// The quoted form is the trap: it is a STRING_LITERAL, so the isLiteral flag says
+// "literal" and the naive reading sends the eleven characters `@Module.ApiUser`
+// as the username. Worse than a 401, because it looks like it tried.
+//
+// A constant's design-time default is exactly what Studio Pro uses for the same
+// fetch, so resolving it here is not a workaround — it is the value.
+func resolveCredential(value string, isLiteral bool, consts map[string]string) (string, bool) {
+	if value == "" {
+		return "", false
+	}
+	if ref, ok := constantReference(value, isLiteral); ok {
+		v, found := consts[strings.ToLower(ref)]
+		return v, found && v != ""
+	}
+	if isLiteral {
+		return value, true
+	}
+	return "", false
+}
+
+// constantReference reports whether a property value names a constant, and which
+// one. A leading @ marks a reference in either spelling; an unquoted qualified
+// name is one too, since a bare Module.Name cannot be a credential.
+func constantReference(value string, isLiteral bool) (string, bool) {
+	if rest, found := strings.CutPrefix(value, "@"); found {
+		return rest, true
+	}
+	if !isLiteral && strings.Contains(value, ".") {
+		return value, true
+	}
+	return "", false
+}
+
+// designTimeConstants maps a constant's qualified name (lowercased) to its
+// default value. Best-effort: a project that cannot be read yields an empty map,
+// and every reference then reports itself unresolved rather than failing the
+// statement.
+func designTimeConstants(ctx *ExecContext) map[string]string {
+	out := map[string]string{}
+	if ctx == nil || ctx.Backend == nil {
+		return out
+	}
+	consts, err := ctx.Backend.ListConstants()
+	if err != nil {
+		return out
+	}
+	h, err := getHierarchy(ctx)
+	if err != nil {
+		return out
+	}
+	for _, c := range consts {
+		if c == nil {
+			continue
+		}
+		mod := h.GetModuleName(h.FindModuleID(c.ContainerID))
+		if mod == "" {
+			continue
+		}
+		out[strings.ToLower(mod+"."+c.Name)] = c.DefaultValue
+	}
+	return out
+}
+
+// hints explains a failed fetch when the reason is credentials mxcli could not
+// resolve, and points at the workaround that also happens to be better practice.
+func (a *metadataFetchAuth) hints() []string {
+	var out []string
+	if a == nil {
+		return out
+	}
+	if len(a.Unresolved) > 0 {
+		out = append(out, "These are constant references, which only the runtime can resolve, so the fetch went out without them: "+strings.Join(a.Unresolved, ", "))
+	}
+	out = append(out,
+		"Fetch the contract once and point MetadataUrl at the file — it commits, so the",
+		"model rebuilds without the service running and a contract change is a reviewable diff.")
+	return out
+}
+
+func fetchODataMetadata(metadataUrl string, auth *metadataFetchAuth) (metadata string, hash string, err error) {
 	if metadataUrl == "" {
 		return "", "", nil
 	}
@@ -1818,7 +2036,16 @@ func fetchODataMetadata(metadataUrl string) (metadata string, hash string, err e
 	} else {
 		// HTTP(S) fetch
 		client := &http.Client{Timeout: 30 * time.Second}
-		resp, err := client.Get(metadataUrl)
+		req, reqErr := http.NewRequest(http.MethodGet, metadataUrl, nil)
+		if reqErr != nil {
+			return "", "", mdlerrors.NewBackend(fmt.Sprintf("build $metadata request for %s", metadataUrl), reqErr)
+		}
+		// The credentials and headers already on the statement apply to this
+		// fetch too. Without them a service behind `authentication basic`
+		// answers 401, the client is created with no cached entity types, and
+		// the CREATE EXTERNAL ENTITIES that follows silently imports nothing.
+		auth.apply(req)
+		resp, err := client.Do(req)
 		if err != nil {
 			return "", "", mdlerrors.NewBackend(fmt.Sprintf("fetch $metadata from %s", metadataUrl), err)
 		}

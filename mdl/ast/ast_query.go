@@ -24,6 +24,7 @@ type ShowObjectType int
 const (
 	ShowModules ShowObjectType = iota
 	ShowEnumerations
+	ShowFolders
 	ShowConstants
 	ShowEntities
 	ShowEntity
@@ -110,6 +111,8 @@ func (t ShowObjectType) String() string {
 		return "MODULES"
 	case ShowEnumerations:
 		return "ENUMERATIONS"
+	case ShowFolders:
+		return "FOLDERS"
 	case ShowConstants:
 		return "CONSTANTS"
 	case ShowEntities:

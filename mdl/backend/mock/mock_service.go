@@ -2,7 +2,12 @@
 
 package mock
 
-import "github.com/mendixlabs/mxcli/model"
+import (
+	"errors"
+
+	"github.com/mendixlabs/mxcli/model"
+	"github.com/mendixlabs/mxcli/sdk/javaactions"
+)
 
 func (m *MockBackend) ListConsumedODataServices() ([]*model.ConsumedODataService, error) {
 	if m.ListConsumedODataServicesFunc != nil {
@@ -170,6 +175,20 @@ func (m *MockBackend) MoveDatabaseConnection(conn *model.DatabaseConnection) err
 		return m.MoveDatabaseConnectionFunc(conn)
 	}
 	return nil
+}
+
+func (m *MockBackend) MoveJavaAction(ja *javaactions.JavaAction) error {
+	if m.MoveJavaActionFunc != nil {
+		return m.MoveJavaActionFunc(ja)
+	}
+	return errors.New("MockBackend.MoveJavaAction not configured")
+}
+
+func (m *MockBackend) MovePublishedODataService(svc *model.PublishedODataService) error {
+	if m.MovePublishedODataServiceFunc != nil {
+		return m.MovePublishedODataServiceFunc(svc)
+	}
+	return errors.New("MockBackend.MovePublishedODataService not configured")
 }
 
 func (m *MockBackend) DeleteDatabaseConnection(id model.ID) error {

@@ -574,6 +574,7 @@ func buildExecuteDatabaseQueryStatement(ctx parser.IExecuteDatabaseQueryStatemen
 			stmt.DynamicQuery = unquoteDollarString(ds.GetText())
 		} else if expr := execCtx.Expression(); expr != nil {
 			stmt.DynamicQuery = expr.GetText()
+			stmt.DynamicQueryIsExpression = true
 		}
 	}
 

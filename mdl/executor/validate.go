@@ -12,6 +12,7 @@ import (
 
 	"github.com/mendixlabs/mxcli/mdl/ast"
 	mdlerrors "github.com/mendixlabs/mxcli/mdl/errors"
+	"github.com/mendixlabs/mxcli/mdl/linter"
 	"github.com/mendixlabs/mxcli/model"
 	"github.com/mendixlabs/mxcli/sdk/domainmodel"
 )
@@ -148,12 +149,19 @@ func (sc *scriptContext) allNames() []string {
 
 // annotateForwardRef checks if a failed statement's error references an object
 // that is defined later in the script. If so, it appends a hint to reorder.
-func annotateForwardRef(err error, _ ast.Statement, created, allDefined *scriptContext) error {
+func annotateForwardRef(err error, stmt ast.Statement, created, allDefined *scriptContext) error {
 	msg := err.Error()
+	// A statement's OWN name is "defined in the script but not yet created" at
+	// the moment it fails, so without this any validation error that names its
+	// own subject picked up the reorder hint — telling the author to move a
+	// statement before itself. Found via MDL054, whose message names the entity
+	// being created (#832).
+	self := newScriptContext()
+	self.collectSingle(stmt)
 	// Check each name that is defined in the script but not yet created.
 	for _, name := range allDefined.allNames() {
-		if created.has(name) {
-			continue // already created before this statement
+		if created.has(name) || self.has(name) {
+			continue // already created before this statement, or defined by it
 		}
 		if strings.Contains(msg, name) {
 			return fmt.Errorf("%w\n  hint: %s is defined later in this script — move its create statement before this one", err, name)
@@ -947,4 +955,59 @@ func getErrorHandlerBody(stmt ast.MicroflowStatement) []ast.MicroflowStatement {
 		}
 	}
 	return nil
+}
+
+// execEnforcedMicroflowRules are the MDL rules `mxcli exec` refuses to write,
+// not just report. Membership requires that the rule's claim has been verified
+// against a real mxbuild — a rule that is merely plausible must not become a
+// hard write barrier.
+//
+// All three are XPath-constraint rules whose constructs were built and confirmed
+// to fail CE0161:
+//
+//	MDL047  [Mod.Assoc = empty]              — no `= empty` for an association
+//	MDL048  [id = $StringVar]                — no id operator from an expression
+//	MDL055  [Attr = $Var/Mod.Assoc/Attr]     — at most one hop off a variable
+//
+// The rest of the MDL0xx set stays check-only deliberately. Promoting all 17
+// error-severity rules was tried and rejected: MDL009 ("enumeration splits
+// require exactly one value per branch") is a FALSE POSITIVE — a multi-value
+// branch covering every enum value builds at 0 errors on 11.6.6, and the
+// shipped write-microflows skill documents that form — so promoting the set
+// wholesale would have made exec refuse valid MDL. Verify a rule before adding
+// it here.
+var execEnforcedMicroflowRules = map[string]bool{
+	"MDL047": true,
+	"MDL048": true,
+	"MDL055": true,
+}
+
+// validateMicroflowRules runs the MDL0xx microflow rule set (ValidateMicroflow)
+// on the exec path and turns the verified subset's ERROR-severity violations
+// into a failure, so `mxcli exec` refuses to write what those rules reject.
+//
+// Before this, ValidateMicroflow was wired only into cmd_check.go and the LSP;
+// the exec path ran ValidateMicroflowBody, a different validator with a
+// different rule set, so a script that skipped `check` wrote microflows the
+// build would reject (issue #833, reported via MDL048).
+//
+// Warnings are never promoted: they are advisory and `check` itself passes with
+// them. The rule ID is included so an exec failure matches what `check` prints.
+func validateMicroflowRules(stmt *ast.CreateMicroflowStmt) error {
+	var msgs []string
+	for _, v := range ValidateMicroflow(stmt) {
+		if v.Severity != linter.SeverityError || !execEnforcedMicroflowRules[v.RuleID] {
+			continue
+		}
+		msg := fmt.Sprintf("[%s] %s", v.RuleID, v.Message)
+		if v.Suggestion != "" {
+			msg += "\n    " + v.Suggestion
+		}
+		msgs = append(msgs, msg)
+	}
+	if len(msgs) == 0 {
+		return nil
+	}
+	return mdlerrors.NewValidationf("microflow '%s' has validation errors:\n  - %s",
+		stmt.Name.String(), strings.Join(msgs, "\n  - "))
 }

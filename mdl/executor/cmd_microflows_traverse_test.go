@@ -1536,3 +1536,53 @@ func TestTraverseFlow_Issue528_NestedGuardDoesNotSwallowSharedActivities(t *test
 		t.Errorf("issue #528: shared activity emitted inside outer if block instead of after end if;\n%s", out)
 	}
 }
+
+// TestTraverseFlow_InheritanceSplitOmitsEmptyElse covers the `else` DESCRIBE
+// used to invent on a type split.
+//
+// An object-type decision always has an `(empty)` outgoing flow — the
+// null-object case, which the builder emits whether or not an `else` was
+// written, because without it the build fails CE0089. DESCRIBE rendered that
+// flow as a bare `else`, so describing a split the author wrote without one
+// produced MDL with an `else`, and each describe→exec pass accumulated another.
+//
+// The empty rendering is dropped, matching what the if/else emitters already
+// do. Exec re-creates the flow, so nothing is lost. An else that HAS a body
+// still renders.
+func TestTraverseFlow_InheritanceSplitOmitsEmptyElse(t *testing.T) {
+	e := &Executor{}
+	run := func(emptyGoesToMerge bool) string {
+		activityMap := map[model.ID]microflows.MicroflowObject{
+			mkID("split"): &microflows.InheritanceSplit{
+				BaseMicroflowObject: mkObj("split"),
+				VariableName:        "A",
+			},
+			mkID("log"):   &microflows.ActionActivity{BaseActivity: microflows.BaseActivity{BaseMicroflowObject: mkObj("log")}, Action: &microflows.LogMessageAction{LogLevel: "Info", LogNodeName: "'T'"}},
+			mkID("merge"): &microflows.ExclusiveMerge{BaseMicroflowObject: mkObj("merge")},
+		}
+		// The (empty) case flow: straight to the merge means "no else body".
+		emptyDest := mkID("merge")
+		if !emptyGoesToMerge {
+			emptyDest = mkID("log")
+		}
+		flowsByOrigin := map[model.ID][]*microflows.SequenceFlow{
+			mkID("split"): {
+				{OriginID: mkID("split"), DestinationID: mkID("merge"), CaseValue: &microflows.InheritanceCase{EntityQualifiedName: "SP.Dog"}},
+				{OriginID: mkID("split"), DestinationID: emptyDest, CaseValue: &microflows.InheritanceCase{EntityQualifiedName: ""}},
+			},
+			mkID("log"): {{OriginID: mkID("log"), DestinationID: mkID("merge")}},
+		}
+		var lines []string
+		traverseFlowUntilMerge(e.newExecContext(context.Background()), mkID("split"), mkID("merge"),
+			activityMap, flowsByOrigin, nil, map[model.ID]model.ID{mkID("split"): mkID("merge")},
+			map[model.ID]bool{}, nil, nil, &lines, 0, nil, 0, nil)
+		return strings.Join(lines, "\n")
+	}
+
+	if out := run(true); strings.Contains(out, "else") {
+		t.Errorf("DESCRIBE invented an `else` for the (empty) flow with no body:\n%s", out)
+	}
+	if out := run(false); !strings.Contains(out, "else") {
+		t.Errorf("an else WITH a body must still render:\n%s", out)
+	}
+}

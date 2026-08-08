@@ -1344,13 +1344,28 @@ func buildRestParameterMappings(
 	return pathMappings, queryMappings
 }
 
+// dynamicQueryExpression renders the statement's dynamic query as the Mendix
+// expression the action stores.
+//
+// A literal SQL string has to be quoted, because the field holds an expression —
+// but an expression must be passed through untouched. Quoting `$Sql` sends the
+// four characters "$Sql" to the database:
+//
+//	ERROR - ExternalDatabaseConnector: Parser Error: syntax error at or near "$"
+//
+// which blocks runtime-built SQL entirely. The two spellings are only
+// distinguishable at parse time, hence DynamicQueryIsExpression.
+func dynamicQueryExpression(s *ast.ExecuteDatabaseQueryStmt) string {
+	q := s.DynamicQuery
+	if q == "" || s.DynamicQueryIsExpression || strings.HasPrefix(q, "'") {
+		return q
+	}
+	return "'" + strings.ReplaceAll(q, "'", "''") + "'"
+}
+
 // addExecuteDatabaseQueryAction creates an EXECUTE DATABASE QUERY statement.
 func (fb *flowBuilder) addExecuteDatabaseQueryAction(s *ast.ExecuteDatabaseQueryStmt) model.ID {
-	// DynamicQuery is a Mendix expression — string literals need single quotes
-	dynamicQuery := s.DynamicQuery
-	if dynamicQuery != "" && !strings.HasPrefix(dynamicQuery, "'") {
-		dynamicQuery = "'" + strings.ReplaceAll(dynamicQuery, "'", "''") + "'"
-	}
+	dynamicQuery := dynamicQueryExpression(s)
 
 	action := &microflows.ExecuteDatabaseQueryAction{
 		BaseElement:        model.BaseElement{ID: model.ID(types.GenerateID())},

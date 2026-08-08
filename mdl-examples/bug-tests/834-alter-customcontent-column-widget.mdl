@@ -1,0 +1,56 @@
+-- ============================================================================
+-- Issue #834 — ALTER PAGE could not reach a widget inside a customContent column
+-- ============================================================================
+--
+-- `alter page … set Caption = '…' on btnEdit` reported "widget btnEdit not
+-- found" when btnEdit lived inside a datagrid column rendered as
+-- customContent. The only remedy was CREATE OR REPLACE PAGE — a full rewrite.
+--
+-- Two independent defects were in play:
+--
+--   1. The resolver never descended into a column's own content. Columns live
+--      at Object.Properties[columns].Value.Objects[]; each column's widgets are
+--      one level deeper at Properties[content].Value.Widgets[]. The pluggable
+--      search only reached the grid's own Object.Properties[].Value.Widgets.
+--
+--   2. `set Caption` failed on EVERY action button, nested or top-level, with
+--      "widget has no Caption property" — an ActionButton stores its caption as
+--      a Forms$ClientTemplate under CaptionTemplate, not as a Caption document.
+--
+-- Addressing is by the nested widget's OWN name. A `grid.column.widget` path
+-- was considered and rejected: DataGrid2 columns carry no stored name in the
+-- MPR, so the column segment could only ever be a derived name (the bound
+-- attribute, or the caption) — which changes when the caption is edited, making
+-- such a path silently stale. The nested widget's name is real and stable.
+--
+-- To verify:
+--   1. Run this script.
+--   2. `mxcli describe page Bug834.PgCC` — btnEdit's caption must read
+--      'Changed' (nested) and btnTop's must read 'Changed too' (top-level).
+--   3. mx check reports 0 errors (verified on 11.6.6).
+-- ============================================================================
+
+CREATE MODULE Bug834;
+
+CREATE OR MODIFY PERSISTENT ENTITY Bug834.Thing ( Slug: String(50) );
+
+CREATE OR REPLACE PAGE Bug834.PgCC ( Title: 'PgCC', Layout: Atlas_Core.Atlas_Default )
+{
+  actionbutton btnTop (caption: 'Edit')
+  datagrid dgcc (datasource: database from Bug834.Thing) {
+    column colA (attribute: Slug, caption: 'Slug')
+    column colB (caption: 'Act', ShowContentAs: customContent) {
+      actionbutton btnEdit (caption: 'Edit')
+    }
+  }
+}
+
+-- Defect 1: reaching a widget nested in a customContent column.
+ALTER PAGE Bug834.PgCC {
+  set caption = 'Changed' on btnEdit;
+};
+
+-- Defect 2: the same setter on a top-level action button, which failed too.
+ALTER PAGE Bug834.PgCC {
+  set caption = 'Changed too' on btnTop;
+};

@@ -211,6 +211,8 @@ SHOW STRUCTURE DEPTH 1 ALL;`,
 			"move folder", "drop folder",
 		},
 		Syntax: `MOVE <doctype> Module.Name TO FOLDER 'Path';
+-- doctype: PAGE | MICROFLOW | NANOFLOW | SNIPPET | ENUMERATION | CONSTANT
+--        | DATABASE CONNECTION | JAVA ACTION | ODATA SERVICE | ENTITY | FOLDER
 MOVE <doctype> Module.Name TO TargetModule;
 MOVE <doctype> OldModule.Name TO FOLDER 'Path' IN NewModule;
 MOVE FOLDER Module.FolderName TO FOLDER 'Path';
@@ -224,12 +226,50 @@ MOVE MICROFLOW MyModule.ACT_ProcessOrder TO FOLDER 'Orders/Processing';
 -- Move entity to different module
 MOVE ENTITY OldModule.Customer TO NewModule;
 
+-- Java actions and published OData services have no folder clause on CREATE,
+-- so MOVE is the only way to place them
+MOVE JAVA ACTION MyModule.ODataQuery TO FOLDER 'Support';
+MOVE ODATA SERVICE MyModule.PublicApi TO FOLDER 'Api/Published';
+
 -- Check impact before cross-module move
 SHOW IMPACT OF OldModule.CustomerPage;
 MOVE PAGE OldModule.CustomerPage TO NewModule;
 
 -- Drop empty folder
-DROP FOLDER 'OldFolder' IN Module;`,
+DROP FOLDER 'OldFolder' IN Module;
+
+-- Read the placement back
+LIST FOLDERS IN MyModule;`,
+		SeeAlso: []string{"folders"},
+	})
+
+	// ── Folders ─────────────────────────────────────────────────────────
+
+	Register(SyntaxFeature{
+		Path:    "folders",
+		Summary: "LIST FOLDERS — the folder layout of a module, with what is in each folder",
+		Keywords: []string{
+			"folders", "list folders", "show folders", "layout",
+			"folder tree", "where is this document", "unfiled",
+		},
+		Syntax: "LIST FOLDERS [IN <module>];",
+		Example: `-- Layout of one module
+LIST FOLDERS IN MyModule;
+
+-- Every module in the project
+LIST FOLDERS;
+
+-- As rows, to diff against an intended layout
+mxcli -p app.mpr --json -c "LIST FOLDERS IN MyModule"
+
+-- Complements MOVE: MOVE places a document in a folder, LIST FOLDERS reads
+-- the placement back. SHOW STRUCTURE is organised by document type at every
+-- depth, so it never shows which folder a document sits in.
+--
+-- Empty folders are listed too (with [0]), and documents still at the module
+-- root appear under "(module root)" — so the output is the whole layout and
+-- can be diffed against an intended one.`,
+		SeeAlso: []string{"move", "structure"},
 	})
 
 	// ── Search ──────────────────────────────────────────────────────────
@@ -283,6 +323,9 @@ Flags:
                       every test or model change (Ctrl-C to stop)
       --attach        Run against an app already started with
                       'mxcli run --local --test-endpoint' — no boot at all
+      --skip-app-startup
+                      With --local, do not run the project's own
+                      after-startup microflow (it runs by default)
       --legacy-runner With --local: use the old after-startup runner
   -v, --verbose       Show runtime log lines
   -t, --timeout DUR   Runtime startup timeout (default: 5m)
@@ -292,12 +335,22 @@ Annotations:
   @expect $var = value      Assert variable equals value
   @expect $obj/Attr = val   Assert entity attribute
   @throws 'message'         Expect error
-  @cleanup rollback|none    Cleanup strategy (default: rollback)
+  @cleanup rollback|none    What happens to the test's database writes.
+                            rollback (the default) wraps the test in a
+                            transaction and rolls it back, so nothing it
+                            wrote survives — including when it throws.
+                            none lets the writes commit. --local only:
+                            the Docker path always commits. An unknown
+                            value is a parse error, not a silent commit.
 
 How --local runs tests: one microflow per test, invoked by name over a
 token-guarded HTTP endpoint the app registers at boot. A test that throws
 fails only itself, and results are returned rather than scraped from the log.
 Docker still uses the older after-startup runner.
+
+Boot also runs the project's own after-startup microflow, chained after the
+endpoint registration, so tests see the app in the state it really boots into
+and a suite behaves the same under --local and --attach.
 
 Cost of a run:
   cold (--local)            ~30s   boots a runtime on its own ports + DB

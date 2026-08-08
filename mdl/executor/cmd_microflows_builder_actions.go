@@ -601,6 +601,19 @@ func (fb *flowBuilder) addStructuredInheritanceSplit(s *ast.InheritanceSplitStmt
 	for _, c := range s.Cases {
 		addBranch(qualifiedNameString(c.Entity), c.Body)
 	}
+	// The empty-entity branch is NOT optional, and is not a "default" case: on an
+	// object-type decision it is the `(empty)` flow, for a null object. Dropping
+	// it when no `else` is written fails the build with
+	//
+	//	CE0089 "The '(empty)' value should be configured for an outgoing flow."
+	//
+	// (verified on mxbuild 11.6.6). So it is emitted unconditionally, and MDL's
+	// `else` on an inheritance split IS that `(empty)` case — which is also why
+	// an `else` cannot substitute for the base entity's own case (CE0090): the
+	// two cover different things.
+	//
+	// DESCRIBE suppresses this flow when its body is empty, so a describe→exec
+	// roundtrip does not accumulate `else` blocks; exec re-creates it here.
 	addBranch("", s.ElseBody)
 
 	fb.posX = mergeX

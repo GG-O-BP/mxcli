@@ -47,6 +47,13 @@ type runResponse struct {
 	DurationMicros int64  `json:"durationMicros"`
 	Result         string `json:"result"`
 	Error          string `json:"error"`
+	// RollbackRequested echoes back whether the runner asked for a rollback, so a
+	// runner talking to an older endpoint that ignores the parameter can tell.
+	RollbackRequested bool `json:"rollbackRequested"`
+	// RolledBack reports that the transaction was actually rolled back.
+	RolledBack bool `json:"rolledBack"`
+	// RollbackError is why it was not.
+	RollbackError string `json:"rollbackError"`
 }
 
 // listResponse is the endpoint's reply to a list request.
@@ -111,10 +118,16 @@ func (c *endpointClient) list() ([]string, error) {
 	return lr.Microflows, nil
 }
 
-// run executes one test microflow and returns the endpoint's reply.
-func (c *endpointClient) run(mf string) (*runResponse, error) {
+// run executes one test microflow and returns the endpoint's reply. With
+// rollback set, the endpoint wraps the call in a transaction it rolls back, so
+// the test's database writes do not survive.
+func (c *endpointClient) run(mf string, rollback bool) (*runResponse, error) {
+	params := url.Values{"mf": {mf}}
+	if rollback {
+		params.Set("rollback", "1")
+	}
 	var rr runResponse
-	if err := c.get("run", url.Values{"mf": {mf}}, &rr); err != nil {
+	if err := c.get("run", params, &rr); err != nil {
 		return nil, err
 	}
 	return &rr, nil

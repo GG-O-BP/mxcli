@@ -106,6 +106,47 @@ begin
 end;
 ```
 
+## Reading the Layout Back
+
+`list folders` shows the folder layout of a module and what is in each folder.
+This is the counterpart to `move`: `move` puts a document somewhere, `list
+folders` shows where everything actually is.
+
+```sql
+-- One module
+list folders in MyModule;
+
+-- Every module in the project
+list folders;
+```
+
+```
+MyModule
+  (module root)  [1]
+    Microflow ACT_Unfiled
+  Api  [0]
+  Api/Published  [1]
+    ODataService PublicApi
+  Support  [1]
+    JavaAction Helper
+
+(3 folder(s), 3 document(s))
+```
+
+Three things about the output are deliberate:
+
+- **Empty folders are listed** (`Api  [0]`), so the listing is the whole layout
+  and can be diffed against an intended one.
+- **Documents still at the module root** appear under `(module root)` — what is
+  not filed yet is the thing you most want to notice.
+- **Ordering is stable**, so a diff between two runs shows only real movement.
+
+Use the CLI's `--json` flag for a row per document (`Module, Folder, Kind, Document`)
+when comparing against a checked-in layout.
+
+Do **not** reach for `show structure` here: it groups by document type at every
+depth and never shows which folder a document sits in.
+
 ## Moving Documents
 
 The `move` command relocates existing documents between folders and modules.
@@ -168,7 +209,16 @@ move page OldModule.CustomerPage to NewModule;
 | Nanoflow      | `folder 'path'` (keyword) | `move nanoflow ...` |
 | Snippet       | `folder: 'path'` (property) | `move snippet ...` |
 | Enumeration   | N/A | `move enumeration ...` |
+| Constant      | N/A | `move constant ...` |
+| Database connection | N/A | `move database connection ...` |
+| Java action   | N/A | `move java action ...` |
+| OData service (published) | N/A | `move odata service ...` |
 | Entity        | N/A | `move entity ...` (module only, no folders) |
+
+**Java actions and published OData services have no folder clause on `create`**, so
+`move` is the only way to place them — before this they were stuck at the module
+root forever. Both are plain document units, so the move is model-level only: it
+changes containment and nothing else.
 
 **Note:** Pages and snippets use property syntax (`folder: 'path'` inside parentheses). Microflows and nanoflows use keyword syntax (`folder 'path'` before `begin`). Entities are embedded in domain models and can only be moved to a different module (no folder support).
 
@@ -243,3 +293,4 @@ drop folder 'Processing' in MyModule;
 - [ ] Cross-module moves: checked impact with `show impact of` first
 - [ ] Folder naming is consistent across modules
 - [ ] DROP FOLDER: verify folder is empty before dropping
+- [ ] After a batch of moves: `list folders in MyModule` to confirm the layout

@@ -10,17 +10,29 @@ create persistent entity InheritanceSplitExample.SpecializedInput extends Inheri
 );
 /
 
+-- An object-type decision needs an outgoing flow for EVERY listed type,
+-- including the base entity. This example used `case Specialized` + `else`,
+-- which fails the build with CE0090 ("The 'InheritanceSplitExample.BaseInput'
+-- value should be configured for an outgoing flow") — `else` serializes as
+-- Microflows$NoCase and is accepted, but it does not satisfy coverage.
+--
+-- The branches also converge on a merge that continues to the end event, so a
+-- non-void microflow needs a `return` after `end split;` (otherwise CE0067
+-- "The 'Return value' property is required", and mxcli check reports MDL003).
+--
+-- Verified with mxbuild 11.6.6 and 11.13.0: 0 errors.
 create microflow InheritanceSplitExample.RouteInput (
   $Input: InheritanceSplitExample.BaseInput
 )
 returns boolean
 begin
+  declare $IsSpecialized boolean = false;
   split type $Input
   case InheritanceSplitExample.SpecializedInput
     cast $SpecializedInput;
-    return true;
-  else
-    return false;
+    set $IsSpecialized = true;
+  case InheritanceSplitExample.BaseInput
   end split;
+  return $IsSpecialized;
 end;
 /

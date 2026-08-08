@@ -333,6 +333,7 @@ it is for pages.
 
 | Statement | Syntax | Notes |
 |-----------|--------|-------|
+| List folders | `list folders [in module];` | The folder layout, with the documents in each folder |
 | Microflow folder | `folder 'path'` (before BEGIN) | `create microflow ... folder 'ACT' begin ... end;` |
 | Page folder | `folder: 'path'` (in properties) | `create page ... (folder: 'pages/Detail') { ... }` |
 | Drop folder | `drop folder 'path' in module;` | Folder must be empty |
@@ -355,7 +356,7 @@ Nested folders use `/` separator: `'Parent/Child/Grandchild'`. Missing folders a
 | Show demo users | `show demo users;` | Configured demo users |
 | Show access on element | `show access on microflow\|nanoflow\|page\|entity Mod.Name;` | Which roles can access |
 | Show security matrix | `show security matrix [in module];` | Full access overview |
-| Create module role | `create module role Mod.Role [description 'text'];` | |
+| Create module role | `create [or modify] module role Mod.Role [description 'text'];` | `or modify` updates an existing role instead of failing, so a security script can be re-run |
 | Drop module role | `drop module role Mod.Role;` | |
 | Create user role | `create user role Name (Mod.Role, ...) [manage all roles];` | Aggregates module roles |
 | Alter user role | `alter user role Name add\|remove module roles (Mod.Role, ...);` | |
@@ -485,6 +486,7 @@ alter workflow Module.OrderApproval
 | Full types | `show structure depth 3;` | Typed attributes, named parameters |
 | Filter by module | `show structure in ModuleName;` | Single module only |
 | Include all modules | `show structure depth 1 all;` | Include system/marketplace modules |
+| Folder layout | `list folders [in module];` | `show structure` is by document type at every depth and never shows folders — use this to read back where a `move` put something |
 
 ## Navigation
 

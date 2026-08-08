@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -300,24 +301,56 @@ func TestAllThemesAreWellFormed(t *testing.T) {
 // The Atlas wiring is what makes a palette swap cheap, so every theme has to
 // run through the same one. Shipped per theme (a theme package is meant to be
 // self-contained), which is exactly why it can drift.
-func TestAtlasMapIsIdenticalInEveryTheme(t *testing.T) {
+func TestSharedPartialsAreIdenticalInEveryTheme(t *testing.T) {
 	themes, err := List()
 	if err != nil {
 		t.Fatal(err)
 	}
-	var reference []byte
-	var referenceName string
+	for _, shared := range []string{"_mxcli-atlas-map.scss", "_mxcli-widgets.scss"} {
+		var reference []byte
+		var referenceName string
+		for _, th := range themes {
+			body, err := assetsFS.ReadFile("assets/" + th.Name + "/files/theme/web/" + shared)
+			if err != nil {
+				t.Fatalf("%s ships no %s: %v", th.Name, shared, err)
+			}
+			if reference == nil {
+				reference, referenceName = body, th.Name
+				continue
+			}
+			if string(body) != string(reference) {
+				t.Errorf("%s's %s has drifted from %s's", th.Name, shared, referenceName)
+			}
+		}
+	}
+}
+
+// The widget layer exists because Sass bakes these colours before any custom
+// property exists, so a rule that reintroduces a literal defeats the point.
+func TestWidgetLayerResolvesEveryColourThroughAToken(t *testing.T) {
+	themes, err := List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	literal := regexp.MustCompile(`(color|background|background-color|border-color|outline-color|box-shadow)\s*:\s*[^;]*(#[0-9a-fA-F]{3,8}|\brgba?\()`)
 	for _, th := range themes {
-		body, err := assetsFS.ReadFile("assets/" + th.Name + "/files/theme/web/_mxcli-atlas-map.scss")
+		body, err := assetsFS.ReadFile("assets/" + th.Name + "/files/theme/web/_mxcli-widgets.scss")
 		if err != nil {
-			t.Fatalf("%s ships no Atlas map: %v", th.Name, err)
+			t.Fatal(err)
 		}
-		if reference == nil {
-			reference, referenceName = body, th.Name
-			continue
+		for i, line := range strings.Split(string(body), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "//") {
+				continue
+			}
+			if literal.MatchString(trimmed) {
+				t.Errorf("%s _mxcli-widgets.scss:%d reintroduces a literal colour: %q",
+					th.Name, i+1, trimmed)
+			}
 		}
-		if string(body) != string(reference) {
-			t.Errorf("%s's Atlas map has drifted from %s's", th.Name, referenceName)
+		// And it has to actually carry the fix that prompted the layer.
+		if !strings.Contains(string(body), ".pagination-bar") {
+			t.Errorf("%s: no rule for the Data Grid 2 pager caption", th.Name)
 		}
 	}
 }

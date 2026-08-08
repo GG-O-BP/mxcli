@@ -23,6 +23,13 @@
 -- Validation:
 --   `mxcli check` parses the script.
 --   `mx check` against the resulting MPR reports 0 errors.
+--
+--   The base-type case (`case BugTest475.Vehicle`) is required for that: an
+--   object-type decision needs an outgoing flow for every listed type, and
+--   without the base entity the build fails CE0090 regardless of this bug.
+--   It is deliberately a TERMINATING branch — the scenario under test is
+--   "exactly ONE non-split branch continues", and giving Vehicle a falling
+--   -through body would make two branches continue and lose the regression.
 --   Roundtrip (describe → exec → describe) preserves the structure
 --   byte-for-byte: the post-split log activity stays outside both case
 --   bodies.
@@ -65,6 +72,8 @@ begin
     log info node 'BugTest475' 'Dispatching car';
   case BugTest475.Boat
     log info node 'BugTest475' 'Dispatching boat';
+    return false;
+  case BugTest475.Vehicle
     return false;
   end split;
   log info node 'BugTest475' 'Dispatched';

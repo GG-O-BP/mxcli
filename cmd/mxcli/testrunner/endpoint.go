@@ -235,10 +235,23 @@ com.mendix.core.Core.addRequestHandler("` + endpointPath + `", new com.mendix.ex
             return;
         }
 
+        // rollback=1 wraps the call in a transaction this handler owns and rolls
+        // it back afterwards, so the test's database writes do not survive it.
+        // The microflow joins that transaction rather than committing its own —
+        // Mendix contexts carry one transaction, and a nested start/end only
+        // adjusts its depth, so the outer rollback undoes everything inside.
+        boolean rollback = "1".equals(request.getParameter("rollback"));
+
         long t0 = System.nanoTime();
         com.mendix.systemwideinterfaces.core.IContext ctx = com.mendix.core.Core.createSystemContext();
         Object result = null;
         String error = null;
+        String rollbackError = null;
+        boolean rolledBack = false;
+
+        if (rollback) {
+            ctx.startTransaction();
+        }
         try {
             result = com.mendix.core.Core.microflowCall(mf).execute(ctx);
         } catch (Throwable t) {
@@ -246,6 +259,21 @@ com.mendix.core.Core.addRequestHandler("` + endpointPath + `", new com.mendix.ex
             while (root.getCause() != null && root.getCause() != root) root = root.getCause();
             String msg = root.getMessage();
             error = (msg == null || msg.isEmpty()) ? root.getClass().getName() : msg;
+        } finally {
+            if (rollback) {
+                // A rollback that silently fails leaves the data behind while the
+                // run still reports a clean pass, so its outcome is reported
+                // rather than swallowed. A microflow that already threw may have
+                // ended the transaction itself; that is not an error worth
+                // failing the test over, but it is worth saying.
+                try {
+                    ctx.rollbackTransaction();
+                    rolledBack = true;
+                } catch (Throwable t) {
+                    String msg = t.getMessage();
+                    rollbackError = (msg == null || msg.isEmpty()) ? t.getClass().getName() : msg;
+                }
+            }
         }
         long micros = (System.nanoTime() - t0) / 1000L;
 
@@ -255,6 +283,9 @@ com.mendix.core.Core.addRequestHandler("` + endpointPath + `", new com.mendix.ex
         b.append(",\"durationMicros\":").append(micros);
         b.append(",\"result\":").append(result == null ? "null" : esc(String.valueOf(result)));
         if (error != null) b.append(",\"error\":").append(esc(error));
+        b.append(",\"rollbackRequested\":").append(rollback);
+        b.append(",\"rolledBack\":").append(rolledBack);
+        if (rollbackError != null) b.append(",\"rollbackError\":").append(esc(rollbackError));
         b.append('}');
         out.write(b.toString());
         out.flush();
