@@ -444,13 +444,18 @@ func edmToMendixType(p *types.EdmProperty) string {
 
 // reservedEntityAttrNames are Mendix-reserved attribute names that must be
 // renamed when imported from an OData property of the same name.
-// These names conflict with Mendix system members or runtime internals.
 // The check is case-insensitive (see attrNameForOData).
+//
+// Every entry is one Mendix rejects with CE7247 "The name 'x' is a reserved
+// word." Verified on 11.12.1 by importing a contract with a property for each
+// name and prefixing disabled: seven errors, one per name below. `name` was on
+// this list and is NOT among them — an external entity with an attribute
+// literally named `name` builds clean, and prefixing it mangled the commonest
+// property in any contract (mxcli-formula1 #28). Do not add a name here without
+// a CE7247 to point at.
 var reservedEntityAttrNames = map[string]bool{
 	// Mendix internal identifier
 	"id": true,
-	// Mendix system-managed attribute for the object name (present on many entities)
-	"name": true,
 	// System ownership association (HasOwner / System.owner)
 	"owner": true,
 	// System audit associations (HasChangedBy / System.changedBy)
@@ -523,6 +528,10 @@ func createExternalEntities(ctx *ExecContext, s *ast.CreateExternalEntitiesStmt)
 
 	serviceRef := s.ServiceRef.String()
 	var created, updated, skipped, failed int
+	// Attribute names the import had to change because Mendix reserves them.
+	// Reported at the end so the local name never silently diverges from the
+	// contract; the mapping still points at the remote property either way.
+	var renamed []string
 
 	for _, schema := range doc.Schemas {
 		for _, et := range schema.EntityTypes {
@@ -649,6 +658,12 @@ func createExternalEntities(ctx *ExecContext, s *ast.CreateExternalEntitiesStmt)
 				}
 
 				attrName := attrNameForOData(p.Name, et.Name)
+				if attrName != p.Name {
+					// Never let a rename be discovered later, when a page written
+					// against the published $metadata fails with "The selected
+					// attribute … no longer exists" (mxcli-formula1 #28).
+					renamed = append(renamed, fmt.Sprintf("%s.%s: %s -> %s", mendixName, p.Name, p.Name, attrName))
+				}
 				attr := &domainmodel.Attribute{
 					Name:       attrName,
 					Type:       edmToDomainModelAttrType(p, keyPropSet[p.Name]),
@@ -731,6 +746,15 @@ func createExternalEntities(ctx *ExecContext, s *ast.CreateExternalEntitiesStmt)
 
 	fmt.Fprintf(ctx.Output, "\nFrom %s into %s: %d created, %d updated, %d skipped, %d failed\n",
 		svcQN, targetModule, created, updated, skipped, failed)
+
+	if len(renamed) > 0 {
+		sort.Strings(renamed)
+		fmt.Fprintf(ctx.Output, "\n  %d attribute name(s) changed — Mendix reserves the contract's spelling (CE7247),\n", len(renamed))
+		fmt.Fprintf(ctx.Output, "  so a page or expression must use the local name, not the one in $metadata:\n")
+		for _, r := range renamed {
+			fmt.Fprintf(ctx.Output, "    %s\n", r)
+		}
+	}
 
 	return nil
 }

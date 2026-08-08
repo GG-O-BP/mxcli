@@ -23,8 +23,6 @@ func TestAttrNameForOData_ReservedWords(t *testing.T) {
 		// Already-covered names
 		{"Id", "Photo", "PhotoId"},
 		{"id", "Photo", "Photoid"},
-		{"Name", "Airline", "AirlineName"},
-		{"name", "Airline", "Airlinename"},
 		// Newly-added reserved names (issue #526)
 		{"Owner", "Trip", "TripOwner"},
 		{"owner", "Trip", "Tripowner"},
@@ -38,7 +36,13 @@ func TestAttrNameForOData_ReservedWords(t *testing.T) {
 		{"changeddate", "Event", "Eventchangeddate"},
 		{"CreatedDate", "Event", "EventCreatedDate"},
 		{"createddate", "Event", "Eventcreateddate"},
-		// Non-reserved names must pass through unchanged
+		// Non-reserved names must pass through unchanged. `name` belongs here:
+		// it was on the reserved list and is not reserved — verified on 11.12.1
+		// by importing a contract with a property per listed name and prefixing
+		// disabled, which produced CE7247 for every other name and nothing for
+		// this one (mxcli-formula1 #28).
+		{"Name", "Airline", "Name"},
+		{"name", "Airline", "name"},
 		{"AirlineCode", "Airline", "AirlineCode"},
 		{"Concurrency", "Airline", "Concurrency"},
 		{"FirstName", "Person", "FirstName"},
