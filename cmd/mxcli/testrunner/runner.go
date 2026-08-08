@@ -236,6 +236,16 @@ func runEndpoint(opts RunOptions, suite *TestSuite, timeout time.Duration, w io.
 		}
 	}
 	fmt.Fprintf(w, "  After-startup set to %s (registers the endpoint; runs no tests)\n", endpointStartupFlow)
+	if state.afterStartup != "" {
+		// Naming what was displaced is the whole point. A suite that needs
+		// startup state passes under --attach and fails here against an empty
+		// database, and nothing in the failure points at the cause: the tests
+		// asked for state the runner deliberately prevented.
+		fmt.Fprintf(w, "  Note: %s does NOT run during this test run — the suite starts from an empty\n", state.afterStartup)
+		fmt.Fprintf(w, "        %s database. For tests that need what your startup microflow sets up,\n", localTestDBSuffix)
+		fmt.Fprintf(w, "        run them with --attach against an app already up under\n")
+		fmt.Fprintf(w, "        'mxcli run --local --test-endpoint', which uses that app's database.\n")
+	}
 
 	// --watch keeps the runtime and the build server up and re-runs on every
 	// change, so it owns the loop — including printing each run's results, which
