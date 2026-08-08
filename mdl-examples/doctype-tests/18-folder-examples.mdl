@@ -132,4 +132,22 @@ create odata service FolderTest.PublicApi (
 
 move odata service FolderTest.PublicApi to folder 'Api/Published';
 
+-- ============================================================================
+-- Level 7: Read the layout back
+-- ============================================================================
+
+/**
+ * LIST FOLDERS is the counterpart to MOVE: it shows the folder layout and what
+ * sits in each folder, including empty folders and anything still at the module
+ * root. SHOW STRUCTURE groups by document type at every depth and never shows
+ * which folder a document is in.
+ */
+list folders in FolderTest;
+
+-- SHOW is accepted as the legacy verb for the same statement.
+show folders in FolderTest;
+
+-- With no IN clause, every module in the project.
+list folders;
+
 drop module FolderTest;

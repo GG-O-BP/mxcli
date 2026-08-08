@@ -15,6 +15,8 @@ func execShow(ctx *ExecContext, s *ast.ShowStmt) error {
 	switch s.ObjectType {
 	case ast.ShowModules:
 		return listModules(ctx)
+	case ast.ShowFolders:
+		return listFolders(ctx, s)
 	case ast.ShowEnumerations:
 		return listEnumerations(ctx, s.InModule)
 	case ast.ShowConstants:

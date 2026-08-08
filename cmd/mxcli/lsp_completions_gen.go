@@ -256,6 +256,7 @@ var mdlGeneratedKeywords = []protocol.CompletionItem{
 	{Label: "AUTOFILL", Kind: protocol.CompletionItemKindKeyword, Detail: "Widget keyword"},
 	{Label: "URL", Kind: protocol.CompletionItemKindKeyword, Detail: "Widget keyword"},
 	{Label: "FOLDER", Kind: protocol.CompletionItemKindKeyword, Detail: "Widget keyword"},
+	{Label: "FOLDERS", Kind: protocol.CompletionItemKindKeyword, Detail: "Widget keyword"},
 	{Label: "PASSING", Kind: protocol.CompletionItemKindKeyword, Detail: "Widget keyword"},
 	{Label: "CONTEXT", Kind: protocol.CompletionItemKindKeyword, Detail: "Widget keyword"},
 	{Label: "EDITABLE", Kind: protocol.CompletionItemKindKeyword, Detail: "Widget keyword"},
