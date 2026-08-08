@@ -307,6 +307,21 @@ func microflowObjectToGen(obj microflows.MicroflowObject) element.Element {
 			g.SetSplitCondition(sc)
 		}
 		return g
+	case *microflows.InheritanceSplit:
+		// Without this the split hit `default: return nil` and was dropped, while
+		// the sequence flows referencing its $ID were still written — a dangling
+		// pointer that mxbuild cannot even load ("KeyNotFoundException ... at
+		// StreamingBsonUnitReader.ResolvePostponedProperties"). Same shape as the
+		// ErrorEvent/BreakEvent gap in #791. Fields mirror the legacy serializer
+		// in sdk/mpr/writer_microflow.go.
+		g := genMf.NewInheritanceSplit()
+		g.SetID(element.ID(o.ID))
+		g.SetCaption(o.Caption)
+		g.SetDocumentation(o.Documentation)
+		g.SetRelativeMiddlePoint(pointStr(o.Position))
+		g.SetSize(sizeStr(o.Size))
+		g.SetSplitVariableName(o.VariableName)
+		return g
 	case *microflows.ExclusiveMerge:
 		g := genMf.NewExclusiveMerge()
 		g.SetID(element.ID(o.ID))
@@ -1087,6 +1102,8 @@ func caseValueToGen(cv microflows.CaseValue) element.Element {
 		cv = &c
 	case microflows.NoCase:
 		cv = &c
+	case microflows.InheritanceCase:
+		cv = &c
 	}
 	switch c := cv.(type) {
 	case *microflows.EnumerationCase:
@@ -1098,6 +1115,14 @@ func caseValueToGen(cv microflows.CaseValue) element.Element {
 		g := genMf.NewEnumerationCase()
 		g.SetID(element.ID(c.ID))
 		g.SetValue(c.Expression)
+		return g
+	case *microflows.InheritanceCase:
+		// A type-split branch selects on an entity. Without this it fell through
+		// to NoCase, so every branch lost the entity it matches on — the second
+		// half of the `split type` corruption.
+		g := genMf.NewInheritanceCase()
+		g.SetID(element.ID(c.ID))
+		g.SetValueQualifiedName(c.EntityQualifiedName)
 		return g
 	default:
 		return genMf.NewNoCase()
