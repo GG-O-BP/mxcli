@@ -120,7 +120,6 @@ microflowStatement
     | annotation* caseStatement SEMICOLON
     | annotation* inheritanceSplitStatement SEMICOLON
     | annotation* castObjectStatement SEMICOLON
-    | annotation* setStatement SEMICOLON
     | annotation* createListStatement SEMICOLON       // Must be before createObjectStatement to match "CREATE LIST OF"
     | annotation* createObjectStatement SEMICOLON
     | annotation* changeObjectStatement SEMICOLON
@@ -170,6 +169,13 @@ microflowStatement
     | annotation* openWorkflowStatement SEMICOLON
     | annotation* lockWorkflowStatement SEMICOLON
     | annotation* unlockWorkflowStatement SEMICOLON
+    // LAST on purpose. Since SET became optional, `$X = <expr>` overlaps every
+    // `VARIABLE EQUALS <function-call>` statement above — aggregates, list
+    // operations, RANGE. Those rules must keep winning: a lower-numbered
+    // setStatement swallowed `$Sum = sum($List.Price)` into a Change Variable
+    // whose fallback conversion drops the attribute, which mxbuild rejects
+    // (CE0015 / CE0109). Last means it only claims what nothing else parses.
+    | annotation* setStatement SEMICOLON
     ;
 
 declareStatement
