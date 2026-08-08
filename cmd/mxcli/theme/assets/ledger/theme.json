@@ -30,6 +30,11 @@
       "purpose": "Layer 2 \u2014 dark palette, variant blocks, fonts, recipes"
     },
     {
+      "path": "theme/web/_mxcli-widgets.scss",
+      "mode": "block",
+      "purpose": "the widget-module layer \u2014 rules for colours Sass bakes before any token exists"
+    },
+    {
       "path": "theme/web/main.scss",
       "mode": "block",
       "purpose": "variant switch + imports \u2014 this file compiles last, so the partials win"
