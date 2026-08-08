@@ -215,3 +215,64 @@ func TestRollbackNote(t *testing.T) {
 		})
 	}
 }
+
+// TestDescribeStartup pins the line that mxcli-formula1 findings #19 asked for.
+// The runner used to say only that after-startup had been repointed, leaving no
+// way to tell that the app's own startup logic would not run — which produced a
+// suite that passed under --attach and failed under --local for reasons
+// unrelated to the code.
+func TestDescribeStartup(t *testing.T) {
+	tests := []struct {
+		name    string
+		app     string
+		skipped bool
+		want    []string
+		absent  []string
+	}{
+		{
+			name: "chains the project's own microflow by default",
+			app:  "MyModule.ASU_Startup",
+			want: []string{"then runs your MyModule.ASU_Startup"},
+			// It must not read as though the app's startup is being skipped.
+			absent: []string{"NOT run"},
+		},
+		{
+			name:    "says plainly when it is skipped",
+			app:     "MyModule.ASU_Startup",
+			skipped: true,
+			want:    []string{"MyModule.ASU_Startup", "NOT run", "--skip-app-startup"},
+		},
+		{
+			name:   "says when there is nothing to chain",
+			app:    "",
+			want:   []string{"no after-startup microflow of its own"},
+			absent: []string{"NOT run"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := describeStartup(tt.app, tt.skipped)
+			for _, w := range tt.want {
+				if !strings.Contains(got, w) {
+					t.Errorf("message %q does not contain %q", got, w)
+				}
+			}
+			for _, a := range tt.absent {
+				if strings.Contains(got, a) {
+					t.Errorf("message %q should not contain %q", got, a)
+				}
+			}
+		})
+	}
+}
+
+// TestSkippedStartupNamesTheFlagThatCausedIt keeps the skipped message
+// actionable: a reader who did not pass the flag themselves (a script did) can
+// still tell why their startup logic is missing.
+func TestSkippedStartupNamesTheFlagThatCausedIt(t *testing.T) {
+	got := describeStartup("Mod.Flow", true)
+	if !strings.Contains(got, "--skip-app-startup") {
+		t.Errorf("message %q does not name the flag responsible", got)
+	}
+}

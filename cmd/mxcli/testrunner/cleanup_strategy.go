@@ -87,3 +87,24 @@ func rollbackNote(requested bool, rr *runResponse) string {
 		return " [ROLLBACK FAILED]"
 	}
 }
+
+// describeStartup says what the generated after-startup microflow will do,
+// naming the project's own microflow when there is one.
+//
+// This line exists because its absence was a reported trap (mxcli-formula1
+// findings #19). The runner printed only that after-startup had been pointed at
+// its own microflow; a reader had no way to tell that their app's startup logic
+// — a cache load, in that report — was therefore not going to run. The suite
+// passed under --attach, where the app boots normally, and failed under --local
+// for reasons that had nothing to do with the code under test.
+func describeStartup(appAfterStartup string, skipped bool) string {
+	base := "After-startup set to " + endpointStartupFlow + " (registers the endpoint; runs no tests"
+	switch {
+	case appAfterStartup == "":
+		return base + "; this project has no after-startup microflow of its own)"
+	case skipped:
+		return base + "; --skip-app-startup, so " + appAfterStartup + " will NOT run)"
+	default:
+		return base + ", then runs your " + appAfterStartup + ")"
+	}
+}

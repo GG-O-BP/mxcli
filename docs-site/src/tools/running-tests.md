@@ -87,6 +87,17 @@ every request must present that token, non-loopback callers are refused, and it
 will only ever invoke the generated `MxTest.Test_*` microflows. The token is
 never written into your project.
 
+### The app's own after-startup microflow
+
+Boot registers the endpoint and then runs the project's own after-startup
+microflow, so tests see the app in the state it really boots into. The run
+prints which of the two happened, and `--skip-app-startup` opts out when a suite
+wants an empty, deterministic baseline.
+
+This keeps a suite behaving the same under `--local` and `--attach`. Note that
+what the startup microflow writes is not covered by `@cleanup rollback` — it
+runs at boot, outside any test's transaction.
+
 ### `@cleanup`: what happens to a test's data
 
 `rollback` is the **default**, so a test's database writes do not survive it.

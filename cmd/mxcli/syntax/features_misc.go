@@ -283,6 +283,9 @@ Flags:
                       every test or model change (Ctrl-C to stop)
       --attach        Run against an app already started with
                       'mxcli run --local --test-endpoint' — no boot at all
+      --skip-app-startup
+                      With --local, do not run the project's own
+                      after-startup microflow (it runs by default)
       --legacy-runner With --local: use the old after-startup runner
   -v, --verbose       Show runtime log lines
   -t, --timeout DUR   Runtime startup timeout (default: 5m)
@@ -304,6 +307,10 @@ How --local runs tests: one microflow per test, invoked by name over a
 token-guarded HTTP endpoint the app registers at boot. A test that throws
 fails only itself, and results are returned rather than scraped from the log.
 Docker still uses the older after-startup runner.
+
+Boot also runs the project's own after-startup microflow, chained after the
+endpoint registration, so tests see the app in the state it really boots into
+and a suite behaves the same under --local and --attach.
 
 Cost of a run:
   cold (--local)            ~30s   boots a runtime on its own ports + DB

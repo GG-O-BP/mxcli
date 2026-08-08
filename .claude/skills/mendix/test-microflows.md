@@ -172,8 +172,9 @@ older **after-startup microflow** pattern.
 2. Records the project's current after-startup microflow, and whether an `MxTest`
    module already exists
 3. Generates **one `MxTest.Test_<id>` microflow per test**, plus a Java action
-   that registers an HTTP endpoint, and points after-startup at a microflow whose
-   only job is to call it — **no test runs during startup**
+   that registers an HTTP endpoint, and points after-startup at a microflow that
+   registers it and then **chains your own after-startup microflow** —
+   **no test runs during startup**
 4. Builds and boots the app once
 5. Invokes each test by name over HTTP; each returns its own verdict in the
    response
@@ -191,6 +192,34 @@ Two consequences worth knowing when reading a failing run:
 
 Each test is a separate microflow with its own variable scope, so `$result` in
 one test never collides with `$result` in another.
+
+#### Your app's after-startup microflow still runs
+
+The generated startup flow registers the endpoint and then calls the project's
+own after-startup microflow, so tests see the app in the state it actually boots
+into — a loaded cache, seeded reference data, whatever your app does. The run
+says which happened:
+
+```
+After-startup set to MxTest.RegisterEndpoint (registers the endpoint; runs no tests, then runs your MyModule.ASU_Startup)
+```
+
+Pass `--skip-app-startup` when you want an empty, deterministic baseline
+instead — the app seeds demo data and your tests assert on counts, say:
+
+```
+After-startup set to MxTest.RegisterEndpoint (… --skip-app-startup, so MyModule.ASU_Startup will NOT run)
+```
+
+This is why a suite behaves the same under `--local` and `--attach`. Before it
+chained, `--local` ran with the app's startup logic suppressed, and a suite that
+depended on startup state passed under `--attach` and failed under `--local` for
+reasons unrelated to the code.
+
+One thing rollback does **not** cover: whatever the startup microflow writes
+happens at boot, outside any test's transaction, so `@cleanup rollback` does not
+undo it. Under `--local` that lands in the scratch `<project>_test` database;
+under `--attach` your app wrote it at its own boot regardless.
 
 #### `--watch`: keep the runtime warm
 
