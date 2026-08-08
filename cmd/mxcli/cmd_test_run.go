@@ -131,9 +131,15 @@ Examples:
 			os.Exit(1)
 		}
 
+		// Resolve before the --list branch, not after: listing and running must
+		// accept the same paths, or `mxcli test tests/ -p app/App.mpr` runs from
+		// the solution root and `--list` on the same command line does not.
+		// With no project this returns the paths untouched.
+		testPaths := resolveTestPaths(args, projectPath)
+
 		if list {
 			// Just list tests, no execution needed
-			if err := testrunner.ListTests(args, os.Stdout); err != nil {
+			if err := testrunner.ListTests(testPaths, os.Stdout); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -148,7 +154,7 @@ Examples:
 
 		opts := testrunner.RunOptions{
 			ProjectPath:  projectPath,
-			TestFiles:    resolveTestPaths(args, projectPath),
+			TestFiles:    testPaths,
 			SkipBuild:    skipBuild,
 			Local:        local,
 			LegacyRunner: legacyRunner,
