@@ -398,3 +398,98 @@ func TestParseEdmx_ConcurrencyModeFixed(t *testing.T) {
 		t.Error("ConcurrencyMode='Fixed' must set Computed=true so the attribute is not marked Creatable (issue #525)")
 	}
 }
+
+// mxcli-formula1 findings #24: CREATE EXTERNAL ENTITIES read names, types and
+// navigation properties out of the contract correctly, then defaulted every
+// capability to true regardless of what the contract said. Mendix compares the
+// two at build time and refuses:
+//
+//	'Seasons' is marked Countable=False in the OData service, but True in the app.
+//	'latitude' is marked Filterable=False in the OData service, but True in the app.
+//
+// Insert/Update/Delete restrictions were already parsed; Count/Filter/Sort were
+// not, so there was nothing for the import to honour.
+func TestParseEdmx_CountFilterSortRestrictions(t *testing.T) {
+	const md = `<?xml version="1.0" encoding="utf-8"?>
+<edmx:Edmx Version="4.0" xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx">
+  <edmx:DataServices>
+    <Schema Namespace="P" xmlns="http://docs.oasis-open.org/odata/ns/edm">
+      <EntityType Name="Circuit">
+        <Key><PropertyRef Name="circuitId"/></Key>
+        <Property Name="circuitId" Type="Edm.String" MaxLength="60"/>
+        <Property Name="latitude" Type="Edm.Decimal"/>
+        <Property Name="altitude" Type="Edm.Decimal"/>
+      </EntityType>
+      <EntityContainer Name="C">
+        <EntitySet Name="Circuits" EntityType="P.Circuit">
+          <Annotation Term="Org.OData.Capabilities.V1.CountRestrictions">
+            <Record><PropertyValue Bool="false" Property="Countable"/></Record>
+          </Annotation>
+          <Annotation Term="Org.OData.Capabilities.V1.FilterRestrictions">
+            <Record><PropertyValue Property="NonFilterableProperties">
+              <Collection><PropertyPath>latitude</PropertyPath></Collection>
+            </PropertyValue></Record>
+          </Annotation>
+          <Annotation Term="Org.OData.Capabilities.V1.SortRestrictions">
+            <Record><PropertyValue Property="NonSortableProperties">
+              <Collection><PropertyPath>altitude</PropertyPath></Collection>
+            </PropertyValue></Record>
+          </Annotation>
+        </EntitySet>
+      </EntityContainer>
+    </Schema>
+  </edmx:DataServices>
+</edmx:Edmx>`
+
+	doc, err := ParseEdmx(md)
+	if err != nil {
+		t.Fatalf("ParseEdmx: %v", err)
+	}
+	if len(doc.EntitySets) != 1 {
+		t.Fatalf("got %d entity sets, want 1", len(doc.EntitySets))
+	}
+	es := doc.EntitySets[0]
+
+	if es.Countable == nil || *es.Countable {
+		t.Errorf("Countable = %v, want an explicit false", es.Countable)
+	}
+	if len(es.NonFilterableProperties) != 1 || es.NonFilterableProperties[0] != "latitude" {
+		t.Errorf("NonFilterableProperties = %v, want [latitude]", es.NonFilterableProperties)
+	}
+	if len(es.NonSortableProperties) != 1 || es.NonSortableProperties[0] != "altitude" {
+		t.Errorf("NonSortableProperties = %v, want [altitude]", es.NonSortableProperties)
+	}
+}
+
+// A contract that says nothing must leave the capabilities unspecified, so the
+// import keeps OData's own default (countable, filterable, sortable) rather than
+// reading silence as a restriction.
+func TestParseEdmx_NoRestrictionsLeavesCapabilitiesUnset(t *testing.T) {
+	const md = `<?xml version="1.0" encoding="utf-8"?>
+<edmx:Edmx Version="4.0" xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx">
+  <edmx:DataServices>
+    <Schema Namespace="P" xmlns="http://docs.oasis-open.org/odata/ns/edm">
+      <EntityType Name="Circuit">
+        <Key><PropertyRef Name="circuitId"/></Key>
+        <Property Name="circuitId" Type="Edm.String" MaxLength="60"/>
+      </EntityType>
+      <EntityContainer Name="C">
+        <EntitySet Name="Circuits" EntityType="P.Circuit"/>
+      </EntityContainer>
+    </Schema>
+  </edmx:DataServices>
+</edmx:Edmx>`
+
+	doc, err := ParseEdmx(md)
+	if err != nil {
+		t.Fatalf("ParseEdmx: %v", err)
+	}
+	es := doc.EntitySets[0]
+	if es.Countable != nil {
+		t.Errorf("Countable = %v, want nil (unspecified)", *es.Countable)
+	}
+	if len(es.NonFilterableProperties) != 0 || len(es.NonSortableProperties) != 0 {
+		t.Errorf("restrictions invented from an unannotated set: filter=%v sort=%v",
+			es.NonFilterableProperties, es.NonSortableProperties)
+	}
+}

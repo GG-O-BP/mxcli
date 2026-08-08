@@ -496,6 +496,13 @@ type PublishedMember struct {
 	// without it `mx check` reports CE5016 ("published as ."). Attribute members only.
 	EdmType string `json:"edmType,omitempty"`
 
+	// EnumerationAsString publishes an enumeration attribute as Edm.String
+	// rather than as its own EDM enum type. The two are one setting, not two:
+	// with this false, Mendix expects the enumeration itself to be published in
+	// the service and rejects Edm.String (CE5016 + CE4583 "Enumeration is not
+	// published in this service"). Attribute members only.
+	EnumerationAsString bool `json:"enumerationAsString,omitempty"`
+
 	// Association-specific fields (Kind == "association"). Studio Pro's
 	// ODataPublish$PublishedAssociationEnd records both the association
 	// target entity (qualified name) and the bare association name

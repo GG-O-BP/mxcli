@@ -227,3 +227,49 @@ func TestExternalEntity_PrimitiveCollectionSourceRoundTrip(t *testing.T) {
 		t.Errorf("RemoteServiceName = %q", got.RemoteServiceName)
 	}
 }
+
+// TestExternalEntity_AttributeRemoteMappingRoundTrip is the attribute-level half
+// of #782, found by mxcli-formula1 #25: entityFromGen learned to read the
+// entity's own remote fields, but attributeFromGen still handled only
+// StoredValue and OqlViewValue. A Rest$ODataMappedValue therefore came back with
+// no RemoteName, and the write path's `isExternal && a.RemoteName != ""` arm fell
+// through to a plain StoredValue on the next read-modify-write.
+//
+// The visible failure is a `create or modify external entity` that touches only
+// an entity-level property and detonates every attribute:
+//
+//	[CE6612] "Attribute 'circuitId' of external entity 'Stg_Circuit' is not supported."
+//
+// one per attribute. Confirmed on 11.12.1 against a real contract import: three
+// CE6612 before the fix, none after.
+func TestExternalEntity_AttributeRemoteMappingRoundTrip(t *testing.T) {
+	proj, modID := externalEntityFixture(t, func(e *domainmodel.Entity) {
+		e.Attributes = []*domainmodel.Attribute{{
+			Name:       "ProductName",
+			Type:       &domainmodel.StringAttributeType{Length: 120},
+			RemoteName: "Name",
+			RemoteType: "Edm.String",
+			Filterable: true,
+			Sortable:   true,
+			Updatable:  true,
+		}}
+	})
+	got := readEntity(t, proj, modID, "Products")
+
+	if len(got.Attributes) != 1 {
+		t.Fatalf("got %d attributes, want 1", len(got.Attributes))
+	}
+	a := got.Attributes[0]
+	if a.RemoteName != "Name" {
+		t.Errorf("RemoteName = %q, want Name — the OData mapping did not survive the read", a.RemoteName)
+	}
+	if a.RemoteType != "Edm.String" {
+		t.Errorf("RemoteType = %q, want Edm.String", a.RemoteType)
+	}
+	// The per-attribute capability flags live on the same ODataMappedValue and
+	// are equally lost if the case arm is missing.
+	if !a.Filterable || !a.Sortable || !a.Updatable {
+		t.Errorf("capability flags lost: filterable=%v sortable=%v updatable=%v",
+			a.Filterable, a.Sortable, a.Updatable)
+	}
+}

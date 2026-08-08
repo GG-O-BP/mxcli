@@ -95,6 +95,10 @@ create module role MyModule.Admin description 'Full administrative access';
 create module role MyModule.User;
 create module role MyModule.Viewer description 'Read-only access';
 
+-- `or modify` updates an existing role's description instead of failing, so the
+-- whole security script stays re-runnable rather than needing a run-once file.
+create or modify module role MyModule.ApiUser description 'API consumer';
+
 -- Remove a module role
 drop module role MyModule.Viewer;
 ```

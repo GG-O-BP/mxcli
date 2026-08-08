@@ -33,14 +33,15 @@ because two themes mapping the same Atlas variables would fight in the cascade.
 
 ## What it writes
 
-Five things, all under `theme/`:
+Six things, all under `theme/`:
 
 | File | What |
 |---|---|
 | `theme/web/custom-variables.scss` | the theme's palette — this is the file to edit |
 | `theme/web/_mxcli-atlas-map.scss` | the Atlas wiring: ~60 Atlas variables expressed in terms of the palette |
 | `theme/web/_mxcli-<name>.scss` | the other palette, the variant blocks, `@font-face`, recipe classes |
-| `theme/web/main.scss` | the variant switch plus two `@import` lines |
+| `theme/web/_mxcli-widgets.scss` | the widget-module layer: colours Sass bakes before any token exists |
+| `theme/web/main.scss` | the variant switch plus the `@import` lines |
 | `theme/web/mxcli-fonts/` | vendored fonts (SIL OFL 1.1) |
 
 **The model is never touched.** No `.mpr` changes, so nothing here can affect a
@@ -137,6 +138,11 @@ mxcli block — anything outside the fence is never touched.
 - **`themesource/<name>/` is only compiled when `<name>` matches a real module**,
   so a theme never writes there. `theme/web/main.scss` compiles last and is the
   correct home for app-level styling.
+- **The widget modules bake some colours as Sass literals**, before any custom
+  property exists, so no token can move them — the Data Grid 2 pager caption is
+  the worst case, at 1.02:1 on a dark ground. `_mxcli-widgets.scss` corrects
+  those with ordinary rules; it is regenerated with the theme, so leave it alone
+  and put your own overrides outside the fence.
 
 ## Recipe classes
 

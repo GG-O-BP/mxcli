@@ -266,6 +266,24 @@ func attributeFromGen(a *genDm.Attribute) *domainmodel.Attribute {
 		// View-entity attribute: the OQL column reference must survive a
 		// read-modify-write (e.g. MOVE ENTITY) or the view goes out of sync (CE6770).
 		attr.Value = &domainmodel.AttributeValue{ViewReference: v.Reference()}
+	case *genRest.ODataMappedValue:
+		// External-entity attribute: the mapping to the remote OData property.
+		// Reading it back is what makes a read-modify-write safe — without it
+		// every attribute of an external entity comes back unmapped, and the
+		// writer's `isExternal && a.RemoteName != ""` arm falls through to a
+		// plain StoredValue. The entity then no longer matches the contract:
+		// "Attribute 'year' of external entity 'Stg_Season' is not supported."
+		attr.RemoteName = v.RemoteName()
+		attr.RemoteType = v.RemoteType()
+		attr.Filterable = v.Filterable()
+		attr.Sortable = v.Sortable()
+		attr.Creatable = v.Creatable()
+		attr.Updatable = v.Updatable()
+	case *genRest.ODataMappedPrimitiveCollectionValue:
+		// The single attribute of a primitive-collection NPE (issue #718).
+		attr.RemoteName = v.RemoteName()
+		attr.RemoteType = v.RemoteType()
+		attr.IsPrimitiveCollection = true
 	}
 	return attr
 }

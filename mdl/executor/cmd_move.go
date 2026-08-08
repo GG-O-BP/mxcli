@@ -81,6 +81,14 @@ func execMove(ctx *ExecContext, s *ast.MoveStmt) error {
 		if err := moveDatabaseConnection(ctx, s.Name, targetContainerID); err != nil {
 			return err
 		}
+	case ast.DocumentTypeJavaAction:
+		if err := moveJavaAction(ctx, s.Name, targetContainerID); err != nil {
+			return err
+		}
+	case ast.DocumentTypeODataService:
+		if err := movePublishedODataService(ctx, s.Name, targetContainerID); err != nil {
+			return err
+		}
 	default:
 		return mdlerrors.NewUnsupported("unsupported document type: " + string(s.DocumentType))
 	}
@@ -387,4 +395,62 @@ func moveDatabaseConnection(ctx *ExecContext, name ast.QualifiedName, targetCont
 	}
 
 	return mdlerrors.NewNotFound("database connection", name.String())
+}
+
+// moveJavaAction moves a Java action to a new container.
+//
+// Java actions and published OData services had no MOVE doctype at all, and
+// neither CREATE form takes a folder clause — so those documents could never
+// leave the module root from MDL (mxcli-formula1 #32).
+func moveJavaAction(ctx *ExecContext, name ast.QualifiedName, targetContainerID model.ID) error {
+	actions, err := ctx.Backend.ListJavaActionsFull()
+	if err != nil {
+		return mdlerrors.NewBackend("list java actions", err)
+	}
+
+	h, err := getHierarchy(ctx)
+	if err != nil {
+		return mdlerrors.NewBackend("build hierarchy", err)
+	}
+
+	for _, ja := range actions {
+		modID := h.FindModuleID(ja.ContainerID)
+		if h.GetModuleName(modID) == name.Module && ja.Name == name.Name {
+			ja.ContainerID = targetContainerID
+			if err := ctx.Backend.MoveJavaAction(ja); err != nil {
+				return mdlerrors.NewBackend("move java action", err)
+			}
+			fmt.Fprintf(ctx.Output, "Moved java action %s to new location\n", name.String())
+			return nil
+		}
+	}
+
+	return mdlerrors.NewNotFound("java action", name.String())
+}
+
+// movePublishedODataService moves a published OData service to a new container.
+func movePublishedODataService(ctx *ExecContext, name ast.QualifiedName, targetContainerID model.ID) error {
+	services, err := ctx.Backend.ListPublishedODataServices()
+	if err != nil {
+		return mdlerrors.NewBackend("list published OData services", err)
+	}
+
+	h, err := getHierarchy(ctx)
+	if err != nil {
+		return mdlerrors.NewBackend("build hierarchy", err)
+	}
+
+	for _, svc := range services {
+		modID := h.FindModuleID(svc.ContainerID)
+		if h.GetModuleName(modID) == name.Module && svc.Name == name.Name {
+			svc.ContainerID = targetContainerID
+			if err := ctx.Backend.MovePublishedODataService(svc); err != nil {
+				return mdlerrors.NewBackend("move published OData service", err)
+			}
+			fmt.Fprintf(ctx.Output, "Moved odata service %s to new location\n", name.String())
+			return nil
+		}
+	}
+
+	return mdlerrors.NewNotFound("odata service", name.String())
 }

@@ -355,7 +355,7 @@ Nested folders use `/` separator: `'Parent/Child/Grandchild'`. Missing folders a
 | Show demo users | `show demo users;` | Configured demo users |
 | Show access on element | `show access on microflow\|nanoflow\|page\|entity Mod.Name;` | Which roles can access |
 | Show security matrix | `show security matrix [in module];` | Full access overview |
-| Create module role | `create module role Mod.Role [description 'text'];` | |
+| Create module role | `create [or modify] module role Mod.Role [description 'text'];` | `or modify` updates an existing role instead of failing, so a security script can be re-run |
 | Drop module role | `drop module role Mod.Role;` | |
 | Create user role | `create user role Name (Mod.Role, ...) [manage all roles];` | Aggregates module roles |
 | Alter user role | `alter user role Name add\|remove module roles (Mod.Role, ...);` | |

@@ -135,6 +135,43 @@ Keep the rail dark in both variants, or force `color: inherit` on those widgets.
 For a working implementation of all of the above, read the generated
 `theme/web/_mxcli-atlas-map.scss` in any themed project.
 
+### Tokens stop at Atlas Core — the widget modules bake their colours
+
+Re-pointing Atlas's custom properties covers the app, and then a few things stay
+stubbornly off-palette: the Data Grid 2 pager caption, row-select checkboxes,
+popover shadows. One cause: the theme source shipped by the **widget modules**
+(`themesource/datawidgets`, `atlas_web_content`) styles some things with Sass
+variables and literals. Sass resolves those at compile time, before any custom
+property exists, so the value is baked into `theme.compiled.css` and **no token
+can move it**. Only a later CSS rule can.
+
+The worst case is `datawidgets/web/variables.scss:18`,
+`$pagination-caption-color: #0a1325` — the "1–15 of 77" caption, which measured
+**1.02:1** on a dark ground. The pager *buttons* beside it were fine, because
+they resolve `var(--gray-darker, …)` through Atlas. Same bar, two mechanisms.
+
+**The obvious fix does not work.** Each module's `main.scss` imports
+`theme/web/custom-variables` *before* its own `!default` variables, so setting
+`$pagination-caption-color: var(--my-muted)` there would win and Sass would
+substitute the `var()` into every use site. Tempting, and wrong here:
+
+1. The names collide with Atlas Core's, and Atlas Core feeds them to Sass colour
+   functions — `atlas_core/web/_variables.scss:20` computes
+   `mix($brand-primary, #e7e7e9, 10%)`. Handing `mix()` a `var()` is a compile
+   error, so the app stops building.
+2. The worst offenders are not behind a variable at all:
+   `_three-state-checkbox.scss` writes `#264ae5` and `rgba(#264ae5, 0.4)`
+   directly, so overriding `$brand-primary` would not reach them.
+
+So it is a rule set, in a partial imported after the theme's own — see the
+generated `theme/web/_mxcli-widgets.scss`.
+
+**Read the compiled CSS, not the SCSS, when building one.** The sources are full
+of `var(--token, #fallback)` declarations that already resolve correctly; only
+the bare literals are a problem. In one measured app the stock blue `#264ae5`
+appeared in 46 declarations — **24 of them harmless fallbacks**. Grepping the
+source would have produced twice the rules for no benefit.
+
 ## CSS Hot-Reload Workflow
 
 For theme/styling changes during Docker development:
