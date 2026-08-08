@@ -77,6 +77,14 @@ type EdmEntitySet struct {
 	Insertable *bool // InsertRestrictions/Insertable
 	Updatable  *bool // UpdateRestrictions/Updatable
 	Deletable  *bool // DeleteRestrictions/Deletable
+	Countable  *bool // CountRestrictions/Countable
+
+	// Property names the service says cannot be filtered or sorted on, from
+	// FilterRestrictions/NonFilterableProperties and
+	// SortRestrictions/NonSortableProperties. Mendix compares these against the
+	// app's per-attribute flags and reports CE6630 on a mismatch.
+	NonFilterableProperties []string
+	NonSortableProperties   []string
 
 	// Navigation property names listed under
 	// Org.OData.Capabilities.V1.{Insert,Update}Restrictions/Non*NavigationProperties.
@@ -406,6 +414,25 @@ func applyCapabilityAnnotations(es *EdmEntitySet, annotations []xmlCapabilitiesA
 				if pv.Property == "Deletable" && pv.Bool != "" {
 					v := pv.Bool == "true"
 					es.Deletable = &v
+				}
+			}
+		case "Org.OData.Capabilities.V1.CountRestrictions":
+			for _, pv := range ann.Record.PropertyValues {
+				if pv.Property == "Countable" && pv.Bool != "" {
+					v := pv.Bool == "true"
+					es.Countable = &v
+				}
+			}
+		case "Org.OData.Capabilities.V1.FilterRestrictions":
+			for _, pv := range ann.Record.PropertyValues {
+				if pv.Property == "NonFilterableProperties" && pv.Collection != nil {
+					es.NonFilterableProperties = pv.Collection.PropertyPaths
+				}
+			}
+		case "Org.OData.Capabilities.V1.SortRestrictions":
+			for _, pv := range ann.Record.PropertyValues {
+				if pv.Property == "NonSortableProperties" && pv.Collection != nil {
+					es.NonSortableProperties = pv.Collection.PropertyPaths
 				}
 			}
 		}

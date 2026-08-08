@@ -598,12 +598,25 @@ func createExternalEntities(ctx *ExecContext, s *ast.CreateExternalEntitiesStmt)
 			}
 			nonInsertable := make(map[string]bool)
 			nonUpdatable := make(map[string]bool)
+			// Filter/Sort restrictions name the properties the service refuses to
+			// filter or sort on. Marking them filterable anyway is CE6630
+			// ("'latitude' is marked Filterable=False in the OData service, but
+			// True in the app") — one per property, on an import whose whole job
+			// is to match the contract.
+			nonFilterable := make(map[string]bool)
+			nonSortable := make(map[string]bool)
 			if entitySet != nil {
 				for _, name := range entitySet.NonInsertableProperties {
 					nonInsertable[name] = true
 				}
 				for _, name := range entitySet.NonUpdatableProperties {
 					nonUpdatable[name] = true
+				}
+				for _, name := range entitySet.NonFilterableProperties {
+					nonFilterable[name] = true
+				}
+				for _, name := range entitySet.NonSortableProperties {
+					nonSortable[name] = true
 				}
 			}
 
@@ -641,8 +654,8 @@ func createExternalEntities(ctx *ExecContext, s *ast.CreateExternalEntitiesStmt)
 					Type:       edmToDomainModelAttrType(p, keyPropSet[p.Name]),
 					RemoteName: p.Name,
 					RemoteType: p.Type,
-					Filterable: true,
-					Sortable:   true,
+					Filterable: !nonFilterable[p.Name],
+					Sortable:   !nonSortable[p.Name],
 					Creatable:  creatable,
 					Updatable:  updatable,
 				}
@@ -1157,7 +1170,12 @@ func applyExternalEntityFields(
 		ent.Source = "Rest$ODataRemoteEntitySource"
 		ent.Persistable = true
 		ent.RemoteEntitySet = entitySet.Name
-		ent.Countable = true
+		// Countable follows the contract when it says so. OData's own default is
+		// countable, so an unannotated set stays true — but a service that
+		// declares CountRestrictions/Countable=false and an app that says true is
+		// CE6630 ("marked Countable=False in the OData service, but True in the
+		// app"), which is the whole point of generating from $metadata.
+		ent.Countable = entitySet.Countable == nil || *entitySet.Countable
 		// Capabilities default to false (Mendix's conservative read-only default)
 		// when the entity set has no Insert/Delete restriction annotation — an
 		// unannotated service is treated as read-only, and the app must match or
