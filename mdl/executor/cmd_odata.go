@@ -1339,6 +1339,8 @@ func createODataService(ctx *ExecContext, stmt *ast.CreateODataServiceStmt) erro
 			modName := h.GetModuleName(modID)
 			if strings.EqualFold(modName, stmt.Name.Module) && strings.EqualFold(svc.Name, stmt.Name.Name) {
 				if stmt.CreateOrModify {
+					// Snapshot the grants before anything below can clear them.
+					existingRoles := append([]string(nil), svc.AllowedModuleRoles...)
 					svc.Documentation = stmt.Documentation
 					if stmt.Path != "" {
 						svc.Path = stmt.Path
@@ -1370,6 +1372,38 @@ func createODataService(ctx *ExecContext, stmt *ast.CreateODataServiceStmt) erro
 					}
 					if len(stmt.AuthenticationTypes) > 0 {
 						svc.AuthenticationTypes = stmt.AuthenticationTypes
+					}
+					// Published entities are replaced wholesale when the statement
+					// supplies any. Previously the modify branch ignored them
+					// entirely: editing a `publish entity` block and re-running
+					// left the served $metadata unchanged, so `Filterable` or
+					// `Countable` changes appeared to do nothing and the only
+					// thing that worked was drop + create. Replacing rather than
+					// merging is what makes the script the description of the
+					// service — a member removed from the script is removed from
+					// the service, which merging could never express.
+					if len(stmt.Entities) > 0 {
+						svc.EntityTypes = nil
+						svc.EntitySets = nil
+						for _, entityDef := range stmt.Entities {
+							entityType, entitySet := astEntityDefToModel(ctx, entityDef)
+							svc.EntityTypes = append(svc.EntityTypes, entityType)
+							svc.EntitySets = append(svc.EntitySets, entitySet)
+						}
+					}
+					// AllowedModuleRoles is granted by a separate statement
+					// (`grant access on odata service …`) and cannot be expressed
+					// here, so a modify must carry it through or the build fails
+					// with "At least one allowed role must be selected for the
+					// published OData service to be accessible."
+					//
+					// A guard, not a fix for an observed defect: the loss was
+					// reported (mxcli-formula1 #26) but did not reproduce on
+					// 11.12.1 — grants survived a modify on both the current and
+					// the previous build. Kept because the invariant is real and
+					// the cost is a slice copy; if it never fires, nothing is lost.
+					if len(svc.AllowedModuleRoles) == 0 && len(existingRoles) > 0 {
+						svc.AllowedModuleRoles = existingRoles
 					}
 					if err := ctx.Backend.UpdatePublishedODataService(svc); err != nil {
 						return mdlerrors.NewBackend("update OData service", err)
