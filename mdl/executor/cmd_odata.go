@@ -1127,9 +1127,15 @@ Got: %s`, stmt.ServiceUrl)
 		}
 		newSvc.MetadataUrl = normalizedUrl
 
-		metadata, hash, err := fetchODataMetadata(normalizedUrl)
+		auth := metadataAuthFromStmt(stmt)
+		metadata, hash, err := fetchODataMetadata(normalizedUrl, auth)
 		if err != nil {
 			fmt.Fprintf(ctx.Output, "Warning: could not fetch $metadata: %v\n", err)
+			for _, hint := range auth.hints() {
+				fmt.Fprintf(ctx.Output, "  %s\n", hint)
+			}
+			fmt.Fprintf(ctx.Output, "  The client is created with no cached entity types, so a following\n")
+			fmt.Fprintf(ctx.Output, "  'create external entities from %s.%s' will import nothing.\n", stmt.Name.Module, stmt.Name.Name)
 		} else if metadata != "" {
 			newSvc.Metadata = metadata
 			newSvc.MetadataHash = hash
@@ -1825,7 +1831,82 @@ func astEntityDefToModel(ctx *ExecContext, def *ast.PublishedEntityDef) (*model.
 // Returns the metadata XML and its SHA-256 hash, or empty strings if the fetch fails.
 // Note: metadataUrl is expected to be already normalized by NormalizeURL() in createODataClient,
 // so all relative paths have been converted to absolute file:// URLs.
-func fetchODataMetadata(metadataUrl string) (metadata string, hash string, err error) {
+// metadataFetchAuth carries the credentials and headers used for the
+// design-time $metadata fetch.
+//
+// Only *literal* values are usable here. MDL stores a quoted literal with its
+// quotes ('f1api') and a constant reference bare (Module.ApiUser); at design
+// time mxcli has no runtime to resolve a constant against, so a reference is
+// reported rather than sent as if it were the value itself.
+type metadataFetchAuth struct {
+	Username string            // literal, quotes already stripped
+	Password string            // literal, quotes already stripped
+	Headers  map[string]string // literal values only
+	// Unresolved names the caller referenced by constant, for the message.
+	Unresolved []string
+}
+
+// apply sets basic auth and headers on the request. A nil receiver is a no-op,
+// so an unauthenticated fetch needs no special case at the call site.
+func (a *metadataFetchAuth) apply(req *http.Request) {
+	if a == nil {
+		return
+	}
+	if a.Username != "" || a.Password != "" {
+		req.SetBasicAuth(a.Username, a.Password)
+	}
+	for k, v := range a.Headers {
+		req.Header.Set(k, v)
+	}
+}
+
+// metadataAuthFromStmt collects the statement's own credentials and headers for
+// the design-time fetch, keeping only the literals.
+func metadataAuthFromStmt(stmt *ast.CreateODataClientStmt) *metadataFetchAuth {
+	auth := &metadataFetchAuth{Headers: map[string]string{}}
+	switch {
+	case stmt.HttpUsernameIsLiteral:
+		auth.Username = stmt.HttpUsername
+	case stmt.HttpUsername != "":
+		auth.Unresolved = append(auth.Unresolved, "HttpUsername ("+stmt.HttpUsername+")")
+	}
+	switch {
+	case stmt.HttpPasswordIsLiteral:
+		auth.Password = stmt.HttpPassword
+	case stmt.HttpPassword != "":
+		// Named, not printed: a constant reference is a name, but the value it
+		// resolves to is a secret and this line goes to the console.
+		auth.Unresolved = append(auth.Unresolved, "HttpPassword ("+stmt.HttpPassword+")")
+	}
+	for _, h := range stmt.Headers {
+		switch {
+		case h.ValueIsLiteral:
+			auth.Headers[h.Key] = h.Value
+		case h.Value != "":
+			auth.Unresolved = append(auth.Unresolved, "header "+h.Key+" ("+h.Value+")")
+		}
+	}
+	sort.Strings(auth.Unresolved)
+	return auth
+}
+
+// hints explains a failed fetch when the reason is credentials mxcli could not
+// resolve, and points at the workaround that also happens to be better practice.
+func (a *metadataFetchAuth) hints() []string {
+	var out []string
+	if a == nil {
+		return out
+	}
+	if len(a.Unresolved) > 0 {
+		out = append(out, "These are constant references, which only the runtime can resolve, so the fetch went out without them: "+strings.Join(a.Unresolved, ", "))
+	}
+	out = append(out,
+		"Fetch the contract once and point MetadataUrl at the file — it commits, so the",
+		"model rebuilds without the service running and a contract change is a reviewable diff.")
+	return out
+}
+
+func fetchODataMetadata(metadataUrl string, auth *metadataFetchAuth) (metadata string, hash string, err error) {
 	if metadataUrl == "" {
 		return "", "", nil
 	}
@@ -1847,7 +1928,16 @@ func fetchODataMetadata(metadataUrl string) (metadata string, hash string, err e
 	} else {
 		// HTTP(S) fetch
 		client := &http.Client{Timeout: 30 * time.Second}
-		resp, err := client.Get(metadataUrl)
+		req, reqErr := http.NewRequest(http.MethodGet, metadataUrl, nil)
+		if reqErr != nil {
+			return "", "", mdlerrors.NewBackend(fmt.Sprintf("build $metadata request for %s", metadataUrl), reqErr)
+		}
+		// The credentials and headers already on the statement apply to this
+		// fetch too. Without them a service behind `authentication basic`
+		// answers 401, the client is created with no cached entity types, and
+		// the CREATE EXTERNAL ENTITIES that follows silently imports nothing.
+		auth.apply(req)
+		resp, err := client.Do(req)
 		if err != nil {
 			return "", "", mdlerrors.NewBackend(fmt.Sprintf("fetch $metadata from %s", metadataUrl), err)
 		}

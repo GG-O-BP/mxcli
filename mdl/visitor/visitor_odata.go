@@ -45,8 +45,10 @@ func (b *Builder) ExitCreateODataClientStatement(ctx *parser.CreateODataClientSt
 			stmt.UseAuthentication = strings.EqualFold(value, "true") || strings.EqualFold(value, "yes")
 		case "httpusername":
 			stmt.HttpUsername = value
+			stmt.HttpUsernameIsLiteral = odataValueIsLiteral(prop)
 		case "httppassword":
 			stmt.HttpPassword = value
+			stmt.HttpPasswordIsLiteral = odataValueIsLiteral(prop)
 		case "clientcertificate":
 			stmt.ClientCertificate = value
 		case "configurationmicroflow":
@@ -296,6 +298,18 @@ func odataValueText(val *parser.OdataPropertyValueContext) string {
 	return ""
 }
 
+// odataValueIsLiteral reports whether an OData property value was written as a
+// quoted string rather than a constant reference. odataValueText strips a
+// literal's quotes, so this is the only thing that still tells the two apart —
+// and mxcli can only use a literal for the design-time $metadata fetch.
+func odataValueIsLiteral(prop *parser.OdataPropertyAssignmentContext) bool {
+	valCtx := prop.OdataPropertyValue()
+	if valCtx == nil {
+		return false
+	}
+	return valCtx.(*parser.OdataPropertyValueContext).STRING_LITERAL() != nil
+}
+
 // odataAssignmentValueText extracts the string value from an OData property assignment.
 func odataAssignmentValueText(prop *parser.OdataPropertyAssignmentContext) string {
 	valCtx := prop.OdataPropertyValue()
@@ -390,10 +404,13 @@ func parseODataHeaders(ctx parser.IOdataHeadersClauseContext) []ast.HeaderDef {
 		entry := entryCtx.(*parser.OdataHeaderEntryContext)
 		key := unquoteString(entry.STRING_LITERAL().GetText())
 		value := ""
+		isLiteral := false
 		if valCtx := entry.OdataPropertyValue(); valCtx != nil {
-			value = odataValueText(valCtx.(*parser.OdataPropertyValueContext))
+			vc := valCtx.(*parser.OdataPropertyValueContext)
+			value = odataValueText(vc)
+			isLiteral = vc.STRING_LITERAL() != nil
 		}
-		headers = append(headers, ast.HeaderDef{Key: key, Value: value})
+		headers = append(headers, ast.HeaderDef{Key: key, Value: value, ValueIsLiteral: isLiteral})
 	}
 
 	return headers

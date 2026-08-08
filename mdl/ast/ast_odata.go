@@ -24,7 +24,15 @@ type CreateODataClientStmt struct {
 	UseAuthentication bool
 	HttpUsername      string // Mendix expression for username
 	HttpPassword      string // Mendix expression for password
-	ClientCertificate string
+
+	// Whether the credential above was written as a quoted literal rather than
+	// a constant reference. The visitor strips a literal's quotes, so by the
+	// time it reaches the executor `'f1api'` and `Module.ApiUser` are both bare
+	// strings — and only the first is a value mxcli can use for the design-time
+	// $metadata fetch. A constant is resolved by the runtime, not by us.
+	HttpUsernameIsLiteral bool
+	HttpPasswordIsLiteral bool
+	ClientCertificate     string
 
 	// Microflow references. `ConfigurationMicroflow` (returns
 	// System.ConsumedODataConfiguration) and `HeadersMicroflow` (returns a list
@@ -52,6 +60,9 @@ type CreateODataClientStmt struct {
 type HeaderDef struct {
 	Key   string
 	Value string // Mendix expression
+	// ValueIsLiteral mirrors HttpUsernameIsLiteral: a quoted literal can be sent
+	// on the design-time fetch, a constant reference cannot.
+	ValueIsLiteral bool
 }
 
 func (s *CreateODataClientStmt) isStatement() {}
