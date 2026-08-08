@@ -60,6 +60,18 @@ func execCreateModuleRole(ctx *ExecContext, s *ast.CreateModuleRoleStmt) error {
 			}
 			return nil
 		}
+		if s.CreateOrModify {
+			// Re-running a security script must not fail on a role that is
+			// already there. AddModuleRole overwrites, so this also adopts a new
+			// description and the caller's casing.
+			if err := ctx.Backend.AddModuleRole(ms.ID, s.Name.Name, s.Description); err != nil {
+				return mdlerrors.NewBackend("modify module role", err)
+			}
+			if !ctx.Quiet {
+				fmt.Fprintf(ctx.Output, "Modified module role: %s.%s\n", s.Name.Module, s.Name.Name)
+			}
+			return nil
+		}
 		return mdlerrors.NewAlreadyExists("module role", s.Name.Module+"."+s.Name.Name)
 	}
 

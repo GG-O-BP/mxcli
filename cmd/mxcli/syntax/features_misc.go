@@ -211,6 +211,8 @@ SHOW STRUCTURE DEPTH 1 ALL;`,
 			"move folder", "drop folder",
 		},
 		Syntax: `MOVE <doctype> Module.Name TO FOLDER 'Path';
+-- doctype: PAGE | MICROFLOW | NANOFLOW | SNIPPET | ENUMERATION | CONSTANT
+--        | DATABASE CONNECTION | JAVA ACTION | ODATA SERVICE | ENTITY | FOLDER
 MOVE <doctype> Module.Name TO TargetModule;
 MOVE <doctype> OldModule.Name TO FOLDER 'Path' IN NewModule;
 MOVE FOLDER Module.FolderName TO FOLDER 'Path';
@@ -223,6 +225,11 @@ MOVE MICROFLOW MyModule.ACT_ProcessOrder TO FOLDER 'Orders/Processing';
 
 -- Move entity to different module
 MOVE ENTITY OldModule.Customer TO NewModule;
+
+-- Java actions and published OData services have no folder clause on CREATE,
+-- so MOVE is the only way to place them
+MOVE JAVA ACTION MyModule.ODataQuery TO FOLDER 'Support';
+MOVE ODATA SERVICE MyModule.PublicApi TO FOLDER 'Api/Published';
 
 -- Check impact before cross-module move
 SHOW IMPACT OF OldModule.CustomerPage;

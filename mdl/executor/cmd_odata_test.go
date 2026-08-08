@@ -47,7 +47,7 @@ func TestFetchODataMetadata_LocalFile(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			metadata, hash, err := fetchODataMetadata(tt.url)
+			metadata, hash, err := fetchODataMetadata(tt.url, nil)
 
 			if tt.wantErr {
 				if err == nil {
@@ -72,7 +72,7 @@ func TestFetchODataMetadata_LocalFile(t *testing.T) {
 			}
 
 			// Hash should be consistent
-			_, hash2, _ := fetchODataMetadata(tt.url)
+			_, hash2, _ := fetchODataMetadata(tt.url, nil)
 			if hash != hash2 {
 				t.Errorf("Hash inconsistent between calls: %q vs %q", hash, hash2)
 			}
@@ -182,7 +182,7 @@ func TestFetchODataMetadata_LocalFileAbsolute(t *testing.T) {
 		fileURL = "file:///" + filepath.ToSlash(filePath)
 	}
 
-	metadata, hash, err := fetchODataMetadata(fileURL)
+	metadata, hash, err := fetchODataMetadata(fileURL, nil)
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}

@@ -23,8 +23,6 @@ func TestAttrNameForOData_ReservedWords(t *testing.T) {
 		// Already-covered names
 		{"Id", "Photo", "PhotoId"},
 		{"id", "Photo", "Photoid"},
-		{"Name", "Airline", "AirlineName"},
-		{"name", "Airline", "Airlinename"},
 		// Newly-added reserved names (issue #526)
 		{"Owner", "Trip", "TripOwner"},
 		{"owner", "Trip", "Tripowner"},
@@ -38,7 +36,13 @@ func TestAttrNameForOData_ReservedWords(t *testing.T) {
 		{"changeddate", "Event", "Eventchangeddate"},
 		{"CreatedDate", "Event", "EventCreatedDate"},
 		{"createddate", "Event", "Eventcreateddate"},
-		// Non-reserved names must pass through unchanged
+		// Non-reserved names must pass through unchanged. `name` belongs here:
+		// it was on the reserved list and is not reserved — verified on 11.12.1
+		// by importing a contract with a property per listed name and prefixing
+		// disabled, which produced CE7247 for every other name and nothing for
+		// this one (mxcli-formula1 #28).
+		{"Name", "Airline", "Name"},
+		{"name", "Airline", "name"},
 		{"AirlineCode", "Airline", "AirlineCode"},
 		{"Concurrency", "Airline", "Concurrency"},
 		{"FirstName", "Person", "FirstName"},
@@ -135,8 +139,13 @@ func TestCreateNavigationAssociations_NoDuplicateOnReimport(t *testing.T) {
 
 // TestMendixAttrTypeToEdm guards the Mendix→EDM type mapping used to populate a
 // published attribute's EdmType. Without it Studio Pro reports CE5016
-// ("published as ."). String/Decimal/Boolean/DateTimeOffset are verified against
-// Studio Pro's corrected BSON.
+// ("published as .").
+//
+// Every row is now adjudicated by mxbuild rather than assumed: one attribute of
+// each type published in one service on 11.12.1, then the CE5016s read off the
+// build. This test previously pinned Integer to Edm.Int32, which was an
+// unverified guess and wrong — Mendix publishes Integer as Int64, so every whole
+// number in a published service failed the build (mxcli-formula1 #16).
 func TestMendixAttrTypeToEdm(t *testing.T) {
 	cases := []struct {
 		typ  domainmodel.AttributeType
@@ -144,13 +153,14 @@ func TestMendixAttrTypeToEdm(t *testing.T) {
 	}{
 		{&domainmodel.StringAttributeType{}, "Edm.String"},
 		{&domainmodel.HashedStringAttributeType{}, "Edm.String"},
-		{&domainmodel.IntegerAttributeType{}, "Edm.Int32"},
+		{&domainmodel.IntegerAttributeType{}, "Edm.Int64"},
 		{&domainmodel.LongAttributeType{}, "Edm.Int64"},
 		{&domainmodel.AutoNumberAttributeType{}, "Edm.Int64"},
 		{&domainmodel.DecimalAttributeType{}, "Edm.Decimal"},
 		{&domainmodel.BooleanAttributeType{}, "Edm.Boolean"},
 		{&domainmodel.DateTimeAttributeType{}, "Edm.DateTimeOffset"},
-		{&domainmodel.BinaryAttributeType{}, "Edm.Binary"},
+		{&domainmodel.BinaryAttributeType{}, "Edm.Binary"}, // never reachable: CE5013 forbids exposing Binary at all
+		{&domainmodel.EnumerationAttributeType{}, "Edm.String"},
 		{nil, ""},
 	}
 	for _, c := range cases {

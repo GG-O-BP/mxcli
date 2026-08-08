@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/mendixlabs/mxcli/model"
+	"github.com/mendixlabs/mxcli/sdk/javaactions"
 	"github.com/mendixlabs/mxcli/sdk/microflows"
 	"github.com/mendixlabs/mxcli/sdk/pages"
 )
@@ -68,4 +69,18 @@ func (b *Backend) MoveDatabaseConnection(conn *model.DatabaseConnection) error {
 		return fmt.Errorf("MoveDatabaseConnection: nil connection")
 	}
 	return b.moveUnit(conn.ID, conn.ContainerID, "DatabaseConnection")
+}
+
+func (b *Backend) MoveJavaAction(ja *javaactions.JavaAction) error {
+	if ja == nil {
+		return fmt.Errorf("MoveJavaAction: nil java action")
+	}
+	return b.moveUnit(ja.ID, ja.ContainerID, "JavaAction")
+}
+
+func (b *Backend) MovePublishedODataService(svc *model.PublishedODataService) error {
+	if svc == nil {
+		return fmt.Errorf("MovePublishedODataService: nil service")
+	}
+	return b.moveUnit(svc.ID, svc.ContainerID, "PublishedODataService")
 }
