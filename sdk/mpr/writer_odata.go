@@ -411,7 +411,7 @@ func serializePublishedMember(m *model.PublishedMember, ownerQN string) bson.D {
 		doc = append(doc, bson.E{Key: "Filterable", Value: m.Filterable})
 		doc = append(doc, bson.E{Key: "Sortable", Value: m.Sortable})
 		doc = append(doc, bson.E{Key: "IsPartOfKey", Value: m.IsPartOfKey})
-		doc = append(doc, bson.E{Key: "EnumerationAsString", Value: false})
+		doc = append(doc, bson.E{Key: "EnumerationAsString", Value: m.EnumerationAsString})
 		doc = append(doc, bson.E{Key: "StringAsGuid", Value: false})
 	case "association":
 		doc = append(doc, bson.E{Key: "$Type", Value: "ODataPublish$PublishedAssociationEnd"})

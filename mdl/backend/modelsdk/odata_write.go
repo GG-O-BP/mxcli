@@ -354,7 +354,7 @@ func publishedMemberToGen(m *model.PublishedMember, ownerQN string) element.Elem
 		addBool(g, "Filterable", m.Filterable)
 		addBool(g, "Sortable", m.Sortable)
 		addBool(g, "IsPartOfKey", m.IsPartOfKey)
-		addBool(g, "EnumerationAsString", false)
+		addBool(g, "EnumerationAsString", m.EnumerationAsString)
 		addBool(g, "StringAsGuid", false)
 		return g
 	}

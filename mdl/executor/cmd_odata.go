@@ -1620,8 +1620,12 @@ type assocMembership struct {
 // return empty collections rather than failing the whole publish.
 // mendixAttrTypeToEdm maps a Mendix attribute type to the OData EDM type Studio
 // Pro publishes it as (the PublishedAttribute.EdmType field). Inverse of
-// edmToDomainModelAttrType. String/Decimal/Boolean/DateTimeOffset verified
-// against Studio Pro output; the rest follow the standard OData mapping.
+// edmToDomainModelAttrType.
+//
+// Every case here has been adjudicated by mxbuild rather than assumed: an
+// attribute published as the wrong EDM type is CE5016 ("has type Integer, but is
+// published as Edm.Int32"), one error per attribute. Verified on 11.12.1 by
+// publishing one attribute of each type and reading the errors.
 func mendixAttrTypeToEdm(t domainmodel.AttributeType) string {
 	if t == nil {
 		return ""
@@ -1629,9 +1633,10 @@ func mendixAttrTypeToEdm(t domainmodel.AttributeType) string {
 	switch t.GetTypeName() {
 	case "String", "HashedString":
 		return "Edm.String"
-	case "Integer":
-		return "Edm.Int32"
-	case "Long", "AutoNumber":
+	case "Integer", "Long", "AutoNumber":
+		// Mendix publishes Integer as Int64 too, not Int32 — an Integer is
+		// 64-bit in the Mendix type system, and Int32 is CE5016 on every whole
+		// number in the service.
 		return "Edm.Int64"
 	case "Decimal":
 		return "Edm.Decimal"
@@ -1640,18 +1645,38 @@ func mendixAttrTypeToEdm(t domainmodel.AttributeType) string {
 	case "DateTime", "Date":
 		return "Edm.DateTimeOffset"
 	case "Binary":
+		// Kept so the mapping is total, but a Binary attribute cannot actually
+		// be exposed over OData — Mendix rejects it outright with CE5013
+		// regardless of the published type.
 		return "Edm.Binary"
 	case "Enumeration":
-		// Enums exposed as string (EnumerationAsString path). A non-string enum
-		// exposure would use the enum's own type — not yet modelled.
+		// Paired with EnumerationAsString=true (see enumPublishedAsString).
+		// Edm.String with that flag false is rejected: Mendix then wants the
+		// enumeration published in the service and typed as its own EDM enum.
 		return "Edm.String"
 	default:
 		return "Edm.String"
 	}
 }
 
-func lookupEntityMembers(ctx *ExecContext, entityQN ast.QualifiedName) (map[string]string, map[string]*assocMembership) {
-	attrs := make(map[string]string) // attr name -> OData EDM type (for the published EdmType)
+// publishedAttrType is how one Mendix attribute publishes over OData: the EDM
+// type, plus whether it is an enumeration flattened to a string. The two travel
+// together because Edm.String alone is ambiguous — a String and an
+// EnumerationAsString enum both carry it, and only the flag tells them apart.
+type publishedAttrType struct {
+	Edm      string
+	AsString bool
+}
+
+// enumPublishedAsString reports whether a published attribute needs the
+// EnumerationAsString flag — i.e. whether it is an enumeration at all. The flag
+// and the Edm.String type are a matched pair; see mendixAttrTypeToEdm.
+func enumPublishedAsString(t domainmodel.AttributeType) bool {
+	return t != nil && t.GetTypeName() == "Enumeration"
+}
+
+func lookupEntityMembers(ctx *ExecContext, entityQN ast.QualifiedName) (map[string]publishedAttrType, map[string]*assocMembership) {
+	attrs := make(map[string]publishedAttrType) // attr name -> how it publishes
 	assocs := make(map[string]*assocMembership)
 	if ctx == nil || ctx.Backend == nil {
 		return attrs, assocs
@@ -1676,7 +1701,10 @@ func lookupEntityMembers(ctx *ExecContext, entityQN ast.QualifiedName) (map[stri
 	}
 	if thisEntity != nil {
 		for _, a := range thisEntity.Attributes {
-			attrs[a.Name] = mendixAttrTypeToEdm(a.Type)
+			attrs[a.Name] = publishedAttrType{
+				Edm:      mendixAttrTypeToEdm(a.Type),
+				AsString: enumPublishedAsString(a.Type),
+			}
 		}
 	}
 	for _, a := range dm.Associations {
@@ -1741,9 +1769,10 @@ func astEntityDefToModel(ctx *ExecContext, def *ast.PublishedEntityDef) (*model.
 			member.ExposedName = member.Name
 		}
 		// Auto-detect kind: attribute first, association as fallback.
-		if edmType, ok := entityAttrs[m.Name]; ok {
+		if pub, ok := entityAttrs[m.Name]; ok {
 			member.Kind = "attribute"
-			member.EdmType = edmType
+			member.EdmType = pub.Edm
+			member.EnumerationAsString = pub.AsString
 		} else if assoc := moduleAssocs[m.Name]; assoc != nil {
 			member.Kind = "association"
 			member.ExposedAssociationName = m.Name
