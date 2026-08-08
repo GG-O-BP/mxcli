@@ -168,7 +168,16 @@ move page OldModule.CustomerPage to NewModule;
 | Nanoflow      | `folder 'path'` (keyword) | `move nanoflow ...` |
 | Snippet       | `folder: 'path'` (property) | `move snippet ...` |
 | Enumeration   | N/A | `move enumeration ...` |
+| Constant      | N/A | `move constant ...` |
+| Database connection | N/A | `move database connection ...` |
+| Java action   | N/A | `move java action ...` |
+| OData service (published) | N/A | `move odata service ...` |
 | Entity        | N/A | `move entity ...` (module only, no folders) |
+
+**Java actions and published OData services have no folder clause on `create`**, so
+`move` is the only way to place them — before this they were stuck at the module
+root forever. Both are plain document units, so the move is model-level only: it
+changes containment and nothing else.
 
 **Note:** Pages and snippets use property syntax (`folder: 'path'` inside parentheses). Microflows and nanoflows use keyword syntax (`folder 'path'` before `begin`). Entities are embedded in domain models and can only be moved to a different module (no folder support).
 

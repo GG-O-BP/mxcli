@@ -939,7 +939,8 @@ func (b *Builder) ExitMoveStatement(ctx *parser.MoveStatementContext) {
 	// MOVE FOLDER is identified by having FOLDER as the first token after MOVE (no document type keyword)
 	if len(ctx.AllFOLDER()) > 0 && ctx.PAGE() == nil && ctx.MICROFLOW() == nil &&
 		ctx.SNIPPET() == nil && ctx.NANOFLOW() == nil && ctx.ENTITY() == nil &&
-		ctx.ENUMERATION() == nil && ctx.CONSTANT() == nil && ctx.DATABASE() == nil {
+		ctx.ENUMERATION() == nil && ctx.CONSTANT() == nil && ctx.DATABASE() == nil &&
+		ctx.JAVA() == nil && ctx.ODATA() == nil {
 		b.exitMoveFolderStatement(ctx, names)
 		return
 	}
@@ -965,6 +966,10 @@ func (b *Builder) ExitMoveStatement(ctx *parser.MoveStatementContext) {
 		stmt.DocumentType = ast.DocumentTypeConstant
 	} else if ctx.DATABASE() != nil {
 		stmt.DocumentType = ast.DocumentTypeDatabaseConnection
+	} else if ctx.JAVA() != nil {
+		stmt.DocumentType = ast.DocumentTypeJavaAction
+	} else if ctx.ODATA() != nil {
+		stmt.DocumentType = ast.DocumentTypeODataService
 	}
 
 	// Parse folder path if specified

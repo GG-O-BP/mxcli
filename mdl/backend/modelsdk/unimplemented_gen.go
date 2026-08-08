@@ -595,6 +595,11 @@ func (unimplemented) ListFolders() ([]*types.FolderInfo, error) {
 	return r0, errUnimplemented("ListFolders")
 }
 
+func (unimplemented) ListIconCollections() ([]*types.IconCollection, error) {
+	var r0 []*types.IconCollection
+	return r0, errUnimplemented("ListIconCollections")
+}
+
 func (unimplemented) ListImageCollections() ([]*types.ImageCollection, error) {
 	var r0 []*types.ImageCollection
 	return r0, errUnimplemented("ListImageCollections")
@@ -744,6 +749,10 @@ func (unimplemented) MoveImportMapping(_ *model.ImportMapping) error {
 	return errUnimplemented("MoveImportMapping")
 }
 
+func (unimplemented) MoveJavaAction(_ *javaactions.JavaAction) error {
+	return errUnimplemented("MoveJavaAction")
+}
+
 func (unimplemented) MoveMicroflow(_ *microflows.Microflow) error {
 	return errUnimplemented("MoveMicroflow")
 }
@@ -754,6 +763,10 @@ func (unimplemented) MoveNanoflow(_ *microflows.Nanoflow) error {
 
 func (unimplemented) MovePage(_ *pages.Page) error {
 	return errUnimplemented("MovePage")
+}
+
+func (unimplemented) MovePublishedODataService(_ *model.PublishedODataService) error {
+	return errUnimplemented("MovePublishedODataService")
 }
 
 func (unimplemented) MoveSnippet(_ *pages.Snippet) error {
