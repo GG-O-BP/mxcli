@@ -21,6 +21,11 @@ import (
 // Known property names, in the spelling the syntax help uses. These are for the
 // error message only — the visitor is the authority on what is accepted, and it
 // matches case-insensitively.
+//
+// The two drifted once already: Countable/SkipSupported/TopSupported were added
+// to the visitor and the hint went on advertising six properties, so a user
+// reading it would think three accepted properties were not. TestKnownODataProps
+// keeps them in step by running every name below through the visitor.
 var (
 	knownODataServiceProps = []string{
 		"Path", "Version", "ODataVersion", "Namespace", "ServiceName",
@@ -28,6 +33,7 @@ var (
 	}
 	knownPublishEntityProps = []string{
 		"ReadMode", "InsertMode", "UpdateMode", "DeleteMode", "UsePaging", "PageSize",
+		"Countable", "SkipSupported", "TopSupported",
 	}
 	knownODataClientProps = []string{
 		"Version", "ODataVersion", "MetadataUrl", "Timeout", "ProxyType",
