@@ -134,6 +134,10 @@ func parseMDLTests(content string, sourcePath string) ([]TestCase, error) {
 			continue
 		}
 
+		if err := validateCleanup(annotations.Cleanup); err != nil {
+			return nil, fmt.Errorf("%s: test %q: %w", sourcePath, annotations.Test, err)
+		}
+
 		testID := fmt.Sprintf("test_%d", i+1)
 		tests = append(tests, TestCase{
 			ID:         testID,
@@ -184,6 +188,10 @@ func parseMarkdownTests(content string, sourcePath string) ([]TestCase, error) {
 				// Parse the block as a single test
 				doc, body, _ := extractDocAndBody(blockContent, blockContent)
 				annotations := parseAnnotations(doc)
+
+				if err := validateCleanup(annotations.Cleanup); err != nil {
+					return nil, fmt.Errorf("%s: test at line %d: %w", sourcePath, blockStart, err)
+				}
 
 				testNum++
 				testID := fmt.Sprintf("test_%d", testNum)
