@@ -119,6 +119,10 @@ func TestCreatePublishedODataService_RoundTrip(t *testing.T) {
 		EntitySets: []*model.PublishedEntitySet{{
 			ExposedName: "Things", EntityTypeName: "MyFirstModule.Thing",
 			ReadMode: "source", UsePaging: true, PageSize: 100,
+			// mxcli-formula1 #10.3: these were hardcoded true in the writer.
+			// An explicit false must survive the BSON round trip; SkipSupported
+			// is left unset here so the default still applies to it.
+			Countable: boolPtrLocal(false), TopSupported: boolPtrLocal(false),
 		}},
 	}
 	if err := b.CreatePublishedODataService(svc); err != nil {
@@ -179,7 +183,20 @@ func TestCreatePublishedODataService_RoundTrip(t *testing.T) {
 	if !es.UsePaging || es.PageSize != 100 {
 		t.Errorf("entity set paging not round-tripped: %+v", es)
 	}
+	if es.Countable == nil || *es.Countable {
+		t.Errorf("Countable=false not round-tripped: %v", es.Countable)
+	}
+	if es.TopSupported == nil || *es.TopSupported {
+		t.Errorf("TopSupported=false not round-tripped: %v", es.TopSupported)
+	}
+	// An unset option is stored as Mendix's default of true, and reads back as
+	// nil so DESCRIBE does not print a default nobody wrote.
+	if es.SkipSupported != nil {
+		t.Errorf("SkipSupported should read back nil when defaulted: %v", *es.SkipSupported)
+	}
 }
+
+func boolPtrLocal(b bool) *bool { return &b }
 
 // TestConsumedODataServiceToGen_ConfigMicroflowKey guards issue #728: the config
 // microflow must be serialized under the version-appropriate BSON key. On

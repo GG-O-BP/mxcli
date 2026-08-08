@@ -558,6 +558,10 @@ func RunLocal(opts LocalRunOptions) error {
 	// Configurations in Studio Pro, `alter settings` in MDL), versioned with the
 	// app rather than repeated on every command line.
 	modelRootURL, modelRootConfig := configuredApplicationRootURL(reader)
+	// Managed Java dependencies are declared in the model but resolved by a
+	// separate step; collect them here so the boot can vendor any that are
+	// missing (mxcli-formula1 findings #12).
+	declaredJars := declaredJarDependencies(reader)
 	reader.Close()
 	version := pv.ProductVersion
 	fmt.Fprintf(w, "  Mendix version: %s\n", version)
@@ -573,7 +577,22 @@ func RunLocal(opts LocalRunOptions) error {
 		return fmt.Errorf("setting up runtime: %w", err)
 	}
 
-	// 3. Ensure the database is available. With --ensure-db, provision it (start
+	// 3. Vendor any declared Java dependency that is not in vendorlib/. MxBuild
+	// does not resolve these (a full build emits no dependencies block), so
+	// without this the app builds green and throws "no driver found" at runtime.
+	// Best-effort: it needs network, and a project whose jars are already
+	// vendored — the common case — does no work at all.
+	if missing := UnvendoredJarDependencies(filepath.Dir(opts.ProjectPath), declaredJars); len(missing) > 0 {
+		fmt.Fprintf(w, "Resolving %d managed Java dependency/dependencies (%s)...\n",
+			len(missing), strings.Join(missing, ", "))
+		if err := SyncJavaDependencies(opts.ProjectPath, "", version, w); err != nil {
+			fmt.Fprintf(stderr, "  Warning: could not resolve Java dependencies: %v\n", err)
+			fmt.Fprintln(stderr, "  The app will build, but code needing those jars fails at runtime.")
+			fmt.Fprintf(stderr, "  Retry with: mxcli sync-java-deps -p %s\n", opts.ProjectPath)
+		}
+	}
+
+	// 4. Ensure the database is available. With --ensure-db, provision it (start
 	// local Postgres + create the role/db if missing); otherwise just check
 	// reachability and point the user at --ensure-db.
 	if opts.EnsureDB {
@@ -595,7 +614,7 @@ func RunLocal(opts LocalRunOptions) error {
 		return nil
 	}
 
-	// 4. Start the warm build server.
+	// 5. Start the warm build server.
 	fmt.Fprintln(w, "Starting mxbuild --serve...")
 	serve, err := StartServe(ServeOptions{
 		Version: version,
@@ -1151,4 +1170,25 @@ func watchAndApply(opts LocalRunOptions, serve *ServeServer, rt *LocalRuntime, w
 			last = sourceMTime(opts.ProjectPath)
 		}
 	}
+}
+
+// declaredJarDependencies collects the managed Java dependency coordinates the
+// model declares, across every module.
+func declaredJarDependencies(reader *mpr.Reader) []JarDependencyRef {
+	all, err := reader.ListModuleSettings()
+	if err != nil {
+		return nil
+	}
+	var out []JarDependencyRef
+	for _, ms := range all {
+		if ms == nil {
+			continue
+		}
+		for _, d := range ms.JarDependencies {
+			out = append(out, JarDependencyRef{
+				Group: d.GroupID, Artifact: d.ArtifactID, Version: d.Version,
+			})
+		}
+	}
+	return out
 }

@@ -44,7 +44,7 @@ func TestDescribeSettings_Mock(t *testing.T) {
 		},
 	}
 	ctx, buf := newMockCtx(t, withBackend(mb))
-	assertNoError(t, describeSettings(ctx))
+	assertNoError(t, describeSettings(ctx, ""))
 	assertContainsStr(t, buf.String(), "alter settings")
 }
 
@@ -61,7 +61,7 @@ func TestDescribeSettings_NotConnected(t *testing.T) {
 		IsConnectedFunc: func() bool { return false },
 	}
 	ctx, _ := newMockCtx(t, withBackend(mb))
-	assertError(t, describeSettings(ctx))
+	assertError(t, describeSettings(ctx, ""))
 }
 
 func TestShowSettings_BackendError(t *testing.T) {

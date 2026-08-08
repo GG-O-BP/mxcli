@@ -392,25 +392,46 @@ func outputPublishedODataServiceMDL(ctx *ExecContext, svc *model.PublishedODataS
 				es = entitySetByEntityName[et.Entity]
 			}
 
-			// PUBLISH ENTITY line with modes
-			fmt.Fprintf(ctx.Output, "  publish entity %s as '%s'", et.Entity, et.ExposedName)
+			// PUBLISH ENTITY line with modes.
+			//
+			// `AS '<name>'` is the ENTITY SET's exposed name — that is what the
+			// served $metadata calls the set, and what re-executing this output
+			// must reproduce. Printing the entity TYPE's exposed name here
+			// silently renamed the set on a describe -> exec round trip
+			// (mxcli-formula1 findings #10.5).
+			exposedName := et.ExposedName
+			if es != nil && es.ExposedName != "" {
+				exposedName = es.ExposedName
+			}
+			fmt.Fprintf(ctx.Output, "  publish entity %s as '%s'", et.Entity, exposedName)
 			if es != nil {
 				var modeProps []string
 				if es.ReadMode != "" {
-					modeProps = append(modeProps, fmt.Sprintf("ReadMode: %s", es.ReadMode))
+					modeProps = append(modeProps, fmt.Sprintf("ReadMode: %s", odataModeToMDL(es.ReadMode)))
 				}
 				if es.InsertMode != "" {
-					modeProps = append(modeProps, fmt.Sprintf("InsertMode: %s", es.InsertMode))
+					modeProps = append(modeProps, fmt.Sprintf("InsertMode: %s", odataModeToMDL(es.InsertMode)))
 				}
 				if es.UpdateMode != "" {
-					modeProps = append(modeProps, fmt.Sprintf("UpdateMode: %s", es.UpdateMode))
+					modeProps = append(modeProps, fmt.Sprintf("UpdateMode: %s", odataModeToMDL(es.UpdateMode)))
 				}
 				if es.DeleteMode != "" {
-					modeProps = append(modeProps, fmt.Sprintf("DeleteMode: %s", es.DeleteMode))
+					modeProps = append(modeProps, fmt.Sprintf("DeleteMode: %s", odataModeToMDL(es.DeleteMode)))
 				}
 				if es.UsePaging {
 					modeProps = append(modeProps, "UsePaging: Yes")
 					modeProps = append(modeProps, fmt.Sprintf("PageSize: %d", es.PageSize))
+				}
+				// Only a turned-off query option is worth printing; true is the
+				// default and would be noise on every resource.
+				if es.Countable != nil && !*es.Countable {
+					modeProps = append(modeProps, "Countable: No")
+				}
+				if es.SkipSupported != nil && !*es.SkipSupported {
+					modeProps = append(modeProps, "SkipSupported: No")
+				}
+				if es.TopSupported != nil && !*es.TopSupported {
+					modeProps = append(modeProps, "TopSupported: No")
 				}
 				if len(modeProps) > 0 {
 					fmt.Fprintf(ctx.Output, " (\n    %s\n  )", strings.Join(modeProps, ",\n    "))
@@ -430,10 +451,17 @@ func outputPublishedODataServiceMDL(ctx *ExecContext, svc *model.PublishedODataS
 						modifiers = append(modifiers, "Sortable")
 					}
 					if m.IsPartOfKey {
-						modifiers = append(modifiers, "IsPartOfKey")
+						// KEY is the spelling the syntax help documents;
+						// IsPartOfKey parses too, but only one belongs in
+						// output meant to be re-executed.
+						modifiers = append(modifiers, "KEY")
 					}
 
-					line := fmt.Sprintf("    %s as '%s'", m.Name, m.ExposedName)
+					// The member is stored fully qualified
+					// (Module.Entity.Member), while `expose (...)` takes a bare
+					// member name — so emitting the stored form produced MDL
+					// that does not parse (mxcli-formula1 findings #10.5).
+					line := fmt.Sprintf("    %s as '%s'", bareMemberName(m.Name), m.ExposedName)
 					if len(modifiers) > 0 {
 						line += fmt.Sprintf(" (%s)", strings.Join(modifiers, ", "))
 					}
@@ -1320,6 +1348,10 @@ func createODataService(ctx *ExecContext, stmt *ast.CreateODataServiceStmt) erro
 					}
 					if stmt.ServiceName != "" {
 						svc.ServiceName = stmt.ServiceName
+					} else if svc.ServiceName == "" {
+						// Heal a service written before ServiceName was defaulted:
+						// re-running the script repairs a model that cannot build.
+						svc.ServiceName = svc.Name
 					}
 					if stmt.Summary != "" {
 						svc.Summary = stmt.Summary
@@ -1327,7 +1359,9 @@ func createODataService(ctx *ExecContext, stmt *ast.CreateODataServiceStmt) erro
 					if stmt.Description != "" {
 						svc.Description = stmt.Description
 					}
-					svc.PublishAssociations = stmt.PublishAssociations
+					if stmt.PublishAssociationsSet {
+						svc.PublishAssociations = stmt.PublishAssociations
+					}
 					if len(stmt.AuthenticationTypes) > 0 {
 						svc.AuthenticationTypes = stmt.AuthenticationTypes
 					}
@@ -1353,6 +1387,17 @@ func createODataService(ctx *ExecContext, stmt *ast.CreateODataServiceStmt) erro
 		containerID = folderID
 	}
 
+	// Name (the document) and ServiceName (the name in the OData metadata
+	// document) are different properties, and Mendix requires the second to be
+	// non-empty — an empty one fails the build with CE0729 "The service name
+	// should not be empty", which `mxcli check` cannot see. Default it to the
+	// document name, exactly as the CONSUMED path does for CE0339 above.
+	// (mxcli-formula1 findings #10.1.)
+	serviceName := stmt.ServiceName
+	if serviceName == "" {
+		serviceName = stmt.Name.Name
+	}
+
 	newSvc := &model.PublishedODataService{
 		ContainerID:         containerID,
 		Name:                stmt.Name.Name,
@@ -1361,10 +1406,10 @@ func createODataService(ctx *ExecContext, stmt *ast.CreateODataServiceStmt) erro
 		Version:             stmt.Version,
 		ODataVersion:        stmt.ODataVersion,
 		Namespace:           stmt.Namespace,
-		ServiceName:         stmt.ServiceName,
+		ServiceName:         serviceName,
 		Summary:             stmt.Summary,
 		Description:         stmt.Description,
-		PublishAssociations: stmt.PublishAssociations,
+		PublishAssociations: publishAssociationsFor(stmt),
 		AuthenticationTypes: stmt.AuthenticationTypes,
 	}
 
@@ -1376,6 +1421,18 @@ func createODataService(ctx *ExecContext, stmt *ast.CreateODataServiceStmt) erro
 		entityType, entitySet := astEntityDefToModel(ctx, entityDef)
 		newSvc.EntityTypes = append(newSvc.EntityTypes, entityType)
 		newSvc.EntitySets = append(newSvc.EntitySets, entitySet)
+	}
+
+	// An explicit false on a non-persistable entity is unbuildable whatever the
+	// key is: object-id mode needs a published ID, and Mendix forbids publishing
+	// the ID of a non-persistable entity. Say so rather than let CE7375 be the
+	// first anyone hears of it.
+	if !newSvc.PublishAssociations {
+		if nonPersistable := nonPersistablePublishedEntities(ctx, stmt.Entities); len(nonPersistable) > 0 {
+			fmt.Fprintf(ctx.Output,
+				"  Warning: PublishAssociations is false, but %s %s non-persistable — associations-as-object-id requires a published ID, which Mendix forbids there. The build will fail with CE7375; remove the property to get the default (true).\n",
+				strings.Join(nonPersistable, ", "), pluralIsAre(len(nonPersistable)))
+		}
 	}
 
 	if err := ctx.Backend.CreatePublishedODataService(newSvc); err != nil {
@@ -1722,6 +1779,9 @@ func astEntityDefToModel(ctx *ExecContext, def *ast.PublishedEntityDef) (*model.
 		UpdateMode:     def.UpdateMode,
 		DeleteMode:     def.DeleteMode,
 		UsePaging:      def.UsePaging,
+		Countable:      def.Countable,
+		SkipSupported:  def.SkipSupported,
+		TopSupported:   def.TopSupported,
 		PageSize:       def.PageSize,
 	}
 
@@ -1782,3 +1842,87 @@ func fetchODataMetadata(metadataUrl string) (metadata string, hash string, err e
 }
 
 // Executor wrappers for unmigrated callers.
+// nonPersistablePublishedEntities returns the qualified names of the published
+// entities that are non-persistable, in statement order. Entities it cannot
+// resolve are treated as persistable: this drives a silent default correction,
+// so an unreadable entity must not change what gets written.
+func nonPersistablePublishedEntities(ctx *ExecContext, defs []*ast.PublishedEntityDef) []string {
+	if ctx == nil || ctx.Backend == nil {
+		return nil
+	}
+	var out []string
+	seen := make(map[string]bool)
+	for _, def := range defs {
+		if def == nil || seen[def.Entity.String()] {
+			continue
+		}
+		seen[def.Entity.String()] = true
+		module, err := findModule(ctx, def.Entity.Module)
+		if err != nil {
+			continue
+		}
+		dm, err := ctx.Backend.GetDomainModel(module.ID)
+		if err != nil {
+			continue
+		}
+		for _, e := range dm.Entities {
+			if e.Name == def.Entity.Name && !e.Persistable {
+				out = append(out, def.Entity.String())
+				break
+			}
+		}
+	}
+	return out
+}
+
+// pluralIsAre picks the verb for a list of n names.
+func pluralIsAre(n int) string {
+	if n == 1 {
+		return "is"
+	}
+	return "are"
+}
+
+// publishAssociationsFor picks the PublishAssociations value to store.
+//
+// false means "expose associations as an associated object id", and Mendix then
+// requires the system ID attribute to be published as the entity key — so a
+// service whose key is an ordinary attribute (what MDL's `expose (Attr (KEY))`
+// writes) fails the build with CE7375, and a non-persistable entity cannot
+// satisfy it at all because publishing its ID is forbidden. Verified on 11.12.1:
+// the identical service builds 0 errors with true and CE7375 with false, for a
+// persistent entity with a unique key.
+//
+// Defaulting to true therefore does not pick a preference; it picks the value
+// that can build from the MDL people actually write. An explicit
+// `PublishAssociations: false` is still honoured — that author has published an
+// ID key, or wants to know. (mxcli-formula1 findings #10.4.)
+func publishAssociationsFor(stmt *ast.CreateODataServiceStmt) bool {
+	if !stmt.PublishAssociationsSet {
+		return true
+	}
+	return stmt.PublishAssociations
+}
+
+// odataModeToMDL turns a stored Read/Change mode into the MDL spelling that
+// parses back. The backend stores a microflow-backed mode as
+// "CallMicroflow:Module.Name" (and accepts "MICROFLOW Module.Name" on the way
+// in), but a bare `CallMicroflow:Qualified.Name` matches no MDL value — so
+// DESCRIBE was emitting something it could not read (mxcli-formula1 #10.5).
+func odataModeToMDL(mode string) string {
+	for _, prefix := range []string{"CallMicroflow:", "MICROFLOW ", "microflow "} {
+		if rest := strings.TrimPrefix(mode, prefix); rest != mode {
+			return "microflow " + strings.TrimSpace(rest)
+		}
+	}
+	return mode
+}
+
+// bareMemberName strips a Module.Entity. prefix from a published member name,
+// leaving the member name `expose (...)` accepts.
+func bareMemberName(name string) string {
+	if i := strings.LastIndex(name, "."); i >= 0 {
+		return name[i+1:]
+	}
+	return name
+}

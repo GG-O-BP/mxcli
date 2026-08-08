@@ -1,0 +1,74 @@
+-- ============================================================================
+-- mxcli-formula1 finding #10.4: PublishAssociations defaulted to unbuildable
+-- ============================================================================
+--
+-- Symptom (before fix): a published service failed the build with
+--
+--   [error] [CE7375] "Attribute ID for entity 'X' must be published and be the
+--   key when associations are exposed as an associated object id."
+--
+-- even with NO associations exposed at all. PublishAssociations=false means
+-- "expose associations as an associated object id", and Mendix then requires
+-- the system ID attribute to be published as the entity key. MDL's
+-- `expose (Attr (KEY))` publishes an ordinary attribute, so the old default of
+-- false could not build — and for a non-persistable entity nothing could fix
+-- it, because publishing the ID of a non-persistable entity is forbidden.
+--
+-- Wider than first reported: this was never specific to non-persistable
+-- entities. Measured on 11.12.1 with a PERSISTENT entity and a unique key, the
+-- identical service builds 0 errors with true and CE7375 with false.
+--
+-- After fix: an unspecified PublishAssociations defaults to true (links). An
+-- explicit `PublishAssociations: false` is still honoured — and warned about
+-- when a published entity is non-persistable, where it can never build.
+--
+-- This script is also the reporter's architecture in miniature: a
+-- non-persistable entity fed by a read microflow, published over OData v4, with
+-- no copy of the data into the database.
+--
+-- Usage:
+--   mxcli exec mdl-examples/bug-tests/f1-10.4-odata-publish-associations.mdl -p app.mpr
+--   then a real build must report 0 errors:
+--   scripts/mx-check.sh -p app.mpr
+-- ============================================================================
+
+create module F1PUBASSOC;
+
+-- Non-persistable: the rows are produced per request, never stored.
+create non-persistent entity F1PUBASSOC.Lap (
+  LapKey:  string(60),
+  Driver:  string(120),
+  LapTime: decimal
+);
+
+-- A read microflow backs the published entity set. The $Response parameter is
+-- required because the published resource is Countable — Mendix asks the
+-- microflow for the count.
+CREATE MICROFLOW F1PUBASSOC.Read_Laps ($Response: System.ODataResponse)
+  RETURNS List of F1PUBASSOC.Lap AS $Laps
+BEGIN
+  $Laps = CREATE LIST OF F1PUBASSOC.Lap;
+  RETURN $Laps;
+END;
+
+-- No ServiceName:, no PublishAssociations:, no follow-up ALTER — one statement.
+create odata service F1PUBASSOC.LapApi (
+  path: 'odata/f1laps/',
+  version: '1.0.0',
+  ODataVersion: OData4,
+  namespace: 'F1PUBASSOC.Laps'
+)
+authentication basic
+{
+  publish entity F1PUBASSOC.Lap as 'Laps' (
+    ReadMode: microflow F1PUBASSOC.Read_Laps,
+    InsertMode: not_supported,
+    UpdateMode: not_supported,
+    DeleteMode: not_supported
+  )
+  expose (
+    LapKey as 'lapKey' (KEY, Filterable, Sortable),
+    Driver (Filterable, Sortable),
+    LapTime (Sortable)
+  );
+};

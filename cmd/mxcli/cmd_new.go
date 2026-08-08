@@ -26,7 +26,7 @@ This command performs the following steps:
   3. Applies mxcli's default styling (--theme, see 'mxcli theme list')
   4. Initializes AI tooling and devcontainer configuration (mxcli init)
   5. Runs one build so generated sources are settled (--skip-build to skip)
-  6. Downloads the correct mxcli binary for the devcontainer (linux)
+  6. Links this mxcli into the project (or downloads a Linux build on macOS/Windows)
 
 Examples:
   mxcli new MyApp

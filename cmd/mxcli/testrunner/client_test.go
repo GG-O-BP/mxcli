@@ -21,6 +21,8 @@ type fakeEndpoint struct {
 	// seenTokens records what each request presented, so a test can assert the
 	// client actually sends the token rather than the server merely allowing it.
 	seenTokens []string
+	// rollbackParams records the rollback query parameter of each run request.
+	rollbackParams []string
 }
 
 func (f *fakeEndpoint) handler() http.Handler {
@@ -45,6 +47,7 @@ func (f *fakeEndpoint) handler() http.Handler {
 			}
 			json.NewEncoder(w).Encode(listResponse{Microflows: names})
 		case strings.HasSuffix(r.URL.Path, "/run"):
+			f.rollbackParams = append(f.rollbackParams, r.URL.Query().Get("rollback"))
 			mf := r.URL.Query().Get("mf")
 			resp, ok := f.flows[mf]
 			if !ok {
@@ -213,5 +216,31 @@ func TestWaitReadyGivesUp(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "did not come up") {
 		t.Errorf("error %q does not explain the endpoint never came up", err)
+	}
+}
+
+// TestClientSendsTheRollbackParameter pins that the runner's per-test decision
+// actually reaches the endpoint. Without the parameter the endpoint commits, and
+// a test annotated for rollback would silently leave its data behind.
+func TestClientSendsTheRollbackParameter(t *testing.T) {
+	fake, c := newFakeEndpoint(t, "tok", map[string]runResponse{
+		testFlowPrefix + "test_1": {OK: true, Result: verdictPass},
+	})
+
+	if _, err := c.run(testFlowPrefix+"test_1", true); err != nil {
+		t.Fatalf("run with rollback: %v", err)
+	}
+	if _, err := c.run(testFlowPrefix+"test_1", false); err != nil {
+		t.Fatalf("run without rollback: %v", err)
+	}
+
+	if len(fake.rollbackParams) != 2 {
+		t.Fatalf("server saw %d run requests, want 2", len(fake.rollbackParams))
+	}
+	if fake.rollbackParams[0] != "1" {
+		t.Errorf("rollback run sent rollback=%q, want \"1\"", fake.rollbackParams[0])
+	}
+	if fake.rollbackParams[1] != "" {
+		t.Errorf("non-rollback run sent rollback=%q, want it absent", fake.rollbackParams[1])
 	}
 }

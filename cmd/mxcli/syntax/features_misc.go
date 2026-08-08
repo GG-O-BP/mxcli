@@ -125,7 +125,7 @@ DISCONNECT;`,
 			"settings", "project settings", "configuration",
 			"startup", "shutdown", "hash algorithm", "java version",
 		},
-		Syntax:  "SHOW SETTINGS;\nDESCRIBE SETTINGS;\nALTER SETTINGS MODEL <key> = <value>;\nALTER SETTINGS CONFIGURATION '<name>' <key> = <value>;",
+		Syntax:  "SHOW SETTINGS;\nDESCRIBE SETTINGS;\nDESCRIBE SETTINGS CONFIGURATION '<name>';   -- just one configuration\nALTER SETTINGS MODEL <key> = <value>;\nALTER SETTINGS CONFIGURATION '<name>' <key> = <value>;",
 		Example: "SHOW SETTINGS;\nALTER SETTINGS MODEL AfterStartupMicroflow = 'Module.MF_Startup';",
 		SeeAlso: []string{"settings.show", "settings.alter"},
 	})
@@ -136,8 +136,8 @@ DISCONNECT;`,
 		Keywords: []string{
 			"show settings", "describe settings", "list settings",
 		},
-		Syntax:  "SHOW SETTINGS;\nDESCRIBE SETTINGS;",
-		Example: "SHOW SETTINGS;\nDESCRIBE SETTINGS;",
+		Syntax:  "SHOW SETTINGS;\nDESCRIBE SETTINGS;\nDESCRIBE SETTINGS CONFIGURATION '<name>';",
+		Example: "SHOW SETTINGS;\nDESCRIBE SETTINGS;\nDESCRIBE SETTINGS CONFIGURATION 'Default';",
 	})
 
 	Register(SyntaxFeature{
@@ -283,6 +283,9 @@ Flags:
                       every test or model change (Ctrl-C to stop)
       --attach        Run against an app already started with
                       'mxcli run --local --test-endpoint' — no boot at all
+      --skip-app-startup
+                      With --local, do not run the project's own
+                      after-startup microflow (it runs by default)
       --legacy-runner With --local: use the old after-startup runner
   -v, --verbose       Show runtime log lines
   -t, --timeout DUR   Runtime startup timeout (default: 5m)
@@ -292,12 +295,22 @@ Annotations:
   @expect $var = value      Assert variable equals value
   @expect $obj/Attr = val   Assert entity attribute
   @throws 'message'         Expect error
-  @cleanup rollback|none    Cleanup strategy (default: rollback)
+  @cleanup rollback|none    What happens to the test's database writes.
+                            rollback (the default) wraps the test in a
+                            transaction and rolls it back, so nothing it
+                            wrote survives — including when it throws.
+                            none lets the writes commit. --local only:
+                            the Docker path always commits. An unknown
+                            value is a parse error, not a silent commit.
 
 How --local runs tests: one microflow per test, invoked by name over a
 token-guarded HTTP endpoint the app registers at boot. A test that throws
 fails only itself, and results are returned rather than scraped from the log.
 Docker still uses the older after-startup runner.
+
+Boot also runs the project's own after-startup microflow, chained after the
+endpoint registration, so tests see the app in the state it really boots into
+and a suite behaves the same under --local and --attach.
 
 Cost of a run:
   cold (--local)            ~30s   boots a runtime on its own ports + DB

@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/mendixlabs/mxcli/cmd/mxcli/testrunner"
@@ -37,13 +38,25 @@ loop can keep serving the same project while tests run.
   1. Parses test files and extracts test blocks with @test/@expect annotations
   2. Generates one microflow per test, plus a Java action that registers a
      token-guarded HTTP endpoint
-  3. Boots the app once — startup only registers the endpoint, it runs no tests
+  3. Boots the app once — startup registers the endpoint and then runs your own
+     after-startup microflow, so tests see the app as it really boots. No test
+     runs during startup
   4. Invokes each test by name over HTTP; the verdict comes back in the response
   5. Restores original project settings
+
+Your after-startup microflow running is what makes a suite behave the same under
+--local and --attach. Pass --skip-app-startup for an empty, deterministic
+baseline instead — the run always prints which of the two it did.
 
 Because each test is its own microflow invoked on its own, a test that throws
 fails only itself instead of ending the run, and results are returned rather
 than recovered from the runtime log.
+
+It also makes @cleanup real. By default (@cleanup rollback) each test runs in a
+transaction the endpoint rolls back afterwards, so its database writes do not
+survive — use @cleanup none when the writes are the point. The Docker path
+always commits: it runs tests inside the after-startup action and has no
+context of its own to roll back.
 
 The endpoint is only reachable from loopback, only with a per-run token passed
 to the runtime through its environment (never written into your project), and
@@ -120,6 +133,7 @@ Examples:
 		legacyRunner, _ := cmd.Flags().GetBool("legacy-runner")
 		watch, _ := cmd.Flags().GetBool("watch")
 		attach, _ := cmd.Flags().GetBool("attach")
+		skipAppStartup, _ := cmd.Flags().GetBool("skip-app-startup")
 		verbose, _ := cmd.Flags().GetBool("verbose")
 		color, _ := cmd.Flags().GetBool("color")
 		timeoutStr, _ := cmd.Flags().GetString("timeout")
@@ -131,8 +145,10 @@ Examples:
 		}
 
 		if list {
-			// Just list tests, no execution needed
-			if err := testrunner.ListTests(args, os.Stdout); err != nil {
+			// resolveTestPaths here too: listing that cannot find a path execution
+			// finds is a confusing split, and `mxcli test tests/ -p app/App.mpr
+			// --list` hit exactly that (mxcli-formula1 findings #15).
+			if err := testrunner.ListTests(resolveTestPaths(args, projectPath), os.Stdout); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -146,19 +162,20 @@ Examples:
 		}
 
 		opts := testrunner.RunOptions{
-			ProjectPath:  projectPath,
-			TestFiles:    args,
-			SkipBuild:    skipBuild,
-			Local:        local,
-			LegacyRunner: legacyRunner,
-			Watch:        watch,
-			Attach:       attach,
-			Timeout:      timeout,
-			JUnitOutput:  junitOutput,
-			Verbose:      verbose,
-			Color:        color,
-			Stdout:       os.Stdout,
-			Stderr:       os.Stderr,
+			ProjectPath:    projectPath,
+			TestFiles:      resolveTestPaths(args, projectPath),
+			SkipBuild:      skipBuild,
+			Local:          local,
+			LegacyRunner:   legacyRunner,
+			Watch:          watch,
+			Attach:         attach,
+			SkipAppStartup: skipAppStartup,
+			Timeout:        timeout,
+			JUnitOutput:    junitOutput,
+			Verbose:        verbose,
+			Color:          color,
+			Stdout:         os.Stdout,
+			Stderr:         os.Stderr,
 		}
 
 		result, err := testrunner.Run(opts)
@@ -176,4 +193,42 @@ Examples:
 			os.Exit(1)
 		}
 	},
+}
+
+// resolveTestPaths lets a relative test path be relative to the PROJECT as well
+// as to the working directory.
+//
+// `mxcli test tests/ -p app/App.mpr` used to fail with "no such file or
+// directory" for a tests/ that sits right next to the .mpr — the path resolved
+// against the process CWD only. That is defensible on its own, but mxcli
+// otherwise encourages naming the project rather than standing in its
+// directory, so the two conventions collide (mxcli-formula1 findings #13).
+//
+// The working directory still wins: a tests/ in both places resolves to the one
+// the user is standing in, which is what every other tool does.
+func resolveTestPaths(paths []string, projectPath string) []string {
+	if projectPath == "" || len(paths) == 0 {
+		return paths
+	}
+	projectDir := filepath.Dir(projectPath)
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if filepath.IsAbs(p) {
+			out = append(out, p)
+			continue
+		}
+		if _, err := os.Stat(p); err == nil {
+			out = append(out, p)
+			continue
+		}
+		if alt := filepath.Join(projectDir, p); alt != p {
+			if _, err := os.Stat(alt); err == nil {
+				out = append(out, alt)
+				continue
+			}
+		}
+		// Neither exists: keep the original so the error names what was typed.
+		out = append(out, p)
+	}
+	return out
 }

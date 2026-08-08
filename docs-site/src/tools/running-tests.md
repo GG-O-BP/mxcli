@@ -87,6 +87,54 @@ every request must present that token, non-loopback callers are refused, and it
 will only ever invoke the generated `MxTest.Test_*` microflows. The token is
 never written into your project.
 
+### The app's own after-startup microflow
+
+Boot registers the endpoint and then runs the project's own after-startup
+microflow, so tests see the app in the state it really boots into. The run
+prints which of the two happened, and `--skip-app-startup` opts out when a suite
+wants an empty, deterministic baseline.
+
+This keeps a suite behaving the same under `--local` and `--attach`. Note that
+what the startup microflow writes is not covered by `@cleanup rollback` — it
+runs at boot, outside any test's transaction.
+
+### `@cleanup`: what happens to a test's data
+
+`rollback` is the **default**, so a test's database writes do not survive it.
+The endpoint opens a transaction around the call and rolls it back afterwards,
+including when the test throws.
+
+```mdl
+/**
+ * @test creating an order does not leak
+ * @expect $result = 'ok'
+ */
+$result = CALL MICROFLOW Sales.CreateOrder(Amount = 100);
+/
+
+/**
+ * @test seed a fixture the app should keep
+ * @cleanup none
+ */
+$result = CALL MICROFLOW Sales.SeedCatalogue();
+/
+```
+
+| Strategy | Effect |
+|---|---|
+| `rollback` (default) | The test's writes are rolled back, even if it throws |
+| `none` | The writes commit and persist |
+
+Rollback needs the test endpoint, so it applies to `--local` and `--attach`.
+The Docker / `--legacy-runner` path runs tests inside the after-startup action
+and has no context of its own to roll back, so it always commits.
+
+A rollback that fails is reported per test and summarised at the end — data
+left behind while the suite still says PASS is exactly what this is for.
+`--verbose` tags every test `[rolled back]`, `[committed]` or
+`[ROLLBACK FAILED]`. A misspelled strategy is a parse error, not a silent
+commit.
+
 **Docker — the after-startup runner.** The whole suite is compiled into the
 project's after-startup microflow, the container is restarted, and results are
 parsed out of its log. `--legacy-runner` selects this on a local run too.

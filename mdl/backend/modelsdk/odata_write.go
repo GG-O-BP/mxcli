@@ -287,10 +287,14 @@ func publishedEntitySetToGen(es *model.PublishedEntitySet, entityTypeID string) 
 	addStr(g, "AlternativeExposedName", "")
 	addBool(g, "UsePaging", es.UsePaging)
 	addInt64(g, "PageSize", int64(es.PageSize))
+	// Query options default to true (Mendix's own defaults) and are only turned
+	// off when the author says so. Countable is not free: it forces the read
+	// microflow to take a System.ODataResponse parameter and compute a count.
+	// (mxcli-formula1 findings #10.3.)
 	qo := newElem("ODataPublish$QueryOptions", "")
-	addBool(qo, "Countable", true)
-	addBool(qo, "SkipSupported", true)
-	addBool(qo, "TopSupported", true)
+	addBool(qo, "Countable", boolOrDefault(es.Countable, true))
+	addBool(qo, "SkipSupported", boolOrDefault(es.SkipSupported, true))
+	addBool(qo, "TopSupported", boolOrDefault(es.TopSupported, true))
 	addPart(g, "QueryOptions", qo)
 	if entityTypeID != "" {
 		addIDRef(g, "EntityTypePointer", model.ID(entityTypeID))
@@ -424,4 +428,12 @@ func addByNameRefListV3(b *element.Base, name string, qnames []string) {
 	for _, qn := range qnames {
 		p.Append(qn)
 	}
+}
+
+// boolOrDefault resolves an optional bool: nil means "not specified".
+func boolOrDefault(v *bool, def bool) bool {
+	if v == nil {
+		return def
+	}
+	return *v
 }

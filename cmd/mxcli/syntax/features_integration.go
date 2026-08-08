@@ -71,23 +71,30 @@ func init() {
 		Keywords: []string{
 			"create odata service", "publish entity", "publish odata",
 			"expose", "key", "navigation property", "association exposure",
-			"authentication", "page size",
+			"authentication", "page size", "servicename", "publishassociations",
+			"readmode microflow", "non-persistable", "countable", "skipsupported",
+			"topsupported",
 		},
 		Syntax: "CREATE [OR MODIFY] ODATA SERVICE Module.Name (\n" +
 			"  path: 'odata/customers/',           -- no leading slash; trailing slash required\n" +
 			"  version: '1.0.0',\n" +
 			"  ODataVersion: OData4,\n" +
-			"  namespace: 'Module.Customers'\n" +
+			"  namespace: 'Module.Customers',\n" +
+			"  ServiceName: 'CustomerApi',        -- optional; defaults to the document name\n" +
+			"  PublishAssociations: Yes           -- optional; default Yes (associations as links)\n" +
 			")\n" +
 			"authentication basic, session\n" +
 			"{\n" +
 			"  publish entity Module.Entity as 'EntitySet' (\n" +
-			"    ReadMode: source,\n" +
-			"    InsertMode: source | not_supported,\n" +
-			"    UpdateMode: source | not_supported,\n" +
-			"    DeleteMode: source | not_supported,\n" +
+			"    ReadMode: source | microflow Module.Read_X,\n" +
+			"    InsertMode: source | not_supported | microflow Module.Insert_X,\n" +
+			"    UpdateMode: source | not_supported | microflow Module.Update_X,\n" +
+			"    DeleteMode: source | not_supported | microflow Module.Delete_X,\n" +
 			"    UsePaging: Yes,\n" +
-			"    PageSize: 100\n" +
+			"    PageSize: 100,\n" +
+			"    Countable: No,                   -- default Yes; No drops the $Response requirement\n" +
+			"    SkipSupported: No,               -- default Yes ($skip)\n" +
+			"    TopSupported: No                 -- default Yes ($top)\n" +
 			"  )\n" +
 			"  expose (\n" +
 			"    KeyAttr as 'ExposedKey' (KEY, Filterable, Sortable),\n" +
@@ -96,7 +103,15 @@ func init() {
 			"  );\n" +
 			"};\n" +
 			"\n" +
-			"GRANT ACCESS ON ODATA SERVICE Module.Name TO Module.Role;",
+			"GRANT ACCESS ON ODATA SERVICE Module.Name TO Module.Role;\n" +
+			"\n" +
+			"-- A NON-PERSISTABLE entity can be published: back it with a read\n" +
+			"-- microflow returning a list of that entity. Nothing is stored, so\n" +
+			"-- there is no copy of the data in the database.\n" +
+			"--\n" +
+			"-- While Countable is Yes (the default) the read microflow must take a\n" +
+			"-- $Response: System.ODataResponse parameter and set its Count; with\n" +
+			"-- Countable: No it takes no parameters at all.",
 		Example: "create persistent entity Shop.Customer (\n" +
 			"  Email: string(200) unique error 'unique' required error 'required',\n" +
 			"  Name:  string(200)\n" +
@@ -156,7 +171,7 @@ func init() {
 			"body", "response", "mapping", "authentication",
 			"json structure", "import mapping", "export mapping",
 		},
-		Syntax: "CREATE [OR MODIFY] REST CLIENT Module.Name (\n  BaseUrl: 'https://...',\n  Authentication: NONE | BASIC (...)\n)\n{\n  OPERATION Name {\n    Method: GET|POST|PUT|DELETE|PATCH,\n    Path: '/path/{param}',\n    Parameters: ($param: Type),\n    Query: ($param: Type),\n    Headers: ('Key' = 'Value'),\n    Timeout: 30,\n    Body: JSON FROM $var | MAPPING Entity { jsonField = Attribute, ... },\n    Response: JSON AS $var | MAPPING Entity { Attribute = jsonField, ... }\n  }\n};\n\n-- MAPPING takes a target ENTITY plus a body listing the JSON fields; Mendix\n-- stores it inline on the operation. An existing import/export mapping\n-- document cannot be referenced here (rejected as MDL-REST01).",
+		Syntax:  "CREATE [OR MODIFY] REST CLIENT Module.Name (\n  BaseUrl: 'https://...',\n  Authentication: NONE | BASIC (...)\n)\n{\n  OPERATION Name {\n    Method: GET|POST|PUT|DELETE|PATCH,\n    Path: '/path/{param}',\n    Parameters: ($param: Type),\n    Query: ($param: Type),\n    Headers: ('Key' = 'Value'),\n    Timeout: 30,\n    Body: JSON FROM $var | MAPPING Entity { jsonField = Attribute, ... },\n    Response: JSON AS $var | MAPPING Entity { Attribute = jsonField, ... }\n  }\n};\n\n-- MAPPING takes a target ENTITY plus a body listing the JSON fields; Mendix\n-- stores it inline on the operation. An existing import/export mapping\n-- document cannot be referenced here (rejected as MDL-REST01).",
 		Example: "CREATE REST CLIENT Module.PetStore (\n  BaseUrl: 'https://petstore.example.com/api',\n  Authentication: NONE\n)\n{\n  OPERATION GetPet {\n    Method: GET,\n    Path: '/pets/{id}',\n    Parameters: ($id: String),\n    Query: ($verbose: String),\n    Response: MAPPING Module.Pet {\n      Name = name,\n      Status = status\n    }\n  }\n};",
 		SeeAlso: []string{"rest", "rest.published"},
 	})
