@@ -389,3 +389,71 @@ func assertField(t *testing.T, m map[string]any, key, expected string) {
 		t.Errorf("field %q: expected %q, got %q", key, expected, s)
 	}
 }
+
+// mxcli-formula1 §26: `create or modify odata service` silently revoked the
+// service's access, and the next build failed with "At least one allowed role
+// must be selected for the published OData service to be accessible."
+//
+// The grants were read correctly and carried through the executor — and then
+// dropped here. This document is serialized wholesale and written with
+// updateUnit, so a field the serializer omits is not left alone, it is deleted.
+// Because grants are made by a separate statement (`grant access on odata
+// service …`) and cannot be re-stated in the create script, nothing in the
+// script could put them back.
+func TestSerializePublishedODataService_KeepsAllowedModuleRoles(t *testing.T) {
+	w := &Writer{}
+	svc := &model.PublishedODataService{
+		BaseElement:        model.BaseElement{ID: "svc-roles"},
+		Name:               "CustomerAPI",
+		ServiceName:        "CustomerAPI",
+		AllowedModuleRoles: []string{"MyModule.User", "MyModule.Admin"},
+	}
+
+	data, err := w.serializePublishedODataService(svc)
+	if err != nil {
+		t.Fatalf("serialize failed: %v", err)
+	}
+	var raw map[string]any
+	if err := bson.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+
+	// Storage marker 1 (BY_NAME references) — the same array shape the working
+	// GRANT path writes via makeMendixStringArray, and extractBsonArray only
+	// strips markers 2 and 3, so the marker is still element 0 here.
+	roles := extractBsonArray(raw["AllowedModuleRoles"])
+	if len(roles) != 3 {
+		t.Fatalf("AllowedModuleRoles: expected marker + 2 grants, got %v — the service is now inaccessible and the build fails", roles)
+	}
+	if m, _ := roles[0].(int32); m != 1 {
+		t.Errorf("storage marker = %v, want 1 (BY_NAME)", roles[0])
+	}
+	for i, want := range []string{"MyModule.User", "MyModule.Admin"} {
+		if got, _ := roles[i+1].(string); got != want {
+			t.Errorf("role %d = %q, want %q", i, got, want)
+		}
+	}
+}
+
+// A service with no grants must still carry the field, as an empty versioned
+// array — the absence of the key and an empty list are different documents.
+func TestSerializePublishedODataService_EmptyRolesStillWritesTheField(t *testing.T) {
+	w := &Writer{}
+	data, err := w.serializePublishedODataService(&model.PublishedODataService{
+		BaseElement: model.BaseElement{ID: "svc-noroles"},
+		Name:        "Bare",
+	})
+	if err != nil {
+		t.Fatalf("serialize failed: %v", err)
+	}
+	var raw map[string]any
+	if err := bson.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if _, present := raw["AllowedModuleRoles"]; !present {
+		t.Error("AllowedModuleRoles must be present even when empty")
+	}
+	if arr := extractBsonArray(raw["AllowedModuleRoles"]); len(arr) != 1 {
+		t.Errorf("expected the bare marker and no grants, got %v", arr)
+	}
+}

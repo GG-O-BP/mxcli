@@ -238,6 +238,22 @@ func (w *Writer) serializePublishedODataService(svc *model.PublishedODataService
 		authTypes = append(authTypes, at)
 	}
 
+	// AllowedModuleRoles: BY_NAME references, storage marker 1 — the same array
+	// shape the working GRANT path writes (makeMendixStringArray).
+	//
+	// This document is serialized wholesale and written with updateUnit, so a
+	// field the serializer omits is not left alone: it is deleted. Omitting it
+	// silently revoked a service's access on every `create or modify`, and the
+	// next build failed with "At least one allowed role must be selected for the
+	// published OData service to be accessible." Grants are made by a separate
+	// statement (`grant access on odata service …`) and cannot be re-stated in
+	// the create script, so nothing in the script could put them back
+	// (mxcli-formula1 §26).
+	allowedRoles := bson.A{int32(1)}
+	for _, name := range svc.AllowedModuleRoles {
+		allowedRoles = append(allowedRoles, name)
+	}
+
 	// Serialize entity types and build ID map for entity set pointers.
 	// Issue #595: key by qualified entity name (et.Entity), not ExposedName.
 	// PublishedEntitySet.EntityTypeName holds the qualified name, so keying
@@ -289,6 +305,7 @@ func (w *Writer) serializePublishedODataService(svc *model.PublishedODataService
 		{Key: "PublishAssociations", Value: svc.PublishAssociations},
 		{Key: "UseGeneralization", Value: svc.UseGeneralization},
 		{Key: "AuthenticationMicroflow", Value: svc.AuthMicroflow},
+		{Key: "AllowedModuleRoles", Value: allowedRoles},
 		{Key: "AuthenticationTypes", Value: authTypes},
 		{Key: "EntityTypes", Value: entityTypes},
 		{Key: "EntitySets", Value: entitySets},
