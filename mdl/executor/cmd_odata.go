@@ -1127,7 +1127,7 @@ Got: %s`, stmt.ServiceUrl)
 		}
 		newSvc.MetadataUrl = normalizedUrl
 
-		auth := metadataAuthFromStmt(stmt)
+		auth := metadataAuthFromStmt(ctx, stmt)
 		metadata, hash, err := fetchODataMetadata(normalizedUrl, auth)
 		if err != nil {
 			fmt.Fprintf(ctx.Output, "Warning: could not fetch $metadata: %v\n", err)
@@ -1896,32 +1896,106 @@ func (a *metadataFetchAuth) apply(req *http.Request) {
 
 // metadataAuthFromStmt collects the statement's own credentials and headers for
 // the design-time fetch, keeping only the literals.
-func metadataAuthFromStmt(stmt *ast.CreateODataClientStmt) *metadataFetchAuth {
+func metadataAuthFromStmt(ctx *ExecContext, stmt *ast.CreateODataClientStmt) *metadataFetchAuth {
 	auth := &metadataFetchAuth{Headers: map[string]string{}}
-	switch {
-	case stmt.HttpUsernameIsLiteral:
-		auth.Username = stmt.HttpUsername
-	case stmt.HttpUsername != "":
+	consts := designTimeConstants(ctx)
+
+	if v, ok := resolveCredential(stmt.HttpUsername, stmt.HttpUsernameIsLiteral, consts); ok {
+		auth.Username = v
+	} else if stmt.HttpUsername != "" {
 		auth.Unresolved = append(auth.Unresolved, "HttpUsername ("+stmt.HttpUsername+")")
 	}
-	switch {
-	case stmt.HttpPasswordIsLiteral:
-		auth.Password = stmt.HttpPassword
-	case stmt.HttpPassword != "":
+	if v, ok := resolveCredential(stmt.HttpPassword, stmt.HttpPasswordIsLiteral, consts); ok {
+		auth.Password = v
+	} else if stmt.HttpPassword != "" {
 		// Named, not printed: a constant reference is a name, but the value it
 		// resolves to is a secret and this line goes to the console.
 		auth.Unresolved = append(auth.Unresolved, "HttpPassword ("+stmt.HttpPassword+")")
 	}
 	for _, h := range stmt.Headers {
-		switch {
-		case h.ValueIsLiteral:
-			auth.Headers[h.Key] = h.Value
-		case h.Value != "":
+		if v, ok := resolveCredential(h.Value, h.ValueIsLiteral, consts); ok {
+			auth.Headers[h.Key] = v
+		} else if h.Value != "" {
 			auth.Unresolved = append(auth.Unresolved, "header "+h.Key+" ("+h.Value+")")
 		}
 	}
 	sort.Strings(auth.Unresolved)
 	return auth
+}
+
+// resolveCredential turns an MDL property value into the string to send on the
+// design-time fetch.
+//
+// Three spellings reach here and all three have to work, because the shape MDL
+// pushes users towards is the constant reference — mxcli requires a constant for
+// ServiceUrl, so a client written the documented way has constants for its
+// credentials too (mxcli-formula1 #23 follow-up):
+//
+//	HttpUsername: 'f1api'            a literal
+//	HttpUsername: @Module.ApiUser    a constant reference
+//	HttpUsername: '@Module.ApiUser'  the same reference, quoted
+//
+// The quoted form is the trap: it is a STRING_LITERAL, so the isLiteral flag says
+// "literal" and the naive reading sends the eleven characters `@Module.ApiUser`
+// as the username. Worse than a 401, because it looks like it tried.
+//
+// A constant's design-time default is exactly what Studio Pro uses for the same
+// fetch, so resolving it here is not a workaround — it is the value.
+func resolveCredential(value string, isLiteral bool, consts map[string]string) (string, bool) {
+	if value == "" {
+		return "", false
+	}
+	if ref, ok := constantReference(value, isLiteral); ok {
+		v, found := consts[strings.ToLower(ref)]
+		return v, found && v != ""
+	}
+	if isLiteral {
+		return value, true
+	}
+	return "", false
+}
+
+// constantReference reports whether a property value names a constant, and which
+// one. A leading @ marks a reference in either spelling; an unquoted qualified
+// name is one too, since a bare Module.Name cannot be a credential.
+func constantReference(value string, isLiteral bool) (string, bool) {
+	if rest, found := strings.CutPrefix(value, "@"); found {
+		return rest, true
+	}
+	if !isLiteral && strings.Contains(value, ".") {
+		return value, true
+	}
+	return "", false
+}
+
+// designTimeConstants maps a constant's qualified name (lowercased) to its
+// default value. Best-effort: a project that cannot be read yields an empty map,
+// and every reference then reports itself unresolved rather than failing the
+// statement.
+func designTimeConstants(ctx *ExecContext) map[string]string {
+	out := map[string]string{}
+	if ctx == nil || ctx.Backend == nil {
+		return out
+	}
+	consts, err := ctx.Backend.ListConstants()
+	if err != nil {
+		return out
+	}
+	h, err := getHierarchy(ctx)
+	if err != nil {
+		return out
+	}
+	for _, c := range consts {
+		if c == nil {
+			continue
+		}
+		mod := h.GetModuleName(h.FindModuleID(c.ContainerID))
+		if mod == "" {
+			continue
+		}
+		out[strings.ToLower(mod+"."+c.Name)] = c.DefaultValue
+	}
+	return out
 }
 
 // hints explains a failed fetch when the reason is credentials mxcli could not
