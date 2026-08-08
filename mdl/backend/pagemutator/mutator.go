@@ -1082,6 +1082,26 @@ func findInWidgetChildren(wDoc bson.D, widgetName string) *bsonWidgetResult {
 							colPropKeys: colPropKeyMap,
 						}
 					}
+					// Descend into the column's OWN content widgets. A column
+					// rendered as customContent holds a widget tree at
+					// Properties[content].Value.Widgets — one level deeper than the
+					// pluggable search above, which only reaches the grid's own
+					// Object.Properties[].Value.Widgets. Without this, a widget
+					// inside a customContent column was unreachable by ALTER PAGE
+					// and the only remedy was rewriting the page (issue #834).
+					for _, cProp := range bsonnav.DGetArrayElements(bsonnav.DGet(colDoc, "Properties")) {
+						cPropDoc, ok := cProp.(bson.D)
+						if !ok {
+							continue
+						}
+						cValDoc := bsonnav.DGetDoc(cPropDoc, "Value")
+						if cValDoc == nil {
+							continue
+						}
+						if result := findInWidgetArray(cValDoc, "Widgets", widgetName); result != nil {
+							return result
+						}
+					}
 				}
 				break // only one "columns" property per widget
 			}
@@ -2352,26 +2372,32 @@ func buildDesignPropertyValueDoc(valueType, option string) bson.D {
 }
 
 func setWidgetCaptionMut(widget bson.D, value any) error {
-	caption := bsonnav.DGetDoc(widget, "Caption")
-	if caption == nil {
-		return mdlerrors.NewValidation("widget has no Caption property")
+	if caption := bsonnav.DGetDoc(widget, "Caption"); caption != nil {
+		setTranslatableText(caption, "", value)
+		return nil
 	}
-	setTranslatableText(caption, "", value)
-	return nil
+	// An ActionButton has no `Caption` document: its caption is a
+	// Forms$ClientTemplate stored under `CaptionTemplate` (Template → Items[] →
+	// Translation.Text), the same shape setWidgetContentMut walks. Without this
+	// branch `alter page … set Caption = '…' on <button>` failed with "widget has
+	// no Caption property" for EVERY action button, nested or top-level.
+	if tmpl := bsonnav.DGetDoc(widget, "CaptionTemplate"); tmpl != nil {
+		return setClientTemplateText(tmpl, "CaptionTemplate", value)
+	}
+	return mdlerrors.NewValidation("widget has no Caption property")
 }
 
-func setWidgetContentMut(widget bson.D, value any) error {
+// setClientTemplateText writes the literal text of a Forms$ClientTemplate
+// (Template → Items[] → Translation.Text). Shared by the caption and content
+// setters, which store their text in the same structure under different keys.
+func setClientTemplateText(clientTemplate bson.D, label string, value any) error {
 	strVal, ok := value.(string)
 	if !ok {
-		return fmt.Errorf("Content value must be a string")
+		return fmt.Errorf("%s value must be a string", label)
 	}
-	content := bsonnav.DGetDoc(widget, "Content")
-	if content == nil {
-		return fmt.Errorf("widget has no Content property")
-	}
-	template := bsonnav.DGetDoc(content, "Template")
+	template := bsonnav.DGetDoc(clientTemplate, "Template")
 	if template == nil {
-		return fmt.Errorf("Content has no Template")
+		return fmt.Errorf("%s has no Template", label)
 	}
 	items := bsonnav.DGetArrayElements(bsonnav.DGet(template, "Items"))
 	if len(items) > 0 {
@@ -2380,7 +2406,15 @@ func setWidgetContentMut(widget bson.D, value any) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("Content.Template has no Items with Text")
+	return fmt.Errorf("%s.Template has no Items with Text", label)
+}
+
+func setWidgetContentMut(widget bson.D, value any) error {
+	content := bsonnav.DGetDoc(widget, "Content")
+	if content == nil {
+		return fmt.Errorf("widget has no Content property")
+	}
+	return setClientTemplateText(content, "Content", value)
 }
 
 // setWidgetLabelMut sets the widget's Label caption. Returns nil without error

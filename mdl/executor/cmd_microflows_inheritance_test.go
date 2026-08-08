@@ -422,3 +422,78 @@ func assertLineContains(t *testing.T, lines []string, want string) {
 	}
 	t.Fatalf("expected output to contain %q, got %v", want, lines)
 }
+
+// TestBuilder_InheritanceSplitKeepsEmptyCaseFlow pins something that LOOKS
+// like a phantom and is not.
+//
+// A `split type` with no authored `else` still gets an outgoing flow whose
+// InheritanceCase has an empty entity name. That flow is the `(empty)` case of
+// an object-type decision — the null-object branch — not a "default" case.
+// Dropping it when no `else` is written fails the build with
+//
+//	CE0089 "The '(empty)' value should be configured for an outgoing flow."
+//
+// verified on mxbuild 11.6.6. An earlier attempt to remove it as unauthored
+// broke every type split, so the builder must keep emitting it unconditionally;
+// what changed instead is that DESCRIBE no longer renders it as a bare `else`
+// (see TestDescribe_InheritanceSplitOmitsEmptyElse).
+//
+// This also explains why an `else` cannot substitute for the base entity's own
+// case (CE0090): `(empty)` and the base type cover different things.
+func TestBuilder_InheritanceSplitKeepsEmptyCaseFlow(t *testing.T) {
+	build := func(elseBody []ast.MicroflowStatement) (splitID model.ID, flows []*microflows.SequenceFlow) {
+		fb := &flowBuilder{spacing: HorizontalSpacing, measurer: &layoutMeasurer{}}
+		oc := fb.buildFlowGraph([]ast.MicroflowStatement{
+			&ast.InheritanceSplitStmt{
+				Variable: "A",
+				Cases: []ast.InheritanceSplitCase{
+					{Entity: ast.QualifiedName{Module: "SP", Name: "Dog"}},
+					{Entity: ast.QualifiedName{Module: "SP", Name: "Animal"}},
+				},
+				ElseBody: elseBody,
+			},
+			&ast.ReturnStmt{},
+		}, nil)
+		for _, obj := range oc.Objects {
+			if s, ok := obj.(*microflows.InheritanceSplit); ok {
+				splitID = s.ID
+			}
+		}
+		for _, f := range oc.Flows {
+			if f.OriginID == splitID {
+				flows = append(flows, f)
+			}
+		}
+		return splitID, flows
+	}
+
+	countEmptyCase := func(flows []*microflows.SequenceFlow) int {
+		n := 0
+		for _, f := range flows {
+			if ic, ok := f.CaseValue.(*microflows.InheritanceCase); ok && ic.EntityQualifiedName == "" {
+				n++
+			}
+		}
+		return n
+	}
+
+	t.Run("no else authored still emits the (empty) flow", func(t *testing.T) {
+		_, flows := build(nil)
+		if len(flows) != 3 {
+			t.Errorf("split has %d outgoing flows, want 3 (two cases + the (empty) case)", len(flows))
+		}
+		if got := countEmptyCase(flows); got != 1 {
+			t.Errorf("got %d empty-entity case flows, want exactly 1 — without it the build fails CE0089", got)
+		}
+	})
+
+	t.Run("authored else reuses the same flow", func(t *testing.T) {
+		_, flows := build([]ast.MicroflowStatement{&ast.ReturnStmt{}})
+		if len(flows) != 3 {
+			t.Errorf("split has %d outgoing flows, want 3", len(flows))
+		}
+		if got := countEmptyCase(flows); got != 1 {
+			t.Errorf("got %d empty-entity case flows, want exactly 1", got)
+		}
+	})
+}
