@@ -448,16 +448,36 @@ Use `split type` when a microflow branches on an object's runtime specialization
 Use `cast` inside a type branch to create the specialized variable used by the branch body.
 
 ```mdl
+declare $IsSpecialized boolean = false;
 split type $Input
 case Sample.SpecializedInput
   cast $SpecificInput;
-  return true;
-else
-  return false;
+  set $IsSpecialized = true;
+case Sample.BaseInput
 end split;
+return $IsSpecialized;
 ```
 
-`case` values are qualified entity names. The optional `else` branch handles objects that do not match any listed specialization.
+`case` values are qualified entity names.
+
+> **Every type needs a branch — including the base entity.** An object-type
+> decision gets one outgoing flow per listed type, and a type with no flow fails
+> the build with **CE0090** *"The 'X' value should be configured for an outgoing
+> flow."* The base entity (the split variable's own type) counts: `case
+> Sample.BaseInput` above is what covers "it is not any of the specializations".
+>
+> **`else` does not stand in for the base-type case.** It is accepted — it
+> serializes as `Microflows$NoCase` — but it does not satisfy coverage, so
+> `case Spec` + `else` still fails CE0090. Once every type has a branch, `else`
+> is redundant. Verified on Mendix 11.6.6 and 11.13.0.
+>
+> **The split needs somewhere to go afterwards.** Branch bodies converge on a
+> merge that continues to the microflow's end event, so a non-void microflow
+> needs a `return` after `end split;` — otherwise `mxcli check` reports MDL003
+> and the build fails **CE0067** *"The 'Return value' property is required."*
+> Doing the per-branch work into a variable and returning it once (above) is the
+> clearest shape; returning inside every branch also works, but still needs the
+> trailing `return`.
 
 **`cast` only stores the output variable.** Studio Pro persists Microflows$CastAction with a single `VariableName` field — the source variable is implicit (the type-split's input). Use `cast $SpecificName;` to give the specialized variable its name. The two-variable form `$Output = cast $Source;` parses but `$Source` is dropped on roundtrip; prefer the single-variable form.
 
