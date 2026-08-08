@@ -209,6 +209,24 @@ Playwright + the devcontainer's Chromium).
   skips the bundle and just hot-reloads. It uses `CHOKIDAR_USEPOLLING` because inotify
   is silent on container filesystems.
 - Without `--watch`, a single one-shot bundle (~7 s) runs before boot.
+- **The bundle is re-checked after the boot**, because bundling before it is not
+  enough: the runtime's boot runs Gradle `clean-custom-classes compile package`,
+  and when Gradle has work to do (a new Java action, a full recompile) its package
+  pass repopulates `deployment/web` and deletes `dist/` — the bundle written
+  seconds earlier by the same command. If that happened, `run --local` says
+  `re-bundling` and rebuilds it. When Gradle had nothing to do the check is a
+  `stat` and costs nothing.
+
+**If you ever see a black page:** that is this failure, and nothing else reports
+it — `mxcli check` passes, the build succeeds, the runtime log is quiet, `curl /`
+returns **200** with a valid HTML shell, and the OData services all answer. Only a
+browser sees it. Confirm with `curl -o /dev/null -w '%{http_code}' <app>/dist/index.js`;
+a 404 there is the whole diagnosis.
+
+`mxcli test --local` boots the same way and destroys the bundle too. Tests are
+headless so it is not rebuilt for them (that would cost ~30 s on a loop whose point
+is two seconds) — the run prints a note instead, and a subsequent `run --local`
+restores it.
 
 ## Pixel-perfect page loop
 

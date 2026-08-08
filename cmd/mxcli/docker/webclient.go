@@ -138,10 +138,82 @@ func BuildWebClient(opts WebClientOptions) error {
 		return fmt.Errorf("web client build timed out after %s", timeout)
 	}
 
-	dist := filepath.Join(webDir, "dist", "index.js")
-	if _, err := os.Stat(dist); err != nil {
-		return fmt.Errorf("web client build reported success but %s is missing:\n%s", dist, log.String())
+	if !WebClientBundled(opts.DeployDir) {
+		return fmt.Errorf("web client build reported success but %s is missing:\n%s",
+			webClientBundlePath(opts.DeployDir), log.String())
 	}
 	fmt.Fprintf(w, "  Web client bundled in %s\n", time.Since(start).Round(time.Millisecond))
 	return nil
+}
+
+// webClientBundlePath is the one file whose absence is the black screen: the
+// shell loads, paints the theme's background, and never starts the client.
+func webClientBundlePath(deployDir string) string {
+	return filepath.Join(deployDir, "web", "dist", "index.js")
+}
+
+// WebClientBundled reports whether the deployment currently has a browser
+// bundle to serve.
+func WebClientBundled(deployDir string) bool {
+	fi, err := os.Stat(webClientBundlePath(deployDir))
+	return err == nil && !fi.IsDir() && fi.Size() > 0
+}
+
+// EnsureWebClientBundle re-bundles when the bundle is missing, and reports
+// whether it had to.
+//
+// Bundling before the runtime boots is not enough. The boot runs Gradle
+// `clean-custom-classes compile package`, and when Gradle has work to do — a new
+// Java action, a full recompile — its package pass repopulates deployment/web
+// and takes dist/ with it, deleting the bundle written seconds earlier by a
+// previous step of the same command. Nothing reports this: `mxcli check` passes,
+// the build succeeds, the runtime logs nothing, `curl /` returns 200 with a valid
+// HTML shell, and every OData service answers. Only a browser sees the black
+// screen, which is how it survives restarts (mxcli-formula1 §35).
+//
+// So the bundle is verified *after* the boot rather than trusted from before it.
+// When Gradle had nothing to do the check is a stat and costs nothing, which is
+// why this is a guard rather than a reordering — the bundle still exists before
+// the boot for the common case where the app is reachable immediately.
+func EnsureWebClientBundle(opts WebClientOptions) (bool, error) {
+	return ensureWebClientBundle(opts.DeployDir, opts.Stdout, func() error {
+		return BuildWebClient(opts)
+	})
+}
+
+// ReportLostWebClientBundle says so when a boot destroyed a bundle that existed
+// before it, and reports whether it did.
+//
+// This is the second way into §35: `mxcli test --local` boots the same way and
+// its Gradle package pass wipes the bundle too, so a test run between a `run
+// --local` and a browser leaves the app serving a black screen even though
+// nothing was rebuilt. Tests are headless and do not need the bundle, and
+// re-bundling would cost ~30s on a loop whose whole point is two seconds — so
+// this warns with the remedy instead of paying for it uninvited.
+func ReportLostWebClientBundle(deployDir string, hadBundle bool, w io.Writer) bool {
+	if w == nil || !hadBundle || WebClientBundled(deployDir) {
+		return false
+	}
+	fmt.Fprintf(w, "Note: this boot's packaging step removed the browser bundle at %s.\n"+
+		"  The app will render a blank page until it is rebuilt — re-run 'mxcli run --local' to restore it.\n",
+		webClientBundlePath(deployDir))
+	return true
+}
+
+// ensureWebClientBundle holds the decision, separated from the node invocation
+// so it can be tested without mxbuild's tooling.
+func ensureWebClientBundle(deployDir string, w io.Writer, bundle func() error) (bool, error) {
+	if w == nil {
+		w = io.Discard
+	}
+	if WebClientBundled(deployDir) {
+		return false, nil
+	}
+	fmt.Fprintln(w, "Web client bundle was removed by the boot's packaging step; re-bundling...")
+	if err := bundle(); err != nil {
+		return true, fmt.Errorf("re-bundling web client after boot: %w\n"+
+			"  The app is running but will render a blank page until %s exists.",
+			err, webClientBundlePath(deployDir))
+	}
+	return true, nil
 }

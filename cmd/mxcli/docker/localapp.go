@@ -151,6 +151,11 @@ func StartLocalApp(opts LocalAppOptions) (*LocalApp, error) {
 
 	app := &LocalApp{Version: version, RuntimeLogPath: opts.RuntimeLogPath}
 
+	// Whether a browser bundle exists *before* this boot. The boot's Gradle
+	// packaging removes it, and this app is booted headless (tests), so the loss
+	// is only noticed later by whoever opens a browser (mxcli-formula1 §35).
+	hadWebClient := WebClientBundled(opts.DeployDir)
+
 	// 4. Build, unless the caller is reusing an existing deployment.
 	if !opts.SkipBuild {
 		fmt.Fprintln(w, "Building project (mxbuild --serve)...")
@@ -189,6 +194,7 @@ func StartLocalApp(opts LocalAppOptions) (*LocalApp, error) {
 		return nil, err
 	}
 	app.Runtime = rt
+	ReportLostWebClientBundle(opts.DeployDir, hadWebClient, w)
 	return app, nil
 }
 

@@ -740,6 +740,18 @@ func RunLocal(opts LocalRunOptions) error {
 	}
 	defer rt.Stop()
 
+	// 6b. The boot's Gradle `package` pass repopulates deployment/web, and when
+	// Gradle had work to do it takes dist/ with it — deleting the bundle step 5b
+	// wrote seconds ago. Verify after the boot, because before it proves nothing
+	// (mxcli-formula1 §35). Costs a stat when the bundle survived.
+	if _, err := EnsureWebClientBundle(WebClientOptions{
+		DeployDir: opts.DeployDir, MxBuildPath: mxbuildPath, Stdout: w,
+	}); err != nil {
+		// The app is up and its services answer; only the browser is broken. Say so
+		// and keep running rather than tearing down a working runtime.
+		fmt.Fprintf(stderr, "Warning: %v\n", err)
+	}
+
 	if opts.OnReady != nil {
 		opts.OnReady(LocalAppInfo{
 			AppPort:   opts.AppPort,
