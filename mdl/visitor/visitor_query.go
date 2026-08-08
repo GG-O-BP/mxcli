@@ -104,6 +104,16 @@ func (b *Builder) ExitShowStatement(ctx *parser.ShowStatementContext) {
 				Name:       &name,
 			})
 		}
+	} else if ctx.FOLDERS() != nil {
+		stmt := &ast.ShowStmt{ObjectType: ast.ShowFolders}
+		if ctx.IN() != nil {
+			if qn := ctx.QualifiedName(); qn != nil {
+				stmt.InModule = getQualifiedNameText(qn)
+			} else if id := ctx.IDENTIFIER(); id != nil {
+				stmt.InModule = id.GetText()
+			}
+		}
+		b.statements = append(b.statements, stmt)
 	} else if ctx.ENUMERATIONS() != nil {
 		stmt := &ast.ShowStmt{ObjectType: ast.ShowEnumerations}
 		if ctx.IN() != nil {

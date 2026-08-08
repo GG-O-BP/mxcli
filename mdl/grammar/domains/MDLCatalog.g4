@@ -26,6 +26,11 @@ showStatement
     | showOrList SNIPPETS (IN (qualifiedName | IDENTIFIER))?
     | showOrList BUILDING BLOCKS (IN (qualifiedName | IDENTIFIER))?
     | showOrList ENUMERATIONS (IN (qualifiedName | IDENTIFIER))?
+    // LIST FOLDERS is the layout view: which folders exist and what is in them.
+    // MOVE could place a document but nothing could read the placement back, so
+    // a layout could not be confirmed or diffed without opening the .mpr as
+    // SQLite (mxcli-formula1 #32).
+    | showOrList FOLDERS (IN (qualifiedName | IDENTIFIER))?
     | showOrList CONSTANTS (IN (qualifiedName | IDENTIFIER))?
     | showOrList CONSTANT VALUES (IN (qualifiedName | IDENTIFIER))?
     | showOrList LAYOUTS (IN (qualifiedName | IDENTIFIER))?

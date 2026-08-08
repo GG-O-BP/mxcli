@@ -236,7 +236,40 @@ SHOW IMPACT OF OldModule.CustomerPage;
 MOVE PAGE OldModule.CustomerPage TO NewModule;
 
 -- Drop empty folder
-DROP FOLDER 'OldFolder' IN Module;`,
+DROP FOLDER 'OldFolder' IN Module;
+
+-- Read the placement back
+LIST FOLDERS IN MyModule;`,
+		SeeAlso: []string{"folders"},
+	})
+
+	// ── Folders ─────────────────────────────────────────────────────────
+
+	Register(SyntaxFeature{
+		Path:    "folders",
+		Summary: "LIST FOLDERS — the folder layout of a module, with what is in each folder",
+		Keywords: []string{
+			"folders", "list folders", "show folders", "layout",
+			"folder tree", "where is this document", "unfiled",
+		},
+		Syntax: "LIST FOLDERS [IN <module>];",
+		Example: `-- Layout of one module
+LIST FOLDERS IN MyModule;
+
+-- Every module in the project
+LIST FOLDERS;
+
+-- As rows, to diff against an intended layout
+mxcli -p app.mpr --json -c "LIST FOLDERS IN MyModule"
+
+-- Complements MOVE: MOVE places a document in a folder, LIST FOLDERS reads
+-- the placement back. SHOW STRUCTURE is organised by document type at every
+-- depth, so it never shows which folder a document sits in.
+--
+-- Empty folders are listed too (with [0]), and documents still at the module
+-- root appear under "(module root)" — so the output is the whole layout and
+-- can be diffed against an intended one.`,
+		SeeAlso: []string{"move", "structure"},
 	})
 
 	// ── Search ──────────────────────────────────────────────────────────
