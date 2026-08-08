@@ -1077,7 +1077,7 @@ func renderClientActionMDL(ctx *ExecContext, action map[string]any) string {
 		if formSettings, ok := action["FormSettings"].(map[string]any); ok {
 			if pageName, ok := formSettings["Form"].(string); ok && pageName != "" {
 				result := "show_page " + pageName
-				params := extractPageParameters(ctx, formSettings)
+				params := pageActionParameters(ctx, formSettings, pageName)
 				if params != "" {
 					result += "(" + params + ")"
 				}
@@ -1087,7 +1087,7 @@ func renderClientActionMDL(ctx *ExecContext, action map[string]any) string {
 		if pageSettings, ok := action["PageSettings"].(map[string]any); ok {
 			if pageName, ok := pageSettings["Form"].(string); ok && pageName != "" {
 				result := "show_page " + pageName
-				params := extractPageParameters(ctx, pageSettings)
+				params := pageActionParameters(ctx, pageSettings, pageName)
 				if params != "" {
 					result += "(" + params + ")"
 				}
@@ -1157,6 +1157,70 @@ func getPageQualifiedName(ctx *ExecContext, pageID model.ID) string {
 		}
 	}
 	return ""
+}
+
+// pageActionParameters renders a SHOW_PAGE action's argument list, recovering the
+// implicit mapping when the model stores none.
+//
+// A page action written by mxcli deliberately stores ParameterMappings as an
+// empty array: Studio Pro infers the current row object from the enclosing
+// widget, and an explicit mapping whose Argument is "$currentObject" is rejected
+// as CE0115 "parameters do not match" (issue #296). Nothing was wrong with that
+// decision — what was missing is its other half. DESCRIBE read only the explicit
+// mappings, so `SHOW_PAGE P(Race: $currentObject)` came back as `show_page P`,
+// and the description read as a diagnosis: the mapping was dropped, that is why
+// the page gets an empty object. It was not dropped, and Mendix could not have
+// built the page if it were — an unmapped required page parameter is a
+// consistency error. Three debugging cycles were spent replacing a button that
+// was correct (mxcli-formula1 §39).
+//
+// DESCRIBE is what you reach for once you have stopped trusting the model, so a
+// lossy DESCRIBE is costliest exactly when it is most used.
+func pageActionParameters(ctx *ExecContext, settings map[string]any, pageName string) string {
+	if explicit := extractPageParameters(ctx, settings); explicit != "" {
+		return explicit
+	}
+	// No stored mapping: the target page's own parameters are the mapping, each
+	// bound to the row object the enclosing widget supplies.
+	var params []string
+	for _, name := range targetPageParameterNames(ctx, pageName) {
+		params = append(params, mdlIdent(name)+": $currentObject")
+	}
+	return strings.Join(params, ", ")
+}
+
+// targetPageParameterNames returns the parameter names declared by a page, by
+// qualified name. Returns nil when the page cannot be resolved — a description
+// that omits an argument is better than one that invents a name.
+func targetPageParameterNames(ctx *ExecContext, qualifiedName string) []string {
+	module, name, ok := strings.Cut(qualifiedName, ".")
+	if !ok || module == "" || name == "" {
+		return nil
+	}
+	allPages, err := ctx.Backend.ListPages()
+	if err != nil {
+		return nil
+	}
+	h, err := getHierarchy(ctx)
+	if err != nil {
+		return nil
+	}
+	for _, p := range allPages {
+		if p == nil || !strings.EqualFold(p.Name, name) {
+			continue
+		}
+		if !strings.EqualFold(h.GetModuleName(h.FindModuleID(p.ContainerID)), module) {
+			continue
+		}
+		var names []string
+		for _, param := range p.Parameters {
+			if param != nil && param.Name != "" {
+				names = append(names, param.Name)
+			}
+		}
+		return names
+	}
+	return nil
 }
 
 // extractPageParameters extracts page parameter mappings from a FormSettings/PageSettings object.
