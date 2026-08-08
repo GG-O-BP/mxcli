@@ -58,6 +58,16 @@ type RunOptions struct {
 	// then run against that app's database rather than a scratch one.
 	Attach bool
 
+	// SkipAppStartup stops the project's own after-startup microflow from running
+	// during a --local test run.
+	//
+	// It normally does run: the generated startup flow registers the endpoint and
+	// then chains it, so tests see the app in the state it actually boots into.
+	// Set this when the suite wants an empty, deterministic baseline instead —
+	// e.g. the app seeds demo data at startup and the tests are asserting on
+	// counts.
+	SkipAppStartup bool
+
 	// Timeout for runtime startup and test execution.
 	Timeout time.Duration
 
@@ -178,10 +188,21 @@ func runEndpoint(opts RunOptions, suite *TestSuite, timeout time.Duration, w io.
 		return nil, err
 	}
 
+	// Capture what cleanup will need to restore, before touching anything. This
+	// must succeed: without it cleanup cannot tell an existing MxTest module from
+	// the one it is about to create, nor restore the original after-startup — and
+	// the generated startup flow needs to know what to chain.
+	state, err := captureProjectState(opts.ProjectPath)
+	if err != nil {
+		return nil, fmt.Errorf("capturing project state: %w", err)
+	}
+
 	fmt.Fprintln(w, "Generating test endpoint and test microflows...")
-	// "" : a test run wants a known starting state, so the project's own
-	// after-startup is not chained here (a hosted endpoint does chain it).
-	endpointMDL := GenerateEndpointMDL("")
+	chain := state.afterStartup
+	if opts.SkipAppStartup {
+		chain = ""
+	}
+	endpointMDL := GenerateEndpointMDL(chain)
 	flowsMDL := GenerateTestFlows(suite)
 
 	if opts.Verbose {
@@ -191,14 +212,7 @@ func runEndpoint(opts RunOptions, suite *TestSuite, timeout time.Duration, w io.
 		fmt.Fprintln(w, "--- End MDL ---")
 	}
 
-	// Capture what cleanup will need to restore, before touching anything. This
-	// must succeed: without it cleanup cannot tell an existing MxTest module from
-	// the one it is about to create, nor restore the original after-startup.
 	fmt.Fprintln(w, "Injecting test endpoint into project...")
-	state, err := captureProjectState(opts.ProjectPath)
-	if err != nil {
-		return nil, fmt.Errorf("capturing project state: %w", err)
-	}
 
 	// From here on the project is modified, so every exit runs cleanup.
 	//
@@ -235,17 +249,7 @@ func runEndpoint(opts RunOptions, suite *TestSuite, timeout time.Duration, w io.
 			return finish(nil, fmt.Errorf("preparing project for the test run (%s): %w", cmd, err))
 		}
 	}
-	fmt.Fprintf(w, "  After-startup set to %s (registers the endpoint; runs no tests)\n", endpointStartupFlow)
-	if state.afterStartup != "" {
-		// Naming what was displaced is the whole point. A suite that needs
-		// startup state passes under --attach and fails here against an empty
-		// database, and nothing in the failure points at the cause: the tests
-		// asked for state the runner deliberately prevented.
-		fmt.Fprintf(w, "  Note: %s does NOT run during this test run — the suite starts from an empty\n", state.afterStartup)
-		fmt.Fprintf(w, "        %s database. For tests that need what your startup microflow sets up,\n", localTestDBSuffix)
-		fmt.Fprintf(w, "        run them with --attach against an app already up under\n")
-		fmt.Fprintf(w, "        'mxcli run --local --test-endpoint', which uses that app's database.\n")
-	}
+	fmt.Fprintln(w, "  "+describeStartup(state.afterStartup, opts.SkipAppStartup))
 
 	// --watch keeps the runtime and the build server up and re-runs on every
 	// change, so it owns the loop — including printing each run's results, which

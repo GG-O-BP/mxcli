@@ -93,6 +93,48 @@ The markdown format turns your tests into living documentation.
 | `@throws` | Expect error | `@throws 'validation failed'` |
 | `@cleanup` | Rollback strategy | `@cleanup rollback` (default) or `@cleanup none` |
 
+### `@cleanup` — what happens to a test's data
+
+**`rollback` is the default**, so by default a test's database writes do not
+survive it. The endpoint opens a transaction around the call and rolls it back
+afterwards, including when the test throws.
+
+```mdl
+/**
+ * @test creating an order does not leak
+ * @expect $result = 'ok'
+ */
+$result = CALL MICROFLOW Sales.CreateOrder(Amount = 100);
+/
+
+/**
+ * @test seed data the next test needs
+ * @cleanup none
+ */
+$result = CALL MICROFLOW Sales.SeedCatalogue();
+/
+```
+
+Use `@cleanup none` when the writes are the point — seeding a fixture, or
+inspecting the result in the running app afterwards.
+
+Two things worth knowing:
+
+- **`--local` only.** Rollback needs the test endpoint, which owns the context
+  the test runs in. The Docker / `--legacy-runner` path executes tests inside
+  the after-startup action and has no such seam, so it always commits.
+- **A rollback that fails is reported, loudly.** The run prints a `WARNING` per
+  affected test and a summary line, because the alternative — data left behind
+  while the suite still says PASS — is the failure mode this annotation exists
+  to prevent. `--verbose` tags every test with `[rolled back]`, `[committed]` or
+  `[ROLLBACK FAILED]`.
+
+A misspelled strategy (`@cleanup rollbak`) is a **parse error**, not a silent
+fallback to committing.
+
+Rollback matters most under `--attach`, where the database is the one your dev
+app is using.
+
 ---
 
 ## Running Tests
@@ -130,8 +172,9 @@ older **after-startup microflow** pattern.
 2. Records the project's current after-startup microflow, and whether an `MxTest`
    module already exists
 3. Generates **one `MxTest.Test_<id>` microflow per test**, plus a Java action
-   that registers an HTTP endpoint, and points after-startup at a microflow whose
-   only job is to call it — **no test runs during startup**
+   that registers an HTTP endpoint, and points after-startup at a microflow that
+   registers it and then **chains your own after-startup microflow** —
+   **no test runs during startup**
 4. Builds and boots the app once
 5. Invokes each test by name over HTTP; each returns its own verdict in the
    response
@@ -149,6 +192,34 @@ Two consequences worth knowing when reading a failing run:
 
 Each test is a separate microflow with its own variable scope, so `$result` in
 one test never collides with `$result` in another.
+
+#### Your app's after-startup microflow still runs
+
+The generated startup flow registers the endpoint and then calls the project's
+own after-startup microflow, so tests see the app in the state it actually boots
+into — a loaded cache, seeded reference data, whatever your app does. The run
+says which happened:
+
+```
+After-startup set to MxTest.RegisterEndpoint (registers the endpoint; runs no tests, then runs your MyModule.ASU_Startup)
+```
+
+Pass `--skip-app-startup` when you want an empty, deterministic baseline
+instead — the app seeds demo data and your tests assert on counts, say:
+
+```
+After-startup set to MxTest.RegisterEndpoint (… --skip-app-startup, so MyModule.ASU_Startup will NOT run)
+```
+
+This is why a suite behaves the same under `--local` and `--attach`. Before it
+chained, `--local` ran with the app's startup logic suppressed, and a suite that
+depended on startup state passed under `--attach` and failed under `--local` for
+reasons unrelated to the code.
+
+One thing rollback does **not** cover: whatever the startup microflow writes
+happens at boot, outside any test's transaction, so `@cleanup rollback` does not
+undo it. Under `--local` that lands in the scratch `<project>_test` database;
+under `--attach` your app wrote it at its own boot regardless.
 
 #### `--watch`: keep the runtime warm
 

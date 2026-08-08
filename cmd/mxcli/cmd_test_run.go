@@ -38,13 +38,25 @@ loop can keep serving the same project while tests run.
   1. Parses test files and extracts test blocks with @test/@expect annotations
   2. Generates one microflow per test, plus a Java action that registers a
      token-guarded HTTP endpoint
-  3. Boots the app once — startup only registers the endpoint, it runs no tests
+  3. Boots the app once — startup registers the endpoint and then runs your own
+     after-startup microflow, so tests see the app as it really boots. No test
+     runs during startup
   4. Invokes each test by name over HTTP; the verdict comes back in the response
   5. Restores original project settings
+
+Your after-startup microflow running is what makes a suite behave the same under
+--local and --attach. Pass --skip-app-startup for an empty, deterministic
+baseline instead — the run always prints which of the two it did.
 
 Because each test is its own microflow invoked on its own, a test that throws
 fails only itself instead of ending the run, and results are returned rather
 than recovered from the runtime log.
+
+It also makes @cleanup real. By default (@cleanup rollback) each test runs in a
+transaction the endpoint rolls back afterwards, so its database writes do not
+survive — use @cleanup none when the writes are the point. The Docker path
+always commits: it runs tests inside the after-startup action and has no
+context of its own to roll back.
 
 The endpoint is only reachable from loopback, only with a per-run token passed
 to the runtime through its environment (never written into your project), and
@@ -121,6 +133,7 @@ Examples:
 		legacyRunner, _ := cmd.Flags().GetBool("legacy-runner")
 		watch, _ := cmd.Flags().GetBool("watch")
 		attach, _ := cmd.Flags().GetBool("attach")
+		skipAppStartup, _ := cmd.Flags().GetBool("skip-app-startup")
 		verbose, _ := cmd.Flags().GetBool("verbose")
 		color, _ := cmd.Flags().GetBool("color")
 		timeoutStr, _ := cmd.Flags().GetString("timeout")
@@ -131,15 +144,11 @@ Examples:
 			os.Exit(1)
 		}
 
-		// Resolve before the --list branch, not after: listing and running must
-		// accept the same paths, or `mxcli test tests/ -p app/App.mpr` runs from
-		// the solution root and `--list` on the same command line does not.
-		// With no project this returns the paths untouched.
-		testPaths := resolveTestPaths(args, projectPath)
-
 		if list {
-			// Just list tests, no execution needed
-			if err := testrunner.ListTests(testPaths, os.Stdout); err != nil {
+			// resolveTestPaths here too: listing that cannot find a path execution
+			// finds is a confusing split, and `mxcli test tests/ -p app/App.mpr
+			// --list` hit exactly that (mxcli-formula1 findings #15).
+			if err := testrunner.ListTests(resolveTestPaths(args, projectPath), os.Stdout); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -153,19 +162,20 @@ Examples:
 		}
 
 		opts := testrunner.RunOptions{
-			ProjectPath:  projectPath,
-			TestFiles:    testPaths,
-			SkipBuild:    skipBuild,
-			Local:        local,
-			LegacyRunner: legacyRunner,
-			Watch:        watch,
-			Attach:       attach,
-			Timeout:      timeout,
-			JUnitOutput:  junitOutput,
-			Verbose:      verbose,
-			Color:        color,
-			Stdout:       os.Stdout,
-			Stderr:       os.Stderr,
+			ProjectPath:    projectPath,
+			TestFiles:      resolveTestPaths(args, projectPath),
+			SkipBuild:      skipBuild,
+			Local:          local,
+			LegacyRunner:   legacyRunner,
+			Watch:          watch,
+			Attach:         attach,
+			SkipAppStartup: skipAppStartup,
+			Timeout:        timeout,
+			JUnitOutput:    junitOutput,
+			Verbose:        verbose,
+			Color:          color,
+			Stdout:         os.Stdout,
+			Stderr:         os.Stderr,
 		}
 
 		result, err := testrunner.Run(opts)
