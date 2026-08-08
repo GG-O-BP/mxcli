@@ -1496,3 +1496,165 @@ func TestEnclosingDataSourceFlow(t *testing.T) {
 		t.Errorf("nearer association source should shadow outer microflow: got (%q,%q), want empty", mf, nf)
 	}
 }
+
+// makeGridWithCustomContentColumn builds the shape issue #834 is about: a
+// pluggable DataGrid2 whose column renders `customContent`, with a widget
+// nested inside that column's content.
+//
+// The nesting is two levels deeper than a plain pluggable property:
+//
+//	CustomWidget.Object → Properties[columns].Value.Objects[i]   ← the column
+//	                    → Properties[content].Value.Widgets[]    ← its content
+//
+// findInWidgetChildren searched the first level and matched columns by derived
+// name, but never descended into a column's own content.
+func makeGridWithCustomContentColumn(gridName, childName string) bson.D {
+	columnsTypeID := primitive.Binary{Subtype: 0x04, Data: []byte{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}}
+	contentTypeID := primitive.Binary{Subtype: 0x04, Data: []byte{2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2}}
+	captionTypeID := primitive.Binary{Subtype: 0x04, Data: []byte{3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3}}
+
+	return bson.D{
+		{Key: "$Type", Value: "CustomWidgets$CustomWidget"},
+		{Key: "Name", Value: gridName},
+		{Key: "Type", Value: bson.D{
+			{Key: "$Type", Value: "CustomWidgets$CustomWidgetType"},
+			{Key: "ObjectType", Value: bson.D{
+				{Key: "PropertyTypes", Value: bson.A{
+					int32(2),
+					bson.D{
+						{Key: "$ID", Value: columnsTypeID},
+						{Key: "PropertyKey", Value: "columns"},
+						// The column's own property types hang off the columns
+						// property type as ValueType.ObjectType.PropertyTypes
+						// (see buildColumnPropKeyMap).
+						{Key: "ValueType", Value: bson.D{
+							{Key: "ObjectType", Value: bson.D{
+								{Key: "PropertyTypes", Value: bson.A{
+									int32(2),
+									bson.D{
+										{Key: "$ID", Value: contentTypeID},
+										{Key: "PropertyKey", Value: "content"},
+									},
+									bson.D{
+										{Key: "$ID", Value: captionTypeID},
+										{Key: "PropertyKey", Value: "header"},
+									},
+								}},
+							}},
+						}},
+					},
+				}},
+			}},
+		}},
+		{Key: "Object", Value: bson.D{
+			{Key: "Properties", Value: bson.A{
+				int32(2),
+				bson.D{
+					{Key: "TypePointer", Value: columnsTypeID},
+					{Key: "Value", Value: bson.D{
+						{Key: "Objects", Value: bson.A{
+							int32(2),
+							bson.D{ // the column
+								{Key: "Properties", Value: bson.A{
+									int32(2),
+									bson.D{
+										{Key: "TypePointer", Value: captionTypeID},
+										{Key: "Value", Value: bson.D{
+											{Key: "TextTemplate", Value: bson.D{
+												{Key: "Template", Value: bson.D{
+													{Key: "Items", Value: bson.A{
+														int32(2),
+														bson.D{{Key: "Text", Value: "Act"}},
+													}},
+												}},
+											}},
+										}},
+									},
+									bson.D{
+										{Key: "TypePointer", Value: contentTypeID},
+										{Key: "Value", Value: bson.D{
+											{Key: "Widgets", Value: bson.A{
+												int32(2),
+												bson.D{
+													{Key: "$Type", Value: "Forms$ActionButton"},
+													{Key: "Name", Value: childName},
+													// Real shape: an ActionButton's caption is a
+													// Forms$ClientTemplate, not a plain Caption doc.
+													{Key: "CaptionTemplate", Value: bson.D{
+														{Key: "$Type", Value: "Forms$ClientTemplate"},
+														{Key: "Template", Value: bson.D{
+															{Key: "$Type", Value: "Texts$Text"},
+															{Key: "Items", Value: bson.A{
+																int32(3),
+																bson.D{
+																	{Key: "$Type", Value: "Texts$Translation"},
+																	{Key: "LanguageCode", Value: "en_US"},
+																	{Key: "Text", Value: "Edit"},
+																},
+															}},
+														}},
+													}},
+												},
+											}},
+										}},
+									},
+								}},
+							},
+						}},
+					}},
+				},
+			}},
+		}},
+	}
+}
+
+// TestFindBsonWidget_InsideCustomContentColumn covers issue #834: `alter page …
+// set Caption = '…' on btnEdit` reported "widget not found" when btnEdit lived
+// inside a datagrid column rendered as customContent, so the only way to touch
+// it was rewriting the whole page with CREATE OR REPLACE.
+//
+// Addressing is by the CHILD widget's own name. A `grid.column.widget` path was
+// considered and rejected: DataGrid2 columns carry no stored name in the MPR
+// (see findBsonColumn), so the column segment could only be a derived name —
+// which changes when the caption changes, making such a path silently stale.
+// The nested widget's name is real and stable.
+func TestFindBsonWidget_InsideCustomContentColumn(t *testing.T) {
+	rawData := makeRawPage(makeGridWithCustomContentColumn("dgcc", "btnEdit"))
+
+	result := findBsonWidget(rawData, "btnEdit")
+	if result == nil {
+		t.Fatal("widget nested in a customContent column was not found")
+	}
+	if got := bsonnav.DGetString(result.widget, "Name"); got != "btnEdit" {
+		t.Fatalf("found %q, want btnEdit", got)
+	}
+
+	// And it must be mutable through the normal path, not merely findable.
+	m := &Mutator{rawData: rawData, widgetFinder: findBsonWidget}
+	if err := m.SetWidgetProperty("btnEdit", "Caption", "Changed"); err != nil {
+		t.Fatalf("SetWidgetProperty on the nested widget failed: %v", err)
+	}
+	again := findBsonWidget(rawData, "btnEdit")
+	tmpl := bsonnav.DGetDoc(again.widget, "CaptionTemplate")
+	template := bsonnav.DGetDoc(tmpl, "Template")
+	items := bsonnav.DGetArrayElements(bsonnav.DGet(template, "Items"))
+	if len(items) == 0 {
+		t.Fatal("CaptionTemplate lost its Items")
+	}
+	if got := bsonnav.DGetString(items[0].(bson.D), "Text"); got != "Changed" {
+		t.Errorf("caption text = %q, want Changed", got)
+	}
+}
+
+// The column itself must still resolve by its derived name — descending into
+// column content must not shadow the existing column addressing.
+func TestFindBsonWidget_ColumnStillResolvesByDerivedName(t *testing.T) {
+	rawData := makeRawPage(makeGridWithCustomContentColumn("dgcc", "btnEdit"))
+	result := findBsonWidget(rawData, "Act")
+	if result == nil {
+		t.Fatal("column 'Act' no longer resolves by its derived name")
+	}
+	if len(result.colPropKeys) == 0 {
+		t.Error("expected a column result (colPropKeys populated), got a plain widget")
+	}
+}
