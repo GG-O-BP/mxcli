@@ -541,7 +541,20 @@ publish entity Api.Row as 'Rows' (
 )
 ```
 
-Declaring `No` is the read path's substitute for the `400` it cannot send.
+Declaring `No` is the read path's substitute for the `400` it cannot send. It is
+also safe to declare: the contract carries `TopSupported`/`SkipSupported` as
+standalone boolean annotations, and `sql <alias> generate connector` reads them,
+so a consuming app generated from this service says `No` too. (Until mxcli
+learned to read them it always generated `Yes`, and the consumer failed to build
+with **CE6630** "'Rows' is marked supports $top=False in the OData service, but
+True in the app" — if you hit that against an older mxcli, that is the cause.)
+
+`mxcli check` enforces this as **MDL-ODATA03**, and it looks for the option
+*names* in the microflow body, not just for a `System.HttpRequest` parameter —
+adding the parameter to answer the KEY (below) does not silence the paging
+warning. A microflow that hands the request to a Java action, a JavaScript
+action, or a microflow outside the script is left alone, since mxcli cannot read
+what those do.
 
 **2. Answer a lookup by your own KEY.** A client holding a row re-reads it by
 key, unprompted, and Mendix's own OData client sends the `$filter` spelling:
