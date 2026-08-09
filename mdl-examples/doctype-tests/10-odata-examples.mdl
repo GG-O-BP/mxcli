@@ -435,6 +435,47 @@ revoke access on odata service OdTest.CustomerAPI from OdTest.user;
 /
 
 /**
+ * Level 8.6b: OData action — publish a microflow
+ *
+ * Mendix exposes a published microflow in $metadata as an ActionImport, so a
+ * client can POST arguments to it. Without one, a parameterised resource has to
+ * be modelled as an entity set that carries its own arguments as attributes and
+ * echoes them back on every row: Mendix validates $filter against the published
+ * metadata before the read microflow runs, so an argument that is not an
+ * attribute is answered 400 and never reaches the microflow.
+ *
+ * Parameter data types and the return type are NOT written here. They are read
+ * off the microflow, which already declares them — the same thing Studio Pro
+ * does, and the only arrangement in which the two cannot drift.
+ */
+CREATE MICROFLOW OdTest.RecordNote ($Note: string, $Amount: integer)
+  RETURNS Boolean AS $Ok
+BEGIN
+  declare $Ok Boolean = true;
+  RETURN $Ok;
+END;
+/
+
+create or modify odata service OdTest.ActionApi (
+  path: 'odata/actions/',
+  version: '1.0.0',
+  ODataVersion: OData4,
+  namespace: 'OdTest.Actions',
+  ServiceName: 'Action Service'
+)
+authentication basic
+{
+  -- An action alongside no entity sets at all is legitimate.
+  publish microflow OdTest.RecordNote as 'RecordNote'
+    expose ( Note as 'note', Amount as 'amount' (CanBeEmpty) );
+};
+/
+
+-- DESCRIBE round-trips the block, so this output is re-executable.
+describe odata service OdTest.ActionApi;
+/
+
+/**
  * Level 8.7c: A modify must NOT revoke the grants made above.
  *
  * The service document is serialized wholesale, so a writer that omits

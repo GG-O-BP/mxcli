@@ -602,6 +602,56 @@ non-filterable"` before the microflow runs. So the microflow only ever sees name
 that exist in the published metadata. That is defence in depth, not a substitute for a
 whitelist — it constrains the *name*, not what you do with it.
 
+## OData Actions: Publishing a Microflow
+
+An entity set is a *read* surface. To let a client **invoke** something —
+`POST /odata/x/RecordNote` with arguments in the body — publish a microflow.
+Mendix exposes it in `$metadata` as an `ActionImport`.
+
+```sql
+create odata service ProductApi.Actions ( ... )
+authentication basic
+{
+  publish microflow ProductApi.RecordNote as 'RecordNote'
+    expose ( Note as 'note', Amount as 'amount' (CanBeEmpty) );
+};
+```
+
+**Parameter data types and the return type are not written in MDL.** They are
+read off the microflow, which already declares them — the same thing Studio Pro
+does, and the only arrangement in which the two cannot drift. Omitting the
+`expose` clause publishes every parameter under its own name.
+
+### Why this matters more than it looks
+
+Mendix validates `$filter` against the published metadata **before** the read
+microflow runs. So a parameterised *entity set* cannot take its arguments as
+filters: `?$filter=driverId eq 'x'` against a resource whose entity has no
+`driverId` attribute is answered
+
+```
+400  Could not map 'driverId' to attribute or association.
+```
+
+and the microflow never sees it. The workaround is to carry every parameter as
+an attribute and echo it back on each row — `SELECT f.*, {driverId} AS driver_id
+…`. An action takes them as parameters and needs none of that.
+
+### Two things Mendix will not do for you
+
+- **A returning stored procedure cannot be called directly.** The External
+  Database Connector dispatches a `CALL` as an update, and PgJDBC refuses
+  because a `CALL` with INOUT parameters answers with a row: *"A result was
+  returned when none was expected"*. There is no `execute database statement`
+  activity — only `execute database query`, which wants a `SELECT`. Wrap the
+  procedure in a one-line function that `CALL`s it and returns its row.
+- **The JDBC driver must be declared and shipped even for PostgreSQL**, the
+  database Mendix itself runs on. Without a module jar dependency the build
+  fails CE5278; declared but `included = false`, the build is green and the
+  first request dies with *"No JDBC driver found in app for URL"* — the
+  Connector resolves drivers from the app's classpath, not the runtime's. Use
+  `included = true` and `mxcli sync-java-deps`.
+
 ## Authentication Methods, and the Cost of Basic Auth
 
 A published service names one or more methods in the `authentication` clause:

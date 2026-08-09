@@ -106,6 +106,12 @@ func init() {
 			"    OtherAttr (Filterable),\n" +
 			"    AssocName as 'NavProp'   -- bare association name -> PublishedAssociationEnd\n" +
 			"  );\n" +
+			"\n" +
+			"  -- An OData action (an ActionImport in $metadata). Parameter types and\n" +
+			"  -- the return type come off the microflow, which already declares them;\n" +
+			"  -- omitting the expose clause publishes every parameter by its own name.\n" +
+			"  publish microflow Module.DoThing as 'DoThing'\n" +
+			"    expose ( Note as 'note', Amount as 'amount' (CanBeEmpty) );\n" +
 			"};\n" +
 			"\n" +
 			"GRANT ACCESS ON ODATA SERVICE Module.Name TO Module.Role;\n" +

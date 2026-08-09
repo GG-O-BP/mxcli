@@ -360,7 +360,7 @@ func outputPublishedODataServiceMDL(ctx *ExecContext, svc *model.PublishedODataS
 	}
 
 	// Published entities block
-	if len(svc.EntityTypes) > 0 || len(svc.EntitySets) > 0 {
+	if len(svc.EntityTypes) > 0 || len(svc.EntitySets) > 0 || len(svc.Microflows) > 0 {
 		fmt.Fprintln(ctx.Output, "{")
 
 		// Build entity set lookup by exposed name and entity type name for merging
@@ -476,6 +476,13 @@ func outputPublishedODataServiceMDL(ctx *ExecContext, svc *model.PublishedODataS
 				fmt.Fprintln(ctx.Output, "  );")
 			}
 			fmt.Fprintln(ctx.Output)
+		}
+
+		// OData actions. Emitted as part of the block, not as a comment beside
+		// it: a comment reads as complete and replays into a service without the
+		// action (mxcli-formula1 §47.1).
+		for _, pm := range svc.Microflows {
+			printPublishedMicroflowMDL(ctx.Output, pm)
 		}
 
 		fmt.Fprintln(ctx.Output, "}")
@@ -2198,4 +2205,38 @@ func odataAuthClause(svc *model.PublishedODataService) string {
 		parts = append(parts, "Microflow "+svc.AuthMicroflow)
 	}
 	return strings.Join(parts, ", ")
+}
+
+// printPublishedMicroflowMDL writes a `publish microflow` block. Parameter data
+// types and the return type are deliberately absent: they are read off the
+// microflow at execution time, so restating them here would let the emitted
+// script and the microflow drift apart.
+func printPublishedMicroflowMDL(w io.Writer, pm *model.PublishedMicroflow) {
+	head := "  publish microflow " + pm.Microflow
+	if pm.ExposedName != "" {
+		head += fmt.Sprintf(" as '%s'", pm.ExposedName)
+	}
+	if len(pm.Parameters) == 0 {
+		fmt.Fprintln(w, head+";")
+		return
+	}
+	fmt.Fprintln(w, head)
+	parts := make([]string, 0, len(pm.Parameters))
+	for _, p := range pm.Parameters {
+		// The stored ref is Module.Microflow.Param; MDL names the parameter
+		// alone, so take the last segment.
+		name := p.MicroflowParameter
+		if i := strings.LastIndex(name, "."); i >= 0 {
+			name = name[i+1:]
+		}
+		part := name
+		if p.ExposedName != "" && p.ExposedName != name {
+			part += fmt.Sprintf(" as '%s'", p.ExposedName)
+		}
+		if p.CanBeEmpty {
+			part += " (CanBeEmpty)"
+		}
+		parts = append(parts, part)
+	}
+	fmt.Fprintf(w, "    expose ( %s );\n", strings.Join(parts, ", "))
 }
