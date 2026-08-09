@@ -113,7 +113,11 @@ rules:
 
 Elements in System and Marketplace modules are never reported — that is code you
 did not write, and flagging Community Commons would bury the findings you can
-act on.
+act on. This applies to **every** rule, not just QUAL002: the `System` module is
+not distinguishable by its `Source` (which is empty, exactly like your own
+modules), so it used to slip past the Marketplace filter into every rule that
+walks entities, pages, microflows or widgets. On a blank Mendix 9.24 project that
+was the difference between 60 findings and 8.
 
 Adding a document type to the sweep is two rows: one in `documentableSources`
 (`mdl/linter/context.go`) naming the catalog table and its documentation column,

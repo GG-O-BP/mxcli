@@ -165,7 +165,7 @@ type Entity struct {
 // Entities returns an iterator over all entities (excluding system modules).
 func (ctx *LintContext) Entities() iter.Seq[Entity] {
 	return func(yield func(Entity) bool) {
-		rows, err := ctx.db.Query(`
+		rows, err := ctx.db.Query(fmt.Sprintf(`
 			SELECT e.Id, e.Name, e.QualifiedName, e.ModuleName, e.Folder,
 			       CASE e.EntityType
 			           WHEN 'PERSISTENT' THEN 'Persistent'
@@ -178,9 +178,9 @@ func (ctx *LintContext) Entities() iter.Seq[Entity] {
 			       e.HasEventHandlers, e.IsExternal
 			FROM entities e
 			LEFT JOIN modules m ON e.ModuleName = m.Name
-			WHERE COALESCE(m.Source, '') = ''
+			WHERE %s
 			ORDER BY e.ModuleName, e.Name
-		`)
+		`, notPlatformModule("m")))
 		if err != nil {
 			return
 		}
@@ -482,15 +482,15 @@ type Microflow struct {
 // Microflows returns an iterator over all microflows (excluding system modules).
 func (ctx *LintContext) Microflows() iter.Seq[Microflow] {
 	return func(yield func(Microflow) bool) {
-		rows, err := ctx.db.Query(`
+		rows, err := ctx.db.Query(fmt.Sprintf(`
 			SELECT mf.Id, mf.Name, mf.QualifiedName, mf.ModuleName, mf.Folder,
 			       mf.MicroflowType, mf.Description, mf.ReturnType,
 			       mf.ParameterCount, mf.ActivityCount, mf.Complexity
 			FROM microflows mf
 			LEFT JOIN modules m ON mf.ModuleName = m.Name
-			WHERE COALESCE(m.Source, '') = ''
+			WHERE %s
 			ORDER BY mf.ModuleName, mf.Name
-		`)
+		`, notPlatformModule("m")))
 		if err != nil {
 			return
 		}
@@ -535,14 +535,14 @@ type Page struct {
 // Pages returns an iterator over all pages (excluding system modules).
 func (ctx *LintContext) Pages() iter.Seq[Page] {
 	return func(yield func(Page) bool) {
-		rows, err := ctx.db.Query(`
+		rows, err := ctx.db.Query(fmt.Sprintf(`
 			SELECT p.Id, p.Name, p.QualifiedName, p.ModuleName, p.Folder,
 			       p.Title, p.URL, p.Description, p.WidgetCount
 			FROM pages p
 			LEFT JOIN modules m ON p.ModuleName = m.Name
-			WHERE COALESCE(m.Source, '') = ''
+			WHERE %s
 			ORDER BY p.ModuleName, p.Name
-		`)
+		`, notPlatformModule("m")))
 		if err != nil {
 			return
 		}
@@ -588,14 +588,14 @@ type Enumeration struct {
 // Enumerations returns an iterator over all enumerations (excluding system modules).
 func (ctx *LintContext) Enumerations() iter.Seq[Enumeration] {
 	return func(yield func(Enumeration) bool) {
-		rows, err := ctx.db.Query(`
+		rows, err := ctx.db.Query(fmt.Sprintf(`
 			SELECT en.Id, en.Name, en.QualifiedName, en.ModuleName, en.Folder,
 			       en.Description, en.ValueCount
 			FROM enumerations en
 			LEFT JOIN modules m ON en.ModuleName = m.Name
-			WHERE COALESCE(m.Source, '') = ''
+			WHERE %s
 			ORDER BY en.ModuleName, en.Name
-		`)
+		`, notPlatformModule("m")))
 		if err != nil {
 			return
 		}
@@ -638,14 +638,14 @@ type LintConstant struct {
 // Constants returns an iterator over all constants (excluding system modules).
 func (ctx *LintContext) Constants() iter.Seq[LintConstant] {
 	return func(yield func(LintConstant) bool) {
-		rows, err := ctx.db.Query(`
+		rows, err := ctx.db.Query(fmt.Sprintf(`
 			SELECT c.Id, c.Name, c.QualifiedName, c.ModuleName, c.Folder,
 			       c.Description, c.DefaultValue, c.ExposedToClient
 			FROM constants c
 			LEFT JOIN modules m ON c.ModuleName = m.Name
-			WHERE COALESCE(m.Source, '') = ''
+			WHERE %s
 			ORDER BY c.ModuleName, c.Name
-		`)
+		`, notPlatformModule("m")))
 		if err != nil {
 			return
 		}
@@ -694,15 +694,15 @@ type Widget struct {
 // Widgets returns an iterator over all widgets (excluding system modules).
 func (ctx *LintContext) Widgets() iter.Seq[Widget] {
 	return func(yield func(Widget) bool) {
-		rows, err := ctx.db.Query(`
+		rows, err := ctx.db.Query(fmt.Sprintf(`
 			SELECT w.Id, w.Name, w.WidgetType, w.ContainerId, w.ContainerQualifiedName,
 			       w.ContainerType, w.ModuleName, w.EntityRef, w.AttributeRef,
 			       w.MicroflowRef, w.NanoflowRef
 			FROM widgets w
 			LEFT JOIN modules m ON w.ModuleName = m.Name
-			WHERE COALESCE(m.Source, '') = ''
+			WHERE %s
 			ORDER BY w.ModuleName, w.ContainerQualifiedName, w.Name
-		`)
+		`, notPlatformModule("m")))
 		if err != nil {
 			return
 		}
@@ -748,13 +748,13 @@ type Snippet struct {
 // Snippets returns an iterator over all snippets (excluding system modules).
 func (ctx *LintContext) Snippets() iter.Seq[Snippet] {
 	return func(yield func(Snippet) bool) {
-		rows, err := ctx.db.Query(`
+		rows, err := ctx.db.Query(fmt.Sprintf(`
 			SELECT s.Id, s.Name, s.QualifiedName, s.ModuleName, s.Folder, s.WidgetCount
 			FROM snippets s
 			LEFT JOIN modules m ON s.ModuleName = m.Name
-			WHERE COALESCE(m.Source, '') = ''
+			WHERE %s
 			ORDER BY s.ModuleName, s.Name
-		`)
+		`, notPlatformModule("m")))
 		if err != nil {
 			return
 		}
@@ -950,14 +950,14 @@ type DatabaseConnection struct {
 // DatabaseConnections returns an iterator over all database connections (excluding system modules).
 func (ctx *LintContext) DatabaseConnections() iter.Seq[DatabaseConnection] {
 	return func(yield func(DatabaseConnection) bool) {
-		rows, err := ctx.db.Query(`
+		rows, err := ctx.db.Query(fmt.Sprintf(`
 			SELECT dc.Id, dc.Name, dc.QualifiedName, dc.ModuleName, dc.Folder,
 			       dc.DatabaseType, dc.QueryCount
 			FROM database_connections dc
 			LEFT JOIN modules m ON dc.ModuleName = m.Name
-			WHERE COALESCE(m.Source, '') = ''
+			WHERE %s
 			ORDER BY dc.ModuleName, dc.Name
-		`)
+		`, notPlatformModule("m")))
 		if err != nil {
 			return
 		}
@@ -1111,35 +1111,35 @@ func (ctx *LintContext) FindUnused(kind string) []string {
 	var query string
 	switch kind {
 	case "entity":
-		query = `
+		query = fmt.Sprintf(`
 			SELECT e.QualifiedName
 			FROM entities e
 			LEFT JOIN modules m ON e.ModuleName = m.Name
-			WHERE COALESCE(m.Source, '') = ''
+			WHERE %s
 			AND e.QualifiedName NOT IN (
 				SELECT DISTINCT TargetName FROM refs WHERE TargetType = 'ENTITY'
 			)
-		`
+		`, notPlatformModule("m"))
 	case "microflow":
-		query = `
+		query = fmt.Sprintf(`
 			SELECT mf.QualifiedName
 			FROM microflows mf
 			LEFT JOIN modules m ON mf.ModuleName = m.Name
-			WHERE COALESCE(m.Source, '') = ''
+			WHERE %s
 			AND mf.QualifiedName NOT IN (
 				SELECT DISTINCT TargetName FROM refs WHERE TargetType IN ('MICROFLOW', 'NANOFLOW')
 			)
-		`
+		`, notPlatformModule("m"))
 	case "page":
-		query = `
+		query = fmt.Sprintf(`
 			SELECT p.QualifiedName
 			FROM pages p
 			LEFT JOIN modules m ON p.ModuleName = m.Name
-			WHERE COALESCE(m.Source, '') = ''
+			WHERE %s
 			AND p.QualifiedName NOT IN (
 				SELECT DISTINCT TargetName FROM refs WHERE TargetType = 'PAGE'
 			)
-		`
+		`, notPlatformModule("m"))
 	default:
 		return unused
 	}
