@@ -590,3 +590,96 @@ func TestParseEdmx_StandaloneHandlingKeepsRecordAnnotations(t *testing.T) {
 		t.Errorf("Countable = %v — the record arm regressed", es.Countable)
 	}
 }
+
+// edmxWithAnnotations wraps entity-set annotations in a minimal but real EDMX
+// document, so the assertions run through ParseEdmx rather than a hand-built
+// struct.
+func edmxWithAnnotations(setName, annotations string) string {
+	return `<?xml version="1.0" encoding="utf-8"?>
+<edmx:Edmx Version="4.0" xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx">
+  <edmx:DataServices>
+    <Schema Namespace="F1OpsApi" xmlns="http://docs.oasis-open.org/odata/ns/edm">
+      <EntityType Name="Row"><Key><PropertyRef Name="k"/></Key>
+        <Property Name="k" Type="Edm.String"/>
+        <Property Name="message" Type="Edm.String"/>
+      </EntityType>
+      <EntityContainer Name="Entities">
+        <EntitySet Name="` + setName + `" EntityType="F1OpsApi.Row">
+` + annotations + `
+        </EntitySet>
+      </EntityContainer>
+    </Schema>
+  </edmx:DataServices>
+</edmx:Edmx>`
+}
+
+// mxcli-formula1 §48: FilterRestrictions/SortRestrictions carry the SAME
+// two-shape problem §42 had. Mendix emits the bare record boolean when NO
+// attribute is filterable — there is no list to enumerate — and mxcli read only
+// the list, so a wholly-unfilterable set generated a wholly-filterable app:
+// 28 × CE6630 on one service.
+func TestParseEdmx_WholeSetFilterAndSortRestrictions(t *testing.T) {
+	doc, err := ParseEdmx(edmxWithAnnotations("Predictions", `
+          <Annotation Term="Org.OData.Capabilities.V1.FilterRestrictions"><Record>
+            <PropertyValue Bool="false" Property="Filterable"/>
+          </Record></Annotation>
+          <Annotation Term="Org.OData.Capabilities.V1.SortRestrictions"><Record>
+            <PropertyValue Bool="false" Property="Sortable"/>
+          </Record></Annotation>`))
+	if err != nil {
+		t.Fatalf("parsing: %v", err)
+	}
+	es := doc.EntitySets[0]
+	if es.Filterable == nil || *es.Filterable {
+		t.Errorf("Filterable = %v, want an explicit false", es.Filterable)
+	}
+	if es.Sortable == nil || *es.Sortable {
+		t.Errorf("Sortable = %v, want an explicit false", es.Sortable)
+	}
+	// The whole point: no property escapes a whole-set restriction.
+	if es.AttrFilterable("message") {
+		t.Error("'message' is filterable against a set that says nothing is — CE6630")
+	}
+	if es.AttrSortable("message") {
+		t.Error("'message' is sortable against a set that says nothing is — CE6630")
+	}
+}
+
+// The list shape is the one that already worked, and it has to keep working —
+// Mendix emits BOTH, in one document, on different entity sets.
+func TestParseEdmx_PerPropertyFilterRestrictionsStillHonoured(t *testing.T) {
+	doc, err := ParseEdmx(edmxWithAnnotations("DriverForm", `
+          <Annotation Term="Org.OData.Capabilities.V1.FilterRestrictions"><Record>
+            <PropertyValue Bool="true" Property="Filterable"/>
+            <PropertyValue Property="NonFilterableProperties"><Collection>
+              <PropertyPath>message</PropertyPath>
+            </Collection></PropertyValue>
+          </Record></Annotation>`))
+	if err != nil {
+		t.Fatalf("parsing: %v", err)
+	}
+	es := doc.EntitySets[0]
+	if got := es.NonFilterableProperties; len(got) != 1 || got[0] != "message" {
+		t.Errorf("NonFilterableProperties = %v, want [message]", got)
+	}
+	if es.AttrFilterable("message") {
+		t.Error("'message' is named non-filterable and must not be filterable")
+	}
+	if !es.AttrFilterable("k") {
+		t.Error("'k' is not named, and the set says Filterable=true, so it must stay filterable")
+	}
+}
+
+// Unstated is OData's default of allowed. Defaulting the other way would invert
+// CE6630 for every service that annotates nothing — i.e. every one that worked
+// before this change.
+func TestEdmEntitySet_UnrestrictedByDefault(t *testing.T) {
+	var nilSet *EdmEntitySet
+	if !nilSet.AttrFilterable("anything") || !nilSet.AttrSortable("anything") {
+		t.Error("a nil entity set must not restrict anything")
+	}
+	empty := &EdmEntitySet{Name: "Rows"}
+	if !empty.AttrFilterable("k") || !empty.AttrSortable("k") {
+		t.Error("an unannotated set must not restrict anything")
+	}
+}

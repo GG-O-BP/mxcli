@@ -21,7 +21,11 @@ func setupMicroflowsDB(t *testing.T, rows [][]any) catalog.CatalogDB {
 		t.Fatalf("failed to open in-memory db: %v", err)
 	}
 
-	_, err = db.Exec(`CREATE TABLE modules (Name TEXT PRIMARY KEY, Source TEXT)`)
+	// Id mirrors the real `modules` view. Platform filtering keys off the System
+	// module's sentinel Id — Source is empty for System exactly as it is for a
+	// user module — and these iterators swallow query errors, so a missing
+	// column shows up as "no rows" rather than "no such column".
+	_, err = db.Exec(`CREATE TABLE modules (Id TEXT, Name TEXT PRIMARY KEY, Source TEXT)`)
 	if err != nil {
 		t.Fatalf("failed to create modules table: %v", err)
 	}
@@ -43,7 +47,7 @@ func setupMicroflowsDB(t *testing.T, rows [][]any) catalog.CatalogDB {
 		}
 		// Ensure module exists
 		moduleName := row[3].(string)
-		if _, err := db.Exec(`INSERT OR IGNORE INTO modules (Name, Source) VALUES (?, '')`, moduleName); err != nil {
+		if _, err := db.Exec(`INSERT OR IGNORE INTO modules (Id, Name, Source) VALUES (?, ?, '')`, moduleName+"-id", moduleName); err != nil {
 			t.Fatalf("failed to insert module: %v", err)
 		}
 	}

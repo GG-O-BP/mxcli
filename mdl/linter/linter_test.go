@@ -12,11 +12,11 @@ type stubRule struct {
 	id string
 }
 
-func (r *stubRule) ID() string                      { return r.id }
-func (r *stubRule) Name() string                    { return r.id }
-func (r *stubRule) Description() string             { return "" }
-func (r *stubRule) DefaultSeverity() Severity       { return SeverityWarning }
-func (r *stubRule) Category() string                { return "test" }
+func (r *stubRule) ID() string                { return r.id }
+func (r *stubRule) Name() string              { return r.id }
+func (r *stubRule) Description() string       { return "" }
+func (r *stubRule) DefaultSeverity() Severity { return SeverityWarning }
+func (r *stubRule) Category() string          { return "test" }
 func (r *stubRule) Check(_ *LintContext) []Violation {
 	return []Violation{{RuleID: r.id, Severity: SeverityWarning, Message: "hit"}}
 }

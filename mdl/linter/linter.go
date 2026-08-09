@@ -181,6 +181,19 @@ func (l *Linter) Run(ctx context.Context) ([]Violation, error) {
 	return allViolations, nil
 }
 
+// QueryErrors returns the catalog queries that failed during the run.
+//
+// A non-empty result means the findings are INCOMPLETE: some iterator could not
+// read the catalog and yielded nothing, which is indistinguishable from a clean
+// project in the violation list alone. Callers should report these rather than
+// present the run as successful.
+func (l *Linter) QueryErrors() []QueryError {
+	if l.ctx == nil {
+		return nil
+	}
+	return l.ctx.QueryErrors()
+}
+
 // Summary holds counts of violations by severity.
 type Summary struct {
 	Errors   int

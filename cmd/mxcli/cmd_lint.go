@@ -47,7 +47,10 @@ Bundled Starlark rules (in .claude/lint-rules/):
   - Entity business key (ARCH003) - persistent entities need a unique key
   Quality:
   - McCabe complexity (QUAL001) - microflow cyclomatic complexity threshold
-  - Missing documentation (QUAL002) - entities/microflows need documentation
+  - Missing documentation (QUAL002) - every document type (modules, entities,
+      pages, microflows, workflows, Java/JavaScript actions and their parameters,
+      REST services, mappings, constants, ...). Attributes and associations are
+      off by default; see the check_* options.
   - Long microflows (QUAL003) - microflows with too many activities
   - Orphaned elements (QUAL004) - unreferenced elements in the project
   Design:
@@ -244,6 +247,24 @@ Examples:
 		formatter := linter.GetFormatter(outputFormat, useColor)
 		if err := formatter.Format(violations, os.Stdout); err != nil {
 			fmt.Fprintf(os.Stderr, "Error formatting output: %v\n", err)
+			os.Exit(1)
+		}
+
+		// A failed catalog query means some iterator yielded nothing and the
+		// findings above are incomplete. Reported on stderr so it survives
+		// `| jq` on the results, and treated as a failure: silently passing CI
+		// on a lint run that could not read the model is the worst outcome.
+		queryErrs := lint.QueryErrors()
+		for _, qe := range queryErrs {
+			fmt.Fprintf(os.Stderr,
+				"Error: lint could not read the catalog for %s: %v\n", qe.Iterator, qe.Err)
+		}
+		if len(queryErrs) > 0 {
+			fmt.Fprintf(os.Stderr,
+				"Results are INCOMPLETE (%d failed %s). The cached catalog is usually the cause; "+
+					"delete %s and re-run.\n",
+				len(queryErrs), map[bool]string{true: "query", false: "queries"}[len(queryErrs) == 1],
+				filepath.Join(projectDir, ".mxcli", "catalog.db"))
 			os.Exit(1)
 		}
 

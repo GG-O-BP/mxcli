@@ -107,13 +107,26 @@ background-color: rgba($cf-over, 0.1);
 because a leftover `run --local` / `mxbuild --serve` / runtime would otherwise be
 silently adopted and keep serving old output (it looks like a cache but is a stale
 **process**). If a background `run --local` died while its serve+runtime kept serving,
-recover with:
+**the refusal names the pid** — on Linux it resolves the listener through `/proc`, so
+recovery is one command:
 
-```bash
-pgrep -af 'mxbuild --serve|runtimelauncher|mxcli run'   # find them
-kill <pid>                                              # stop each
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080  # want 000
 ```
+port 8080 (app) is already in use.
+  Held by pid 11893: /root/.mxcli/mxbuild/11.13.0/modeler/mxbuild --serve …
+  That is a leftover from an earlier run that did not shut down cleanly
+  (a kill -9 or a reaped container skips mxcli's own teardown).
+    kill 11893
+```
+
+It also distinguishes the two cases, which need opposite remedies: a leftover of a
+previous run is safe to kill, while a **foreign** listener (someone else's server on
+8080) is not — for that it says so and points at `--app-port`.
+
+Note that a *graceful* stop already reaps everything: `run --local` puts each child
+(mxbuild's JVM, the runtime, the rollup bundler) in its own process group and kills the
+group on Ctrl-C/SIGTERM. Reaching this error means the previous run was killed with
+`kill -9`, crashed, or had its container reaped — none of which run any handler. Do
+**not** `pkill -f 'mxcli run'`: that pattern also matches the shell you type it in.
 
 Launch `run --local` as the **sole** command in its invocation (don't chain a trailing
 `sleep`/`curl` whose non-zero exit can kill the backgrounded run); poll separately.
