@@ -576,9 +576,25 @@ begin
 end;
 ```
 
+To watch what clients actually send, raise the **`OData Publish`** log node (note
+the space; it exists only when the project publishes a service):
+
+```bash
+mxcli log set "OData Publish" TRACE
+```
+```
+TRACE - OData Publish: Incoming request from 127.0.0.1: GET .../Rows?$top=5&$filter=rowKey eq 'abc'
+DEBUG - OData Publish: Responding to client with status code 400.
+```
+
+That is the fastest way to see a client re-reading a row by key, and it needs no
+change to the model. `ODataConsume` is the client side, a different node.
+
 Mendix validates field names before the microflow runs (`$filter=secretColumn eq 'x'`
-is a `400` from the platform), so the microflow only ever sees names that exist
-in the published metadata. That is defence in depth, not a substitute for a
+is a `400` from the platform), and it enforces `Filterable`: filtering on a property
+you did not declare filterable is rejected with `400 "Property 'x' is
+non-filterable"` before the microflow runs. So the microflow only ever sees names
+that exist in the published metadata. That is defence in depth, not a substitute for a
 whitelist — it constrains the *name*, not what you do with it.
 
 ## Step-by-Step: Read-Write API with Microflow Handlers

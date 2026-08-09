@@ -23,8 +23,12 @@ import (
 // runtime this was built against reports 57 of them. A per-subsystem command
 // would have wrapped a generic primitive one subsystem at a time.
 //
-// So the command is generic, and the OData-specific knowledge (which node to
-// raise) lives in the skill instead.
+// So the command is generic, and the OData-specific knowledge lives in the skill
+// instead — including the answer to the original question: `OData Publish` (with
+// a space) logs the full incoming URI at TRACE, and exists only when the project
+// publishes a service. An earlier note here claimed no such node existed; it was
+// written against a project that had no OData service, which is exactly the
+// mistake `log list` is meant to prevent.
 
 var logCmd = &cobra.Command{
 	Use:   "log",
@@ -56,8 +60,15 @@ Examples:
   # Several at once — one admin call, applied together
   mxcli log set ConnectionBus_Queries=TRACE Connector=DEBUG
 
-  # A node that has not published yet (Mendix allows pre-registering a level)
-  mxcli log set MyModule.MyNode TRACE --force`,
+  # A name with a space needs quoting
+  mxcli log set "OData Publish" TRACE
+
+  # A node that has not registered yet (Mendix allows pre-registering a level)
+  mxcli log set MyModule.MyNode TRACE --force
+
+The node list belongs to THIS app, not to Mendix: a node appears once something
+registers it, so a blank app reports 57 and publishing one OData service makes it
+58. Start from 'log list' rather than a remembered name.`,
 }
 
 var logListCmd = &cobra.Command{

@@ -71,6 +71,7 @@ Nodes worth knowing:
 | What SQL is being run | `ConnectionBus_Queries` (and `_Retrieve`, `_Update`) |
 | Database sync at startup | `ConnectionBus_Synchronize` |
 | Consumed OData / REST calls | `ODataConsume`, `REST Consume` |
+| **Published** OData requests (the incoming URI) | `OData Publish` — note the space; only exists if the project publishes a service |
 | Microflow execution | `MicroflowEngine`, `ActionManager` |
 | Scheduled events / queues | `SystemTask`, `TaskQueue` |
 | Java/JS action wiring | `Connector` |
@@ -81,11 +82,33 @@ for the life of the process, so a typo becomes a real (empty) node that shows up
 `log list` from then on. Use it only to pre-register a node that has not published
 yet.
 
-**There is no log node for a *published* OData service.** `ODataConsume` is the
-client side only. So "what is my published resource being asked?" cannot be
-answered by raising a node — put `LOG INFO 'URI=' + $Request/Uri` in the read
-microflow instead (see `odata-data-sharing.md`). That gap is Mendix's, not
-mxcli's.
+**Nodes appear only once something registers them**, so the list is a property of
+*this* app, not of Mendix. A blank 11.12 app reports 57; adding one published
+OData service makes it 58. This is why `log list` is the first step rather than a
+remembered name — and why `--force` exists for a node that has not registered yet.
+
+### Seeing what a published OData resource is asked
+
+`OData Publish` — **note the space** — is the node, and it exists only when the
+project publishes a service. At TRACE it logs the full incoming URI, which is the
+question `$filter`/`$top`/key-lookup bugs turn on:
+
+```bash
+mxcli log set "OData Publish" TRACE
+# GET /odata/f1/Rows?$top=5&$filter=rowKey eq 'abc'
+```
+```
+TRACE - OData Publish: Incoming request from 127.0.0.1: GET .../Rows?$top=5&$filter=rowKey eq 'abc'
+DEBUG - OData Publish: Responding to client with status code 400.
+```
+
+`ODataConsume` is the *client* side — a different node for a different direction.
+
+That same probe showed Mendix rejecting `$filter` on a property not declared
+`Filterable`, with a **400 "Property 'rowKey' is non-filterable"**, before the read
+microflow ran. So the platform does enforce the filterability you declare in
+`expose (…)`; what it does *not* do is apply `$top`/`$skip`/`$orderby` for a
+read-microflow resource (see `odata-data-sharing.md`).
 
 ## 2. Metrics — throughput and database pressure
 
