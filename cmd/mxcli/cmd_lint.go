@@ -250,6 +250,24 @@ Examples:
 			os.Exit(1)
 		}
 
+		// A failed catalog query means some iterator yielded nothing and the
+		// findings above are incomplete. Reported on stderr so it survives
+		// `| jq` on the results, and treated as a failure: silently passing CI
+		// on a lint run that could not read the model is the worst outcome.
+		queryErrs := lint.QueryErrors()
+		for _, qe := range queryErrs {
+			fmt.Fprintf(os.Stderr,
+				"Error: lint could not read the catalog for %s: %v\n", qe.Iterator, qe.Err)
+		}
+		if len(queryErrs) > 0 {
+			fmt.Fprintf(os.Stderr,
+				"Results are INCOMPLETE (%d failed %s). The cached catalog is usually the cause; "+
+					"delete %s and re-run.\n",
+				len(queryErrs), map[bool]string{true: "query", false: "queries"}[len(queryErrs) == 1],
+				filepath.Join(projectDir, ".mxcli", "catalog.db"))
+			os.Exit(1)
+		}
+
 		// Exit with error if there are errors
 		summary := linter.Summarize(violations)
 		if summary.Errors > 0 {

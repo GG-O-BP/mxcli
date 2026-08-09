@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 	"iter"
+	"sync"
 
 	"github.com/mendixlabs/mxcli/mdl/catalog"
 	"github.com/mendixlabs/mxcli/mdl/types"
@@ -42,6 +43,12 @@ type LintContext struct {
 	fullMFCache  map[model.ID]*microflows.Microflow
 	fullMFErr    error
 	fullMFLoaded bool
+
+	// queryErrors collects catalog queries that failed, so an iterator that
+	// could not run is distinguishable from one that legitimately found
+	// nothing. See QueryError.
+	queryErrors []QueryError
+	queryErrMu  sync.Mutex
 }
 
 // FullMicroflow returns the fully-parsed microflow (with its object collection)
@@ -182,6 +189,7 @@ func (ctx *LintContext) Entities() iter.Seq[Entity] {
 			ORDER BY e.ModuleName, e.Name
 		`, notPlatformModule("m")))
 		if err != nil {
+			ctx.recordQueryError("Entities", err)
 			return
 		}
 		defer rows.Close()
@@ -195,6 +203,7 @@ func (ctx *LintContext) Entities() iter.Seq[Entity] {
 				&e.AccessRuleCount, &e.ValidationRuleCount,
 				&hasEventHandlers, &isExternal)
 			if err != nil {
+				ctx.recordQueryError("Entities (row scan)", err)
 				continue
 			}
 			e.Folder = folder.String
@@ -242,6 +251,7 @@ func (ctx *LintContext) AttributesFor(entityQualifiedName string) iter.Seq[Attri
 			ORDER BY Name
 		`, entityQualifiedName)
 		if err != nil {
+			ctx.recordQueryError("AttributesFor", err)
 			return
 		}
 		defer rows.Close()
@@ -255,6 +265,7 @@ func (ctx *LintContext) AttributesFor(entityQualifiedName string) iter.Seq[Attri
 				&a.ModuleName, &dataType, &length, &isUnique, &isRequired, &defaultVal,
 				&isCalculated, &desc)
 			if err != nil {
+				ctx.recordQueryError("AttributesFor (row scan)", err)
 				continue
 			}
 			a.DataType = dataType.String
@@ -293,6 +304,7 @@ func (ctx *LintContext) PermissionsFor(entityQualifiedName string) iter.Seq[Perm
 			ORDER BY ModuleRoleName, AccessType
 		`, entityQualifiedName)
 		if err != nil {
+			ctx.recordQueryError("PermissionsFor", err)
 			return
 		}
 		defer rows.Close()
@@ -302,6 +314,7 @@ func (ctx *LintContext) PermissionsFor(entityQualifiedName string) iter.Seq[Perm
 			var memberName, xpathConstraint, moduleName sql.NullString
 			err := rows.Scan(&p.ModuleRoleName, &p.EntityName, &memberName, &p.AccessType, &xpathConstraint, &moduleName)
 			if err != nil {
+				ctx.recordQueryError("PermissionsFor (row scan)", err)
 				continue
 			}
 			p.MemberName = memberName.String
@@ -342,6 +355,7 @@ func (ctx *LintContext) Permissions() iter.Seq[AllPermission] {
 			ORDER BY ElementType, ElementName, ModuleRoleName, AccessType
 		`)
 		if err != nil {
+			ctx.recordQueryError("Permissions", err)
 			return
 		}
 		defer rows.Close()
@@ -408,12 +422,14 @@ func (ctx *LintContext) RoleMappings() iter.Seq[RoleMappingInfo] {
 			ORDER BY UserRoleName, ModuleRoleName
 		`)
 		if err != nil {
+			ctx.recordQueryError("RoleMappings", err)
 			return
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var rm RoleMappingInfo
 			if err := rows.Scan(&rm.UserRoleName, &rm.ModuleRoleName, &rm.ModuleName); err != nil {
+				ctx.recordQueryError("RoleMappings (row scan)", err)
 				continue
 			}
 			if ctx.IsExcluded(rm.ModuleName) {
@@ -446,12 +462,14 @@ func (ctx *LintContext) ModuleRoles() iter.Seq[ModuleRoleInfo] {
 			ORDER BY ModuleName, ModuleRoleName
 		`)
 		if err != nil {
+			ctx.recordQueryError("ModuleRoles", err)
 			return
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var mr ModuleRoleInfo
 			if err := rows.Scan(&mr.Name, &mr.ModuleName); err != nil {
+				ctx.recordQueryError("ModuleRoles (row scan)", err)
 				continue
 			}
 			if ctx.IsExcluded(mr.ModuleName) {
@@ -492,6 +510,7 @@ func (ctx *LintContext) Microflows() iter.Seq[Microflow] {
 			ORDER BY mf.ModuleName, mf.Name
 		`, notPlatformModule("m")))
 		if err != nil {
+			ctx.recordQueryError("Microflows", err)
 			return
 		}
 		defer rows.Close()
@@ -502,6 +521,7 @@ func (ctx *LintContext) Microflows() iter.Seq[Microflow] {
 			err := rows.Scan(&mf.ID, &mf.Name, &mf.QualifiedName, &mf.ModuleName, &folder,
 				&mf.MicroflowType, &desc, &retType, &mf.ParameterCount, &mf.ActivityCount, &mf.Complexity)
 			if err != nil {
+				ctx.recordQueryError("Microflows (row scan)", err)
 				continue
 			}
 			mf.Folder = folder.String
@@ -544,6 +564,7 @@ func (ctx *LintContext) Pages() iter.Seq[Page] {
 			ORDER BY p.ModuleName, p.Name
 		`, notPlatformModule("m")))
 		if err != nil {
+			ctx.recordQueryError("Pages", err)
 			return
 		}
 		defer rows.Close()
@@ -555,6 +576,7 @@ func (ctx *LintContext) Pages() iter.Seq[Page] {
 			err := rows.Scan(&pg.ID, &pg.Name, &pg.QualifiedName, &pg.ModuleName, &folder,
 				&title, &url, &desc, &widgetCount)
 			if err != nil {
+				ctx.recordQueryError("Pages (row scan)", err)
 				continue
 			}
 			pg.Folder = folder.String
@@ -597,6 +619,7 @@ func (ctx *LintContext) Enumerations() iter.Seq[Enumeration] {
 			ORDER BY en.ModuleName, en.Name
 		`, notPlatformModule("m")))
 		if err != nil {
+			ctx.recordQueryError("Enumerations", err)
 			return
 		}
 		defer rows.Close()
@@ -607,6 +630,7 @@ func (ctx *LintContext) Enumerations() iter.Seq[Enumeration] {
 			err := rows.Scan(&en.ID, &en.Name, &en.QualifiedName, &en.ModuleName, &folder,
 				&desc, &en.ValueCount)
 			if err != nil {
+				ctx.recordQueryError("Enumerations (row scan)", err)
 				continue
 			}
 			en.Folder = folder.String
@@ -647,6 +671,7 @@ func (ctx *LintContext) Constants() iter.Seq[LintConstant] {
 			ORDER BY c.ModuleName, c.Name
 		`, notPlatformModule("m")))
 		if err != nil {
+			ctx.recordQueryError("Constants", err)
 			return
 		}
 		defer rows.Close()
@@ -658,6 +683,7 @@ func (ctx *LintContext) Constants() iter.Seq[LintConstant] {
 			err := rows.Scan(&c.ID, &c.Name, &c.QualifiedName, &c.ModuleName,
 				&folder, &desc, &defaultVal, &exposedToClient)
 			if err != nil {
+				ctx.recordQueryError("Constants (row scan)", err)
 				continue
 			}
 			c.Folder = folder.String
@@ -704,6 +730,7 @@ func (ctx *LintContext) Widgets() iter.Seq[Widget] {
 			ORDER BY w.ModuleName, w.ContainerQualifiedName, w.Name
 		`, notPlatformModule("m")))
 		if err != nil {
+			ctx.recordQueryError("Widgets", err)
 			return
 		}
 		defer rows.Close()
@@ -714,6 +741,7 @@ func (ctx *LintContext) Widgets() iter.Seq[Widget] {
 			err := rows.Scan(&w.ID, &w.Name, &w.WidgetType, &containerID, &containerQName,
 				&containerType, &w.ModuleName, &entityRef, &attrRef, &mfRef, &nfRef)
 			if err != nil {
+				ctx.recordQueryError("Widgets (row scan)", err)
 				continue
 			}
 			w.ContainerID = containerID.String
@@ -756,6 +784,7 @@ func (ctx *LintContext) Snippets() iter.Seq[Snippet] {
 			ORDER BY s.ModuleName, s.Name
 		`, notPlatformModule("m")))
 		if err != nil {
+			ctx.recordQueryError("Snippets", err)
 			return
 		}
 		defer rows.Close()
@@ -766,6 +795,7 @@ func (ctx *LintContext) Snippets() iter.Seq[Snippet] {
 			var widgetCount sql.NullInt64
 			err := rows.Scan(&s.ID, &s.Name, &s.QualifiedName, &s.ModuleName, &folder, &widgetCount)
 			if err != nil {
+				ctx.recordQueryError("Snippets (row scan)", err)
 				continue
 			}
 			s.Folder = folder.String
@@ -846,6 +876,7 @@ func (ctx *LintContext) ScheduledEvents() iter.Seq[ScheduledEvent] {
 
 		events, err := ctx.reader.ListScheduledEvents()
 		if err != nil {
+			ctx.recordQueryError("ScheduledEvents", err)
 			return
 		}
 
@@ -902,6 +933,7 @@ func (ctx *LintContext) XPathExpressions() iter.Seq[XPathExpressionEntry] {
 			ORDER BY ModuleName, DocumentQualifiedName
 		`)
 		if err != nil {
+			ctx.recordQueryError("XPathExpressions", err)
 			return
 		}
 		defer rows.Close()
@@ -917,6 +949,7 @@ func (ctx *LintContext) XPathExpressions() iter.Seq[XPathExpressionEntry] {
 				&isParam, &e.UsageType, &moduleName,
 			)
 			if err != nil {
+				ctx.recordQueryError("XPathExpressions (row scan)", err)
 				continue
 			}
 			e.ComponentName = componentName.String
@@ -959,6 +992,7 @@ func (ctx *LintContext) DatabaseConnections() iter.Seq[DatabaseConnection] {
 			ORDER BY dc.ModuleName, dc.Name
 		`, notPlatformModule("m")))
 		if err != nil {
+			ctx.recordQueryError("DatabaseConnections", err)
 			return
 		}
 		defer rows.Close()
@@ -969,6 +1003,7 @@ func (ctx *LintContext) DatabaseConnections() iter.Seq[DatabaseConnection] {
 			err := rows.Scan(&dc.ID, &dc.Name, &dc.QualifiedName, &dc.ModuleName, &folder,
 				&dc.DatabaseType, &dc.QueryCount)
 			if err != nil {
+				ctx.recordQueryError("DatabaseConnections (row scan)", err)
 				continue
 			}
 			dc.Folder = folder.String
@@ -1008,6 +1043,7 @@ func (ctx *LintContext) ActivitiesFor(microflowQualifiedName string) iter.Seq[Ac
 			ORDER BY Sequence
 		`, microflowQualifiedName)
 		if err != nil {
+			ctx.recordQueryError("ActivitiesFor", err)
 			return
 		}
 		defer rows.Close()
@@ -1018,6 +1054,7 @@ func (ctx *LintContext) ActivitiesFor(microflowQualifiedName string) iter.Seq[Ac
 			err := rows.Scan(&a.ID, &name, &caption, &a.ActivityType, &actionType,
 				&a.MicroflowID, &a.MicroflowQualifiedName, &a.ModuleName, &entityRef)
 			if err != nil {
+				ctx.recordQueryError("ActivitiesFor (row scan)", err)
 				continue
 			}
 			a.Name = name.String
@@ -1095,6 +1132,7 @@ func (ctx *LintContext) FindReferences(targetName string) []Reference {
 		err := rows.Scan(&r.SourceType, &srcID, &r.SourceName, &r.TargetType,
 			&tgtID, &r.TargetName, &r.RefKind, &r.ModuleName)
 		if err != nil {
+			ctx.recordQueryError("FindReferences (row scan)", err)
 			continue
 		}
 		r.SourceID = srcID.String
@@ -1146,6 +1184,7 @@ func (ctx *LintContext) FindUnused(kind string) []string {
 
 	rows, err := ctx.db.Query(query)
 	if err != nil {
+		ctx.recordQueryError("FindUnused("+kind+")", err)
 		return unused
 	}
 	defer rows.Close()
@@ -1243,6 +1282,7 @@ func (ctx *LintContext) JavaActions() iter.Seq[JavaAction] {
 			ORDER BY ja.ModuleName, ja.Name
 		`, notPlatformModule("m")))
 		if err != nil {
+			ctx.recordQueryError("JavaActions", err)
 			return
 		}
 		defer rows.Close()
@@ -1290,6 +1330,7 @@ func (ctx *LintContext) javaActionParameters() map[string][]JavaActionParameter 
 		var desc, ptype sql.NullString
 		var required int
 		if err := rows.Scan(&actionID, &p.Name, &desc, &ptype, &required); err != nil {
+			ctx.recordQueryError("javaActionParameters (row scan)", err)
 			continue
 		}
 		p.Description = desc.String
@@ -1298,6 +1339,51 @@ func (ctx *LintContext) javaActionParameters() map[string][]JavaActionParameter 
 		out[actionID] = append(out[actionID], p)
 	}
 	return out
+}
+
+// QueryError records a catalog query that failed inside an iterator.
+//
+// The iterators return iter.Seq[T] with no error channel, so a failed query
+// used to be indistinguishable from an empty result: `if err != nil { return }`
+// yielded nothing and said nothing. That is the worst shape for a linter, whose
+// entire output is "here is what I found" — a broken query reads as a clean
+// project. Errors are collected here and surfaced by the runner instead.
+type QueryError struct {
+	Iterator string // the iterator that failed, e.g. "Entities"
+	Err      error
+}
+
+func (e QueryError) Error() string { return e.Iterator + ": " + e.Err.Error() }
+
+// recordQueryError notes a failed query. Iterators still degrade to "no rows"
+// so one broken query cannot take down the whole run, but the failure is no
+// longer silent.
+//
+// The mutex is not currently required (Linter.Run is sequential) but the Linter
+// carries a maxWorkers knob, so this stays safe if rules ever run in parallel.
+func (ctx *LintContext) recordQueryError(iterator string, err error) {
+	if err == nil {
+		return
+	}
+	ctx.queryErrMu.Lock()
+	defer ctx.queryErrMu.Unlock()
+	// Deduplicate: several rules iterate the same accessor, so one broken view
+	// would otherwise be reported once per rule. The fact matters, not how many
+	// rules tripped over it.
+	for _, existing := range ctx.queryErrors {
+		if existing.Iterator == iterator && existing.Err.Error() == err.Error() {
+			return
+		}
+	}
+	ctx.queryErrors = append(ctx.queryErrors, QueryError{Iterator: iterator, Err: err})
+}
+
+// QueryErrors returns every catalog query that failed during this lint run.
+// A non-empty result means the findings are incomplete.
+func (ctx *LintContext) QueryErrors() []QueryError {
+	ctx.queryErrMu.Lock()
+	defer ctx.queryErrMu.Unlock()
+	return append([]QueryError(nil), ctx.queryErrors...)
 }
 
 // systemModuleID is the fixed sentinel Mendix gives the built-in System module
@@ -1419,12 +1505,18 @@ func (ctx *LintContext) DocumentableElements() iter.Seq[Documentable] {
 
 			rows, err := ctx.db.Query(query)
 			if err != nil {
-				continue // table absent in this catalog: skip this kind only
+				// Skip this kind only — one absent table must not take down the
+				// whole sweep — but say so, because "this document type has no
+				// undocumented elements" and "this document type could not be
+				// read" look identical in the output otherwise.
+				ctx.recordQueryError("DocumentableElements("+src.Table+")", err)
+				continue
 			}
 			for rows.Next() {
 				d := Documentable{Kind: src.Kind}
 				var qn, mod sql.NullString
 				if err := rows.Scan(&d.Name, &qn, &mod, &d.Description); err != nil {
+					ctx.recordQueryError("DocumentableElements("+src.Table+") row scan", err)
 					continue
 				}
 				d.QualifiedName = qn.String
