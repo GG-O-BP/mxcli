@@ -64,7 +64,20 @@ const [appURL, username, password, storagePath] = process.argv.slice(3);
 const { chromium } = require(require.resolve("playwright-core", { paths: [pkgDir] }));
 (async () => {
   const b = await chromium.launch();
-  const ctx = await b.newContext();
+  // Tell the runtime the request really is http when it is. On Mendix 10.24+
+  // X-Forwarded-Proto takes precedence over ApplicationRootUrl, so this drops
+  // the Secure attribute and the __Host- prefix from the session cookies. It
+  // matters when the app boots with an https root URL (as it does under --hub)
+  // and the browser reaches it over http from a NON-loopback host: 127.0.0.1 is
+  // a trustworthy origin and keeps Secure cookies happily, but a container
+  // hostname is not, and there the session cannot be held at all.
+  //
+  // Accurate rather than a workaround — the request is http — and a no-op when
+  // the root URL is already http. Real users arrive over https through the hub
+  // without this header and still get Secure cookies.
+  const insecure = new URL(appURL).protocol === "http:";
+  const ctx = await b.newContext(
+    insecure ? { extraHTTPHeaders: { "X-Forwarded-Proto": "http" } } : {});
   const p = await ctx.newPage();
   await p.goto(appURL, { waitUntil: "load", timeout: 30000 });
   let sawForm = false;

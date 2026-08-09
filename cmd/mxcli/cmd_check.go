@@ -183,6 +183,12 @@ Examples:
 		// the model quietly lacked what the author asked for.
 		violations = append(violations, executor.ValidateODataProperties(prog)...)
 
+		// Flag a microflow-backed OData resource whose read microflow cannot keep
+		// the promises the service makes for it. A read microflow has no
+		// System.HttpResponse parameter, so it cannot answer 400 — its contract
+		// has to be declared correctly up front, and nothing else checks that.
+		violations = append(violations, executor.ValidateODataReadContract(prog)...)
+
 		// Flag a page whose widgets point at a page created further down the same
 		// script. `exec` resolves page references in statement order and is not
 		// transactional, so this fails after earlier statements are already

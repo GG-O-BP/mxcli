@@ -80,3 +80,27 @@ func TestReadLogTail(t *testing.T) {
 		t.Errorf("readLogTail(small) = %q, %v", got, err)
 	}
 }
+
+// mxcli-formula1 suggested issue 7: under --hub the app boots with an https
+// ApplicationRootUrl, so the runtime marks its session cookies Secure and
+// __Host-. A headless browser reaching the app over http from a non-loopback
+// host cannot hold such a cookie, so login is impossible and every screenshot
+// silently shows the login page.
+//
+// Mendix 10.24+ lets X-Forwarded-Proto override ApplicationRootUrl, which is
+// both the fix and the truth: the request really is http. Verified against a
+// live 11.12.1 runtime — the captured storage state goes from
+// __Host-XASSESSIONID(secure=true) to XASSESSIONID(secure=false).
+func TestLoginScript_DeclaresHttpWhenTheTargetIsHttp(t *testing.T) {
+	if !strings.Contains(loginScript, `"X-Forwarded-Proto": "http"`) {
+		t.Error("the login context does not declare the real scheme; Secure cookies will block a non-loopback browser")
+	}
+	// Conditioned on the scheme: an https target must not be told it is http, or
+	// the runtime would downgrade cookies for a session that is genuinely secure.
+	if !strings.Contains(loginScript, `new URL(appURL).protocol === "http:"`) {
+		t.Error("the header must be conditional on an http target")
+	}
+	if !strings.Contains(loginScript, "insecure ?") {
+		t.Error("expected the context options to branch on the scheme")
+	}
+}

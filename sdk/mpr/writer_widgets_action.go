@@ -86,8 +86,12 @@ func serializeClientAction(action pages.ClientAction) bson.D {
 		// "$currentObject" makes Studio Pro report CE0115 "parameters do not match" — a
 		// widget's current-row object is represented by an inferred WidgetValue, not an
 		// Argument expression (issue #296; re-confirmed against mxbuild 11.12.1 for
-		// FINDINGS #56 — DESCRIBE recovers the implicit $currentObject instead, see
-		// renderClientActionMDL).
+		// FINDINGS #56).
+		//
+		// The other half of this decision lives in DESCRIBE, which must put the
+		// argument back from the target page's own parameters — see
+		// pageActionParameters. It did not, for a long time, and this comment
+		// asserted that it did (mxcli-formula1 §39).
 		formSettings := bson.D{
 			{Key: "$ID", Value: idToBsonBinary(generateUUID())},
 			{Key: "$Type", Value: "Forms$FormSettings"},

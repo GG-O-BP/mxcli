@@ -1397,11 +1397,14 @@ func createODataService(ctx *ExecContext, stmt *ast.CreateODataServiceStmt) erro
 					// with "At least one allowed role must be selected for the
 					// published OData service to be accessible."
 					//
-					// A guard, not a fix for an observed defect: the loss was
-					// reported (mxcli-formula1 #26) but did not reproduce on
-					// 11.12.1 — grants survived a modify on both the current and
-					// the previous build. Kept because the invariant is real and
-					// the cost is a slice copy; if it never fires, nothing is lost.
+					// The reported loss (mxcli-formula1 §26) was real, and this
+					// carry-through was never what fixed it: the grants were read
+					// and carried correctly, then dropped one layer down, because
+					// serializePublishedODataService did not write the field at
+					// all. Looking for the loss at model level and concluding "does
+					// not reproduce" was the mistake — the round trip to BSON is
+					// where a wholesale re-serialization deletes what it omits.
+					// Kept as a guard for a caller that clears the slice.
 					if len(svc.AllowedModuleRoles) == 0 && len(existingRoles) > 0 {
 						svc.AllowedModuleRoles = existingRoles
 					}

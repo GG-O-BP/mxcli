@@ -209,6 +209,43 @@ Playwright + the devcontainer's Chromium).
   skips the bundle and just hot-reloads. It uses `CHOKIDAR_USEPOLLING` because inotify
   is silent on container filesystems.
 - Without `--watch`, a single one-shot bundle (~7 s) runs before boot.
+- **The bundle is re-checked after the boot**, because bundling before it is not
+  enough: the runtime's boot runs Gradle `clean-custom-classes compile package`,
+  and when Gradle has work to do (a new Java action, a full recompile) its package
+  pass repopulates `deployment/web` and deletes `dist/` — the bundle written
+  seconds earlier by the same command. If that happened, `run --local` says
+  `re-bundling` and rebuilds it. When Gradle had nothing to do the check is a
+  `stat` and costs nothing.
+
+**If you ever see a black page:** that is this failure, and nothing else reports
+it — `mxcli check` passes, the build succeeds, the runtime log is quiet, `curl /`
+returns **200** with a valid HTML shell, and the OData services all answer. Only a
+browser sees it. Confirm with `curl -o /dev/null -w '%{http_code}' <app>/dist/index.js`;
+a 404 there is the whole diagnosis.
+
+`mxcli test --local` boots the same way and destroys the bundle too. Tests are
+headless so it is not rebuilt for them (that would cost ~30 s on a loop whose point
+is two seconds) — the run prints a note instead, and a subsequent `run --local`
+restores it.
+
+### Screenshots when the app has an https root URL (`--hub`)
+
+Under `--hub` the runtime boots with the public **https** root URL, so it marks
+its session cookies `Secure` and prefixes them `__Host-`. The screenshot login
+therefore declares the real scheme with `X-Forwarded-Proto: http`, which on
+Mendix 10.24+ takes precedence over `ApplicationRootUrl` and drops both — so the
+captured session is usable over http.
+
+Measured on 11.12.1, `__Host-XASSESSIONID (secure)` becomes `XASSESSIONID`
+(not secure). Real users still arrive over https through the hub without that
+header and still get `Secure` cookies.
+
+One correction to a common assumption: this is **not** needed for `127.0.0.1`.
+Loopback is a *trustworthy origin*, so Chromium accepts `Secure` cookies there
+and an app with an https root URL renders and logs in fine over
+`http://127.0.0.1:8080`. It matters when the browser reaches the app from a
+non-loopback host — a container name, a LAN address — where the origin is not
+trustworthy and the session cannot be held at all.
 
 ## Pixel-perfect page loop
 

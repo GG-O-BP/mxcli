@@ -22,6 +22,7 @@ var (
 	initAllTools         bool
 	initListTools        bool
 	initContainerRuntime string
+	initSyncSkills       bool
 )
 
 const mendixGitignore = `# Mendix project
@@ -133,6 +134,20 @@ Container Runtime:
 		if !info.IsDir() {
 			fmt.Fprintf(os.Stderr, "Error: not a directory: %s\n", absDir)
 			os.Exit(1)
+		}
+
+		// --sync-skills: refresh only the embedded skills and exit. The rest of
+		// init is interactive-ish and writes tool configs; this is the part that
+		// must follow a binary upgrade, and the SessionStart bootstrap runs it
+		// unattended on every session (mxcli-formula1 §16).
+		if initSyncSkills {
+			res, err := syncAIContextSkills(absDir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error syncing skills: %v\n", err)
+				os.Exit(1)
+			}
+			reportSkillSync(os.Stdout, res)
+			return
 		}
 
 		// Find .mpr file. With none here, look one level down: a solution repo
@@ -696,6 +711,7 @@ func init() {
 	initCmd.Flags().BoolVar(&initAllTools, "all-tools", false, "Initialize for all supported AI tools")
 	initCmd.Flags().BoolVar(&initListTools, "list-tools", false, "List supported AI tools and exit")
 	initCmd.Flags().StringVar(&initContainerRuntime, "container-runtime", "docker", "Container runtime for devcontainer (docker or podman)")
+	initCmd.Flags().BoolVar(&initSyncSkills, "sync-skills", false, "Refresh .ai-context/skills/ from this binary and exit (quiet when already current)")
 }
 
 // findMprFilesInSubdirs returns the .mpr files one level below dir, sorted, so

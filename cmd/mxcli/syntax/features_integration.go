@@ -111,7 +111,24 @@ func init() {
 			"--\n" +
 			"-- While Countable is Yes (the default) the read microflow must take a\n" +
 			"-- $Response: System.ODataResponse parameter and set its Count; with\n" +
-			"-- Countable: No it takes no parameters at all.",
+			"-- Countable: No it takes no parameters at all.\n" +
+			"\n" +
+			"-- HTTP STATUS CODES. An OData action, and an insert/update/delete\n" +
+			"-- microflow, may take a $HttpResponse: System.HttpResponse parameter and\n" +
+			"-- set StatusCode/Content. A READ microflow may not — it cannot answer\n" +
+			"-- 400, so its contract has to be declared correctly instead:\n" +
+			"--\n" +
+			"--   * Mendix applies NO query options to a read-microflow resource. It\n" +
+			"--     returns exactly what the microflow returns, so TopSupported and\n" +
+			"--     SkipSupported describe YOUR microflow. Leaving them unspecified\n" +
+			"--     publishes Yes. Declare No for anything you do not parse.\n" +
+			"--   * A declared KEY promises a lookup by that key. A client holding a\n" +
+			"--     row re-reads it as `?$filter=key eq '…'` on its own; answer it, or\n" +
+			"--     the client adopts the first row of your collection default as that\n" +
+			"--     object's identity, silently and with a 200.\n" +
+			"--\n" +
+			"-- Take a $Request: System.HttpRequest parameter to see the query string.\n" +
+			"-- MDL-ODATA02 and MDL-ODATA03 flag a read microflow that takes none.",
 		Example: "create persistent entity Shop.Customer (\n" +
 			"  Email: string(200) unique error 'unique' required error 'required',\n" +
 			"  Name:  string(200)\n" +
