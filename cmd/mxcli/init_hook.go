@@ -66,6 +66,13 @@ if [ ! -x ./mxcli ]; then
   chmod +x ./mxcli
 fi
 
+# Keep .ai-context/skills/ in step with this binary. The skills are embedded in
+# mxcli and written once by 'mxcli init', so upgrading the binary used to leave
+# yesterday's guidance in place with no warning — and an agent reads stale
+# guidance with the same confidence as current guidance. Quiet when already
+# current; never fatal, since a skills refresh must not block the session.
+./mxcli init --sync-skills . || true
+
 exec ./mxcli run --local --setup --ensure-db -p "$MPR"
 `
 

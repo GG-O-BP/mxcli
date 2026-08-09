@@ -287,9 +287,14 @@ navigationClause
     | MENU_KW LPAREN navMenuItemDef* RPAREN
     ;
 
+// The icon is a qualifiedName, like every other reference into the model, and
+// not a string. Atlas icon names carry hyphens, which IDENTIFIER cannot lex, so
+// those segments are double-quoted the same way a keyword-colliding name is:
+//   ICON Atlas_Core.Atlas.home
+//   ICON Atlas_Core.Atlas."align-center"
 navMenuItemDef
-    : MENU_KW ITEM STRING_LITERAL ((PAGE qualifiedName) | (MICROFLOW qualifiedName))? SEMICOLON?
-    | MENU_KW STRING_LITERAL LPAREN navMenuItemDef* RPAREN SEMICOLON?
+    : MENU_KW ITEM STRING_LITERAL ((PAGE qualifiedName) | (MICROFLOW qualifiedName))? (ICON qualifiedName)? SEMICOLON?
+    | MENU_KW STRING_LITERAL (ICON qualifiedName)? LPAREN navMenuItemDef* RPAREN SEMICOLON?
     ;
 
 dropStatement

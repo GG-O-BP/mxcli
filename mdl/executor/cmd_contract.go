@@ -612,20 +612,17 @@ func createExternalEntities(ctx *ExecContext, s *ast.CreateExternalEntitiesStmt)
 			// ("'latitude' is marked Filterable=False in the OData service, but
 			// True in the app") — one per property, on an import whose whole job
 			// is to match the contract.
-			nonFilterable := make(map[string]bool)
-			nonSortable := make(map[string]bool)
+			// Both restrictions have two shapes — a per-property exclusion list and
+			// a whole-set boolean — so they are resolved by EdmEntitySet rather
+			// than read field by field here; consulting one shape and not the
+			// other is what produced 28 × CE6630 on a single service
+			// (mxcli-formula1 §48). AttrFilterable/AttrSortable are nil-safe.
 			if entitySet != nil {
 				for _, name := range entitySet.NonInsertableProperties {
 					nonInsertable[name] = true
 				}
 				for _, name := range entitySet.NonUpdatableProperties {
 					nonUpdatable[name] = true
-				}
-				for _, name := range entitySet.NonFilterableProperties {
-					nonFilterable[name] = true
-				}
-				for _, name := range entitySet.NonSortableProperties {
-					nonSortable[name] = true
 				}
 			}
 
@@ -669,8 +666,8 @@ func createExternalEntities(ctx *ExecContext, s *ast.CreateExternalEntitiesStmt)
 					Type:       edmToDomainModelAttrType(p, keyPropSet[p.Name]),
 					RemoteName: p.Name,
 					RemoteType: p.Type,
-					Filterable: !nonFilterable[p.Name],
-					Sortable:   !nonSortable[p.Name],
+					Filterable: entitySet.AttrFilterable(p.Name),
+					Sortable:   entitySet.AttrSortable(p.Name),
 					Creatable:  creatable,
 					Updatable:  updatable,
 				}
@@ -1010,20 +1007,7 @@ func createNavigationAssociations(
 	// nav-property key relies on RemoteParentNavigationProperty, which the
 	// legacy read preserves; the modelsdk read does not, so the natural
 	// association name (== nav-property name) is the fallback skip signal.
-	existingAssocs := make(map[assocKey]bool)
-	existingNav := make(map[assocKey]bool)
-	for _, a := range dm.Associations {
-		// Find parent entity name for this association
-		for _, ent := range dm.Entities {
-			if ent.ID == a.ParentID {
-				existingAssocs[assocKey{ent.Name, a.Name}] = true
-				if a.RemoteParentNavigationProperty != "" {
-					existingNav[assocKey{ent.Name, a.RemoteParentNavigationProperty}] = true
-				}
-				break
-			}
-		}
-	}
+	existingAssocs, existingNav := indexExistingAssociations(dm)
 
 	count := 0
 	for _, schema := range doc.Schemas {
@@ -1137,6 +1121,41 @@ func createNavigationAssociations(
 	return count
 }
 
+// indexExistingAssociations builds the two lookup tables the re-import dedup
+// needs, both keyed by (parent entity name, name):
+//
+//   - byName — the association's own name.
+//   - byNav  — the OData navigation property it was generated from.
+//
+// byNav is the one that matters, and it is not a convenience. Association names
+// are unique per MODULE, so the second entity with a `season` nav property gets
+// `season_2`. Such an association can never match itself by name, so without
+// byNav a re-import recreates it — computing a fresh suffix each time, two more
+// per run, unbounded and invisible to `mx check` (mxcli-formula1 §50).
+//
+// byNav is only populated for associations that carry
+// RemoteParentNavigationProperty, which is why the modelsdk reader must read the
+// OData source back; dropping it there silently reduced this to the name match.
+func indexExistingAssociations(dm *domainmodel.DomainModel) (byName, byNav map[assocKey]bool) {
+	byName = make(map[assocKey]bool)
+	byNav = make(map[assocKey]bool)
+	parentName := make(map[model.ID]string, len(dm.Entities))
+	for _, ent := range dm.Entities {
+		parentName[ent.ID] = ent.Name
+	}
+	for _, a := range dm.Associations {
+		p, ok := parentName[a.ParentID]
+		if !ok {
+			continue
+		}
+		byName[assocKey{p, a.Name}] = true
+		if a.RemoteParentNavigationProperty != "" {
+			byNav[assocKey{p, a.RemoteParentNavigationProperty}] = true
+		}
+	}
+	return byName, byNav
+}
+
 // uniqueAssocName returns a Mendix-safe association name for an OData nav
 // property. If the requested name collides with an existing entity name OR an
 // already-created association name, append a numeric suffix.
@@ -1211,8 +1230,15 @@ func applyExternalEntityFields(
 		ent.Creatable = entitySet.Insertable != nil && *entitySet.Insertable
 		ent.Deletable = entitySet.Deletable != nil && *entitySet.Deletable
 		ent.Updatable = false
-		ent.SkipSupported = true
-		ent.TopSupported = true
+		// Skip/Top follow the contract for the same reason Countable does. They
+		// were stamped true regardless, which made `TopSupported: No` on the
+		// PUBLISHING side unusable: the contract correctly said Bool="false", the
+		// consuming app said true, and the consumer failed to build with CE6630
+		// "'Seasons' is marked supports $top=False in the OData service, but True
+		// in the app". OData's own default is supported, so an unannotated set
+		// stays true (mxcli-formula1 §42).
+		ent.SkipSupported = entitySet.SkipSupported == nil || *entitySet.SkipSupported
+		ent.TopSupported = entitySet.TopSupported == nil || *entitySet.TopSupported
 		// CreateChangeLocally is deliberately NOT set. Unlike the capability flags
 		// above it cannot be derived from the service contract — it is a local
 		// modelling choice ("Allow creating and changing objects locally"), so

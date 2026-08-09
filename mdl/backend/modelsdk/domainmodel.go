@@ -472,6 +472,24 @@ func assocFromGen(a *genDm.Association) *domainmodel.Association {
 		out.ParentDeleteBehavior = &domainmodel.DeleteBehavior{Type: domainmodel.DeleteBehaviorType(db.ParentDeleteBehavior())}
 		out.ChildDeleteBehavior = &domainmodel.DeleteBehavior{Type: domainmodel.DeleteBehaviorType(db.ChildDeleteBehavior())}
 	}
+
+	// Read the external (OData) source back. RemoteParentNavigationProperty in
+	// particular is the only durable link from an association to the OData
+	// navigation property it was generated from, and CREATE EXTERNAL ENTITIES
+	// dedupes on it. Dropping it here meant a re-import could not recognise an
+	// association it had itself created once the name carried a numeric suffix
+	// (module-wide uniqueness turns a second `season` into `season_2`), so every
+	// re-run appended two more — unbounded, and invisible to `mx check`.
+	if src, ok := a.Source().(*genRest.ODataRemoteAssociationSource); ok && src != nil {
+		out.Source = "Rest$ODataRemoteAssociationSource"
+		out.Navigability2 = src.Navigability2()
+		out.RemoteParentNavigationProperty = src.RemoteParentNavigationProperty()
+		out.RemoteChildNavigationProperty = src.RemoteChildNavigationProperty()
+		out.CreatableFromParent = src.CreatableFromParent()
+		out.CreatableFromChild = src.CreatableFromChild()
+		out.UpdatableFromParent = src.UpdatableFromParent()
+		out.UpdatableFromChild = src.UpdatableFromChild()
+	}
 	return out
 }
 

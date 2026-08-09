@@ -423,14 +423,11 @@ func checkTargetPortsFree(o LocalRunOptions) error {
 	} {
 		hostPort := fmt.Sprintf("%s:%d", host, c.port)
 		if err := pingTCP(hostPort, 500*time.Millisecond); err == nil {
-			return fmt.Errorf("port %d (%s) is already in use — a previous 'mxcli run --local' "+
-				"or a stray mxbuild --serve/runtime is likely still serving on it.\n"+
+			return fmt.Errorf("port %d (%s) is already in use.\n"+
 				"  A stale process is silently adopted otherwise, so edits appear to do nothing (looks like a stale cache — it isn't).\n"+
-				"  Free the ports, then retry:\n"+
-				"    pgrep -af 'mxbuild --serve|runtimelauncher|mxcli run'   # find them\n"+
-				"    kill <pid>                                             # stop each; confirm with: curl -s -o /dev/null -w '%%{http_code}' http://%s:%d  (want 000)\n"+
+				"%s"+
 				"  Or run on different ports with %s (and --admin-port/--serve-port).",
-				c.port, c.role, host, o.AppPort, c.flag)
+				c.port, c.role, portCulpritAdvice(c.port, host, o.AppPort), c.flag)
 		}
 	}
 	return nil
@@ -739,6 +736,18 @@ func RunLocal(opts LocalRunOptions) error {
 		return err
 	}
 	defer rt.Stop()
+
+	// 6b. The boot's Gradle `package` pass repopulates deployment/web, and when
+	// Gradle had work to do it takes dist/ with it — deleting the bundle step 5b
+	// wrote seconds ago. Verify after the boot, because before it proves nothing
+	// (mxcli-formula1 §35). Costs a stat when the bundle survived.
+	if _, err := EnsureWebClientBundle(WebClientOptions{
+		DeployDir: opts.DeployDir, MxBuildPath: mxbuildPath, Stdout: w,
+	}); err != nil {
+		// The app is up and its services answer; only the browser is broken. Say so
+		// and keep running rather than tearing down a working runtime.
+		fmt.Fprintf(stderr, "Warning: %v\n", err)
+	}
 
 	if opts.OnReady != nil {
 		opts.OnReady(LocalAppInfo{

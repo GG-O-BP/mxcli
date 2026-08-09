@@ -348,16 +348,19 @@ func outputPublishedODataServiceMDL(ctx *ExecContext, svc *model.PublishedODataS
 
 	fmt.Fprintln(ctx.Output, ")")
 
-	// Authentication types
+	// Authentication types. The custom-authentication microflow is part of the
+	// clause, not a comment beside it: emitted as a comment the output looked
+	// complete but replayed into a service Mendix rejects with CE0333
+	// (mxcli-formula1 §40).
 	if len(svc.AuthenticationTypes) > 0 {
-		fmt.Fprintf(ctx.Output, "authentication %s\n", strings.Join(svc.AuthenticationTypes, ", "))
-	}
-	if svc.AuthMicroflow != "" {
-		fmt.Fprintf(ctx.Output, "-- Auth Microflow: %s\n", svc.AuthMicroflow)
+		fmt.Fprintf(ctx.Output, "authentication %s\n", odataAuthClause(svc))
+	} else if svc.AuthMicroflow != "" {
+		// A microflow with no type recorded still has to survive the round trip.
+		fmt.Fprintf(ctx.Output, "authentication microflow %s\n", svc.AuthMicroflow)
 	}
 
 	// Published entities block
-	if len(svc.EntityTypes) > 0 || len(svc.EntitySets) > 0 {
+	if len(svc.EntityTypes) > 0 || len(svc.EntitySets) > 0 || len(svc.Microflows) > 0 {
 		fmt.Fprintln(ctx.Output, "{")
 
 		// Build entity set lookup by exposed name and entity type name for merging
@@ -473,6 +476,13 @@ func outputPublishedODataServiceMDL(ctx *ExecContext, svc *model.PublishedODataS
 				fmt.Fprintln(ctx.Output, "  );")
 			}
 			fmt.Fprintln(ctx.Output)
+		}
+
+		// OData actions. Emitted as part of the block, not as a comment beside
+		// it: a comment reads as complete and replays into a service without the
+		// action (mxcli-formula1 §47.1).
+		for _, pm := range svc.Microflows {
+			printPublishedMicroflowMDL(ctx.Output, pm)
 		}
 
 		fmt.Fprintln(ctx.Output, "}")
@@ -1370,8 +1380,18 @@ func createODataService(ctx *ExecContext, stmt *ast.CreateODataServiceStmt) erro
 					if stmt.PublishAssociationsSet {
 						svc.PublishAssociations = stmt.PublishAssociations
 					}
+					if len(stmt.Microflows) > 0 {
+						published, mfErr := astMicroflowDefsToModel(ctx, stmt.Microflows)
+						if mfErr != nil {
+							return mfErr
+						}
+						svc.Microflows = published
+					}
 					if len(stmt.AuthenticationTypes) > 0 {
 						svc.AuthenticationTypes = stmt.AuthenticationTypes
+						// Restated auth replaces the microflow too, including
+						// clearing it when the new clause is not `microflow`.
+						svc.AuthMicroflow = stmt.AuthMicroflow
 					}
 					// Published entities are replaced wholesale when the statement
 					// supplies any. Previously the modify branch ignored them
@@ -1397,11 +1417,14 @@ func createODataService(ctx *ExecContext, stmt *ast.CreateODataServiceStmt) erro
 					// with "At least one allowed role must be selected for the
 					// published OData service to be accessible."
 					//
-					// A guard, not a fix for an observed defect: the loss was
-					// reported (mxcli-formula1 #26) but did not reproduce on
-					// 11.12.1 — grants survived a modify on both the current and
-					// the previous build. Kept because the invariant is real and
-					// the cost is a slice copy; if it never fires, nothing is lost.
+					// The reported loss (mxcli-formula1 §26) was real, and this
+					// carry-through was never what fixed it: the grants were read
+					// and carried correctly, then dropped one layer down, because
+					// serializePublishedODataService did not write the field at
+					// all. Looking for the loss at model level and concluding "does
+					// not reproduce" was the mistake — the round trip to BSON is
+					// where a wholesale re-serialization deletes what it omits.
+					// Kept as a guard for a caller that clears the slice.
 					if len(svc.AllowedModuleRoles) == 0 && len(existingRoles) > 0 {
 						svc.AllowedModuleRoles = existingRoles
 					}
@@ -1451,7 +1474,16 @@ func createODataService(ctx *ExecContext, stmt *ast.CreateODataServiceStmt) erro
 		Description:         stmt.Description,
 		PublishAssociations: publishAssociationsFor(stmt),
 		AuthenticationTypes: stmt.AuthenticationTypes,
+		AuthMicroflow:       stmt.AuthMicroflow,
 	}
+
+	// OData actions. Resolved against the project's microflows so the parameter
+	// types and return type come off the microflow rather than being restated.
+	publishedMFs, mfErr := astMicroflowDefsToModel(ctx, stmt.Microflows)
+	if mfErr != nil {
+		return mfErr
+	}
+	newSvc.Microflows = publishedMFs
 
 	// Map AST entity definitions to model entity types and entity sets.
 	// Pass ctx so the executor can resolve exposed members against the
@@ -2152,4 +2184,59 @@ func bareMemberName(name string) string {
 		return name[i+1:]
 	}
 	return name
+}
+
+// odataAuthClause renders a service's authentication methods as MDL, attaching
+// the microflow to the `Microflow` method rather than trailing it as a comment.
+// Custom authentication is the only method that names a target.
+func odataAuthClause(svc *model.PublishedODataService) string {
+	parts := make([]string, 0, len(svc.AuthenticationTypes))
+	named := false
+	for _, t := range svc.AuthenticationTypes {
+		if strings.EqualFold(t, "Microflow") && svc.AuthMicroflow != "" {
+			parts = append(parts, t+" "+svc.AuthMicroflow)
+			named = true
+			continue
+		}
+		parts = append(parts, t)
+	}
+	// A stored microflow with no matching method would otherwise be dropped.
+	if !named && svc.AuthMicroflow != "" {
+		parts = append(parts, "Microflow "+svc.AuthMicroflow)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// printPublishedMicroflowMDL writes a `publish microflow` block. Parameter data
+// types and the return type are deliberately absent: they are read off the
+// microflow at execution time, so restating them here would let the emitted
+// script and the microflow drift apart.
+func printPublishedMicroflowMDL(w io.Writer, pm *model.PublishedMicroflow) {
+	head := "  publish microflow " + pm.Microflow
+	if pm.ExposedName != "" {
+		head += fmt.Sprintf(" as '%s'", pm.ExposedName)
+	}
+	if len(pm.Parameters) == 0 {
+		fmt.Fprintln(w, head+";")
+		return
+	}
+	fmt.Fprintln(w, head)
+	parts := make([]string, 0, len(pm.Parameters))
+	for _, p := range pm.Parameters {
+		// The stored ref is Module.Microflow.Param; MDL names the parameter
+		// alone, so take the last segment.
+		name := p.MicroflowParameter
+		if i := strings.LastIndex(name, "."); i >= 0 {
+			name = name[i+1:]
+		}
+		part := name
+		if p.ExposedName != "" && p.ExposedName != name {
+			part += fmt.Sprintf(" as '%s'", p.ExposedName)
+		}
+		if p.CanBeEmpty {
+			part += " (CanBeEmpty)"
+		}
+		parts = append(parts, part)
+	}
+	fmt.Fprintf(w, "    expose ( %s );\n", strings.Join(parts, ", "))
 }

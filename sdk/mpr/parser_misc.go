@@ -563,6 +563,14 @@ func parseNavMenuItem(raw map[string]any) *NavMenuItem {
 		mi.Caption = extractTextFromBson(caption)
 	}
 
+	// Icon is polymorphic: Forms$IconCollectionIcon and Forms$ImageIcon carry a
+	// qualified Image, Forms$GlyphIcon carries a numeric Code and no name at
+	// all. Keep the $Type so callers can tell which one they got.
+	if icon, ok := raw["Icon"].(map[string]any); ok {
+		mi.IconType = extractString(icon["$Type"])
+		mi.Icon = extractString(icon["Image"])
+	}
+
 	// Extract action type and target from Action
 	if action, ok := raw["Action"].(map[string]any); ok {
 		actionType := extractString(action["$Type"])

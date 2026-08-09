@@ -151,6 +151,11 @@ func StartLocalApp(opts LocalAppOptions) (*LocalApp, error) {
 
 	app := &LocalApp{Version: version, RuntimeLogPath: opts.RuntimeLogPath}
 
+	// Whether a browser bundle exists *before* this boot. The boot's Gradle
+	// packaging removes it, and this app is booted headless (tests), so the loss
+	// is only noticed later by whoever opens a browser (mxcli-formula1 §35).
+	hadWebClient := WebClientBundled(opts.DeployDir)
+
 	// 4. Build, unless the caller is reusing an existing deployment.
 	if !opts.SkipBuild {
 		fmt.Fprintln(w, "Building project (mxbuild --serve)...")
@@ -189,6 +194,7 @@ func StartLocalApp(opts LocalAppOptions) (*LocalApp, error) {
 		return nil, err
 	}
 	app.Runtime = rt
+	ReportLostWebClientBundle(opts.DeployDir, hadWebClient, w)
 	return app, nil
 }
 
@@ -265,7 +271,8 @@ func checkLocalAppPortsFree(o LocalAppOptions) error {
 	for _, p := range ports {
 		if err := pingTCP(fmt.Sprintf("127.0.0.1:%d", p.port), 300*time.Millisecond); err == nil {
 			return fmt.Errorf("port %d (%s) is already in use — stop the running instance first, "+
-				"or pass a different port", p.port, p.what)
+				"or pass a different port.\n%s",
+				p.port, p.what, portCulpritAdvice(p.port, "127.0.0.1", o.AppPort))
 		}
 	}
 	return nil

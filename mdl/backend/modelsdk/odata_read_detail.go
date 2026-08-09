@@ -3,6 +3,8 @@
 package modelsdkbackend
 
 import (
+	"strings"
+
 	"github.com/mendixlabs/mxcli/model"
 )
 
@@ -68,6 +70,65 @@ func publishedEntityTreeFromRaw(raw map[string]any) ([]*model.PublishedEntityTyp
 		sets = append(sets, publishedEntitySetFromRaw(sm, byID))
 	}
 	return ets, sets
+}
+
+// publishedMicroflowsFromRaw parses the Microflows part list — the service's
+// OData actions. Without it DESCRIBE would emit a service missing its actions,
+// and replaying that output would silently drop them.
+func publishedMicroflowsFromRaw(raw map[string]any) []*model.PublishedMicroflow {
+	var out []*model.PublishedMicroflow
+	for _, e := range jsAsSlice(raw["Microflows"]) {
+		m := jsToMap(e)
+		if m == nil {
+			continue
+		}
+		pm := &model.PublishedMicroflow{
+			Microflow:   jsExtractString(m["Microflow"]),
+			ExposedName: jsExtractString(m["ExposedName"]),
+			Summary:     jsExtractString(m["Summary"]),
+			Description: jsExtractString(m["Description"]),
+		}
+		pm.TypeName = "ODataPublish$PublishedMicroflow"
+		pm.ReturnTypeKind, pm.ReturnTypeRef = odataDataTypeFromRaw(m["ReturnType"])
+		for _, p := range jsAsSlice(m["Parameters"]) {
+			pmap := jsToMap(p)
+			if pmap == nil {
+				continue
+			}
+			mp := &model.PublishedMicroflowParameter{
+				MicroflowParameter: jsExtractString(pmap["MicroflowParameter"]),
+				ExposedName:        jsExtractString(pmap["ExposedName"]),
+				CanBeEmpty:         jsExtractBool(pmap["CanBeEmpty"]),
+				Summary:            jsExtractString(pmap["Summary"]),
+				Description:        jsExtractString(pmap["Description"]),
+			}
+			mp.TypeName = "ODataPublish$PublishedMicroflowParameter"
+			mp.DataTypeKind, mp.DataTypeRef = odataDataTypeFromRaw(pmap["DataType"])
+			pm.Parameters = append(pm.Parameters, mp)
+		}
+		out = append(out, pm)
+	}
+	return out
+}
+
+// odataDataTypeFromRaw reads a DataTypes$* element into the kind + ref pair the
+// semantic model carries. Mirrors sdk/mpr.parseODataDataType.
+func odataDataTypeFromRaw(v any) (kind, ref string) {
+	m := jsToMap(v)
+	if m == nil {
+		return "", ""
+	}
+	t := jsExtractString(m["$Type"])
+	t = strings.TrimSuffix(strings.TrimPrefix(t, "DataTypes$"), "Type")
+	switch t {
+	case "":
+		return "", ""
+	case "Object", "List":
+		return t, jsExtractString(m["Entity"])
+	case "Enumeration":
+		return t, jsExtractString(m["Enumeration"])
+	}
+	return t, ""
 }
 
 func publishedEntityTypeFromRaw(raw map[string]any) *model.PublishedEntityType {

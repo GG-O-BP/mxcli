@@ -133,7 +133,14 @@ func (b *Builder) ExitCreateODataServiceStatement(ctx *parser.CreateODataService
 
 	// Parse authentication clause
 	if authCtx := ctx.OdataAuthenticationClause(); authCtx != nil {
-		stmt.AuthenticationTypes = parseODataAuthTypes(authCtx)
+		stmt.AuthenticationTypes, stmt.AuthMicroflow = parseODataAuthTypes(authCtx)
+	}
+
+	// Parse PUBLISH MICROFLOW blocks (OData actions)
+	for _, blockCtx := range ctx.AllPublishMicroflowBlock() {
+		if mf := parsePublishMicroflowBlock(blockCtx); mf != nil {
+			stmt.Microflows = append(stmt.Microflows, mf)
+		}
 	}
 
 	// Parse PUBLISH ENTITY blocks
@@ -319,10 +326,15 @@ func odataAssignmentValueText(prop *parser.OdataPropertyAssignmentContext) strin
 	return odataValueText(valCtx.(*parser.OdataPropertyValueContext))
 }
 
-// parseODataAuthTypes extracts authentication types from the clause.
-func parseODataAuthTypes(authCtx parser.IOdataAuthenticationClauseContext) []string {
+// parseODataAuthTypes extracts authentication types from the clause, and the
+// microflow named by `authentication microflow X`.
+//
+// The grammar has always accepted the qualified name; only the name was
+// discarded, so `authentication microflow M.Auth` parsed, checked and executed
+// while the model got a Microflow auth type with no microflow — a service that
+// then failed to build with CE0333 (mxcli-formula1 §40).
+func parseODataAuthTypes(authCtx parser.IOdataAuthenticationClauseContext) (types []string, microflow string) {
 	clause := authCtx.(*parser.OdataAuthenticationClauseContext)
-	var types []string
 
 	for _, atCtx := range clause.AllOdataAuthType() {
 		at := atCtx.(*parser.OdataAuthTypeContext)
@@ -334,12 +346,15 @@ func parseODataAuthTypes(authCtx parser.IOdataAuthenticationClauseContext) []str
 			types = append(types, "Guest")
 		} else if at.MICROFLOW() != nil {
 			types = append(types, "Microflow")
+			if qn := at.QualifiedName(); qn != nil {
+				microflow = buildQualifiedName(qn).String()
+			}
 		} else if at.IDENTIFIER() != nil {
 			types = append(types, at.IDENTIFIER().GetText())
 		}
 	}
 
-	return types
+	return types, microflow
 }
 
 // parsePublishEntityBlock converts a PUBLISH ENTITY parse context into an AST node.
@@ -414,6 +429,52 @@ func parseODataHeaders(ctx parser.IOdataHeadersClauseContext) []ast.HeaderDef {
 	}
 
 	return headers
+}
+
+// parsePublishMicroflowBlock converts a PUBLISH MICROFLOW block (an OData
+// action) into an AST node. Parameter types and the return type are not read
+// here: they come off the microflow at execution time, so the two cannot drift.
+func parsePublishMicroflowBlock(ctx parser.IPublishMicroflowBlockContext) *ast.PublishedMicroflowDef {
+	block := ctx.(*parser.PublishMicroflowBlockContext)
+	if block.QualifiedName() == nil {
+		return nil
+	}
+	def := &ast.PublishedMicroflowDef{
+		Microflow: buildQualifiedName(block.QualifiedName()),
+	}
+	if sl := block.STRING_LITERAL(); sl != nil {
+		def.ExposedName = unquoteString(sl.GetText())
+	}
+	if exposeCtx := block.ExposeClause(); exposeCtx != nil {
+		expose := exposeCtx.(*parser.ExposeClauseContext)
+		if expose.STAR() != nil {
+			def.ExposeAll = true
+		}
+		for _, memberCtx := range expose.AllExposeMember() {
+			member := memberCtx.(*parser.ExposeMemberContext)
+			if member.IdentifierOrKeyword() == nil {
+				continue
+			}
+			p := &ast.PublishedParamDef{Name: member.IdentifierOrKeyword().GetText()}
+			if sl := member.STRING_LITERAL(); sl != nil {
+				p.ExposedName = unquoteString(sl.GetText())
+			}
+			if opts := member.ExposeMemberOptions(); opts != nil {
+				optsCtx := opts.(*parser.ExposeMemberOptionsContext)
+				for _, id := range optsCtx.AllIdentifierOrKeyword() {
+					if strings.EqualFold(id.GetText(), "canbeempty") ||
+						strings.EqualFold(id.GetText(), "optional") {
+						p.CanBeEmpty = true
+					}
+				}
+			}
+			def.Parameters = append(def.Parameters, p)
+		}
+	} else {
+		// No clause at all means every parameter, under its own name.
+		def.ExposeAll = true
+	}
+	return def
 }
 
 // parseExposeMembers converts an EXPOSE clause into AST member definitions.

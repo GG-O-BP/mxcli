@@ -214,6 +214,16 @@ create odata service MyModule.CustomerAPI (
   namespace: 'MyModule.Customers'
 )
 authentication basic, session
+-- Inside the { } body, alongside `publish entity`, a microflow can be published
+-- as an OData action (an ActionImport in $metadata):
+--   publish microflow Module.DoThing as 'DoThing'
+--     expose ( Note as 'note', Amount as 'amount' (CanBeEmpty) );
+-- Parameter types and the return type are read off the microflow, not restated.
+-- or: authentication microflow Module.Authenticate
+--   Custom authentication. The microflow takes a List of System.HttpHeader and
+--   returns a System.User (empty denies). It removes the per-request password
+--   hash that `basic` pays on every call. Requires app security on (CE6600) and
+--   a microflow to be named (CE0333, flagged as MDL-ODATA04).
 {
   publish entity MyModule.Customer as 'Customers' (
     ReadMode: source,
@@ -506,12 +516,24 @@ create or replace navigation Responsive
   login page Administration.Login
   not found page MyModule.Custom404
   menu (
-    menu item 'Home' page MyModule.Home_Web;
-    menu 'Admin' (
+    menu item 'Home' page MyModule.Home_Web icon Atlas_Core.Atlas.home;
+    menu 'Admin' icon Atlas_Core.Atlas."align-center" (
       menu item 'Users' page Administration.Account_Overview;
     );
   );
 ```
+
+`icon` is optional and is a **qualified name** into an **icon collection** —
+`Atlas_Core.Atlas`, `Atlas_Core.Atlas_Filled`, `Atlas_Core.Atlas_Styling`, or one
+of your own — written like any other model reference. Hyphenated Atlas names
+(`align-center`) are double-quoted, the same way a keyword-colliding name is:
+`Atlas_Core.Atlas."align-center"`. List the available names with `describe icon
+collection Atlas_Core.Atlas`.
+
+Studio Pro can also set a *glyph* icon (a numeric character code) or an *image*
+icon (pointing into an image collection). Those are different elements; MDL
+writes only the icon-collection form, and `describe navigation` marks the other
+two with a comment instead of emitting an `icon` clause that would convert them.
 
 ## Project Settings
 

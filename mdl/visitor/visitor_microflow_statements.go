@@ -1163,7 +1163,7 @@ func buildRetrieveStatement(ctx parser.IRetrieveStatementContext) *ast.RetrieveS
 				if xpathExpr := xcCtx.XpathExpr(); xpathExpr != nil {
 					andExprs = append(andExprs, buildXPathSourceExpression(xpathExpr))
 					if prc, ok := xpathExpr.(antlr.ParserRuleContext); ok {
-						if source := strings.TrimSpace(extractOriginalText(prc)); source != "" {
+						if source := strings.TrimSpace(extractExpressionText(prc)); source != "" {
 							predicateSources = append(predicateSources, normalizeXPathTokens("["+source+"]"))
 						}
 					}
@@ -1221,7 +1221,7 @@ func retrieveRangeExpressionSource(exprCtx parser.IExpressionContext) string {
 		return ""
 	}
 	if prc, ok := exprCtx.(antlr.ParserRuleContext); ok {
-		if source := strings.TrimSpace(extractOriginalText(prc)); source != "" {
+		if source := strings.TrimSpace(extractExpressionText(prc)); source != "" {
 			return source
 		}
 	}
@@ -1446,7 +1446,7 @@ func buildSourceExpression(ctx parser.IExpressionContext) ast.Expression {
 	}
 	expr := buildExpression(ctx)
 	if prc, ok := ctx.(antlr.ParserRuleContext); ok {
-		if source := strings.TrimSpace(extractOriginalText(prc)); source != "" {
+		if source := strings.TrimSpace(extractExpressionText(prc)); source != "" {
 			if shouldPreserveExpressionSource(source) {
 				return &ast.SourceExpr{Expression: expr, Source: stripExpressionIdentifierQuotes(source)}
 			}
@@ -1461,7 +1461,7 @@ func buildXPathSourceExpression(ctx parser.IXpathExprContext) ast.Expression {
 	}
 	expr := buildXPathExpr(ctx)
 	if prc, ok := ctx.(antlr.ParserRuleContext); ok {
-		if source := strings.TrimSpace(extractOriginalText(prc)); source != "" {
+		if source := strings.TrimSpace(extractExpressionText(prc)); source != "" {
 			// Requote any bare [%token%] so the stored constraint passes mx check
 			// (CE0161) — the original source preserves the unquoted form (#641).
 			return &ast.SourceExpr{Expression: expr, Source: stripExpressionIdentifierQuotes(normalizeXPathTokens(source))}
@@ -1487,7 +1487,7 @@ func buildRetrieveWhereExpression(ctx parser.IExpressionContext) ast.Expression 
 		}
 	}
 	if prc, ok := ctx.(antlr.ParserRuleContext); ok {
-		if source := strings.TrimSpace(extractOriginalText(prc)); source != "" {
+		if source := strings.TrimSpace(extractExpressionText(prc)); source != "" {
 			if shouldPreserveExpressionSource(source) || strings.Contains(source, "/") {
 				return &ast.SourceExpr{Expression: expr, Source: stripExpressionIdentifierQuotes(source)}
 			}

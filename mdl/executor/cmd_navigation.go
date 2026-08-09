@@ -76,6 +76,7 @@ func execAlterNavigation(ctx *ExecContext, s *ast.AlterNavigationStmt) error {
 func convertMenuItemDef(def ast.NavMenuItemDef) types.NavMenuItemSpec {
 	spec := types.NavMenuItemSpec{
 		Caption: def.Caption,
+		Icon:    def.Icon,
 	}
 	if def.Page != nil {
 		spec.Page = def.Page.String()
@@ -347,17 +348,47 @@ func menuItemTarget(item *types.NavMenuItem) string {
 func printMenuMDL(w io.Writer, items []*types.NavMenuItem, depth int) {
 	indent := strings.Repeat("  ", depth)
 	for _, item := range items {
+		icon := menuItemIconMDL(item)
 		if len(item.Items) > 0 {
 			// Sub-menu container
-			fmt.Fprintf(w, "%smenu '%s' (\n", indent, item.Caption)
+			fmt.Fprintf(w, "%smenu '%s'%s (\n", indent, item.Caption, icon)
 			printMenuMDL(w, item.Items, depth+1)
 			fmt.Fprintf(w, "%s);\n", indent)
 		} else if item.Page != "" {
-			fmt.Fprintf(w, "%smenu item '%s' page %s;\n", indent, item.Caption, item.Page)
+			fmt.Fprintf(w, "%smenu item '%s' page %s%s;\n", indent, item.Caption, item.Page, icon)
 		} else if item.Microflow != "" {
-			fmt.Fprintf(w, "%smenu item '%s' microflow %s;\n", indent, item.Caption, item.Microflow)
+			fmt.Fprintf(w, "%smenu item '%s' microflow %s%s;\n", indent, item.Caption, item.Microflow, icon)
 		} else {
-			fmt.Fprintf(w, "%smenu item '%s';\n", indent, item.Caption)
+			fmt.Fprintf(w, "%smenu item '%s'%s;\n", indent, item.Caption, icon)
+		}
+		if note := menuItemIconNote(item); note != "" {
+			fmt.Fprintf(w, "%s%s\n", indent, note)
 		}
 	}
+}
+
+// menuItemIconMDL renders the ICON clause for a menu item, or "" when there is
+// nothing CREATE NAVIGATION can reproduce.
+func menuItemIconMDL(item *types.NavMenuItem) string {
+	if item.Icon == "" || !strings.HasSuffix(item.IconType, "IconCollectionIcon") {
+		return ""
+	}
+	return " icon " + quoteQualifiedName(item.Icon)
+}
+
+// menuItemIconNote flags an icon DESCRIBE cannot round-trip, so re-running the
+// output loses it visibly rather than silently. CREATE NAVIGATION writes only
+// Forms$IconCollectionIcon; a glyph icon (numeric Code) or an image icon
+// (pointing into an image collection, not an icon collection) is a different
+// element and would have to be guessed at.
+func menuItemIconNote(item *types.NavMenuItem) string {
+	if item.IconType == "" || strings.HasSuffix(item.IconType, "IconCollectionIcon") {
+		return ""
+	}
+	target := item.Icon
+	if target == "" {
+		target = "a numeric glyph code"
+	}
+	return fmt.Sprintf("-- icon %s (%s) is not reproducible by CREATE NAVIGATION; set it in Studio Pro",
+		target, item.IconType)
 }

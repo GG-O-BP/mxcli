@@ -107,13 +107,26 @@ background-color: rgba($cf-over, 0.1);
 because a leftover `run --local` / `mxbuild --serve` / runtime would otherwise be
 silently adopted and keep serving old output (it looks like a cache but is a stale
 **process**). If a background `run --local` died while its serve+runtime kept serving,
-recover with:
+**the refusal names the pid** — on Linux it resolves the listener through `/proc`, so
+recovery is one command:
 
-```bash
-pgrep -af 'mxbuild --serve|runtimelauncher|mxcli run'   # find them
-kill <pid>                                              # stop each
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080  # want 000
 ```
+port 8080 (app) is already in use.
+  Held by pid 11893: /root/.mxcli/mxbuild/11.13.0/modeler/mxbuild --serve …
+  That is a leftover from an earlier run that did not shut down cleanly
+  (a kill -9 or a reaped container skips mxcli's own teardown).
+    kill 11893
+```
+
+It also distinguishes the two cases, which need opposite remedies: a leftover of a
+previous run is safe to kill, while a **foreign** listener (someone else's server on
+8080) is not — for that it says so and points at `--app-port`.
+
+Note that a *graceful* stop already reaps everything: `run --local` puts each child
+(mxbuild's JVM, the runtime, the rollup bundler) in its own process group and kills the
+group on Ctrl-C/SIGTERM. Reaching this error means the previous run was killed with
+`kill -9`, crashed, or had its container reaped — none of which run any handler. Do
+**not** `pkill -f 'mxcli run'`: that pattern also matches the shell you type it in.
 
 Launch `run --local` as the **sole** command in its invocation (don't chain a trailing
 `sleep`/`curl` whose non-zero exit can kill the backgrounded run); poll separately.
@@ -209,6 +222,43 @@ Playwright + the devcontainer's Chromium).
   skips the bundle and just hot-reloads. It uses `CHOKIDAR_USEPOLLING` because inotify
   is silent on container filesystems.
 - Without `--watch`, a single one-shot bundle (~7 s) runs before boot.
+- **The bundle is re-checked after the boot**, because bundling before it is not
+  enough: the runtime's boot runs Gradle `clean-custom-classes compile package`,
+  and when Gradle has work to do (a new Java action, a full recompile) its package
+  pass repopulates `deployment/web` and deletes `dist/` — the bundle written
+  seconds earlier by the same command. If that happened, `run --local` says
+  `re-bundling` and rebuilds it. When Gradle had nothing to do the check is a
+  `stat` and costs nothing.
+
+**If you ever see a black page:** that is this failure, and nothing else reports
+it — `mxcli check` passes, the build succeeds, the runtime log is quiet, `curl /`
+returns **200** with a valid HTML shell, and the OData services all answer. Only a
+browser sees it. Confirm with `curl -o /dev/null -w '%{http_code}' <app>/dist/index.js`;
+a 404 there is the whole diagnosis.
+
+`mxcli test --local` boots the same way and destroys the bundle too. Tests are
+headless so it is not rebuilt for them (that would cost ~30 s on a loop whose point
+is two seconds) — the run prints a note instead, and a subsequent `run --local`
+restores it.
+
+### Screenshots when the app has an https root URL (`--hub`)
+
+Under `--hub` the runtime boots with the public **https** root URL, so it marks
+its session cookies `Secure` and prefixes them `__Host-`. The screenshot login
+therefore declares the real scheme with `X-Forwarded-Proto: http`, which on
+Mendix 10.24+ takes precedence over `ApplicationRootUrl` and drops both — so the
+captured session is usable over http.
+
+Measured on 11.12.1, `__Host-XASSESSIONID (secure)` becomes `XASSESSIONID`
+(not secure). Real users still arrive over https through the hub without that
+header and still get `Secure` cookies.
+
+One correction to a common assumption: this is **not** needed for `127.0.0.1`.
+Loopback is a *trustworthy origin*, so Chromium accepts `Secure` cookies there
+and an app with an https root URL renders and logs in fine over
+`http://127.0.0.1:8080`. It matters when the browser reaches the app from a
+non-loopback host — a container name, a LAN address — where the origin is not
+trustworthy and the session cannot be held at all.
 
 ## Pixel-perfect page loop
 

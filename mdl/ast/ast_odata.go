@@ -102,8 +102,16 @@ type CreateODataServiceStmt struct {
 	PublishAssociations    bool
 	PublishAssociationsSet bool
 	AuthenticationTypes    []string
-	Entities               []*PublishedEntityDef
-	CreateOrModify         bool // True if CREATE OR MODIFY was used
+	// AuthMicroflow is the microflow named by `authentication microflow X`.
+	// Custom authentication is the only method that carries a target, and
+	// Mendix rejects the service without one (CE0333 "Please select a microflow
+	// to use for authentication").
+	AuthMicroflow string
+	Entities      []*PublishedEntityDef
+	// Microflows are OData actions — `publish microflow Module.MF`. Mendix
+	// exposes each as an ActionImport in $metadata.
+	Microflows     []*PublishedMicroflowDef
+	CreateOrModify bool // True if CREATE OR MODIFY was used
 
 	// UnknownProperties holds property names the visitor did not recognise, in
 	// source order. The parser accepts any `name: value` pair, so without this
@@ -136,6 +144,28 @@ type PublishedEntityDef struct {
 
 	// UnknownProperties: see CreateODataServiceStmt.UnknownProperties.
 	UnknownProperties []string
+}
+
+// PublishedMicroflowDef represents a PUBLISH MICROFLOW block — an OData action.
+//
+// Parameter data types and the return type are read off the microflow rather
+// than restated here, so the two cannot drift.
+type PublishedMicroflowDef struct {
+	Microflow   QualifiedName
+	ExposedName string
+	// Parameters selects and optionally renames the microflow's parameters.
+	// Empty means expose them all under their own names.
+	Parameters []*PublishedParamDef
+	// ExposeAll records an explicit `expose (*)`, which is the same as omitting
+	// the clause but says so.
+	ExposeAll bool
+}
+
+// PublishedParamDef is one exposed microflow parameter.
+type PublishedParamDef struct {
+	Name        string
+	ExposedName string
+	CanBeEmpty  bool
 }
 
 // PublishedMemberDef represents an EXPOSE member within a PUBLISH ENTITY block.

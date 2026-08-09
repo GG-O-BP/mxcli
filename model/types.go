@@ -438,8 +438,40 @@ type PublishedODataService struct {
 	AuthMicroflow       string                 `json:"authMicroflow,omitempty"`
 	EntityTypes         []*PublishedEntityType `json:"entityTypes,omitempty"`
 	EntitySets          []*PublishedEntitySet  `json:"entitySets,omitempty"`
-	AllowedModuleRoles  []string               `json:"allowedModuleRoles,omitempty"`
-	Excluded            bool                   `json:"excluded,omitempty"`
+	// Microflows are published as OData actions (ActionImport in $metadata).
+	Microflows         []*PublishedMicroflow `json:"microflows,omitempty"`
+	AllowedModuleRoles []string              `json:"allowedModuleRoles,omitempty"`
+	Excluded           bool                  `json:"excluded,omitempty"`
+}
+
+// PublishedMicroflow is a microflow exposed as an OData action.
+type PublishedMicroflow struct {
+	BaseElement
+	Microflow   string `json:"microflow,omitempty"`   // BY_NAME ref, Module.Microflow
+	ExposedName string `json:"exposedName,omitempty"` // the ActionImport name
+	Summary     string `json:"summary,omitempty"`
+	Description string `json:"description,omitempty"`
+	// The microflow's own return type, read off the microflow rather than
+	// authored so the two cannot drift. Kind and Ref are kept apart on purpose:
+	// "Module.X" alone cannot say whether X is an entity or an enumeration —
+	// the ambiguity CLAUDE.md documents for the MDL visitor.
+	ReturnTypeKind string                         `json:"returnTypeKind,omitempty"` // Boolean|String|…|Object|List|Enumeration
+	ReturnTypeRef  string                         `json:"returnTypeRef,omitempty"`  // qualified name for Object/List/Enumeration
+	Parameters     []*PublishedMicroflowParameter `json:"parameters,omitempty"`
+}
+
+// PublishedMicroflowParameter is one argument of a published microflow.
+type PublishedMicroflowParameter struct {
+	BaseElement
+	// MicroflowParameter is a BY_NAME ref of the form Module.Microflow.Param,
+	// the same shape the published-REST writer uses.
+	MicroflowParameter string `json:"microflowParameter,omitempty"`
+	ExposedName        string `json:"exposedName,omitempty"`
+	DataTypeKind       string `json:"dataTypeKind,omitempty"`
+	DataTypeRef        string `json:"dataTypeRef,omitempty"`
+	CanBeEmpty         bool   `json:"canBeEmpty,omitempty"`
+	Summary            string `json:"summary,omitempty"`
+	Description        string `json:"description,omitempty"`
 }
 
 // GetName returns the service's name.
