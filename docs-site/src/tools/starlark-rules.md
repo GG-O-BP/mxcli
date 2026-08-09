@@ -28,7 +28,7 @@ In addition to the built-in Go rules, mxcli bundles 27 Starlark-based lint rules
 | Rule | Description |
 |------|-------------|
 | **QUAL001** | McCabe complexity -- Flags microflows with high cyclomatic complexity |
-| **QUAL002** | Documentation -- Checks for missing documentation on public elements |
+| **QUAL002** | Documentation -- Missing documentation on entities, microflows, Java actions and Java action parameters ([options](#qual002-options)) |
 | **QUAL003** | Long microflows -- Warns about microflows with too many activities |
 | **QUAL004** | Orphaned elements -- Detects unused entities, microflows, or pages |
 
@@ -48,6 +48,42 @@ In addition to the built-in Go rules, mxcli bundles 27 Starlark-based lint rules
 | **CONV017** | Calculated attributes -- Checks calculated attribute patterns |
 
 Additional convention rules cover access rule constraints, role mapping, microflow size and content.
+
+### QUAL002 options {#qual002-options}
+
+Undocumented model elements are invisible to `mxcli check` and to the build —
+nothing fails, so nothing reminds you. QUAL002 is that reminder, and it covers
+more than the domain model:
+
+| Option | Default | Checks |
+|---|---|---|
+| `check_entities` | `true` | entity descriptions |
+| `check_microflows` | `true` | microflow descriptions (nanoflows always exempt) |
+| `check_java_actions` | `true` | Java action documentation |
+| `check_java_action_params` | `true` | Java action **parameter** descriptions |
+| `check_attributes` | `false` | entity attribute descriptions |
+| `min_activities` | `3` | microflows with fewer activities are exempt |
+
+Parameter descriptions are worth more than they look: Studio Pro renders them in
+the dialog where someone wires up the call, so an undocumented parameter is a
+blank field next to a name like `pInput` at exactly the moment a caller has to
+decide what to pass. Java actions matter for the same reason one step up — unlike
+a microflow, the body is Java the model cannot show a reader.
+
+`check_attributes` is off by default only because of volume: a real domain model
+has hundreds of attributes, and turning it on at `info` severity is a long list.
+Turn it on when you are actually working through documentation debt.
+
+Set options in the lint config:
+
+```yaml
+rules:
+  QUAL002:
+    enabled: true
+    options:
+      check_attributes: true
+      min_activities: 5
+```
 
 ## Where Starlark Rules Live
 

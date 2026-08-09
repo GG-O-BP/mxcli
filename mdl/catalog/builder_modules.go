@@ -309,7 +309,19 @@ func (b *Builder) buildJavaActions() error {
 	}
 	defer stmt.Close()
 
+	paramStmt, err := b.tx.Prepare(`
+		INSERT INTO java_action_parameters_data (Id, JavaActionId, JavaActionName,
+			QualifiedName, ModuleName, Name, Description, ParameterType, IsRequired,
+			Ordinal, ProjectId, SnapshotId)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+		return err
+	}
+	defer paramStmt.Close()
+
 	projectID, snapshotID := b.snapshotMeta()
+	paramCount := 0
 
 	for _, ja := range actions {
 		moduleID := b.hierarchy.findModuleID(ja.ContainerID)
@@ -337,9 +349,38 @@ func (b *Builder) buildJavaActions() error {
 		if err != nil {
 			return err
 		}
+
+		for i, p := range ja.Parameters {
+			if p == nil {
+				continue
+			}
+			paramType := ""
+			if p.ParameterType != nil {
+				paramType = p.ParameterType.TypeString()
+			}
+			if _, err := paramStmt.Exec(
+				string(p.ID),
+				string(ja.ID),
+				ja.Name,
+				qualifiedName+"."+p.Name,
+				moduleName,
+				p.Name,
+				p.Description,
+				paramType,
+				boolToInt(p.IsRequired),
+				i,
+				projectID, snapshotID,
+			); err != nil {
+				return err
+			}
+			paramCount++
+		}
 	}
 
 	b.report("Java Actions", len(actions))
+	if paramCount > 0 {
+		b.report("Java Action Parameters", paramCount)
+	}
 	return nil
 }
 

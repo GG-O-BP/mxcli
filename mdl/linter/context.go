@@ -1200,3 +1200,101 @@ func (ctx *LintContext) ModuleDependencies() map[string][]string {
 
 	return deps
 }
+
+// JavaActionParameter represents one parameter of a Java action.
+type JavaActionParameter struct {
+	Name          string
+	Description   string
+	ParameterType string
+	IsRequired    bool
+}
+
+// JavaAction represents a Java action from the catalog, with its parameters.
+//
+// Parameters are carried on the action rather than offered as a separate
+// iterator: a rule that reports an undocumented parameter has to name the action
+// it belongs to, and pairing them here keeps a rule from having to join.
+type JavaAction struct {
+	ID            string
+	Name          string
+	QualifiedName string
+	ModuleName    string
+	Folder        string
+	Documentation string
+	ExportLevel   string
+	ReturnType    string
+	Parameters    []JavaActionParameter
+}
+
+// JavaActions returns an iterator over all Java actions (excluding system and
+// marketplace modules, as every other document iterator here does — a rule must
+// not report undocumented code the user did not write).
+func (ctx *LintContext) JavaActions() iter.Seq[JavaAction] {
+	return func(yield func(JavaAction) bool) {
+		params := ctx.javaActionParameters()
+
+		rows, err := ctx.db.Query(`
+			SELECT ja.Id, ja.Name, ja.QualifiedName, ja.ModuleName, ja.Folder,
+			       ja.Documentation, ja.ExportLevel, ja.ReturnType
+			FROM java_actions ja
+			LEFT JOIN modules m ON ja.ModuleName = m.Name
+			WHERE COALESCE(m.Source, '') = ''
+			ORDER BY ja.ModuleName, ja.Name
+		`)
+		if err != nil {
+			return
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var ja JavaAction
+			var folder, doc, exportLevel, retType sql.NullString
+			if err := rows.Scan(&ja.ID, &ja.Name, &ja.QualifiedName, &ja.ModuleName,
+				&folder, &doc, &exportLevel, &retType); err != nil {
+				continue
+			}
+			ja.Folder = folder.String
+			ja.Documentation = doc.String
+			ja.ExportLevel = exportLevel.String
+			ja.ReturnType = retType.String
+			ja.Parameters = params[ja.ID]
+
+			if ctx.IsExcluded(ja.ModuleName) {
+				continue
+			}
+			if !yield(ja) {
+				return
+			}
+		}
+	}
+}
+
+// javaActionParameters indexes every parameter by its owning action's ID, in
+// declaration order.
+func (ctx *LintContext) javaActionParameters() map[string][]JavaActionParameter {
+	out := map[string][]JavaActionParameter{}
+	rows, err := ctx.db.Query(`
+		SELECT JavaActionId, Name, Description, ParameterType, IsRequired
+		FROM java_action_parameters
+		ORDER BY JavaActionId, Ordinal
+	`)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var actionID string
+		var p JavaActionParameter
+		var desc, ptype sql.NullString
+		var required int
+		if err := rows.Scan(&actionID, &p.Name, &desc, &ptype, &required); err != nil {
+			continue
+		}
+		p.Description = desc.String
+		p.ParameterType = ptype.String
+		p.IsRequired = required != 0
+		out[actionID] = append(out[actionID], p)
+	}
+	return out
+}

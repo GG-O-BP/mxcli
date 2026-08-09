@@ -7,12 +7,16 @@ package catalog
 //
 // History:
 //
+//	9 — java_action_parameters_data + view: a Java action's parameters, each
+//	    with its own Description. Without the bump a cached catalog silently
+//	    reports zero parameters, so QUAL002 would under-report rather than
+//	    fail (mxcli-formula1: missing documentation on Java actions).
 //	2 — split each domain table into <name>_data + <name> view that JOINs
 //	    snapshots, removing the denormalized ProjectName / SnapshotDate /
 //	    SnapshotSource / SourceId / SourceBranch / SourceRevision columns
 //	    from every row (issue #576).
 //	1 — initial flat schema with denormalized snapshot columns on every row.
-const CatalogSchemaVersion = "8"
+const CatalogSchemaVersion = "9"
 
 // MetaSchemaVersion is the catalog_meta key that records the schema version
 // the cache was built against.
@@ -261,6 +265,26 @@ func (c *Catalog) createTables() error {
 			SnapshotId TEXT
 		)`,
 		viewWithFullSnapshot("java_actions"),
+
+		// java_action_parameters — one row per parameter of a Java action.
+		// Separate from java_actions (which only counts them) because a
+		// parameter carries its own Description, and an undocumented parameter
+		// is the thing a caller actually sees in Studio Pro's action dialog.
+		`CREATE TABLE IF NOT EXISTS java_action_parameters_data (
+			Id TEXT PRIMARY KEY,
+			JavaActionId TEXT,
+			JavaActionName TEXT,
+			QualifiedName TEXT,
+			ModuleName TEXT,
+			Name TEXT,
+			Description TEXT,
+			ParameterType TEXT,
+			IsRequired INTEGER DEFAULT 0,
+			Ordinal INTEGER DEFAULT 0,
+			ProjectId TEXT,
+			SnapshotId TEXT
+		)`,
+		viewWithFullSnapshot("java_action_parameters"),
 
 		// javascript_actions
 		`CREATE TABLE IF NOT EXISTS javascript_actions_data (
