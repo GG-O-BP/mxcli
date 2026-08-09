@@ -343,7 +343,7 @@ func appendSourceExpressionSuffix(
 	expr ast.Expression,
 	suffix string,
 ) ast.Expression {
-	source := strings.TrimSpace(extractOriginalText(exprCtx.(antlr.ParserRuleContext)))
+	source := strings.TrimSpace(extractExpressionText(exprCtx.(antlr.ParserRuleContext)))
 	innerExpr := expr
 	if sourceExpr, ok := expr.(*ast.SourceExpr); ok {
 		source = sourceExpr.Source
