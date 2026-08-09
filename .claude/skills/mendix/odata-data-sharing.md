@@ -474,6 +474,113 @@ Two things worth knowing before you write this:
 `PublishAssociations` must stay at its default (Yes) here: a non-persistable
 entity cannot publish its ID, so object-id mode can never build for it.
 
+## HTTP Status Codes and Errors: What Each Capability Can Do
+
+**The read path and the write path have different powers, and the difference is
+the single most expensive thing to get wrong here.** Read this before designing
+any microflow-backed resource.
+
+| Capability | Can set the HTTP status code? | How |
+|---|---|---|
+| OData **action** (published microflow) | **Yes** | add a `System.HttpResponse` parameter |
+| Entity **Insertable / Updatable / Deletable** microflow | **Yes** | add a `System.HttpResponse` parameter |
+| Entity **Readable** microflow | **No** | not offered — the read capability has no documented `HttpResponse` parameter |
+
+Sources: [published-odata-microflow §4](https://docs.mendix.com/refguide/published-odata-microflow/#4-customizing-the-outgoing-http-response),
+[published-odata-entity, custom HTTP response](https://docs.mendix.com/refguide/published-odata-entity/#custom-http-response).
+The custom-response section names Insertable, Updatable and Deletable; the
+Readable section never references it.
+
+### Writing a status code (action / insert / update / delete)
+
+```sql
+create microflow Api.InsertRow (
+  $Row: Api.Row,
+  $HttpResponse: System.HttpResponse
+)
+begin
+  if $Row/RowKey = empty then
+    change $HttpResponse (StatusCode = 400, Content = '{"error":"rowKey is required"}');
+    return;
+  end if;
+  ...
+end;
+```
+
+Three rules the platform imposes:
+
+- **`ReasonPhrase` is ignored.** Setting it is dead code; put the explanation in
+  `Content`.
+- **`204` always produces an empty body.** Setting `Content` alongside it is
+  discarded.
+- **Changing status or content makes the whole response come from
+  `HttpResponse`** — headers included. Changing *only* headers merges them with
+  the defaults instead.
+- `Transfer-Encoding` and `Date` cannot be changed.
+
+### The read path cannot refuse, so it must not over-promise
+
+A read microflow has no way to answer `400`. Its only exits are to throw (a
+blunt `500`) or to return data. That has two consequences, and both are design
+obligations rather than nice-to-haves:
+
+**1. Declare capabilities you do not implement as `No`.** Mendix applies *no*
+query options to a read-microflow resource — it hands over the request and
+returns whatever comes back — so `TopSupported` / `SkipSupported` / `Countable`
+are claims about your microflow, not about the platform. A resource that
+advertises `TopSupported: Yes` and ignores `$top` returns the entire collection
+with a `200`, and the client believes it received a page.
+
+```sql
+publish entity Api.Row as 'Rows' (
+  ReadMode: microflow Api.Read_Rows,
+  -- Only claim what Read_Rows actually parses out of the URI:
+  TopSupported: No,
+  SkipSupported: No,
+  Countable: No
+)
+```
+
+Declaring `No` is the read path's substitute for the `400` it cannot send.
+
+**2. Answer a lookup by your own KEY.** A client holding a row re-reads it by
+key, unprompted, and Mendix's own OData client sends the `$filter` spelling:
+
+```
+?$filter=rowKey eq '1036-c'     ← what the runtime actually sends
+/Rows('1036-c')                 ← bare path key
+/Rows(rowKey='1036-c')          ← named path key
+```
+
+If the microflow parses only its collection filter, the key request falls through
+to the collection default and the client adopts the **first row** as the identity
+of the object it is displaying. There is no error: the request is well-formed,
+the response is a valid collection, the count is right, the status is `200`. Two
+different objects are then on screen at once, and nothing distinguishes them
+until one travels to another page.
+
+So: `expose ( … (KEY) )` is a promise the *service* makes on the *microflow's*
+behalf. Branch key → id → filter → default, or do not declare the KEY.
+
+The request itself always arrives on `System.HttpRequest`:
+
+```sql
+create microflow Api.Read_Rows (
+  $Request:  System.HttpRequest,
+  $Response: System.ODataResponse    -- required while Countable is Yes
+)
+returns List of Api.Row
+begin
+  log info 'URI=' + $Request/Uri;    -- the whole query string, URL-encoded
+  ...
+end;
+```
+
+Mendix validates field names before the microflow runs (`$filter=secretColumn eq 'x'`
+is a `400` from the platform), so the microflow only ever sees names that exist
+in the published metadata. That is defence in depth, not a substitute for a
+whitelist — it constrains the *name*, not what you do with it.
+
 ## Step-by-Step: Read-Write API with Microflow Handlers
 
 For write operations (insert, update, delete), the OData service delegates to microflows that map between the view entity and the underlying persistent entities.

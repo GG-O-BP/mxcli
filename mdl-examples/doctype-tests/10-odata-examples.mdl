@@ -540,6 +540,79 @@ end;
 /
 
 -- ############################################################################
+-- LEVEL 8.75: A microflow-backed resource declares its own contract
+-- ############################################################################
+--
+-- Mendix applies NO query options to a read-microflow resource: it hands the
+-- request to the microflow and returns exactly what comes back. And unlike an
+-- OData action or an insert/update/delete microflow, a read microflow has no
+-- System.HttpResponse parameter, so it cannot answer 400 either.
+--
+-- So the read path's contract is declarative. Two ways to be correct, both
+-- shown here, and MDL-ODATA02/03 flag anything in between.
+
+create non-persistent entity OdTest.LiveRow ( RowKey: string(60), Label: string(200) );
+
+-- (a) Take the request and honour it. mxcli cannot tell WHICH options a
+--     microflow parses, so taking $Request is enough to earn its silence — the
+--     branch key -> filter -> default is the author's job.
+create microflow OdTest.Read_LiveRows (
+  $Request:  System.HttpRequest,
+  $Response: System.ODataResponse
+)
+returns List of OdTest.LiveRow as $Rows
+begin
+  -- $Request/Uri carries the whole query string, URL-encoded:
+  --   ?$filter=rowKey eq '1036-c'   <- a client re-reading a row it holds
+  --   ?$top=20&$skip=40             <- paging the client believes works
+  $Rows = create list of OdTest.LiveRow;
+  return $Rows;
+end;
+/
+
+-- (b) Or declare an honest contract: no KEY to answer, no paging claimed.
+create microflow OdTest.Read_AllRows ()
+returns List of OdTest.LiveRow as $Rows
+begin
+  $Rows = create list of OdTest.LiveRow;
+  return $Rows;
+end;
+/
+
+create odata service OdTest.LiveAPI (
+  path: 'odata/live/',
+  version: '1.0.0',
+  ODataVersion: OData4,
+  namespace: 'OdTest.LiveAPI',
+  ServiceName: 'LiveAPI'
+)
+{
+  publish entity OdTest.LiveRow as 'Rows' (
+    ReadMode: microflow OdTest.Read_LiveRows,
+    InsertMode: not_supported, UpdateMode: not_supported, DeleteMode: not_supported
+  )
+  expose ( RowKey as 'rowKey' (KEY), Label as 'label' )
+};
+
+-- The honest variant: nothing is claimed, so nothing is promised. Note there is
+-- no KEY — declaring one would promise a lookup Read_AllRows cannot answer.
+create odata service OdTest.BulkAPI (
+  path: 'odata/bulk/',
+  version: '1.0.0',
+  ODataVersion: OData4,
+  namespace: 'OdTest.BulkAPI',
+  ServiceName: 'BulkAPI'
+)
+{
+  publish entity OdTest.LiveRow as 'AllRows' (
+    ReadMode: microflow OdTest.Read_AllRows,
+    InsertMode: not_supported, UpdateMode: not_supported, DeleteMode: not_supported,
+    Countable: false, TopSupported: false, SkipSupported: false
+  )
+  expose ( RowKey as 'rowKey', Label as 'label' )
+};
+
+-- ############################################################################
 -- LEVEL 8.8: DROP (cleanup)
 -- ############################################################################
 -- Cleanup statements below are commented out by default; flip them on if
