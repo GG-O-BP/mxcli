@@ -602,6 +602,78 @@ non-filterable"` before the microflow runs. So the microflow only ever sees name
 that exist in the published metadata. That is defence in depth, not a substitute for a
 whitelist — it constrains the *name*, not what you do with it.
 
+## Authentication Methods, and the Cost of Basic Auth
+
+A published service names one or more methods in the `authentication` clause:
+
+```sql
+authentication basic, session
+authentication microflow ProductApi.Authenticate
+```
+
+| Method | How the caller proves itself | Cost per request |
+|---|---|---|
+| `basic` | `Authorization: Basic …` on every request | **a full password hash** |
+| `session` | an existing session + `X-Csrf-Token` | none, but only reachable from same-origin JavaScript in the same app |
+| `guest` | anonymous | none |
+| `microflow` | your microflow decides | whatever the microflow does |
+
+**Basic auth hashes on every call, including failures.** A consumed OData
+service holds no session, so every request is a fresh login. Measured on a real
+app, that was 60–80% of a page turn — and a *wrong* password costs the same,
+because the hash runs either way:
+
+```
+GET /odata/f1/Drivers?$top=20
+  basic auth                 200  ~360 ms
+  wrong password             401  ~346 ms   <- hashes either way
+  session cookie             200   ~19 ms
+  no credentials             401   ~42 ms
+```
+
+Do not read the 19 ms as the fix: `session` is only open to same-origin
+JavaScript, and a Mendix OData *client* sends basic auth and keeps no cookie.
+
+### Custom authentication
+
+A microflow taking `List of System.HttpHeader` and returning a `System.User`.
+Return empty to deny. No password hash anywhere, so the ~42 ms floor.
+
+```sql
+CREATE MICROFLOW ProductApi.Authenticate ($Headers: List of System.HttpHeader)
+  RETURNS System.User AS $User
+BEGIN
+  -- e.g. compare a shared secret from $Headers, then retrieve the service account
+  retrieve $Users from System.User;
+  $User = head($Users);
+  RETURN $User;
+END;
+
+create odata service ProductApi.Api ( ... )
+authentication microflow ProductApi.Authenticate
+{ ... };
+```
+
+**The client needs no change.** The microflow can read the `Authorization:
+Basic …` header itself and compare it against a constant, so the consumer keeps
+its existing username/password configuration and the server simply stops
+calling BCrypt.
+
+Two build rules to know before you reach for it:
+
+- **The microflow is mandatory.** `authentication microflow` with no name parses
+  but fails the build with **CE0333** "Please select a microflow to use for
+  authentication". `mxcli check` flags this as `MDL-ODATA04`.
+- **App security must be on.** With security off, Mendix reports **CE6600**
+  "App security is off, but custom authentication is enabled for this service".
+  Set it with `alter project security level prototype` (or `production`).
+
+If custom authentication is more than you need, `ALTER SETTINGS MODEL
+BcryptCost = 8` shrinks the hash instead of removing it. Each step down halves
+the cost; the default is 12. That is a judgement about the accounts in *that*
+app — appropriate for machine accounts with generated passwords, not for a
+database of human passwords.
+
 ## Step-by-Step: Read-Write API with Microflow Handlers
 
 For write operations (insert, update, delete), the OData service delegates to microflows that map between the view entity and the underlying persistent entities.

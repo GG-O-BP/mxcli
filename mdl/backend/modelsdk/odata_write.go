@@ -29,8 +29,14 @@ func init() {
 	codec.RegisterListMarker("ODataPublish$PublishedAttribute", 3)
 	codec.RegisterListMarker("ODataPublish$PublishedAssociationEnd", 3)
 	codec.RegisterListMarker("ODataPublish$PublishedId", 3)
+	// AllowedModuleRoles empties as marker 1, not 3 — it is a BY_NAME role list,
+	// not a part list. Without the entry, a service with no grants omits the key
+	// entirely, and since the document is serialized wholesale that DELETES the
+	// stored grants on the next modify (CE0307). An empty list is only reached
+	// when the property itself wrote nothing, because ByNameRefList marks dirty
+	// on Append.
 	codec.RegisterTypeDefaults("ODataPublish$PublishedODataService2", codec.TypeDefaults{
-		MandatoryListMarkers: map[string]int32{"AuthenticationTypes": 3, "EntityTypes": 3, "EntitySets": 3, "Enumerations": 3, "Microflows": 3},
+		MandatoryListMarkers: map[string]int32{"AllowedModuleRoles": 1, "AuthenticationTypes": 3, "EntityTypes": 3, "EntitySets": 3, "Enumerations": 3, "Microflows": 3},
 	})
 	codec.RegisterTypeDefaults("ODataPublish$EntityType", codec.TypeDefaults{
 		MandatoryListMarkers: map[string]int32{"ChildMembers": 3},
@@ -231,6 +237,18 @@ func publishedODataServiceToGen(svc *model.PublishedODataService) element.Elemen
 	addBool(g, "PublishAssociations", svc.PublishAssociations)
 	addBool(g, "UseGeneralization", svc.UseGeneralization)
 	addStr(g, "AuthenticationMicroflow", svc.AuthMicroflow)
+	// AllowedModuleRoles is written unconditionally, marker 1, matching
+	// sdk/mpr/writer_odata.go. This document is serialized wholesale, so a key
+	// the serializer omits is not left alone — it is deleted, silently revoking
+	// the service's access on every `create or modify`. Grants are made by a
+	// separate statement (`grant access on odata service …`) and cannot be
+	// restated in the create script, so nothing in the script can put them back;
+	// the next build fails CE0307 "At least one allowed role must be selected".
+	//
+	// The §26 fix went into the mpr writer only, and this one had no reference to
+	// the field at all, so the bug survived here for a full release with a green
+	// suite (mxcli-formula1 §41).
+	addByNameRefList(g, "AllowedModuleRoles", "", svc.AllowedModuleRoles)
 	if len(svc.AuthenticationTypes) > 0 {
 		addByNameRefListV3(g, "AuthenticationTypes", svc.AuthenticationTypes)
 	}

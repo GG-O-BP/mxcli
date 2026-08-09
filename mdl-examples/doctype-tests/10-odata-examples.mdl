@@ -434,6 +434,68 @@ grant access on odata service OdTest.CustomerAPI to OdTest.Admin, OdTest.user;
 revoke access on odata service OdTest.CustomerAPI from OdTest.user;
 /
 
+/**
+ * Level 8.7c: A modify must NOT revoke the grants made above.
+ *
+ * The service document is serialized wholesale, so a writer that omits
+ * AllowedModuleRoles deletes it. Grants are made by GRANT ACCESS, a separate
+ * statement, and cannot be restated inside the service body — so once dropped
+ * nothing in the script can put them back and the build fails CE0307
+ * "At least one allowed role must be selected".
+ *
+ * NOTE: `mx check` does NOT catch this. A published service with no allowed
+ * roles is 0 errors on Mendix 11.12 (measured), so this example exercises the
+ * path but cannot gate it. The gate is
+ * TestODataService_EngineWriteParity, which reads the stored BSON and compares
+ * the two engines directly (mxcli-formula1 §26, §41).
+ */
+create or modify odata service OdTest.CustomerAPI (
+  path: 'odata/customers/',
+  version: '1.0.1',
+  ODataVersion: OData4,
+  namespace: 'OdTest.Customers',
+  ServiceName: 'Customer Service',
+  Summary: 'API for managing customers (modified, grants not restated)',
+  PublishAssociations: Yes
+)
+authentication basic, session
+{
+  publish entity OdTest.Customer as 'Customers' (
+    ReadMode: source,
+    InsertMode: source,
+    UpdateMode: source,
+    DeleteMode: not_supported,
+    UsePaging: Yes,
+    PageSize: 100
+  )
+  expose (
+    Email as 'customerId' (KEY, Filterable, Sortable),
+    Name (Filterable, Sortable),
+    Phone,
+    IsActive,
+    Order_Customer as 'Orders'
+  );
+
+  publish entity OdTest.Order as 'Orders' (
+    ReadMode: source,
+    InsertMode: not_supported,
+    UpdateMode: not_supported,
+    DeleteMode: not_supported
+  )
+  expose (
+    OrderNumber as 'orderId' (KEY, Filterable, Sortable),
+    OrderDate (Sortable),
+    TotalAmount (Sortable),
+    Status (Filterable),
+    Order_Customer as 'Customer'
+  );
+};
+/
+
+-- The grant made in 8.7a must still be there.
+describe odata service OdTest.CustomerAPI;
+/
+
 -- ############################################################################
 -- LEVEL 9: EXTERNAL ACTION CALLS IN MICROFLOWS
 -- ############################################################################
