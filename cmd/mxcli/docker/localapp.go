@@ -271,7 +271,8 @@ func checkLocalAppPortsFree(o LocalAppOptions) error {
 	for _, p := range ports {
 		if err := pingTCP(fmt.Sprintf("127.0.0.1:%d", p.port), 300*time.Millisecond); err == nil {
 			return fmt.Errorf("port %d (%s) is already in use — stop the running instance first, "+
-				"or pass a different port", p.port, p.what)
+				"or pass a different port.\n%s",
+				p.port, p.what, portCulpritAdvice(p.port, "127.0.0.1", o.AppPort))
 		}
 	}
 	return nil
