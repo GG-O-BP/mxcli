@@ -594,8 +594,12 @@ create odata service OdTest.LiveAPI (
   expose ( RowKey as 'rowKey' (KEY), Label as 'label' )
 };
 
--- The honest variant: nothing is claimed, so nothing is promised. Note there is
--- no KEY — declaring one would promise a lookup Read_AllRows cannot answer.
+-- The honest variant: no paging is claimed, so none is promised.
+--
+-- The KEY stays. Mendix REQUIRES a published entity to have one (CE6585
+-- "Published entity 'X' must have a key defined."), so "drop the KEY" is not an
+-- available remedy — a resource whose rows a client can hold must answer the
+-- key lookup, full stop. What you CAN decline is the query options.
 create odata service OdTest.BulkAPI (
   path: 'odata/bulk/',
   version: '1.0.0',
@@ -609,7 +613,7 @@ create odata service OdTest.BulkAPI (
     InsertMode: not_supported, UpdateMode: not_supported, DeleteMode: not_supported,
     Countable: false, TopSupported: false, SkipSupported: false
   )
-  expose ( RowKey as 'rowKey', Label as 'label' )
+  expose ( RowKey as 'rowKey' (KEY), Label as 'label' )
 };
 
 -- ############################################################################

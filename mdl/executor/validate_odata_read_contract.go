@@ -102,7 +102,9 @@ func keyPromiseViolations(where string, e *ast.PublishedEntityDef, mf string) []
 		Suggestion: fmt.Sprintf(
 			"A client holding a row re-reads it by key on its own — Mendix's OData client sends `?$filter=%s eq '…'`. "+
 				"With no branch for it the request falls through to the collection default, the client adopts the FIRST row as that object's identity, and there is no error: valid collection, right count, 200. "+
-				"Give %s a `$Request: %s` parameter and branch key → filter → default, or drop the KEY.",
+				"Give %s a `$Request: %s` parameter and branch key → filter → default. "+
+				"Dropping the KEY is NOT an alternative: Mendix requires a published entity to have one "+
+				"(CE6585 \"Published entity must have a key defined\"), so the lookup has to be answered.",
 			keys[0], mf, httpRequestType),
 	}}
 }

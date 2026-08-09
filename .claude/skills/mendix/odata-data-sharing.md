@@ -560,7 +560,12 @@ different objects are then on screen at once, and nothing distinguishes them
 until one travels to another page.
 
 So: `expose ( … (KEY) )` is a promise the *service* makes on the *microflow's*
-behalf. Branch key → id → filter → default, or do not declare the KEY.
+behalf. Branch key → id → filter → default.
+
+**Not declaring the KEY is not a way out.** Mendix requires a published entity to
+have one — `CE6585 "Published entity 'X' must have a key defined."` — so the only
+correct resolution is to answer the lookup. (Query *options* you may decline;
+the key you may not.)
 
 The request itself always arrives on `System.HttpRequest`:
 
