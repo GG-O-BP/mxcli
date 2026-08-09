@@ -214,6 +214,11 @@ create odata service MyModule.CustomerAPI (
   namespace: 'MyModule.Customers'
 )
 authentication basic, session
+-- Inside the { } body, alongside `publish entity`, a microflow can be published
+-- as an OData action (an ActionImport in $metadata):
+--   publish microflow Module.DoThing as 'DoThing'
+--     expose ( Note as 'note', Amount as 'amount' (CanBeEmpty) );
+-- Parameter types and the return type are read off the microflow, not restated.
 -- or: authentication microflow Module.Authenticate
 --   Custom authentication. The microflow takes a List of System.HttpHeader and
 --   returns a System.User (empty denies). It removes the per-request password

@@ -78,6 +78,14 @@ type EdmEntitySet struct {
 	Updatable  *bool // UpdateRestrictions/Updatable
 	Deletable  *bool // DeleteRestrictions/Deletable
 	Countable  *bool // CountRestrictions/Countable
+	// TopSupported / SkipSupported are STANDALONE boolean annotations in the
+	// OData capabilities vocabulary, not records:
+	//   <Annotation Bool="false" Term="Org.OData.Capabilities.V1.TopSupported"/>
+	// Mendix compares them against the app's per-entity flags and reports
+	// CE6630 on a mismatch, so a generator that stamps them true regardless
+	// makes `TopSupported: No` on the publishing side unusable.
+	TopSupported  *bool
+	SkipSupported *bool
 
 	// Property names the service says cannot be filtered or sorted on, from
 	// FilterRestrictions/NonFilterableProperties and
@@ -369,7 +377,19 @@ func parseXmlEntityType(et *xmlEntityType) *EdmEntityType {
 // flags on the EdmEntitySet.
 func applyCapabilityAnnotations(es *EdmEntitySet, annotations []xmlCapabilitiesAnnotation) {
 	for _, ann := range annotations {
+		// Standalone boolean terms carry their value on the annotation itself.
+		// Handled before the record guard, which skipped them entirely.
 		if ann.Record == nil {
+			if ann.Bool == "" {
+				continue
+			}
+			v := ann.Bool == "true"
+			switch ann.Term {
+			case "Org.OData.Capabilities.V1.TopSupported":
+				es.TopSupported = &v
+			case "Org.OData.Capabilities.V1.SkipSupported":
+				es.SkipSupported = &v
+			}
 			continue
 		}
 		switch ann.Term {
@@ -554,7 +574,10 @@ type xmlEntitySet struct {
 // <PropertyValue Property="NonInsertableNavigationProperties"><Collection>
 // <NavigationPropertyPath>Trips</NavigationPropertyPath></Collection></PropertyValue>.
 type xmlCapabilitiesAnnotation struct {
-	Term   string                 `xml:"Term,attr"`
+	Term string `xml:"Term,attr"`
+	// Bool carries a standalone boolean term (TopSupported, SkipSupported).
+	// Empty when the annotation is record-shaped.
+	Bool   string                 `xml:"Bool,attr"`
 	Record *xmlCapabilitiesRecord `xml:"Record"`
 }
 

@@ -24,6 +24,14 @@ const parityScript = `
 create module PTest;
 create entity PTest.Cust (Email: string(200) unique error 'u' required error 'r');
 create module role PTest.Admin;
+
+CREATE MICROFLOW PTest.DoThing ($Note: string)
+  RETURNS Boolean AS $Ok
+BEGIN
+  declare $Ok Boolean = true;
+  RETURN $Ok;
+END;
+
 create odata service PTest.Api (
   path: 'odata/p/', version: '1.0.0', ODataVersion: OData4,
   namespace: 'PTest.Api', ServiceName: 'Api'
@@ -35,6 +43,10 @@ authentication basic
     UpdateMode: not_supported, DeleteMode: not_supported
   )
   expose ( Email as 'email' (KEY) );
+
+  -- An OData action. Both writers must serialize the Microflows part list;
+  -- neither referenced PublishedMicroflow before mxcli-formula1 §47.
+  publish microflow PTest.DoThing as 'DoThing' expose ( Note as 'note' );
 };
 grant access on odata service PTest.Api to PTest.Admin;
 
@@ -52,6 +64,8 @@ authentication basic
     UpdateMode: not_supported, DeleteMode: not_supported
   )
   expose ( Email as 'email' (KEY) );
+
+  publish microflow PTest.DoThing as 'DoThing' expose ( Note as 'note' );
 };
 `
 

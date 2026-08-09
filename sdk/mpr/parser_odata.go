@@ -4,6 +4,7 @@ package mpr
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/mendixlabs/mxcli/model"
 
@@ -176,7 +177,70 @@ func (r *Reader) parsePublishedODataService(unitID, containerID string, contents
 		}
 	}
 
+	// Parse published microflows (OData actions)
+	for _, pm := range extractBsonArray(raw["Microflows"]) {
+		if pmMap, ok := pm.(map[string]any); ok {
+			svc.Microflows = append(svc.Microflows, parsePublishedMicroflow(pmMap))
+		}
+	}
+
 	return svc, nil
+}
+
+// parsePublishedMicroflow parses an ODataPublish$PublishedMicroflow — an OData
+// action — from a BSON map.
+func parsePublishedMicroflow(raw map[string]any) *model.PublishedMicroflow {
+	pm := &model.PublishedMicroflow{
+		Microflow:   extractString(raw["Microflow"]),
+		ExposedName: extractString(raw["ExposedName"]),
+		Summary:     extractString(raw["Summary"]),
+		Description: extractString(raw["Description"]),
+	}
+	pm.ID = model.ID(extractID(raw["$ID"]))
+	pm.TypeName = "ODataPublish$PublishedMicroflow"
+	pm.ReturnTypeKind, pm.ReturnTypeRef = parseODataDataType(raw["ReturnType"])
+
+	for _, p := range extractBsonArray(raw["Parameters"]) {
+		pMap, ok := p.(map[string]any)
+		if !ok {
+			continue
+		}
+		mp := &model.PublishedMicroflowParameter{
+			MicroflowParameter: extractString(pMap["MicroflowParameter"]),
+			ExposedName:        extractString(pMap["ExposedName"]),
+			CanBeEmpty:         extractBool(pMap["CanBeEmpty"], false),
+			Summary:            extractString(pMap["Summary"]),
+			Description:        extractString(pMap["Description"]),
+		}
+		mp.ID = model.ID(extractID(pMap["$ID"]))
+		mp.TypeName = "ODataPublish$PublishedMicroflowParameter"
+		mp.DataTypeKind, mp.DataTypeRef = parseODataDataType(pMap["DataType"])
+		pm.Parameters = append(pm.Parameters, mp)
+	}
+	return pm
+}
+
+// parseODataDataType reads a DataTypes$* element back into the kind + ref pair
+// the semantic model carries. Object/List name an Entity, Enumeration names an
+// Enumeration; everything else is a bare primitive whose kind is the $Type with
+// the "DataTypes$" prefix and "Type" suffix removed.
+func parseODataDataType(v any) (kind, ref string) {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return "", ""
+	}
+	t := extractString(m["$Type"])
+	t = strings.TrimPrefix(t, "DataTypes$")
+	t = strings.TrimSuffix(t, "Type")
+	switch t {
+	case "":
+		return "", ""
+	case "Object", "List":
+		return t, extractString(m["Entity"])
+	case "Enumeration":
+		return t, extractString(m["Enumeration"])
+	}
+	return t, ""
 }
 
 // parsePublishedEntityType parses a published entity type from a BSON map.

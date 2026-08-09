@@ -376,7 +376,6 @@ func menuItemIconMDL(item *types.NavMenuItem) string {
 	return " icon " + quoteQualifiedName(item.Icon)
 }
 
-
 // menuItemIconNote flags an icon DESCRIBE cannot round-trip, so re-running the
 // output loses it visibly rather than silently. CREATE NAVIGATION writes only
 // Forms$IconCollectionIcon; a glyph icon (numeric Code) or an image icon

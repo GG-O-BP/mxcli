@@ -124,6 +124,7 @@ func (b *Backend) ListPublishedODataServices() ([]*model.PublishedODataService, 
 		// Pro on load (NullReferenceException).
 		if raw, rerr := b.GetRawUnit(svc.ID); rerr == nil {
 			svc.EntityTypes, svc.EntitySets = publishedEntityTreeFromRaw(raw)
+			svc.Microflows = publishedMicroflowsFromRaw(raw)
 		}
 		out = append(out, svc)
 	}

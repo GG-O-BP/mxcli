@@ -249,6 +249,15 @@ func (w *Writer) serializePublishedODataService(svc *model.PublishedODataService
 	// statement (`grant access on odata service …`) and cannot be re-stated in
 	// the create script, so nothing in the script could put them back
 	// (mxcli-formula1 §26).
+	// Published microflows — OData actions. Mendix turns each into an
+	// ActionImport in $metadata; without them a parameterised resource has to be
+	// modelled as an entity set echoing its own arguments back as columns
+	// (mxcli-formula1 §47).
+	publishedMicroflows := bson.A{int32(3)}
+	for _, pm := range svc.Microflows {
+		publishedMicroflows = append(publishedMicroflows, serializePublishedMicroflow(pm))
+	}
+
 	allowedRoles := bson.A{int32(1)}
 	for _, name := range svc.AllowedModuleRoles {
 		allowedRoles = append(allowedRoles, name)
@@ -315,7 +324,7 @@ func (w *Writer) serializePublishedODataService(svc *model.PublishedODataService
 		// to resolve the second's (CE6585) — observed when comparing a
 		// Studio Pro-authored multi-entity service against ours.
 		{Key: "Enumerations", Value: bson.A{int32(3)}},
-		{Key: "Microflows", Value: bson.A{int32(3)}},
+		{Key: "Microflows", Value: publishedMicroflows},
 		{Key: "IncludeMetadataByDefault", Value: true},
 		{Key: "ReplaceIllegalChars", Value: false},
 		{Key: "SupportsGraphQL", Value: false},
@@ -564,4 +573,63 @@ func serializeChangeMode(mode string) bson.D {
 			{Key: "$Type", Value: "ODataPublish$ChangeNotSupported"},
 		}
 	}
+}
+
+// serializePublishedMicroflow serializes an ODataPublish$PublishedMicroflow.
+//
+// Property names come from the generated metamodel; the MicroflowParameter ref
+// is Module.Microflow.Param, the shape the published-REST writer already ships.
+// DataTypes$* elements are built by the same rules serializeMicroflowDataType
+// uses for a microflow's own return type.
+func serializePublishedMicroflow(pm *model.PublishedMicroflow) bson.D {
+	params := bson.A{int32(3)}
+	for _, p := range pm.Parameters {
+		params = append(params, serializePublishedMicroflowParameter(p))
+	}
+	return bson.D{
+		{Key: "$ID", Value: idToBsonBinary(generateUUID())},
+		{Key: "$Type", Value: "ODataPublish$PublishedMicroflow"},
+		{Key: "ExposedName", Value: pm.ExposedName},
+		{Key: "AlternativeExposedName", Value: ""},
+		{Key: "Microflow", Value: pm.Microflow},
+		{Key: "Parameters", Value: params},
+		{Key: "ReturnType", Value: serializeODataDataType(pm.ReturnTypeKind, pm.ReturnTypeRef)},
+		{Key: "Summary", Value: pm.Summary},
+		{Key: "Description", Value: pm.Description},
+	}
+}
+
+func serializePublishedMicroflowParameter(p *model.PublishedMicroflowParameter) bson.D {
+	return bson.D{
+		{Key: "$ID", Value: idToBsonBinary(generateUUID())},
+		{Key: "$Type", Value: "ODataPublish$PublishedMicroflowParameter"},
+		{Key: "ExposedName", Value: p.ExposedName},
+		{Key: "MicroflowParameter", Value: p.MicroflowParameter},
+		{Key: "DataType", Value: serializeODataDataType(p.DataTypeKind, p.DataTypeRef)},
+		{Key: "CanBeEmpty", Value: p.CanBeEmpty},
+		{Key: "Summary", Value: p.Summary},
+		{Key: "Description", Value: p.Description},
+	}
+}
+
+// serializeODataDataType builds a DataTypes$* element from a kind and, for the
+// three kinds that name something, its qualified name. Object/List carry
+// `Entity`, Enumeration carries `Enumeration` — verified against
+// serializeMicroflowDataType, which writes the same family for microflow return
+// types and is already proven in the build.
+func serializeODataDataType(kind, ref string) interface{} {
+	if kind == "" {
+		return nil
+	}
+	doc := bson.D{
+		{Key: "$ID", Value: idToBsonBinary(generateUUID())},
+		{Key: "$Type", Value: "DataTypes$" + kind + "Type"},
+	}
+	switch kind {
+	case "Object", "List":
+		return append(doc, bson.E{Key: "Entity", Value: ref})
+	case "Enumeration":
+		return append(doc, bson.E{Key: "Enumeration", Value: ref})
+	}
+	return doc
 }

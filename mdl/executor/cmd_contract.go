@@ -1211,8 +1211,15 @@ func applyExternalEntityFields(
 		ent.Creatable = entitySet.Insertable != nil && *entitySet.Insertable
 		ent.Deletable = entitySet.Deletable != nil && *entitySet.Deletable
 		ent.Updatable = false
-		ent.SkipSupported = true
-		ent.TopSupported = true
+		// Skip/Top follow the contract for the same reason Countable does. They
+		// were stamped true regardless, which made `TopSupported: No` on the
+		// PUBLISHING side unusable: the contract correctly said Bool="false", the
+		// consuming app said true, and the consumer failed to build with CE6630
+		// "'Seasons' is marked supports $top=False in the OData service, but True
+		// in the app". OData's own default is supported, so an unannotated set
+		// stays true (mxcli-formula1 §42).
+		ent.SkipSupported = entitySet.SkipSupported == nil || *entitySet.SkipSupported
+		ent.TopSupported = entitySet.TopSupported == nil || *entitySet.TopSupported
 		// CreateChangeLocally is deliberately NOT set. Unlike the capability flags
 		// above it cannot be derived from the service contract — it is a local
 		// modelling choice ("Allow creating and changing objects locally"), so

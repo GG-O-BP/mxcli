@@ -12,18 +12,28 @@
 // request time has to be stated up front, in the published metadata. These rules
 // check the statement against the microflow it names.
 //
-// Both fire on one provable condition — the microflow does not take a
-// System.HttpRequest parameter — because without the request it cannot see a
-// key, a $filter, a $top or a $skip at all. A microflow that does take the
-// request gets the benefit of the doubt: proving *which* options it parses would
-// need real analysis, and a rule that guesses is a rule people switch off.
+// MDL-ODATA02 (the KEY promise) fires on one provable condition — the microflow
+// does not take a System.HttpRequest parameter — because without the request it
+// cannot see a key at all.
 //
-// mxcli-formula1 §37 (the KEY promise) and §20 (capabilities Mendix does not
-// apply itself).
+// MDL-ODATA03 (paging) needs more than that, because the two concerns share one
+// parameter. Adding $Request to answer the KEY also silenced the paging rule
+// while nothing about the paging changed, which is a false negative exactly on a
+// half-fixed resource (mxcli-formula1 §42). So it asks whether the option is
+// *used*, not whether it could be: an OData query option is named `$top` /
+// `$skip` on the wire, so a microflow that implements one must spell it
+// somewhere. Silence is only reported when the whole reachable body is
+// readable — a call into a Java action, a JavaScript action, or a microflow this
+// script does not define makes the rule say nothing, since a rule that guesses
+// is a rule people switch off.
+//
+// mxcli-formula1 §37 (the KEY promise), §20 (capabilities Mendix does not apply
+// itself) and §42 (the shared-parameter false negative).
 package executor
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/mendixlabs/mxcli/mdl/ast"
@@ -63,13 +73,15 @@ func ValidateODataReadContract(prog *ast.Program) []linter.Violation {
 			// reference to one that already exists in the project is not
 			// evidence of anything, so say nothing.
 			decl, found := flows[strings.ToLower(mf)]
-			if !found || takesHTTPRequest(decl) {
+			if !found {
 				continue
 			}
 			where := fmt.Sprintf("publish entity %s as %q in %s",
 				e.Entity.String(), e.ExposedName, svc.Name.String())
-			out = append(out, keyPromiseViolations(where, e, mf)...)
-			out = append(out, capabilityViolations(where, e, mf)...)
+			if !takesHTTPRequest(decl) {
+				out = append(out, keyPromiseViolations(where, e, mf)...)
+			}
+			out = append(out, capabilityViolations(where, e, mf, decl, flows)...)
 		}
 	}
 	return out
@@ -110,32 +122,196 @@ func keyPromiseViolations(where string, e *ast.PublishedEntityDef, mf string) []
 }
 
 // capabilityViolations flags query options advertised to clients that the read
-// microflow cannot implement (MDL-ODATA03).
-func capabilityViolations(where string, e *ast.PublishedEntityDef, mf string) []linter.Violation {
+// microflow does not implement (MDL-ODATA03).
+//
+// An option is unimplemented when either the microflow cannot see the request at
+// all, or it can and never spells the option's name. The two cases share a rule
+// because they are the same defect to a client — a 200 carrying an unpaged
+// collection — but they read differently to an author, so they are worded apart.
+func capabilityViolations(where string, e *ast.PublishedEntityDef, mf string,
+	decl *ast.CreateMicroflowStmt, flows map[string]*ast.CreateMicroflowStmt) []linter.Violation {
+
 	// nil means "not specified", which publishes Mendix's default of true — so
 	// silence is a claim, and that is exactly what makes this worth flagging.
+	sees := takesHTTPRequest(decl)
+	ev := pagingEvidence(decl, flows)
+	if sees && ev.opaque {
+		// The microflow hands the request off to something this script cannot
+		// read. Say nothing rather than guess.
+		return nil
+	}
+
 	var claimed []string
-	if boolOrTrueAST(e.TopSupported) {
+	if boolOrTrueAST(e.TopSupported) && !(sees && ev.top) {
 		claimed = append(claimed, "TopSupported")
 	}
-	if boolOrTrueAST(e.SkipSupported) {
+	if boolOrTrueAST(e.SkipSupported) && !(sees && ev.skip) {
 		claimed = append(claimed, "SkipSupported")
 	}
 	if len(claimed) == 0 {
 		return nil
 	}
+
+	// The two readings differ in what the author has to look at: one is a missing
+	// parameter, the other a parameter that is there for a different purpose.
+	reason := fmt.Sprintf("%s never sees the request (no %s parameter)", mf, httpRequestType)
+	remedy := fmt.Sprintf("Either parse them from `$Request/Uri` — %s needs a `$Request: %s` parameter first — or declare",
+		mf, httpRequestType)
+	if sees {
+		reason = fmt.Sprintf("nothing in %s reads %s from `$Request/Uri`",
+			mf, strings.Join(quotedOptions(claimed), " or "))
+		remedy = "Either parse them from `$Request/Uri`, or declare"
+	}
+
 	return []linter.Violation{{
 		RuleID:   "MDL-ODATA03",
 		Severity: linter.SeverityWarning,
-		Message: fmt.Sprintf("%s: advertises %s, but %s never sees the request (no %s parameter), so no paging is applied",
-			where, strings.Join(claimed, " and "), mf, httpRequestType),
+		Message: fmt.Sprintf("%s: advertises %s, but %s, so no paging is applied",
+			where, strings.Join(claimed, " and "), reason),
 		Suggestion: fmt.Sprintf(
 			"Mendix applies no query options to a read-microflow resource — it returns exactly what the microflow returns — so these annotations describe %s, not the platform. "+
 				"A client asking for $top=5 gets the whole collection with a 200 and believes it received a page. "+
-				"Either parse them from `$Request/Uri`, or declare `TopSupported: No, SkipSupported: No`. "+
+				"%s `%s`. "+
 				"Declaring No is the read path's substitute for the 400 it cannot send: the read capability has no System.HttpResponse parameter (%s).",
-			mf, odataDocsCustomResponse),
+			mf, remedy, declineClause(claimed), odataDocsCustomResponse),
 	}}
+}
+
+// quotedOptions renders TopSupported/SkipSupported as the query options a client
+// actually sends, which is what the author has to grep the microflow for.
+func quotedOptions(claimed []string) []string {
+	out := make([]string, 0, len(claimed))
+	for _, c := range claimed {
+		out = append(out, "$"+strings.ToLower(strings.TrimSuffix(c, "Supported")))
+	}
+	return out
+}
+
+// declineClause renders the properties to set to No — only the ones flagged, so
+// a half-implemented resource is not told to withdraw the half that works.
+func declineClause(claimed []string) string {
+	parts := make([]string, 0, len(claimed))
+	for _, c := range claimed {
+		parts = append(parts, c+": No")
+	}
+	return strings.Join(parts, ", ")
+}
+
+// paging records what a read microflow was shown to do with the request.
+//
+// opaque is the escape hatch, and it outranks the other two: it means the
+// reachable body leaves what this script can read, so absence of evidence is not
+// evidence of absence.
+type paging struct {
+	top    bool
+	skip   bool
+	opaque bool
+}
+
+// pagingEvidence walks a microflow body — and, transitively, every microflow in
+// the same script that it calls — looking for the literal query option names.
+//
+// A microflow cannot implement `$top` without naming it: the option is spelled
+// that way on the wire, so extracting it means a `find`/`substring` against the
+// literal. That makes the presence of the text weak evidence of handling and its
+// absence strong evidence of the opposite — which is the direction this rule
+// needs, since it only ever reports the absence.
+func pagingEvidence(mf *ast.CreateMicroflowStmt, flows map[string]*ast.CreateMicroflowStmt) paging {
+	var ev paging
+	seen := map[string]bool{}
+	var visit func(*ast.CreateMicroflowStmt)
+	visit = func(m *ast.CreateMicroflowStmt) {
+		if m == nil {
+			return
+		}
+		key := strings.ToLower(m.Name.String())
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+
+		var callees []string
+		walkForPaging(reflect.ValueOf(m.Body), &ev, &callees)
+		for _, callee := range callees {
+			next, found := flows[strings.ToLower(callee)]
+			if !found {
+				// Defined elsewhere in the project (or not at all). Unreadable.
+				ev.opaque = true
+				continue
+			}
+			visit(next)
+		}
+	}
+	visit(mf)
+	return ev
+}
+
+// walkForPaging reflects over microflow statements collecting the option names
+// any string mentions, the calls that leave this script's view, and the calls
+// worth following.
+//
+// Reflection rather than a type switch per statement: MDL gains activity types
+// regularly, and a hand-written walker that misses one turns a false negative
+// into a false positive — the rule would report "nothing reads $top" about a body
+// it simply did not look at. Reflection covers new statement types, and new
+// nesting (loops, if-branches, error handlers), on the day they are added.
+func walkForPaging(v reflect.Value, ev *paging, callees *[]string) {
+	switch v.Kind() {
+	case reflect.Interface:
+		if v.IsNil() {
+			return
+		}
+		// Unwrap to the concrete value; the Ptr case below classifies it. Doing
+		// the type switch here too would count every statement twice.
+		walkForPaging(v.Elem(), ev, callees)
+	case reflect.Ptr:
+		if v.IsNil() {
+			return
+		}
+		switch s := v.Interface().(type) {
+		// Opaque code: a Java or JavaScript action could parse the URI in a
+		// language mxcli does not read, so its presence ends the analysis. A
+		// nanoflow is not indexed with the microflows, so it can never be
+		// followed — treat every one the same way.
+		case *ast.CallJavaActionStmt, *ast.CallJavaScriptActionStmt,
+			*ast.CallWebServiceStmt, *ast.CallNanoflowStmt:
+			ev.opaque = true
+		case *ast.CallMicroflowStmt:
+			*callees = append(*callees, s.MicroflowName.String())
+		}
+		walkForPaging(v.Elem(), ev, callees)
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < v.Len(); i++ {
+			walkForPaging(v.Index(i), ev, callees)
+		}
+	case reflect.Map:
+		for _, k := range v.MapKeys() {
+			walkForPaging(v.MapIndex(k), ev, callees)
+		}
+	case reflect.Struct:
+		t := v.Type()
+		for i := 0; i < v.NumField(); i++ {
+			// Prose about the microflow is not behaviour of the microflow. An
+			// @annotation reading "$top is not applied here" must not be read as
+			// applying it.
+			switch t.Field(i).Name {
+			case "Annotations", "Documentation", "Comment":
+				continue
+			}
+			if !t.Field(i).IsExported() {
+				continue
+			}
+			walkForPaging(v.Field(i), ev, callees)
+		}
+	case reflect.String:
+		s := strings.ToLower(v.String())
+		if strings.Contains(s, "$top") {
+			ev.top = true
+		}
+		if strings.Contains(s, "$skip") {
+			ev.skip = true
+		}
+	}
 }
 
 // microflowsByName indexes the microflows this script defines, lower-cased.

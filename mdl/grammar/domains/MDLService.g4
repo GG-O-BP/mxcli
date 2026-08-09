@@ -145,7 +145,7 @@ createODataServiceStatement
     : ODATA SERVICE qualifiedName
       LPAREN odataPropertyAssignment (COMMA odataPropertyAssignment)* RPAREN
       odataAuthenticationClause?
-      (LBRACE publishEntityBlock* RBRACE)?
+      (LBRACE (publishEntityBlock | publishMicroflowBlock)* RBRACE)?
     ;
 
 odataPropertyValue
@@ -181,6 +181,19 @@ odataAuthType
 publishEntityBlock
     : PUBLISH ENTITY qualifiedName (AS STRING_LITERAL)?
       (LPAREN odataPropertyAssignment (COMMA odataPropertyAssignment)* RPAREN)?
+      exposeClause?
+      SEMICOLON?
+    ;
+
+// An OData action/function: a published microflow. Mendix exposes it in
+// $metadata as an ActionImport, so a client can POST arguments to it rather
+// than reading them back as echoed columns of an entity set.
+//
+// Parameter DataTypes and the return type are NOT restated here — they are read
+// off the microflow, which already declares them. Restating would let the two
+// drift, and Studio Pro derives them the same way.
+publishMicroflowBlock
+    : PUBLISH MICROFLOW qualifiedName (AS STRING_LITERAL)?
       exposeClause?
       SEMICOLON?
     ;

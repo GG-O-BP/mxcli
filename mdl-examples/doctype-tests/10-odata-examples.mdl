@@ -435,6 +435,47 @@ revoke access on odata service OdTest.CustomerAPI from OdTest.user;
 /
 
 /**
+ * Level 8.6b: OData action — publish a microflow
+ *
+ * Mendix exposes a published microflow in $metadata as an ActionImport, so a
+ * client can POST arguments to it. Without one, a parameterised resource has to
+ * be modelled as an entity set that carries its own arguments as attributes and
+ * echoes them back on every row: Mendix validates $filter against the published
+ * metadata before the read microflow runs, so an argument that is not an
+ * attribute is answered 400 and never reaches the microflow.
+ *
+ * Parameter data types and the return type are NOT written here. They are read
+ * off the microflow, which already declares them — the same thing Studio Pro
+ * does, and the only arrangement in which the two cannot drift.
+ */
+CREATE MICROFLOW OdTest.RecordNote ($Note: string, $Amount: integer)
+  RETURNS Boolean AS $Ok
+BEGIN
+  declare $Ok Boolean = true;
+  RETURN $Ok;
+END;
+/
+
+create or modify odata service OdTest.ActionApi (
+  path: 'odata/actions/',
+  version: '1.0.0',
+  ODataVersion: OData4,
+  namespace: 'OdTest.Actions',
+  ServiceName: 'Action Service'
+)
+authentication basic
+{
+  -- An action alongside no entity sets at all is legitimate.
+  publish microflow OdTest.RecordNote as 'RecordNote'
+    expose ( Note as 'note', Amount as 'amount' (CanBeEmpty) );
+};
+/
+
+-- DESCRIBE round-trips the block, so this output is re-executable.
+describe odata service OdTest.ActionApi;
+/
+
+/**
  * Level 8.7c: A modify must NOT revoke the grants made above.
  *
  * The service document is serialized wholesale, so a writer that omits
@@ -615,9 +656,12 @@ end;
 
 create non-persistent entity OdTest.LiveRow ( RowKey: string(60), Label: string(200) );
 
--- (a) Take the request and honour it. mxcli cannot tell WHICH options a
---     microflow parses, so taking $Request is enough to earn its silence — the
---     branch key -> filter -> default is the author's job.
+-- (a) Take the request and honour it. Taking $Request answers the KEY concern
+--     (MDL-ODATA02) — but it does NOT answer the paging one, because the two
+--     share a parameter: adding it for the key would otherwise silence
+--     MDL-ODATA03 while nothing about the paging changed. So the paging rule
+--     looks for the option NAMES in the body, on the reasoning that a query
+--     option spelled `$top` on the wire has to be spelled `$top` to be read.
 create microflow OdTest.Read_LiveRows (
   $Request:  System.HttpRequest,
   $Response: System.ODataResponse
@@ -627,6 +671,14 @@ begin
   -- $Request/Uri carries the whole query string, URL-encoded:
   --   ?$filter=rowKey eq '1036-c'   <- a client re-reading a row it holds
   --   ?$top=20&$skip=40             <- paging the client believes works
+  --
+  -- Branching key -> filter -> page is the author's job; the lines below only
+  -- locate the options. Note they are inside the expression, not a comment:
+  -- prose naming `$top` is documentation, and the rule does not read it as
+  -- implementation.
+  declare $Uri string = $Request/Uri;
+  declare $TopAt integer = find($Uri, '$top=');
+  declare $SkipAt integer = find($Uri, '$skip=');
   $Rows = create list of OdTest.LiveRow;
   return $Rows;
 end;
