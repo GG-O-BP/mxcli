@@ -228,6 +228,25 @@ headless so it is not rebuilt for them (that would cost ~30 s on a loop whose po
 is two seconds) — the run prints a note instead, and a subsequent `run --local`
 restores it.
 
+### Screenshots when the app has an https root URL (`--hub`)
+
+Under `--hub` the runtime boots with the public **https** root URL, so it marks
+its session cookies `Secure` and prefixes them `__Host-`. The screenshot login
+therefore declares the real scheme with `X-Forwarded-Proto: http`, which on
+Mendix 10.24+ takes precedence over `ApplicationRootUrl` and drops both — so the
+captured session is usable over http.
+
+Measured on 11.12.1, `__Host-XASSESSIONID (secure)` becomes `XASSESSIONID`
+(not secure). Real users still arrive over https through the hub without that
+header and still get `Secure` cookies.
+
+One correction to a common assumption: this is **not** needed for `127.0.0.1`.
+Loopback is a *trustworthy origin*, so Chromium accepts `Secure` cookies there
+and an app with an https root URL renders and logs in fine over
+`http://127.0.0.1:8080`. It matters when the browser reaches the app from a
+non-loopback host — a container name, a LAN address — where the origin is not
+trustworthy and the session cannot be held at all.
+
 ## Pixel-perfect page loop
 
 `--screenshot` captures a PNG (default `<projectDir>/.mxcli/run-local.png`) after boot
