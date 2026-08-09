@@ -506,18 +506,19 @@ create or replace navigation Responsive
   login page Administration.Login
   not found page MyModule.Custom404
   menu (
-    menu item 'Home' page MyModule.Home_Web icon 'Atlas_Core.Atlas.home';
-    menu 'Admin' icon 'Atlas_Core.Atlas.user' (
+    menu item 'Home' page MyModule.Home_Web icon Atlas_Core.Atlas.home;
+    menu 'Admin' icon Atlas_Core.Atlas."align-center" (
       menu item 'Users' page Administration.Account_Overview;
     );
   );
 ```
 
-`icon` is optional and names an entry in an **icon collection** —
+`icon` is optional and is a **qualified name** into an **icon collection** —
 `Atlas_Core.Atlas`, `Atlas_Core.Atlas_Filled`, `Atlas_Core.Atlas_Styling`, or one
-of your own. It is quoted because Atlas icon names contain hyphens
-(`align-center`). List the available names with `describe icon collection
-Atlas_Core.Atlas`.
+of your own — written like any other model reference. Hyphenated Atlas names
+(`align-center`) are double-quoted, the same way a keyword-colliding name is:
+`Atlas_Core.Atlas."align-center"`. List the available names with `describe icon
+collection Atlas_Core.Atlas`.
 
 Studio Pro can also set a *glyph* icon (a numeric character code) or an *image*
 icon (pointing into an image collection). Those are different elements; MDL

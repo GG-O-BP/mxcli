@@ -89,20 +89,20 @@ create or replace navigation Responsive
   );
 
 -- ============================================================================
--- ICON — a menu item's icon, named as Module.IconCollection.icon
--- The name is quoted because Atlas icon names contain hyphens. It resolves to
--- an icon collection (Atlas_Core.Atlas, Atlas_Core.Atlas_Filled, …), not an
--- image collection.
+-- ICON — a menu item's icon, as a qualified name into an icon collection
+-- (Atlas_Core.Atlas, Atlas_Core.Atlas_Filled, …), not an image collection.
+-- Written like any other model reference. Hyphenated Atlas names are
+-- double-quoted, the same way a keyword-colliding name is.
 -- ============================================================================
 
 create or replace navigation Responsive
   home page NavTest.NavTest_Home
   login page Administration.login
   menu (
-    menu item 'Home' page NavTest.NavTest_Home icon 'Atlas_Core.Atlas.home';
-    menu 'Admin' icon 'Atlas_Core.Atlas.user' (
+    menu item 'Home' page NavTest.NavTest_Home icon Atlas_Core.Atlas.home;
+    menu 'Admin' icon Atlas_Core.Atlas.user (
       menu item 'Users' page Administration.Account_Overview
-        icon 'Atlas_Core.Atlas_Filled.user';
+        icon Atlas_Core.Atlas."list-bullets";
     );
   );
 

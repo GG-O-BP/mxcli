@@ -373,8 +373,9 @@ func menuItemIconMDL(item *types.NavMenuItem) string {
 	if item.Icon == "" || !strings.HasSuffix(item.IconType, "IconCollectionIcon") {
 		return ""
 	}
-	return fmt.Sprintf(" icon '%s'", item.Icon)
+	return " icon " + quoteQualifiedName(item.Icon)
 }
+
 
 // menuItemIconNote flags an icon DESCRIBE cannot round-trip, so re-running the
 // output loses it visibly rather than silently. CREATE NAVIGATION writes only

@@ -87,23 +87,25 @@ DISCONNECT;`,
   [LOGIN PAGE Module.LoginPage]
   [NOT FOUND PAGE Module.Custom404]
   [MENU (
-    MENU ITEM 'Label' PAGE Module.Page [ICON 'Module.IconCollection.name'];
-    MENU 'Group' [ICON 'Module.IconCollection.name'] ( ... );
+    MENU ITEM 'Label' PAGE Module.Page [ICON Module.IconCollection.Name];
+    MENU 'Group' [ICON Module.IconCollection.Name] ( ... );
   )];
 
--- ICON names an entry in an ICON COLLECTION (Atlas_Core.Atlas,
--- Atlas_Core.Atlas_Filled, Atlas_Core.Atlas_Styling, or your own). It is
--- quoted because Atlas icon names contain hyphens. Browse the available
--- names with:  SHOW ICON COLLECTION  /  DESCRIBE ICON COLLECTION Module.Name`,
+-- ICON is a qualified name into an ICON COLLECTION (Atlas_Core.Atlas,
+-- Atlas_Core.Atlas_Filled, Atlas_Core.Atlas_Styling, or your own) -- a model
+-- reference, not a string. Hyphenated Atlas names are double-quoted:
+--   ICON Atlas_Core.Atlas."align-center"
+-- Browse the available names with:
+--   SHOW ICON COLLECTION  /  DESCRIBE ICON COLLECTION Module.Name`,
 		Example: `CREATE OR REPLACE NAVIGATION Responsive
   HOME PAGE MyModule.Home_Web
   HOME PAGE MyModule.AdminDashboard FOR Administration.Administrator
   LOGIN PAGE Administration.Login
   MENU (
-    MENU ITEM 'Home' PAGE MyModule.Home_Web ICON 'Atlas_Core.Atlas.home';
-    MENU 'Orders' ICON 'Atlas_Core.Atlas.shopping-cart' (
-      MENU ITEM 'All Orders' PAGE Orders.Order_Overview ICON 'Atlas_Core.Atlas.list-bullets';
-      MENU ITEM 'New Order' PAGE Orders.Order_New ICON 'Atlas_Core.Atlas.add';
+    MENU ITEM 'Home' PAGE MyModule.Home_Web ICON Atlas_Core.Atlas.home;
+    MENU 'Orders' ICON Atlas_Core.Atlas."shopping-cart" (
+      MENU ITEM 'All Orders' PAGE Orders.Order_Overview ICON Atlas_Core.Atlas."list-bullets";
+      MENU ITEM 'New Order' PAGE Orders.Order_New ICON Atlas_Core.Atlas.add;
     );
   );`,
 		SeeAlso: []string{"navigation.show"},
