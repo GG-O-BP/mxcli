@@ -28,5 +28,6 @@ type NavMenuItemDef struct {
 	Caption   string           // from STRING_LITERAL
 	Page      *QualifiedName   // PAGE target
 	Microflow *QualifiedName   // MICROFLOW target
+	Icon      string           // ICON 'Module.Collection.name', empty for none
 	Items     []NavMenuItemDef // Sub-items (for MENU 'caption' (...))
 }

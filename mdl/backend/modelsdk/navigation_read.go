@@ -14,6 +14,7 @@ import (
 	genPages "github.com/mendixlabs/mxcli/modelsdk/gen/pages"
 	genTexts "github.com/mendixlabs/mxcli/modelsdk/gen/texts"
 	"github.com/mendixlabs/mxcli/modelsdk/mprread"
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 // GetNavigation reads the Navigation$NavigationDocument unit and converts it to
@@ -170,6 +171,7 @@ func navMenuItemFromGen(el element.Element) *types.NavMenuItem {
 	item := &types.NavMenuItem{
 		Caption: textOf(mi.Caption()),
 	}
+	item.IconType, item.Icon = menuIconOf(mi.Icon())
 	resolveMenuAction(item, mi.Action())
 	for _, subEl := range mi.ItemsItems() {
 		if sub := navMenuItemFromGen(subEl); sub != nil {
@@ -180,6 +182,35 @@ func navMenuItemFromGen(el element.Element) *types.NavMenuItem {
 		return nil
 	}
 	return item
+}
+
+// menuIconOf reports a menu item's icon storage $Type and, for the two variants
+// that carry one, its qualified image name. Forms$GlyphIcon has a numeric Code
+// and no name, so it yields a type with an empty name — which is what keeps
+// DESCRIBE from emitting an ICON clause it cannot faithfully round-trip.
+//
+// The name is read off the element's raw BSON rather than a typed accessor,
+// because the variants decode inconsistently: an unregistered type arrives as a
+// bare *element.Base while a registered one arrives as a generated struct that
+// merely embeds it. Asserting on *element.Base therefore silently returns
+// nothing for exactly the registered variants — which is what made DESCRIBE drop
+// every Atlas icon under this engine while the legacy engine printed them. Match
+// on the Raw() method instead, which both shapes satisfy.
+func menuIconOf(icon element.Element) (typeName, image string) {
+	if icon == nil {
+		return "", ""
+	}
+	typeName = icon.TypeName()
+	raw, ok := icon.(interface{ Raw() bson.Raw })
+	if !ok {
+		return typeName, ""
+	}
+	if v, err := raw.Raw().LookupErr("Image"); err == nil {
+		if s, ok := v.StringValueOK(); ok {
+			image = s
+		}
+	}
+	return typeName, image
 }
 
 // resolveMenuAction sets the action type / target on a NavMenuItem from a gen

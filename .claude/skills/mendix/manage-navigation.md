@@ -84,6 +84,45 @@ create or replace navigation Responsive
   );
 ```
 
+### Menu Icons
+
+Both `menu item` and `menu 'caption' (...)` take an optional `icon`, naming an
+entry in an **icon collection**:
+
+```sql
+create or replace navigation Responsive
+  home page MyModule.Home_Web
+  menu (
+    menu item 'Home' page MyModule.Home_Web icon 'Atlas_Core.Atlas.home';
+    menu 'Orders' icon 'Atlas_Core.Atlas.shopping-cart' (
+      menu item 'All Orders' page Orders.Order_Overview
+        icon 'Atlas_Core.Atlas.list-bullets';
+    );
+  );
+```
+
+The name is **quoted** — Atlas icon names contain hyphens (`align-center`,
+`list-bullets`), so they are not bare identifiers. Atlas_Core ships three
+collections: `Atlas` (outline), `Atlas_Filled`, and `Atlas_Styling`. List what
+is actually available in your project rather than guessing a name:
+
+```sql
+show icon collection;
+describe icon collection Atlas_Core.Atlas;
+```
+
+**Only the icon-collection form is writable.** Studio Pro can also attach a
+*glyph* icon (a numeric character code) or an *image* icon (pointing into an
+image collection). Those are different elements with different fields, so MDL
+does not write them — and `describe navigation` reports them as a comment rather
+than emitting an `icon` clause that would silently convert one into the other on
+replay:
+
+```
+menu item 'Close' page MyModule.Close;
+-- icon System.Images.Close (Forms$ImageIcon) is not reproducible by CREATE NAVIGATION; set it in Studio Pro
+```
+
 ### Clear the Menu
 
 An empty `menu ()` block removes all menu items:
@@ -209,4 +248,5 @@ create or replace navigation Responsive
 - [ ] Role references in `for` clauses are fully qualified (`Module.Role`)
 - [ ] Every `menu item` and `menu 'caption' (...)` ends with `;`
 - [ ] Sub-menu items are wrapped in `menu 'caption' ( ... );`
+- [ ] `icon` names are quoted and exist — check with `describe icon collection Module.Name`, do not guess
 - [ ] Use `describe navigation` to verify changes after applying

@@ -227,7 +227,7 @@ func navMenuItemBson(mi types.NavMenuItemSpec) bson.D {
 		{Key: "Action", Value: navMenuAction(mi)},
 		{Key: "AlternativeText", Value: nil},
 		{Key: "Caption", Value: navCaptionBson(mi.Caption)},
-		{Key: "Icon", Value: nil},
+		{Key: "Icon", Value: navMenuIconBson(mi.Icon)},
 	}
 	subItems := bson.A{int32(1)}
 	for _, sub := range mi.Items {
@@ -235,6 +235,20 @@ func navMenuItemBson(mi types.NavMenuItemSpec) bson.D {
 	}
 	item = append(item, bson.E{Key: "Items", Value: subItems})
 	return item
+}
+
+// navMenuIconBson mirrors sdk/mpr's buildMenuIconBson: the storage name is
+// Forms$IconCollectionIcon (not the metamodel's Pages$…), and only that variant
+// is emitted. See the comment there for why GlyphIcon/ImageIcon are excluded.
+func navMenuIconBson(icon string) interface{} {
+	if icon == "" {
+		return nil
+	}
+	return bson.D{
+		{Key: "$ID", Value: navID()},
+		{Key: "$Type", Value: "Forms$IconCollectionIcon"},
+		{Key: "Image", Value: icon},
+	}
 }
 
 func navCaptionBson(text string) bson.D {

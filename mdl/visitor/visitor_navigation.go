@@ -86,13 +86,21 @@ func (b *Builder) processNavigationClause(stmt *ast.AlterNavigationStmt, ctx *pa
 func buildNavMenuItemDef(ctx parser.INavMenuItemDefContext) ast.NavMenuItemDef {
 	c := ctx.(*parser.NavMenuItemDefContext)
 
+	// Both alternatives put the caption first and the optional ICON string
+	// second, so positional access is unambiguous.
+	literals := c.AllSTRING_LITERAL()
 	caption := ""
-	if sl := c.STRING_LITERAL(); sl != nil {
-		caption = unquoteString(sl.GetText())
+	if len(literals) > 0 {
+		caption = unquoteString(literals[0].GetText())
+	}
+	icon := ""
+	if c.ICON() != nil && len(literals) > 1 {
+		icon = unquoteString(literals[1].GetText())
 	}
 
 	item := ast.NavMenuItemDef{
 		Caption: caption,
+		Icon:    icon,
 	}
 
 	// The grammar uses a single qualifiedName for either PAGE or MICROFLOW target

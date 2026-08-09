@@ -506,12 +506,23 @@ create or replace navigation Responsive
   login page Administration.Login
   not found page MyModule.Custom404
   menu (
-    menu item 'Home' page MyModule.Home_Web;
-    menu 'Admin' (
+    menu item 'Home' page MyModule.Home_Web icon 'Atlas_Core.Atlas.home';
+    menu 'Admin' icon 'Atlas_Core.Atlas.user' (
       menu item 'Users' page Administration.Account_Overview;
     );
   );
 ```
+
+`icon` is optional and names an entry in an **icon collection** —
+`Atlas_Core.Atlas`, `Atlas_Core.Atlas_Filled`, `Atlas_Core.Atlas_Styling`, or one
+of your own. It is quoted because Atlas icon names contain hyphens
+(`align-center`). List the available names with `describe icon collection
+Atlas_Core.Atlas`.
+
+Studio Pro can also set a *glyph* icon (a numeric character code) or an *image*
+icon (pointing into an image collection). Those are different elements; MDL
+writes only the icon-collection form, and `describe navigation` marks the other
+two with a comment instead of emitting an `icon` clause that would convert them.
 
 ## Project Settings
 

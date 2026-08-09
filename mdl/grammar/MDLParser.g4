@@ -287,9 +287,11 @@ navigationClause
     | MENU_KW LPAREN navMenuItemDef* RPAREN
     ;
 
+// The icon is a STRING_LITERAL, not a qualifiedName: Atlas icon names carry
+// hyphens (Atlas_Core.Atlas.align-center), which IDENTIFIER cannot lex.
 navMenuItemDef
-    : MENU_KW ITEM STRING_LITERAL ((PAGE qualifiedName) | (MICROFLOW qualifiedName))? SEMICOLON?
-    | MENU_KW STRING_LITERAL LPAREN navMenuItemDef* RPAREN SEMICOLON?
+    : MENU_KW ITEM STRING_LITERAL ((PAGE qualifiedName) | (MICROFLOW qualifiedName))? (ICON STRING_LITERAL)? SEMICOLON?
+    | MENU_KW STRING_LITERAL (ICON STRING_LITERAL)? LPAREN navMenuItemDef* RPAREN SEMICOLON?
     ;
 
 dropStatement

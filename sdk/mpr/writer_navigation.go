@@ -253,7 +253,7 @@ func buildMenuItemBson(mi NavMenuItemSpec) bson.D {
 		{Key: "Action", Value: buildMenuAction(mi)},
 		{Key: "AlternativeText", Value: nil},
 		{Key: "Caption", Value: buildCaptionBson(mi.Caption)},
-		{Key: "Icon", Value: nil},
+		{Key: "Icon", Value: buildMenuIconBson(mi.Icon)},
 	}
 
 	// Sub-items
@@ -264,6 +264,33 @@ func buildMenuItemBson(mi NavMenuItemSpec) bson.D {
 	item = append(item, bson.E{Key: "Items", Value: subItems})
 
 	return item
+}
+
+// buildMenuIconBson builds a menu item's Icon, or nil when none is set.
+//
+// The metamodel calls this Pages$IconCollectionIcon, but the storage name is
+// Forms$IconCollectionIcon — the same "Form was the original term for Page"
+// rename CLAUDE.md documents for ShowFormAction. Verified against a Studio
+// Pro-authored navigation document (ako/mxcli-ledger), whose menu icons are all
+// Forms$IconCollectionIcon{Image: "Atlas_Core.Atlas.align-center"}, and matching
+// the widget icon path already proven in issue #602.
+//
+// Two sibling variants exist in the same document — Forms$GlyphIcon{Code: int}
+// and Forms$ImageIcon{Image: QN} — and are deliberately NOT emitted here. Both
+// carry a different payload shape, and ImageIcon's qualified name is
+// indistinguishable from an IconCollectionIcon's without resolving which
+// collection document it lands in. Guessing between polymorphic variants is the
+// failure mode that produces a document mxbuild accepts and Studio Pro cannot
+// open.
+func buildMenuIconBson(icon string) interface{} {
+	if icon == "" {
+		return nil
+	}
+	return bson.D{
+		{Key: "$ID", Value: idToBsonBinary(generateUUID())},
+		{Key: "$Type", Value: "Forms$IconCollectionIcon"},
+		{Key: "Image", Value: icon},
+	}
 }
 
 // buildCaptionBson builds a Texts$Text BSON document with a single en_US translation.

@@ -46,11 +46,17 @@ type NavRoleBasedHome struct {
 
 // NavMenuItem is a recursive navigation menu entry.
 type NavMenuItem struct {
-	Caption    string         `json:"caption"`
-	Page       string         `json:"page,omitempty"`
-	Microflow  string         `json:"microflow,omitempty"`
-	ActionType string         `json:"actionType,omitempty"`
-	Items      []*NavMenuItem `json:"items,omitempty"`
+	Caption    string `json:"caption"`
+	Page       string `json:"page,omitempty"`
+	Microflow  string `json:"microflow,omitempty"`
+	ActionType string `json:"actionType,omitempty"`
+	// Icon is the qualified name an icon-collection or image icon points at.
+	// Empty for no icon and for a glyph icon, which carries a numeric Code
+	// instead. IconType keeps the storage $Type so a reader can tell the three
+	// apart — DESCRIBE only round-trips Forms$IconCollectionIcon.
+	Icon     string         `json:"icon,omitempty"`
+	IconType string         `json:"iconType,omitempty"`
+	Items    []*NavMenuItem `json:"items,omitempty"`
 }
 
 // NavOfflineEntity declares offline sync rules for an entity.
@@ -81,5 +87,8 @@ type NavMenuItemSpec struct {
 	Caption   string
 	Page      string
 	Microflow string
-	Items     []NavMenuItemSpec
+	// Icon is a qualified icon-collection name (Atlas_Core.Atlas.home). Empty
+	// means no icon, which serializes as a null Icon.
+	Icon  string
+	Items []NavMenuItemSpec
 }

@@ -79,7 +79,7 @@ DISCONNECT;`,
 		Summary: "Create or replace a navigation profile with home pages, menus, and login page",
 		Keywords: []string{
 			"create navigation", "replace navigation", "home page",
-			"login page", "not found page", "menu item",
+			"login page", "not found page", "menu item", "menu icon",
 		},
 		Syntax: `CREATE OR REPLACE NAVIGATION <profile>
   HOME PAGE Module.Page
@@ -87,18 +87,23 @@ DISCONNECT;`,
   [LOGIN PAGE Module.LoginPage]
   [NOT FOUND PAGE Module.Custom404]
   [MENU (
-    MENU ITEM 'Label' PAGE Module.Page;
-    MENU 'Group' ( ... );
-  )];`,
+    MENU ITEM 'Label' PAGE Module.Page [ICON 'Module.IconCollection.name'];
+    MENU 'Group' [ICON 'Module.IconCollection.name'] ( ... );
+  )];
+
+-- ICON names an entry in an ICON COLLECTION (Atlas_Core.Atlas,
+-- Atlas_Core.Atlas_Filled, Atlas_Core.Atlas_Styling, or your own). It is
+-- quoted because Atlas icon names contain hyphens. Browse the available
+-- names with:  SHOW ICON COLLECTION  /  DESCRIBE ICON COLLECTION Module.Name`,
 		Example: `CREATE OR REPLACE NAVIGATION Responsive
   HOME PAGE MyModule.Home_Web
   HOME PAGE MyModule.AdminDashboard FOR Administration.Administrator
   LOGIN PAGE Administration.Login
   MENU (
-    MENU ITEM 'Home' PAGE MyModule.Home_Web;
-    MENU 'Orders' (
-      MENU ITEM 'All Orders' PAGE Orders.Order_Overview;
-      MENU ITEM 'New Order' PAGE Orders.Order_New;
+    MENU ITEM 'Home' PAGE MyModule.Home_Web ICON 'Atlas_Core.Atlas.home';
+    MENU 'Orders' ICON 'Atlas_Core.Atlas.shopping-cart' (
+      MENU ITEM 'All Orders' PAGE Orders.Order_Overview ICON 'Atlas_Core.Atlas.list-bullets';
+      MENU ITEM 'New Order' PAGE Orders.Order_New ICON 'Atlas_Core.Atlas.add';
     );
   );`,
 		SeeAlso: []string{"navigation.show"},
