@@ -1007,20 +1007,7 @@ func createNavigationAssociations(
 	// nav-property key relies on RemoteParentNavigationProperty, which the
 	// legacy read preserves; the modelsdk read does not, so the natural
 	// association name (== nav-property name) is the fallback skip signal.
-	existingAssocs := make(map[assocKey]bool)
-	existingNav := make(map[assocKey]bool)
-	for _, a := range dm.Associations {
-		// Find parent entity name for this association
-		for _, ent := range dm.Entities {
-			if ent.ID == a.ParentID {
-				existingAssocs[assocKey{ent.Name, a.Name}] = true
-				if a.RemoteParentNavigationProperty != "" {
-					existingNav[assocKey{ent.Name, a.RemoteParentNavigationProperty}] = true
-				}
-				break
-			}
-		}
-	}
+	existingAssocs, existingNav := indexExistingAssociations(dm)
 
 	count := 0
 	for _, schema := range doc.Schemas {
@@ -1132,6 +1119,41 @@ func createNavigationAssociations(
 		}
 	}
 	return count
+}
+
+// indexExistingAssociations builds the two lookup tables the re-import dedup
+// needs, both keyed by (parent entity name, name):
+//
+//   - byName — the association's own name.
+//   - byNav  — the OData navigation property it was generated from.
+//
+// byNav is the one that matters, and it is not a convenience. Association names
+// are unique per MODULE, so the second entity with a `season` nav property gets
+// `season_2`. Such an association can never match itself by name, so without
+// byNav a re-import recreates it — computing a fresh suffix each time, two more
+// per run, unbounded and invisible to `mx check` (mxcli-formula1 §50).
+//
+// byNav is only populated for associations that carry
+// RemoteParentNavigationProperty, which is why the modelsdk reader must read the
+// OData source back; dropping it there silently reduced this to the name match.
+func indexExistingAssociations(dm *domainmodel.DomainModel) (byName, byNav map[assocKey]bool) {
+	byName = make(map[assocKey]bool)
+	byNav = make(map[assocKey]bool)
+	parentName := make(map[model.ID]string, len(dm.Entities))
+	for _, ent := range dm.Entities {
+		parentName[ent.ID] = ent.Name
+	}
+	for _, a := range dm.Associations {
+		p, ok := parentName[a.ParentID]
+		if !ok {
+			continue
+		}
+		byName[assocKey{p, a.Name}] = true
+		if a.RemoteParentNavigationProperty != "" {
+			byNav[assocKey{p, a.RemoteParentNavigationProperty}] = true
+		}
+	}
+	return byName, byNav
 }
 
 // uniqueAssocName returns a Mendix-safe association name for an OData nav
