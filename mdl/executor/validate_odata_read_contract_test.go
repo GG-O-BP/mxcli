@@ -98,9 +98,15 @@ func TestODataReadContract_SilentWhenTheMicroflowSeesTheRequest(t *testing.T) {
 	}
 }
 
-// An honest contract — no KEY, capabilities declared off — is the other way to
-// be correct, and is the only one available to a microflow that cannot parse a
-// URI. It must be silent, or the rule punishes the fix it recommends.
+// Declining the query options is the one thing a URI-blind microflow CAN do
+// honestly, and the rule must stay silent for it — otherwise it punishes the fix
+// it recommends.
+//
+// The fixture omits the KEY only to isolate MDL-ODATA03 from MDL-ODATA02. Do not
+// read that as a supported shape: Mendix requires a published entity to have a
+// key (CE6585 "Published entity must have a key defined"), so a real resource
+// always declares one and must therefore answer the lookup. Query options are
+// declinable; the key is not.
 func TestODataReadContract_SilentWhenTheContractIsHonest(t *testing.T) {
 	ids := odataReadRuleIDs(t, readContractScript(
 		"", ",\n    Countable: false, TopSupported: false, SkipSupported: false", "K as 'k'"))
