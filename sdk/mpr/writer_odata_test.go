@@ -457,3 +457,72 @@ func TestSerializePublishedODataService_EmptyRolesStillWritesTheField(t *testing
 		t.Errorf("expected the bare marker and no grants, got %v", arr)
 	}
 }
+
+// The query-option annotations were hardcoded true, so `publish entity …
+// (TopSupported: No)` parsed, described back as No, and published as Yes.
+//
+// For a microflow-backed resource this claim is load-bearing rather than
+// decorative: Mendix applies no query options itself, so the annotation is the
+// only thing a client has to go on — and a client that believes $top works, when
+// nothing implements it, silently reads a whole collection as though it were a
+// page (mxcli-formula1 §20).
+func TestSerializePublishedODataService_HonoursQueryOptionOptOut(t *testing.T) {
+	no := false
+	yes := true
+	w := &Writer{}
+	svc := &model.PublishedODataService{
+		BaseElement: model.BaseElement{ID: "svc-qo"},
+		Name:        "LiveAPI",
+		EntitySets: []*model.PublishedEntitySet{
+			{
+				BaseElement:    model.BaseElement{ID: "es-off"},
+				ExposedName:    "Drivers",
+				EntityTypeName: "M.Driver",
+				Countable:      &no,
+				SkipSupported:  &no,
+				TopSupported:   &no,
+			},
+			{
+				BaseElement:    model.BaseElement{ID: "es-mixed"},
+				ExposedName:    "Races",
+				EntityTypeName: "M.Race",
+				Countable:      &yes,
+				// SkipSupported/TopSupported unspecified: Mendix's default of true.
+			},
+		},
+	}
+
+	data, err := w.serializePublishedODataService(svc)
+	if err != nil {
+		t.Fatalf("serialize failed: %v", err)
+	}
+	var raw map[string]any
+	if err := bson.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+
+	sets := extractBsonArray(raw["EntitySets"])
+	if len(sets) != 2 {
+		t.Fatalf("expected 2 entity sets, got %d", len(sets))
+	}
+	opts := func(i int) map[string]any {
+		set, _ := sets[i].(map[string]any)
+		qo, _ := set["QueryOptions"].(map[string]any)
+		if qo == nil {
+			t.Fatalf("entity set %d has no QueryOptions", i)
+		}
+		return qo
+	}
+
+	for _, key := range []string{"Countable", "SkipSupported", "TopSupported"} {
+		if v, _ := opts(0)[key].(bool); v {
+			t.Errorf("Drivers.%s = true, but the author said No — mxcli is advertising a capability nothing implements", key)
+		}
+	}
+	// Unspecified must still mean Mendix's default, not false.
+	for _, key := range []string{"Countable", "SkipSupported", "TopSupported"} {
+		if v, _ := opts(1)[key].(bool); !v {
+			t.Errorf("Races.%s = false; unspecified must keep Mendix's default of true", key)
+		}
+	}
+}

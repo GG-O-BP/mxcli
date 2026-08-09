@@ -323,6 +323,10 @@ func (w *Writer) serializePublishedODataService(svc *model.PublishedODataService
 	return marshalUnitIDFirst(doc)
 }
 
+// boolOrTrue resolves a tri-state query option: nil keeps Mendix's default of
+// true, and only an explicit false turns the capability off.
+func boolOrTrue(p *bool) bool { return p == nil || *p }
+
 // serializePublishedEntityType converts a PublishedEntityType to a BSON map.
 func serializePublishedEntityType(et *model.PublishedEntityType) bson.D {
 	// Serialize child members. Pass the owning entity's qualified name so
@@ -361,12 +365,19 @@ func serializePublishedEntitySet(es *model.PublishedEntitySet, entityTypeID stri
 		// entity set to be considered valid. Without it the second
 		// published entity in a multi-entity service fails to resolve
 		// its key (CE6585) — see Studio Pro reference dump.
+		// nil means "not specified" and keeps Mendix's own default of true; only
+		// an explicit false turns one off. These were hardcoded true, so
+		// `publish entity … (TopSupported: No)` parsed, described back as No, and
+		// was published as Yes — mxcli asserting a capability the author had
+		// explicitly disowned. For a microflow-backed resource the claim is
+		// especially load-bearing: Mendix applies no query options itself, so the
+		// annotation is the only thing a client has to go on (mxcli-formula1 §20).
 		{Key: "QueryOptions", Value: bson.D{
 			{Key: "$ID", Value: idToBsonBinary(generateUUID())},
 			{Key: "$Type", Value: "ODataPublish$QueryOptions"},
-			{Key: "Countable", Value: true},
-			{Key: "SkipSupported", Value: true},
-			{Key: "TopSupported", Value: true},
+			{Key: "Countable", Value: boolOrTrue(es.Countable)},
+			{Key: "SkipSupported", Value: boolOrTrue(es.SkipSupported)},
+			{Key: "TopSupported", Value: boolOrTrue(es.TopSupported)},
 		}},
 	}
 
