@@ -1373,6 +1373,13 @@ func createODataService(ctx *ExecContext, stmt *ast.CreateODataServiceStmt) erro
 					if stmt.PublishAssociationsSet {
 						svc.PublishAssociations = stmt.PublishAssociations
 					}
+					if len(stmt.Microflows) > 0 {
+						published, mfErr := astMicroflowDefsToModel(ctx, stmt.Microflows)
+						if mfErr != nil {
+							return mfErr
+						}
+						svc.Microflows = published
+					}
 					if len(stmt.AuthenticationTypes) > 0 {
 						svc.AuthenticationTypes = stmt.AuthenticationTypes
 						// Restated auth replaces the microflow too, including
@@ -1462,6 +1469,14 @@ func createODataService(ctx *ExecContext, stmt *ast.CreateODataServiceStmt) erro
 		AuthenticationTypes: stmt.AuthenticationTypes,
 		AuthMicroflow:       stmt.AuthMicroflow,
 	}
+
+	// OData actions. Resolved against the project's microflows so the parameter
+	// types and return type come off the microflow rather than being restated.
+	publishedMFs, mfErr := astMicroflowDefsToModel(ctx, stmt.Microflows)
+	if mfErr != nil {
+		return mfErr
+	}
+	newSvc.Microflows = publishedMFs
 
 	// Map AST entity definitions to model entity types and entity sets.
 	// Pass ctx so the executor can resolve exposed members against the
