@@ -44,6 +44,49 @@ Gotchas:
 - A spike in "Executing N database synchronization command(s)" on an *unchanged* model
   is a red flag (see the `create or modify` data-loss class of bug).
 
+### Turning up one subsystem: `mxcli log`
+
+Everything logs at `INFO` by default, so the detail you need usually is not in the
+file at all — and raising the whole runtime to `TRACE` is unusable. Logging is
+publish/subscribe: code publishes to a named **LogNode**, and each node has its
+own level.
+
+```bash
+mxcli log list                          # every node and its level (57 on a blank 11.12 app)
+mxcli log list --filter connectionbus   # narrow it — nobody remembers the exact names
+mxcli log set ConnectionBus_Queries TRACE
+mxcli log set ConnectionBus_Queries=TRACE Connector=DEBUG   # one admin call
+mxcli log set ConnectionBus_Queries INFO                    # put it back
+```
+
+Levels: `NONE CRITICAL ERROR WARNING INFO DEBUG TRACE`.
+
+This needs a **running** app (it goes through the M2EE admin API), and the change
+lasts as long as the process — it is a debugging knob, not project configuration.
+
+Nodes worth knowing:
+
+| Question | Node |
+|---|---|
+| What SQL is being run | `ConnectionBus_Queries` (and `_Retrieve`, `_Update`) |
+| Database sync at startup | `ConnectionBus_Synchronize` |
+| Consumed OData / REST calls | `ODataConsume`, `REST Consume` |
+| Microflow execution | `MicroflowEngine`, `ActionManager` |
+| Scheduled events / queues | `SystemTask`, `TaskQueue` |
+| Java/JS action wiring | `Connector` |
+
+**`--force` creates the node, permanently.** Without it an unknown node is refused,
+which is what you want — a typo should be an error. With it the name is registered
+for the life of the process, so a typo becomes a real (empty) node that shows up in
+`log list` from then on. Use it only to pre-register a node that has not published
+yet.
+
+**There is no log node for a *published* OData service.** `ODataConsume` is the
+client side only. So "what is my published resource being asked?" cannot be
+answered by raising a node — put `LOG INFO 'URI=' + $Request/Uri` in the read
+microflow instead (see `odata-data-sharing.md`). That gap is Mendix's, not
+mxcli's.
+
 ## 2. Metrics — throughput and database pressure
 
 `--metrics` registers a Prometheus registry, served at
