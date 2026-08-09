@@ -1399,8 +1399,19 @@ func emitInheritanceSplitStatement(
 		traverseFlowUntilMerge(ctx, flow.DestinationID, branchStopID, activityMap, flowsByOrigin, flowsByDest, splitMergeMap, cloneVisited(visited), entityNames, microflowNames, lines, indent+1, sourceMap, headerLineCount, annotationsByTarget)
 	}
 	if elseFlow != nil {
+		elseLineIdx := len(*lines)
 		*lines = append(*lines, indentStr+"else")
 		traverseFlowUntilMerge(ctx, elseFlow.DestinationID, branchStopID, activityMap, flowsByOrigin, flowsByDest, splitMergeMap, cloneVisited(visited), entityNames, microflowNames, lines, indent+1, sourceMap, headerLineCount, annotationsByTarget)
+		// Remove an empty else block, as the if/else emitters above do. On an
+		// object-type decision this flow is the `(empty)` case (for a null
+		// object), which the builder emits unconditionally — CE0089 without it —
+		// so a split that never had an authored `else` still has the flow. Left
+		// in, DESCRIBE printed a bare `else` the author never wrote and a
+		// describe→exec roundtrip accumulated one each pass. Exec re-creates the
+		// flow, so dropping the empty rendering is lossless.
+		if len(*lines) == elseLineIdx+1 {
+			*lines = (*lines)[:elseLineIdx]
+		}
 	}
 	*lines = append(*lines, indentStr+"end split;")
 }
