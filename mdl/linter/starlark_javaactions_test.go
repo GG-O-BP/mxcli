@@ -4,6 +4,7 @@ package linter_test
 
 import (
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -206,5 +207,239 @@ func TestJavaActionParametersTableExists(t *testing.T) {
 	}
 	if n != 3 {
 		t.Errorf("java_action_parameters holds %d rows, want 3", n)
+	}
+}
+
+// allKindsFixture inserts exactly one undocumented element of every kind the
+// generic sweep claims to cover, driven off DocumentableKinds() so a kind added
+// in Go without a test row fails here rather than shipping unswept.
+func allKindsFixture(t *testing.T) (*catalog.Catalog, map[string]string) {
+	t.Helper()
+
+	cat, err := catalog.NewFromFile(filepath.Join(t.TempDir(), "cat.db"))
+	if err != nil {
+		t.Fatalf("NewFromFile: %v", err)
+	}
+	t.Cleanup(func() { cat.Close() })
+	db := cat.CatalogDB()
+
+	// table -> doc column, mirroring documentableSources.
+	tables := map[string]struct {
+		kind   string
+		docCol string
+	}{
+		"entities":                {"Entity", "Description"},
+		"associations":            {"Association", "Description"},
+		"pages":                   {"Page", "Description"},
+		"snippets":                {"Snippet", "Description"},
+		"building_blocks":         {"BuildingBlock", "Description"},
+		"layouts":                 {"Layout", "Description"},
+		"enumerations":            {"Enumeration", "Description"},
+		"javascript_actions":      {"JavaScriptAction", "Description"},
+		"image_collections":       {"ImageCollection", "Description"},
+		"data_transformers":       {"DataTransformer", "Description"},
+		"workflows":               {"Workflow", "Description"},
+		"business_event_services": {"BusinessEventService", "Documentation"},
+		"rest_clients":            {"RestClient", "Documentation"},
+		"published_rest_services": {"PublishedRestService", "Documentation"},
+		"constants":               {"Constant", "Description"},
+		"json_structures":         {"JsonStructure", "Documentation"},
+		"import_mappings":         {"ImportMapping", "Documentation"},
+		"export_mappings":         {"ExportMapping", "Documentation"},
+	}
+
+	if _, err := db.Exec(
+		`INSERT INTO modules_data (Id, Name, QualifiedName, ModuleName, Description, ProjectId, SnapshotId)
+		 VALUES (?,?,?,?,?,?,?)`,
+		"mod-1", "Racing", "Racing", "Racing", "", "default", "s1"); err != nil {
+		t.Fatalf("insert module: %v", err)
+	}
+
+	// kind -> the element name the sweep should report.
+	//
+	// Id is omitted deliberately: json_structures, import_mappings and
+	// export_mappings declare `Id INTEGER PRIMARY KEY AUTOINCREMENT` while every
+	// other table uses `Id TEXT PRIMARY KEY`, so a synthetic string id is a
+	// datatype mismatch on exactly those three.
+	want := map[string]string{"Module": "Racing"}
+	for table, meta := range tables {
+		name := meta.kind + "X"
+		q := fmt.Sprintf(
+			`INSERT INTO %s_data (Name, QualifiedName, ModuleName, %s, ProjectId, SnapshotId)
+			 VALUES (?,?,?,?,?,?)`, table, meta.docCol)
+		if _, err := db.Exec(q, name, "Racing."+name, "Racing",
+			"", "default", "s1"); err != nil {
+			t.Fatalf("insert into %s: %v", table, err)
+		}
+		want[meta.kind] = name
+	}
+	return cat, want
+}
+
+// Every kind the Go side advertises must actually be swept. Without this, a new
+// documentableSources row that the .star table does not know about is silently
+// skipped by the rule's `entry == None` guard — covered in Go, invisible in
+// practice.
+func TestQUAL002_SweepsEveryAdvertisedDocumentType(t *testing.T) {
+	cat, want := allKindsFixture(t)
+
+	// The Go-side list and the fixture must agree, or the assertion below is
+	// only as complete as whichever is shorter.
+	for _, kind := range linter.DocumentableKinds() {
+		if _, ok := want[kind]; !ok {
+			t.Fatalf("DocumentableKinds() advertises %q but the fixture inserts no such row — "+
+				"add it here, or the sweep for that kind is untested", kind)
+		}
+	}
+
+	var msgs []string
+	for _, v := range runMissingDocRule(t, cat, map[string]any{"check_associations": true}) {
+		msgs = append(msgs, v.Message)
+	}
+	joined := strings.Join(msgs, "\n")
+
+	for kind, name := range want {
+		if !strings.Contains(joined, "'"+name+"'") {
+			t.Errorf("kind %s (element %q) was not reported by QUAL002; got:\n%s", kind, name, joined)
+		}
+	}
+}
+
+// A documented element of every kind must produce silence. A sweep that reports
+// regardless of content would pass the test above just as well.
+func TestQUAL002_DocumentedElementsAreSilent(t *testing.T) {
+	cat, _ := allKindsFixture(t)
+	db := cat.CatalogDB()
+	for _, tbl := range []string{"modules", "pages", "workflows", "constants"} {
+		col := "Description"
+		if _, err := db.Exec(fmt.Sprintf(
+			`UPDATE %s_data SET %s = 'Documented.'`, tbl, col)); err != nil {
+			t.Fatalf("update %s: %v", tbl, err)
+		}
+	}
+
+	var msgs []string
+	for _, v := range runMissingDocRule(t, cat, nil) {
+		msgs = append(msgs, v.Message)
+	}
+	joined := strings.Join(msgs, "\n")
+
+	for _, quiet := range []string{"'Racing'", "'PageX'", "'WorkflowX'", "'ConstantX'"} {
+		if strings.Contains(joined, quiet) {
+			t.Errorf("a documented element %s was still flagged:\n%s", quiet, joined)
+		}
+	}
+	// ...while the ones left blank must still be reported, proving the run
+	// itself was not simply empty.
+	if !strings.Contains(joined, "'LayoutX'") {
+		t.Errorf("the sweep went quiet altogether; expected LayoutX:\n%s", joined)
+	}
+}
+
+// Associations default OFF, like attributes: a real domain model has as many
+// associations as entities and none are documented, so defaulting them on would
+// double the rule's output with findings nobody asked for.
+func TestQUAL002_AssociationsDefaultOff(t *testing.T) {
+	cat, _ := allKindsFixture(t)
+
+	var off []string
+	for _, v := range runMissingDocRule(t, cat, nil) {
+		off = append(off, v.Message)
+	}
+	if strings.Contains(strings.Join(off, "\n"), "AssociationX") {
+		t.Error("associations were reported without being switched on")
+	}
+
+	var on []string
+	for _, v := range runMissingDocRule(t, cat, map[string]any{"check_associations": true}) {
+		on = append(on, v.Message)
+	}
+	if !strings.Contains(strings.Join(on, "\n"), "AssociationX") {
+		t.Error("check_associations: true did not switch associations on")
+	}
+}
+
+// The generic sweep needs its own Marketplace test: TestJavaActions_Exclude…
+// covers only the Java action query, so dropping the filter from
+// DocumentableElements left every other kind unguarded with a green suite.
+func TestQUAL002_SweepExcludesMarketplaceModules(t *testing.T) {
+	cat, _ := allKindsFixture(t)
+	db := cat.CatalogDB()
+
+	if _, err := db.Exec(
+		`INSERT INTO modules_data (Id, Name, QualifiedName, ModuleName, Source, Description, ProjectId, SnapshotId)
+		 VALUES (?,?,?,?,?,?,?,?)`,
+		"mod-mp", "CommunityCommons", "CommunityCommons", "CommunityCommons",
+		"Marketplace", "", "default", "s1"); err != nil {
+		t.Fatalf("insert module: %v", err)
+	}
+	// One element per shape: a page (joins modules by name) and the Marketplace
+	// module row itself (filters on its own Source column — a different code
+	// path, and the one an all-tables loop is most likely to forget).
+	if _, err := db.Exec(
+		`INSERT INTO pages_data (Id, Name, QualifiedName, ModuleName, Description, ProjectId, SnapshotId)
+		 VALUES (?,?,?,?,?,?,?)`,
+		"pg-mp", "CommonsPage", "CommunityCommons.CommonsPage", "CommunityCommons",
+		"", "default", "s1"); err != nil {
+		t.Fatalf("insert page: %v", err)
+	}
+
+	var msgs []string
+	for _, v := range runMissingDocRule(t, cat, map[string]any{"check_associations": true}) {
+		msgs = append(msgs, v.Message)
+	}
+	joined := strings.Join(msgs, "\n")
+
+	for _, leaked := range []string{"CommonsPage", "CommunityCommons"} {
+		if strings.Contains(joined, leaked) {
+			t.Errorf("Marketplace element %q was reported:\n%s", leaked, joined)
+		}
+	}
+	// The user's own elements must still come through, or this passes trivially.
+	if !strings.Contains(joined, "PageX") {
+		t.Errorf("the sweep excluded everything, not just Marketplace:\n%s", joined)
+	}
+}
+
+// System is the trap that Source-based filtering does not catch: the built-in
+// module's Source is empty, exactly like a user module's, so a WHERE on Source
+// alone lets all ~40 platform entities through. QUAL002 shipped that way before
+// this sweep existed — FileDocument and HttpRequest were reported as
+// undocumented on every project.
+func TestQUAL002_ExcludesTheSystemModule(t *testing.T) {
+	cat, _ := allKindsFixture(t)
+	db := cat.CatalogDB()
+
+	// Note the empty Source: System is indistinguishable from a user module on
+	// that column alone. Only the sentinel Id separates them.
+	if _, err := db.Exec(
+		`INSERT INTO modules_data (Id, Name, QualifiedName, ModuleName, Source, Description, ProjectId, SnapshotId)
+		 VALUES (?,?,?,?,?,?,?,?)`,
+		"00000000-0000-0000-0000-000000000001", "System", "System", "System",
+		"", "", "default", "s1"); err != nil {
+		t.Fatalf("insert System module: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO entities_data (Id, Name, QualifiedName, ModuleName, Description, ProjectId, SnapshotId)
+		 VALUES (?,?,?,?,?,?,?)`,
+		"sys-e1", "FileDocument", "System.FileDocument", "System",
+		"", "default", "s1"); err != nil {
+		t.Fatalf("insert System entity: %v", err)
+	}
+
+	var msgs []string
+	for _, v := range runMissingDocRule(t, cat, map[string]any{"check_associations": true}) {
+		msgs = append(msgs, v.Message)
+	}
+	joined := strings.Join(msgs, "\n")
+
+	if strings.Contains(joined, "FileDocument") {
+		t.Errorf("a System entity was reported:\n%s", joined)
+	}
+	if strings.Contains(joined, "'System'") {
+		t.Errorf("the System module itself was reported:\n%s", joined)
+	}
+	if !strings.Contains(joined, "'Racing'") {
+		t.Errorf("the user's own module stopped being reported:\n%s", joined)
 	}
 }

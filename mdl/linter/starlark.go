@@ -314,17 +314,18 @@ func LoadStarlarkRule(path string) (*StarlarkRule, error) {
 func (r *StarlarkRule) buildPredeclared() starlark.StringDict {
 	return starlark.StringDict{
 		// Query functions
-		"entities":         starlark.NewBuiltin("entities", r.builtinEntities),
-		"microflows":       starlark.NewBuiltin("microflows", r.builtinMicroflows),
-		"java_actions":     starlark.NewBuiltin("java_actions", r.builtinJavaActions),
-		"pages":            starlark.NewBuiltin("pages", r.builtinPages),
-		"enumerations":     starlark.NewBuiltin("enumerations", r.builtinEnumerations),
-		"constants":        starlark.NewBuiltin("constants", r.builtinConstants),
-		"widgets":          starlark.NewBuiltin("widgets", r.builtinWidgets),
-		"refs_to":          starlark.NewBuiltin("refs_to", r.builtinRefsTo),
-		"refs_from":        starlark.NewBuiltin("refs_from", r.builtinRefsFrom),
-		"attributes_for":   starlark.NewBuiltin("attributes_for", r.builtinAttributesFor),
-		"scheduled_events": starlark.NewBuiltin("scheduled_events", r.builtinScheduledEvents),
+		"entities":              starlark.NewBuiltin("entities", r.builtinEntities),
+		"microflows":            starlark.NewBuiltin("microflows", r.builtinMicroflows),
+		"java_actions":          starlark.NewBuiltin("java_actions", r.builtinJavaActions),
+		"documentable_elements": starlark.NewBuiltin("documentable_elements", r.builtinDocumentableElements),
+		"pages":                 starlark.NewBuiltin("pages", r.builtinPages),
+		"enumerations":          starlark.NewBuiltin("enumerations", r.builtinEnumerations),
+		"constants":             starlark.NewBuiltin("constants", r.builtinConstants),
+		"widgets":               starlark.NewBuiltin("widgets", r.builtinWidgets),
+		"refs_to":               starlark.NewBuiltin("refs_to", r.builtinRefsTo),
+		"refs_from":             starlark.NewBuiltin("refs_from", r.builtinRefsFrom),
+		"attributes_for":        starlark.NewBuiltin("attributes_for", r.builtinAttributesFor),
+		"scheduled_events":      starlark.NewBuiltin("scheduled_events", r.builtinScheduledEvents),
 
 		// Graph-analysis facts (populated by `refresh catalog communities`).
 		"community_of":         starlark.NewBuiltin("community_of", r.builtinCommunityOf),
@@ -409,6 +410,33 @@ func (r *StarlarkRule) builtinJavaActions(_ *starlark.Thread, _ *starlark.Builti
 	}
 
 	return starlark.NewList(actions), nil
+}
+
+// builtinDocumentableElements returns every element that can carry
+// documentation, across all document types, as a uniform (kind, name,
+// qualified_name, module_name, description) projection.
+//
+// One builtin rather than nineteen: a rule sweeping for missing documentation
+// wants "every document", and a new Mendix document type should be covered by
+// adding a row to documentableSources, not by writing another builtin and
+// remembering to call it.
+func (r *StarlarkRule) builtinDocumentableElements(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if r.ctx == nil {
+		return starlark.NewList(nil), nil
+	}
+
+	var out []starlark.Value
+	for d := range r.ctx.DocumentableElements() {
+		out = append(out, starlarkstruct.FromStringDict(starlark.String("documentable"), starlark.StringDict{
+			"kind":           starlark.String(d.Kind),
+			"name":           starlark.String(d.Name),
+			"qualified_name": starlark.String(d.QualifiedName),
+			"module_name":    starlark.String(d.ModuleName),
+			"description":    starlark.String(d.Description),
+		}))
+	}
+
+	return starlark.NewList(out), nil
 }
 
 // builtinPages returns an iterator over pages.

@@ -47,8 +47,10 @@ Bundled Starlark rules (in .claude/lint-rules/):
   - Entity business key (ARCH003) - persistent entities need a unique key
   Quality:
   - McCabe complexity (QUAL001) - microflow cyclomatic complexity threshold
-  - Missing documentation (QUAL002) - entities, microflows, Java actions and their
-      parameters need documentation (attributes too, via check_attributes)
+  - Missing documentation (QUAL002) - every document type (modules, entities,
+      pages, microflows, workflows, Java/JavaScript actions and their parameters,
+      REST services, mappings, constants, ...). Attributes and associations are
+      off by default; see the check_* options.
   - Long microflows (QUAL003) - microflows with too many activities
   - Orphaned elements (QUAL004) - unreferenced elements in the project
   Design:
