@@ -189,6 +189,11 @@ Examples:
 		// has to be declared correctly up front, and nothing else checks that.
 		violations = append(violations, executor.ValidateODataReadContract(prog)...)
 
+		// Flag `authentication microflow` with no microflow named. The grammar
+		// makes the name optional, so this parses and executes into a service
+		// Mendix refuses to build (CE0333).
+		violations = append(violations, executor.ValidateODataAuth(prog)...)
+
 		// Flag a page whose widgets point at a page created further down the same
 		// script. `exec` resolves page references in statement order and is not
 		// transactional, so this fails after earlier statements are already

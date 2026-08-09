@@ -84,6 +84,11 @@ func init() {
 			"  PublishAssociations: Yes           -- optional; default Yes (associations as links)\n" +
 			")\n" +
 			"authentication basic, session\n" +
+			"-- or, for custom authentication (no per-request password hash):\n" +
+			"--   authentication microflow Module.Authenticate\n" +
+			"-- The microflow takes a List of System.HttpHeader and returns a\n" +
+			"-- System.User; returning empty denies the request. Requires app\n" +
+			"-- security to be on (CE6600) and a microflow to be named (CE0333).\n" +
 			"{\n" +
 			"  publish entity Module.Entity as 'EntitySet' (\n" +
 			"    ReadMode: source | microflow Module.Read_X,\n" +

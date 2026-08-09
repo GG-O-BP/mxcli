@@ -102,8 +102,13 @@ type CreateODataServiceStmt struct {
 	PublishAssociations    bool
 	PublishAssociationsSet bool
 	AuthenticationTypes    []string
-	Entities               []*PublishedEntityDef
-	CreateOrModify         bool // True if CREATE OR MODIFY was used
+	// AuthMicroflow is the microflow named by `authentication microflow X`.
+	// Custom authentication is the only method that carries a target, and
+	// Mendix rejects the service without one (CE0333 "Please select a microflow
+	// to use for authentication").
+	AuthMicroflow  string
+	Entities       []*PublishedEntityDef
+	CreateOrModify bool // True if CREATE OR MODIFY was used
 
 	// UnknownProperties holds property names the visitor did not recognise, in
 	// source order. The parser accepts any `name: value` pair, so without this

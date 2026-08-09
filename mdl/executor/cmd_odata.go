@@ -348,12 +348,15 @@ func outputPublishedODataServiceMDL(ctx *ExecContext, svc *model.PublishedODataS
 
 	fmt.Fprintln(ctx.Output, ")")
 
-	// Authentication types
+	// Authentication types. The custom-authentication microflow is part of the
+	// clause, not a comment beside it: emitted as a comment the output looked
+	// complete but replayed into a service Mendix rejects with CE0333
+	// (mxcli-formula1 §40).
 	if len(svc.AuthenticationTypes) > 0 {
-		fmt.Fprintf(ctx.Output, "authentication %s\n", strings.Join(svc.AuthenticationTypes, ", "))
-	}
-	if svc.AuthMicroflow != "" {
-		fmt.Fprintf(ctx.Output, "-- Auth Microflow: %s\n", svc.AuthMicroflow)
+		fmt.Fprintf(ctx.Output, "authentication %s\n", odataAuthClause(svc))
+	} else if svc.AuthMicroflow != "" {
+		// A microflow with no type recorded still has to survive the round trip.
+		fmt.Fprintf(ctx.Output, "authentication microflow %s\n", svc.AuthMicroflow)
 	}
 
 	// Published entities block
@@ -1372,6 +1375,9 @@ func createODataService(ctx *ExecContext, stmt *ast.CreateODataServiceStmt) erro
 					}
 					if len(stmt.AuthenticationTypes) > 0 {
 						svc.AuthenticationTypes = stmt.AuthenticationTypes
+						// Restated auth replaces the microflow too, including
+						// clearing it when the new clause is not `microflow`.
+						svc.AuthMicroflow = stmt.AuthMicroflow
 					}
 					// Published entities are replaced wholesale when the statement
 					// supplies any. Previously the modify branch ignored them
@@ -1454,6 +1460,7 @@ func createODataService(ctx *ExecContext, stmt *ast.CreateODataServiceStmt) erro
 		Description:         stmt.Description,
 		PublishAssociations: publishAssociationsFor(stmt),
 		AuthenticationTypes: stmt.AuthenticationTypes,
+		AuthMicroflow:       stmt.AuthMicroflow,
 	}
 
 	// Map AST entity definitions to model entity types and entity sets.
@@ -2155,4 +2162,25 @@ func bareMemberName(name string) string {
 		return name[i+1:]
 	}
 	return name
+}
+
+// odataAuthClause renders a service's authentication methods as MDL, attaching
+// the microflow to the `Microflow` method rather than trailing it as a comment.
+// Custom authentication is the only method that names a target.
+func odataAuthClause(svc *model.PublishedODataService) string {
+	parts := make([]string, 0, len(svc.AuthenticationTypes))
+	named := false
+	for _, t := range svc.AuthenticationTypes {
+		if strings.EqualFold(t, "Microflow") && svc.AuthMicroflow != "" {
+			parts = append(parts, t+" "+svc.AuthMicroflow)
+			named = true
+			continue
+		}
+		parts = append(parts, t)
+	}
+	// A stored microflow with no matching method would otherwise be dropped.
+	if !named && svc.AuthMicroflow != "" {
+		parts = append(parts, "Microflow "+svc.AuthMicroflow)
+	}
+	return strings.Join(parts, ", ")
 }

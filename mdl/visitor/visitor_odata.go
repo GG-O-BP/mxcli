@@ -133,7 +133,7 @@ func (b *Builder) ExitCreateODataServiceStatement(ctx *parser.CreateODataService
 
 	// Parse authentication clause
 	if authCtx := ctx.OdataAuthenticationClause(); authCtx != nil {
-		stmt.AuthenticationTypes = parseODataAuthTypes(authCtx)
+		stmt.AuthenticationTypes, stmt.AuthMicroflow = parseODataAuthTypes(authCtx)
 	}
 
 	// Parse PUBLISH ENTITY blocks
@@ -319,10 +319,15 @@ func odataAssignmentValueText(prop *parser.OdataPropertyAssignmentContext) strin
 	return odataValueText(valCtx.(*parser.OdataPropertyValueContext))
 }
 
-// parseODataAuthTypes extracts authentication types from the clause.
-func parseODataAuthTypes(authCtx parser.IOdataAuthenticationClauseContext) []string {
+// parseODataAuthTypes extracts authentication types from the clause, and the
+// microflow named by `authentication microflow X`.
+//
+// The grammar has always accepted the qualified name; only the name was
+// discarded, so `authentication microflow M.Auth` parsed, checked and executed
+// while the model got a Microflow auth type with no microflow — a service that
+// then failed to build with CE0333 (mxcli-formula1 §40).
+func parseODataAuthTypes(authCtx parser.IOdataAuthenticationClauseContext) (types []string, microflow string) {
 	clause := authCtx.(*parser.OdataAuthenticationClauseContext)
-	var types []string
 
 	for _, atCtx := range clause.AllOdataAuthType() {
 		at := atCtx.(*parser.OdataAuthTypeContext)
@@ -334,12 +339,15 @@ func parseODataAuthTypes(authCtx parser.IOdataAuthenticationClauseContext) []str
 			types = append(types, "Guest")
 		} else if at.MICROFLOW() != nil {
 			types = append(types, "Microflow")
+			if qn := at.QualifiedName(); qn != nil {
+				microflow = buildQualifiedName(qn).String()
+			}
 		} else if at.IDENTIFIER() != nil {
 			types = append(types, at.IDENTIFIER().GetText())
 		}
 	}
 
-	return types
+	return types, microflow
 }
 
 // parsePublishEntityBlock converts a PUBLISH ENTITY parse context into an AST node.

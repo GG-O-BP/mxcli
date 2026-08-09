@@ -214,6 +214,11 @@ create odata service MyModule.CustomerAPI (
   namespace: 'MyModule.Customers'
 )
 authentication basic, session
+-- or: authentication microflow Module.Authenticate
+--   Custom authentication. The microflow takes a List of System.HttpHeader and
+--   returns a System.User (empty denies). It removes the per-request password
+--   hash that `basic` pays on every call. Requires app security on (CE6600) and
+--   a microflow to be named (CE0333, flagged as MDL-ODATA04).
 {
   publish entity MyModule.Customer as 'Customers' (
     ReadMode: source,
