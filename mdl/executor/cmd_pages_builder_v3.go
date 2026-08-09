@@ -793,8 +793,31 @@ func (pb *pageBuilder) buildDataSourceV3(ds *ast.DataSourceV3) (pages.DataSource
 		if idx := strings.Index(path, "/"); idx >= 0 {
 			destEntity = path[idx+1:]
 			path = path[:idx]
-		} else {
+		}
+
+		// Both halves of an EntityRefStep are BY_NAME references, and Mendix
+		// resolves either one it cannot find to null — so the association half
+		// needs the same care as the destination. A bare name (the spelling
+		// attribute paths accept, and the one the guard below suggests) reached
+		// BSON unqualified and the loader threw ArgumentNullException at
+		// `EntityRefStep.set_AssociationId`: same unopenable project as an empty
+		// DestinationEntity, a different property. Qualify with the context
+		// entity's module, exactly as attribute-path hops do (upstream #854).
+		path = pb.resolveAssociationPathIn(path, pb.entityContext)
+
+		if destEntity == "" {
 			destEntity = pb.resolveAssociationDestination(path, pb.entityContext)
+		} else if _, _, ok := pb.associationEndpoints(path); !ok {
+			// An author-supplied destination satisfies the guard below, so it is
+			// the one path where a misspelled — or wrongly-moduled — association
+			// would sail through and be written qualified-but-nonexistent, which
+			// Mendix resolves to null just the same. Verify it exists.
+			return nil, "", mdlerrors.NewValidationf(
+				"association %q for datasource %q does not exist — "+
+					"writing it would produce a project Mendix cannot open; "+
+					"a bare name is qualified with the module of the context entity (%s), "+
+					"so an association declared elsewhere must be named in full",
+				path, ds.Reference, pb.entityContext)
 		}
 
 		// An empty DestinationEntity is a by-name reference Mendix resolves to
