@@ -612,20 +612,17 @@ func createExternalEntities(ctx *ExecContext, s *ast.CreateExternalEntitiesStmt)
 			// ("'latitude' is marked Filterable=False in the OData service, but
 			// True in the app") — one per property, on an import whose whole job
 			// is to match the contract.
-			nonFilterable := make(map[string]bool)
-			nonSortable := make(map[string]bool)
+			// Both restrictions have two shapes — a per-property exclusion list and
+			// a whole-set boolean — so they are resolved by EdmEntitySet rather
+			// than read field by field here; consulting one shape and not the
+			// other is what produced 28 × CE6630 on a single service
+			// (mxcli-formula1 §48). AttrFilterable/AttrSortable are nil-safe.
 			if entitySet != nil {
 				for _, name := range entitySet.NonInsertableProperties {
 					nonInsertable[name] = true
 				}
 				for _, name := range entitySet.NonUpdatableProperties {
 					nonUpdatable[name] = true
-				}
-				for _, name := range entitySet.NonFilterableProperties {
-					nonFilterable[name] = true
-				}
-				for _, name := range entitySet.NonSortableProperties {
-					nonSortable[name] = true
 				}
 			}
 
@@ -669,8 +666,8 @@ func createExternalEntities(ctx *ExecContext, s *ast.CreateExternalEntitiesStmt)
 					Type:       edmToDomainModelAttrType(p, keyPropSet[p.Name]),
 					RemoteName: p.Name,
 					RemoteType: p.Type,
-					Filterable: !nonFilterable[p.Name],
-					Sortable:   !nonSortable[p.Name],
+					Filterable: entitySet.AttrFilterable(p.Name),
+					Sortable:   entitySet.AttrSortable(p.Name),
 					Creatable:  creatable,
 					Updatable:  updatable,
 				}

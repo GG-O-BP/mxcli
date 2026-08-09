@@ -94,6 +94,25 @@ type EdmEntitySet struct {
 	NonFilterableProperties []string
 	NonSortableProperties   []string
 
+	// Filterable / Sortable are the WHOLE-SET form of the same two restrictions,
+	// carried as the record's own Bool property:
+	//
+	//	<Annotation Term="…FilterRestrictions"><Record>
+	//	  <PropertyValue Bool="false" Property="Filterable"/>
+	//	</Record></Annotation>
+	//
+	// Mendix picks the shape by arithmetic, not by preference: it lists
+	// NonFilterableProperties when SOME attributes are filterable, and emits the
+	// bare Bool when NONE are, because then there is no list to write. Both
+	// appear in one document. nil means unstated, which is OData's default of
+	// true (mxcli-formula1 §48).
+	Filterable *bool
+	Sortable   *bool
+
+	// Use AttrFilterable / AttrSortable rather than reading the four fields
+	// above: a consumer that consults only one shape generates an app the
+	// publisher's own contract contradicts.
+
 	// Navigation property names listed under
 	// Org.OData.Capabilities.V1.{Insert,Update}Restrictions/Non*NavigationProperties.
 	NonInsertableNavigationProperties []string
@@ -445,14 +464,35 @@ func applyCapabilityAnnotations(es *EdmEntitySet, annotations []xmlCapabilitiesA
 			}
 		case "Org.OData.Capabilities.V1.FilterRestrictions":
 			for _, pv := range ann.Record.PropertyValues {
-				if pv.Property == "NonFilterableProperties" && pv.Collection != nil {
-					es.NonFilterableProperties = pv.Collection.PropertyPaths
+				switch pv.Property {
+				case "Filterable":
+					// The whole-set form. Mendix emits this INSTEAD of a
+					// NonFilterableProperties list when NO attribute is
+					// filterable — there is nothing to enumerate — so reading
+					// only the list makes an entirely unfilterable set look
+					// entirely filterable.
+					if pv.Bool != "" {
+						v := pv.Bool == "true"
+						es.Filterable = &v
+					}
+				case "NonFilterableProperties":
+					if pv.Collection != nil {
+						es.NonFilterableProperties = pv.Collection.PropertyPaths
+					}
 				}
 			}
 		case "Org.OData.Capabilities.V1.SortRestrictions":
 			for _, pv := range ann.Record.PropertyValues {
-				if pv.Property == "NonSortableProperties" && pv.Collection != nil {
-					es.NonSortableProperties = pv.Collection.PropertyPaths
+				switch pv.Property {
+				case "Sortable":
+					if pv.Bool != "" {
+						v := pv.Bool == "true"
+						es.Sortable = &v
+					}
+				case "NonSortableProperties":
+					if pv.Collection != nil {
+						es.NonSortableProperties = pv.Collection.PropertyPaths
+					}
 				}
 			}
 		}
@@ -628,4 +668,51 @@ type xmlEnumType struct {
 type xmlEnumMember struct {
 	Name  string `xml:"Name,attr"`
 	Value string `xml:"Value,attr"`
+}
+
+// AttrFilterable reports whether a client may filter on the named property.
+//
+// FilterRestrictions has TWO shapes and a consumer must honour both. Mendix
+// chooses between them by arithmetic rather than preference: it lists
+// NonFilterableProperties when SOME attributes are filterable, and emits a bare
+// `Bool="false" Property="Filterable"` when NONE are, because then there is no
+// list to write. Both shapes appear in one document, on different entity sets.
+//
+// Reading only the list marks every property of a wholly-unfilterable set as
+// filterable, and the consuming app then fails to build — one CE6630 per
+// property ("'message' is marked Sortable=False in the OData service, but True
+// in the app"), 28 of them on one service (mxcli-formula1 §48). This is §42 one
+// layer along, so the two live behind one call to keep them from drifting apart
+// again.
+//
+// A nil receiver, or an unstated restriction, means OData's default: allowed.
+func (es *EdmEntitySet) AttrFilterable(property string) bool {
+	if es == nil {
+		return true
+	}
+	if es.Filterable != nil && !*es.Filterable {
+		return false
+	}
+	return !containsString(es.NonFilterableProperties, property)
+}
+
+// AttrSortable reports whether a client may order by the named property. See
+// AttrFilterable — SortRestrictions carries the identical pair of shapes.
+func (es *EdmEntitySet) AttrSortable(property string) bool {
+	if es == nil {
+		return true
+	}
+	if es.Sortable != nil && !*es.Sortable {
+		return false
+	}
+	return !containsString(es.NonSortableProperties, property)
+}
+
+func containsString(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
 }

@@ -542,12 +542,25 @@ publish entity Api.Row as 'Rows' (
 ```
 
 Declaring `No` is the read path's substitute for the `400` it cannot send. It is
-also safe to declare: the contract carries `TopSupported`/`SkipSupported` as
-standalone boolean annotations, and `sql <alias> generate connector` reads them,
-so a consuming app generated from this service says `No` too. (Until mxcli
-learned to read them it always generated `Yes`, and the consumer failed to build
-with **CE6630** "'Rows' is marked supports $top=False in the OData service, but
-True in the app" — if you hit that against an older mxcli, that is the cause.)
+also safe to declare: mxcli reads these capabilities off the contract, so a
+consuming app generated from this service says `No` too. (Until it learned to,
+the generator always said `Yes`, and the consumer failed to build with **CE6630**
+"'Rows' is marked supports $top=False in the OData service, but True in the app"
+— if you hit that against an older mxcli, that is the cause.)
+
+**The capabilities vocabulary has two annotation shapes**, and it is worth knowing
+which you are looking at when reading a `$metadata` by hand:
+
+| Capability | Shape |
+|---|---|
+| `TopSupported`, `SkipSupported` | standalone: `<Annotation Bool="false" Term="…TopSupported"/>` |
+| `Insertable`, `Updatable`, `Deletable`, `Countable` | a `<Record>` with a `Bool` property value |
+| `Filterable`, `Sortable` | **either** — a record listing `NonFilterableProperties` when *some* attributes are filterable, or a bare `Bool="false"` on the record when *none* are |
+
+That last row is the trap. Mendix picks the shape by arithmetic (there is no list
+to write when nothing is filterable), so both appear in one document on different
+entity sets, and a service where an entity exposes only a KEY emits the whole-set
+form.
 
 `mxcli check` enforces this as **MDL-ODATA03**, and it looks for the option
 *names* in the microflow body, not just for a `System.HttpRequest` parameter —
