@@ -493,3 +493,100 @@ func TestParseEdmx_NoRestrictionsLeavesCapabilitiesUnset(t *testing.T) {
 			es.NonFilterableProperties, es.NonSortableProperties)
 	}
 }
+
+// mxcli-formula1 §42: `TopSupported: No` on a published resource is correctly
+// written and correctly appears in the contract as Bool="false" — and the
+// frontend then cannot build, because the external-entity generator stamps
+// SkipSupported/TopSupported true regardless:
+//
+//	CE6630 "'Seasons' is marked supports $top=False in the OData service,
+//	        but True in the app."
+//
+// The parser is the first half: these two are STANDALONE boolean annotations,
+// not records, and applyCapabilityAnnotations skipped every annotation with no
+// Record at all. The shape below is copied from the $metadata a Mendix 11.12
+// runtime actually served.
+func TestParseEdmx_StandaloneTopAndSkipSupported(t *testing.T) {
+	const md = `<?xml version="1.0" encoding="utf-8"?>
+<edmx:Edmx Version="4.0" xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx">
+  <edmx:DataServices>
+    <Schema Namespace="P" xmlns="http://docs.oasis-open.org/odata/ns/edm">
+      <EntityType Name="Season">
+        <Key><PropertyRef Name="year"/></Key>
+        <Property Name="year" Type="Edm.String" MaxLength="10"/>
+      </EntityType>
+      <EntityContainer Name="C">
+        <EntitySet Name="Seasons" EntityType="P.Season">
+          <Annotation Bool="false" Term="Org.OData.Capabilities.V1.TopSupported"/>
+          <Annotation Bool="false" Term="Org.OData.Capabilities.V1.SkipSupported"/>
+        </EntitySet>
+        <EntitySet Name="Defaults" EntityType="P.Season"/>
+      </EntityContainer>
+    </Schema>
+  </edmx:DataServices>
+</edmx:Edmx>`
+	svc, err := ParseEdmx(md)
+	if err != nil {
+		t.Fatalf("ParseEdmx: %v", err)
+	}
+	var seasons, defaults *EdmEntitySet
+	for i := range svc.EntitySets {
+		switch svc.EntitySets[i].Name {
+		case "Seasons":
+			seasons = svc.EntitySets[i]
+		case "Defaults":
+			defaults = svc.EntitySets[i]
+		}
+	}
+	if seasons == nil || defaults == nil {
+		t.Fatalf("entity sets not parsed: %+v", svc.EntitySets)
+	}
+	if seasons.TopSupported == nil || *seasons.TopSupported {
+		t.Errorf("TopSupported = %v, want an explicit false", seasons.TopSupported)
+	}
+	if seasons.SkipSupported == nil || *seasons.SkipSupported {
+		t.Errorf("SkipSupported = %v, want an explicit false", seasons.SkipSupported)
+	}
+	// Unannotated stays nil, which the caller reads as OData's own default of
+	// true. Defaulting to false here would invert CE6630 for every service that
+	// says nothing.
+	if defaults.TopSupported != nil || defaults.SkipSupported != nil {
+		t.Errorf("unannotated set should be nil/nil, got %v/%v",
+			defaults.TopSupported, defaults.SkipSupported)
+	}
+}
+
+// A record-shaped annotation must still parse — the standalone handling is
+// added alongside, not instead.
+func TestParseEdmx_StandaloneHandlingKeepsRecordAnnotations(t *testing.T) {
+	const md = `<?xml version="1.0" encoding="utf-8"?>
+<edmx:Edmx Version="4.0" xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx">
+  <edmx:DataServices>
+    <Schema Namespace="P" xmlns="http://docs.oasis-open.org/odata/ns/edm">
+      <EntityType Name="Season">
+        <Key><PropertyRef Name="year"/></Key>
+        <Property Name="year" Type="Edm.String" MaxLength="10"/>
+      </EntityType>
+      <EntityContainer Name="C">
+        <EntitySet Name="Seasons" EntityType="P.Season">
+          <Annotation Bool="false" Term="Org.OData.Capabilities.V1.TopSupported"/>
+          <Annotation Term="Org.OData.Capabilities.V1.CountRestrictions">
+            <Record><PropertyValue Bool="false" Property="Countable"/></Record>
+          </Annotation>
+        </EntitySet>
+      </EntityContainer>
+    </Schema>
+  </edmx:DataServices>
+</edmx:Edmx>`
+	svc, err := ParseEdmx(md)
+	if err != nil {
+		t.Fatalf("ParseEdmx: %v", err)
+	}
+	es := svc.EntitySets[0]
+	if es.TopSupported == nil || *es.TopSupported {
+		t.Errorf("TopSupported = %v", es.TopSupported)
+	}
+	if es.Countable == nil || *es.Countable {
+		t.Errorf("Countable = %v — the record arm regressed", es.Countable)
+	}
+}
