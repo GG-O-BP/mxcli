@@ -1,5 +1,5 @@
 ---
-title: mxcli marketplace diff — detect local modification and plan an ID-preserving module upgrade
+title: mxcli marketplace diff — detect local modification and plan a GUID-preserving module upgrade
 status: draft
 date: 2026-08-04
 ---
@@ -7,14 +7,34 @@ date: 2026-08-04
 # Proposal: `mxcli marketplace diff` — detect local modification of an installed module
 
 **Status:** Draft
-**Date:** 2026-08-04
+**Date:** 2026-08-04 (initial), revised 2026-08-10 (Studio Pro update measured)
+
+## Revision 2026-08-10 — what Studio Pro actually does, measured
+
+The first draft reasoned about Studio Pro's Marketplace "Update" from its
+outcomes. It has now been measured directly (§4), and two of this proposal's
+load-bearing assumptions were wrong in ways that change the design:
+
+- The update is a **replace that transplants the `GUID`**, not an
+  ID-preserving merge. Every `$ID` in the module is renumbered.
+- Renumbering does **not** break consumers. Cross-module references are
+  qualified-name strings, so a module can be renumbered underneath its callers
+  without touching them.
+- A locally modified element is **silently destroyed**, with no merge and no
+  conflict recorded in the model.
+
+The upgrade this proposal is a precondition for is therefore
+**GUID-preserving**, not `$ID`-preserving — a materially easier thing to build.
+And the safety argument is stronger than first written: mxcli's refusal is not
+a gap relative to Studio Pro, it is a safeguard Studio Pro does not offer.
 
 Follows on from [`PROPOSAL_marketplace_modules.md`](PROPOSAL_marketplace_modules.md),
-which ships discovery + download + install and explicitly parks the update path:
-*"A future ID-preserving merge is the remaining work."* This proposal picks up that
+which ships discovery + download + install and explicitly parks the update path —
+originally as *"a future ID-preserving merge"*, since corrected there to a
+GUID-preserving replace on the evidence in §4. This proposal picks up that
 remaining work and argues it should be approached back-to-front — ship the safety
 question first, because it is separable, useful on its own, and a precondition for
-the merge.
+the upgrade.
 
 ## Problem Statement
 
@@ -39,12 +59,18 @@ maintainable through the CLI is only half-automatable."*
 ### Why mxcli's refusal is right but unhelpful
 
 mxcli refuses because an in-place update can discard local edits and change
-persistent-entity `$ID`s. That reasoning is sound but **unconditional** — there is no
-way to tell mxcli a given case is safe, and no way to find out whether it is.
+persistent-entity `$ID`s. Half of that is now confirmed and half is not: an update
+does discard local edits (§4) and does renumber every `$ID` (§4) — but the
+renumbering is harmless, because nothing outside the unit points at those `$ID`s.
+The refusal is right for the first reason alone.
+
+It is nonetheless **unconditional** — there is no way to tell mxcli a given case is
+safe, and no way to find out whether it is.
 
 The user cannot answer "is this safe?" because the question that actually decides it
 — *has anyone modified this module since it was installed?* — has no tool. That is
-the gap this proposal closes.
+the gap this proposal closes. Note the asymmetry §4 exposes: Studio Pro does not
+answer that question either. It destroys the edit and proceeds.
 
 ## Investigation
 
@@ -77,18 +103,27 @@ Every element is regenerated per release — same name, same `$Type`, same folde
 `$ID`. `Filter_Operators` moves `3eb4c31c…` → `6e70cf59…`; `Account` moves
 `6dbb53a1…` → `815a92ab…`.
 
-**Consequence: a literal replace is not merely risky, it is incorrect.** Replacing the
-installed module's units with the package's would renumber every entity in it, and
-every reference *from the consuming app* — an association to `Administration.Account`,
-a security rule, a microflow retrieve — points at the old `$ID`. The upgrade would
-break the callers, not just the database mapping.
+The first draft drew a conclusion here that §4 has since refuted, and it is left in
+place because the reasoning is the trap:
 
-An upgrade therefore has to be a **name-keyed merge into the existing module that
-preserves the in-project `$ID`s**. This is consistent with what
-`PROPOSAL_marketplace_modules.md` already records about Studio Pro's behaviour, and it
-explains the failure mode Mendix users report: a name-keyed merge is well-defined
-right up until the user has also edited the element, at which point it cannot decide
-whose change wins.
+> ~~**Consequence: a literal replace is not merely risky, it is incorrect.** Replacing
+> the installed module's units with the package's would renumber every entity in it,
+> and every reference *from the consuming app* — an association to
+> `Administration.Account`, a security rule, a microflow retrieve — points at the old
+> `$ID`. The upgrade would break the callers, not just the database mapping.~~
+>
+> ~~An upgrade therefore has to be a **name-keyed merge into the existing module that
+> preserves the in-project `$ID`s**.~~
+
+The renumbering is real. The breakage is not: consumers reference a module's elements
+**by qualified name**, not by `$ID`, and Studio Pro renumbers the whole module on every
+update without touching them (§4). What an upgrade must preserve is the element
+**name**, its **`GUID`**, and each unit's **internal** pointer consistency.
+
+The genuinely hard part survives unchanged, and it is the reason this proposal ships
+the diff first: a name-keyed upgrade is well-defined right up until the user has also
+edited the element, at which point it cannot decide whose change wins. Studio Pro
+resolves that by discarding the user's edit (§4).
 
 ### 3. The installed module is not the package — so you cannot diff against it
 
@@ -133,6 +168,86 @@ A naive `mxcli marketplace diff` built on BSON comparison would therefore report
 module as heavily modified and be worse than useless. **This is the trap the proposal
 exists to document.**
 
+### 4. What Studio Pro's update actually does (measured 2026-08-10)
+
+§2 and §3 compare *packages* and *installed copies*. Neither observes the operation
+itself. This section does: a project was snapshotted, its modules updated in Studio
+Pro, and snapshotted again.
+
+Method, data and full analysis:
+[`data/marketplace-upgrade/`](data/marketplace-upgrade/). Subject: `test1-app`,
+Mendix 11.13.0, MPR v2, 369 units, `Administration` 4.3.2 → 4.5.0 and
+`DataWidgets` 3.5.0 → 3.11.3. Snapshots are taken with
+[`scripts/mprsnapshot`](../../scripts/mprsnapshot), which keys every element by
+name and values it by `$ID` + `GUID` — the opposite normalisation from the drift
+detection designed below, because here identity is the signal.
+
+Comparing before/after in the *same* project is what makes this readable: both
+sides have been through the same import and conversion, so the 15,041-path noise
+floor of §3 does not arise.
+
+**The module update is a replace that transplants the `GUID`.**
+
+| `Administration`, matched by name | Count |
+|---|---|
+| Elements matched | 94 |
+| `$ID` preserved | **0** |
+| `$ID` renumbered | 94 |
+| Elements carrying a `GUID` | 9 |
+| `GUID` preserved | **9 (all)** |
+
+At unit level the same: 0 of 27 `Administration` units and 0 of 10 `DataWidgets`
+units kept their `$ID`, while 9 of each kept byte-identical content. `Account`
+moved `562830a8…` → `1dee876e…` and kept `guid=b16e49ea…`.
+
+`PROPOSAL_marketplace_modules.md` records this as *"an ID-preserving merge the
+`mx` CLI does not expose"*. It is neither ID-preserving nor a merge.
+
+**Consumers are untouched, because they reference by name.** `MyFirstModule`
+generalizes *and* retrieves `Administration.Account`. Across the update it is
+identical apart from the project-wide unit count in the header — all 7 units kept
+`$ID` and content while `Account` was renumbered underneath them. Of 9,910 binary
+`$ID` pointers in the project, **0** cross a unit boundary; cross-module
+references are qualified-name strings
+(`MaybeGeneralization/Generalization = "Administration.Account"`), and intra-unit
+pointers are rewritten consistently.
+
+**A locally modified element is destroyed silently.**
+`Administration.AccountPasswordData.ExtraAttributeForTest` — added before the
+snapshot precisely to test this — is gone. Discounting index-path artefacts, the
+update's entire real element delta is:
+
+```
+- Administration/DomainModel/Entities/AccountPasswordData/Attributes/ExtraAttributeForTest
++ Administration/ModuleSecurity/ModuleRoles/EditOwnDetails
++ Administration/ModuleSecurity/ModuleRoles/EditOwnPassword
++ Administration/ModuleSecurity/ModuleRoles/ReadOthersEmail
++ Administration/ModuleSecurity/ModuleRoles/ReadOthersFullName
++ Administration/ModuleSecurity/ModuleRoles/ReadOwnDetails
+```
+
+Five genuine 4.5.0 additions, and one deletion that was the user's own work. No
+merge, no conflict recorded in the model.
+
+**Upgrading widget definitions is a different operation entirely.** Run
+separately after the module update: all 124 elements kept their `$ID`, nothing was
+added or removed, and exactly 7 units changed content — the `Administration` pages
+carrying DataGrid2 widgets. The `DataWidgets` module itself was untouched (11 of 11
+units byte-identical). So this rewrites widget **instances on pages**, in place,
+preserving identity. It should not be conflated with the module update, and it
+connects to [`PROPOSAL_widget_instance_reconciliation.md`](PROPOSAL_widget_instance_reconciliation.md).
+
+**Two incidental findings.** `Administration/_Docs/v4.3.2` became `_Docs/v4.5.0` —
+a cheaper installed-version oracle than the `AppStoreVersion` field that
+`mx show-module-version` and `mxcli show modules` disagree about (open question 4).
+And unnamed widget nodes keyed by list index produce 25 phantom add/removes when a
+property list shifts `Properties[7]` → `Properties[6]`; a real `marketplace diff`
+needs a stabler key for them than the index.
+
+**Limits.** One project, one Mendix version, one update path. The role of `GUID` is
+inferred, not observed: it is the one identity preserved across a full replace,
+which is strong evidence it carries database mapping, but no DDL was examined.
+
 ## Design
 
 ### Compare semantically, not structurally
@@ -162,12 +277,22 @@ With drift known, the three cases separate cleanly:
 
 | Installed module | Upgrade |
 |---|---|
-| unmodified | mechanical name-keyed merge, preserving in-project `$ID`s |
-| modified, no collision with the new version | merge, reporting what was kept |
+| unmodified | mechanical name-keyed replace, preserving `GUID`s |
+| modified, no collision with the new version | replace + re-apply the local edits, reporting what was kept |
 | modified, colliding with the new version | refuse, listing each conflicting element |
 
 Only the first is in scope for a first implementation; the others need the merge
 engine and are deliberately deferred.
+
+§4 makes the first row substantially cheaper than the original draft assumed. An
+unmodified module does not need element-level merging at all: import the new
+package's units, and carry the `GUID` across for each element matched by name.
+`$ID`s may be renumbered freely as long as each unit stays internally consistent,
+because nothing outside the unit points at them. That is what Studio Pro does.
+
+The difference mxcli should offer is **not** a better merge — it is that rows two
+and three are distinguished from row one *before* anything is written. Studio Pro
+treats all three as row one.
 
 ## Proposed CLI
 
@@ -219,8 +344,15 @@ Phase 1 is the whole of this proposal; phase 2 is named only to show where it le
 
 ### Phase 2 — `marketplace update` (deferred, not proposed here)
 
-Name-keyed, `$ID`-preserving merge, gated on a clean `diff`. Needs a decision on
-conflict presentation and on what to do with elements the new version deletes.
+Name-keyed, **`GUID`-preserving** replace, gated on a clean `diff`. Needs a
+decision on conflict presentation and on what to do with elements the new version
+deletes.
+
+§4 narrows this considerably: the mechanism is import-and-transplant-`GUID`s
+rather than an element-level merge engine, and the `$ID`s need no special
+handling. The open design work is almost entirely about the *modified* cases —
+what to show the user, and whether re-applying a local edit onto a replaced
+element is something mxcli should attempt at all or merely describe.
 
 ## Version Compatibility
 
@@ -246,6 +378,16 @@ The control from §3 is the primary test and it is fully reproducible:
   element and only that element is reported.
 - **Coverage honesty:** assert that a document type with no DESCRIBE support is
   reported as *not comparable*, never as clean.
+- **The recorded update (new):** the `01-before` → `02-after` pair in
+  [`data/marketplace-upgrade/`](data/marketplace-upgrade/) is a captured Studio Pro
+  update with a known answer — one destroyed local edit, five added module roles.
+  A `marketplace diff` run against `02-after` must report
+  `ExtraAttributeForTest` as locally modified in `01-before` and gone afterwards.
+  This is the only fixture in the plan that does not need Studio Pro to re-run.
+- **Renumbering is not drift:** every `$ID` in the module changes on every update,
+  so a diff implementation that keys on `$ID` reports 100% drift. Assert that the
+  `01-before` → `02-after` pair reports drift only for the elements that actually
+  changed, not for all 94.
 - Fixtures in `mdl-examples/bug-tests/` are not the right home; this needs an
   integration test under `-tags integration` because it shells out to `mx convert`
   and the marketplace API.
@@ -259,15 +401,32 @@ The control from §3 is the primary test and it is fully reproducible:
    marketplace module lack DESCRIBE today? `Security$ModuleSecurity` and
    `Projects$ModuleSettings` appeared in the §3 control and need checking. The answer
    sizes the "not comparable" bucket and therefore the feature's honesty.
-3. **Is the widget-instance difference in §3 the same phenomenon as #716?** The
-   `TextTemplate`/`ClientTemplate` subtrees that differ are pluggable-widget envelope
-   fields. If the installed module's widget instances are reconciled against the
-   consuming project's widget packages on import, that connects this proposal to
-   [`PROPOSAL_widget_instance_reconciliation.md`](PROPOSAL_widget_instance_reconciliation.md)
-   and both may want the same comparison primitive.
+3. **Is the widget-instance difference in §3 the same phenomenon as #716?**
+   *Partly answered by §4.* Upgrading widget definitions is a separate, explicitly
+   invoked operation that rewrites widget instances on pages in place, preserving
+   every `$ID`. So the §3 subtree differences are plausibly reconciliation
+   artefacts of the same kind — but §4 measured the *definition upgrade*, not the
+   *import*, and those need not behave alike. Still open, and still shared with
+   [`PROPOSAL_widget_instance_reconciliation.md`](PROPOSAL_widget_instance_reconciliation.md).
 4. **Modules with no recorded version.** `mx show-module-version` reports *"Module
    'DataWidgets' does not have a version"* while `mxcli show modules` reports
    `Marketplace v3.5.0` — they read different fields. mxcli has no writer for
    `AppStoreVersion`, so a hand-updated module cannot be recorded as such (FINDINGS
    #37). Should this proposal include `set module version`, or does that belong with
    phase 2?
+   *§4 adds a third source:* a `_Docs/v<version>` unit inside the module, which
+   tracked the update correctly (`v4.3.2` → `v4.5.0`). It is a read-only oracle and
+   does not remove the need for a writer, but `diff` can use it to cross-check the
+   version a project claims.
+5. **What is `GUID` actually for?** *(new)* It is the one identity Studio Pro
+   preserves across a full renumber, which is strong circumstantial evidence it
+   carries the database mapping — but that is inference. The decisive check is to
+   build against a populated database before and after an update and compare the
+   generated DDL: additive means identity survived where it counts, a DROP/CREATE
+   on a module table means it did not. Until then, "the upgrade is data-safe" is a
+   model-level argument, not a measured one.
+6. **Does Studio Pro warn before discarding a local edit?** *(new)* §4 shows the
+   edit is gone from the stored model, but a snapshot cannot see a dialog. This
+   changes how the proposal should describe the status quo: "Studio Pro silently
+   destroys local edits" and "Studio Pro warns and then destroys them" support
+   different claims about what mxcli is adding.

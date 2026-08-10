@@ -22,10 +22,21 @@ with `MxToken` auth 303-redirects to the public CDN `.mpk`. Shipped:
   **module (new)** → `mx module-import`, other types → download + instruct.
 
 **Module *updates* remain postponed** (detect + report only, no mutation):
-re-importing an existing module would discard local edits and, for modules with
-persistent entities, change entity `$ID`s — losing runtime data. Studio Pro's
-Marketplace "Update" does an ID-preserving merge the `mx` CLI does not expose.
-A future ID-preserving merge is the remaining work.
+re-importing an existing module would discard local edits.
+
+> **Corrected 2026-08-10.** This paragraph previously read *"Studio Pro's
+> Marketplace 'Update' does an ID-preserving merge the `mx` CLI does not
+> expose"*, and gave changed entity `$ID`s as a data-loss risk. Both were
+> measured and are wrong. Studio Pro's update **replaces** the module's units —
+> every `$ID` is renumbered — and carries the `GUID` across name-keyed; it is
+> neither ID-preserving nor a merge. The renumbering is harmless, because
+> cross-module references are qualified-name strings and no `$ID` pointer
+> crosses a unit boundary. The real hazard is the other one: a locally modified
+> element is destroyed silently. See §4 of
+> [`PROPOSAL_marketplace_module_upgrade.md`](PROPOSAL_marketplace_module_upgrade.md)
+> and the data in [`data/marketplace-upgrade/`](data/marketplace-upgrade/).
+
+A future GUID-preserving replace is the remaining work.
 
 ## Status update (2026-04-16) — historical (now resolved)
 
