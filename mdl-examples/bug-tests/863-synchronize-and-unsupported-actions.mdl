@@ -1,0 +1,50 @@
+-- ============================================================================
+-- Upstream #863: DESCRIBE rendered SynchronizeAction as `-- Empty action`, and
+-- the fallback comment silently dropped the activity's entire error handler
+-- ============================================================================
+--
+-- Two independent defects, only one of them about Synchronize:
+--
+-- 1. The modelsdk reader (the DEFAULT engine) had no SynchronizeAction case, so
+--    the activity read back with a nil Action and rendered as the anonymous
+--    "-- Empty action" — indistinguishable from an activity that genuinely has
+--    no action. 27 of 58 MicroflowAction types were in that state.
+--
+-- 2. The describer returned as soon as a statement rendered as a line comment,
+--    BEFORE consulting the error-handler flow. So every activity the reader
+--    could not map lost its error branch with no warning — the reporter's
+--    nanoflow went in with 10 activities and came out with 7. That early return
+--    is itself correct (annotations before a comment break exec), so the fix
+--    keeps it and emits the branch commented-out instead of dropping it.
+--
+-- The enum values below are the platform's, from the Mendix Model SDK's
+-- SynchronizationType (All / Unsynchronized / Specific) — NOT Studio Pro's UI
+-- wording, which calls Specific "Selected object(s)" and would have produced an
+-- invalid enum in the model.
+--
+-- Two things mxbuild caught while building this, both invisible in the dump:
+--   * CE0011 — a custom error handler needs its own outgoing error flow.
+--   * CE2004 — a Mendix array's first element is a VERSION MARKER. Written
+--     without it, a one-element VariableNames reads back as empty, so the
+--     variable was plainly in the BSON and the build still said none was
+--     selected.
+--
+-- Verified on Mendix 11.13.0: 0 errors, and describe→exec→describe is stable.
+-- ============================================================================
+
+create module Sync863;
+create persistent entity Sync863.Order (Code: String(20));
+
+-- SYNCHRONIZE is nanoflow-only: the same statement in a microflow is CE0009
+-- "This action is not supported in microflows.", which mxcli now reports as
+-- MDL057 before the build.
+create nanoflow Sync863.NF_Sync ($Order: Sync863.Order)
+begin
+  synchronize all;
+  synchronize unsynchronized;          -- Mendix 9.4+ (version-gated)
+  synchronize $Order;                  -- Specific mode
+  synchronize all on error continue;
+  synchronize all on error without rollback {
+    log error 'sync failed';
+  };
+end;

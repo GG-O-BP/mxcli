@@ -169,6 +169,33 @@ func formatAction(
 	}
 
 	switch a := action.(type) {
+	case *microflows.SynchronizeAction:
+		// Emit the mode explicitly in every case, including the All default, so
+		// the statement is self-describing and a describe→exec round trip cannot
+		// turn a Specific-mode action into an All-mode one by omission.
+		switch a.SyncType {
+		case microflows.SynchronizationTypeSpecific:
+			vars := make([]string, 0, len(a.VariableNames))
+			for _, v := range a.VariableNames {
+				vars = append(vars, "$"+strings.TrimPrefix(v, "$"))
+			}
+			return fmt.Sprintf("synchronize %s;", strings.Join(vars, ", "))
+		case microflows.SynchronizationTypeUnsynchronized:
+			return "synchronize unsynchronized;"
+		default:
+			return "synchronize all;"
+		}
+
+	case *microflows.UnsupportedAction:
+		// The reader had no mapping for this action's $Type. Name it: the old
+		// anonymous "-- Empty action" was indistinguishable from an activity that
+		// genuinely has no action, so a describe→edit→exec cycle deleted the
+		// activity with nothing in the output to suggest anything was lost (#863).
+		if a.StorageType == "" {
+			return "-- Empty action"
+		}
+		return fmt.Sprintf("-- Unsupported action: %s", a.StorageType)
+
 	case *microflows.CastAction:
 		outputVar := a.OutputVariable
 		if outputVar != "" && !strings.HasPrefix(outputVar, "$") {

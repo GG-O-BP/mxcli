@@ -1207,6 +1207,34 @@ func buildDownloadFileStatement(ctx parser.IDownloadFileStatementContext) *ast.D
 	return stmt
 }
 
+// buildSynchronizeStatement converts synchronizeStatement context to SynchronizeStmt.
+// Grammar: SYNCHRONIZE (ALL | UNSYNCHRONIZED | VARIABLE (COMMA VARIABLE)*) onErrorClause?
+//
+// The mode words map to the platform's SynchronizationType values, which are NOT
+// Studio Pro's UI wording: the variable form is "Specific", not "Selected".
+func buildSynchronizeStatement(ctx parser.ISynchronizeStatementContext) *ast.SynchronizeStmt {
+	if ctx == nil {
+		return nil
+	}
+	syncCtx := ctx.(*parser.SynchronizeStatementContext)
+	stmt := &ast.SynchronizeStmt{}
+	switch {
+	case syncCtx.UNSYNCHRONIZED() != nil:
+		stmt.SyncType = "Unsynchronized"
+	case syncCtx.ALL() != nil:
+		stmt.SyncType = "All"
+	default:
+		stmt.SyncType = "Specific"
+		for _, v := range syncCtx.AllVARIABLE() {
+			stmt.Variables = append(stmt.Variables, strings.TrimPrefix(v.GetText(), "$"))
+		}
+	}
+	if errClause := syncCtx.OnErrorClause(); errClause != nil {
+		stmt.ErrorHandling = buildOnErrorClause(errClause)
+	}
+	return stmt
+}
+
 // buildValidationFeedbackStatement converts validationFeedbackStatement context to ValidationFeedbackStmt.
 // Grammar: VALIDATION FEEDBACK attributePath MESSAGE expression (OBJECTS LBRACKET expressionList RBRACKET)?
 func buildValidationFeedbackStatement(ctx parser.IValidationFeedbackStatementContext) *ast.ValidationFeedbackStmt {

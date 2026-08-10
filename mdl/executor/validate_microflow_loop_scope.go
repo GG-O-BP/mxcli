@@ -340,6 +340,8 @@ func loopRefVars(stmt ast.MicroflowStatement) []string {
 		addExpr(s.TemplateArgs...)
 	case *ast.DownloadFileStmt:
 		add(s.FileDocument)
+	case *ast.SynchronizeStmt:
+		add(s.Variables...)
 	case *ast.ValidationFeedbackStmt:
 		if s.AttributePath != nil {
 			add(s.AttributePath.Variable)

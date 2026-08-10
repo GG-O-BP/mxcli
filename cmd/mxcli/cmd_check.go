@@ -140,6 +140,11 @@ Examples:
 			if cfgStmt, ok := stmt.(*ast.CreateConfigurationStmt); ok {
 				violations = append(violations, executor.ValidateCreateConfiguration(cfgStmt)...)
 			}
+			// Check database connection credentials: a literal where Mendix
+			// stores a constant reference writes an UNOPENABLE project.
+			if dbStmt, ok := stmt.(*ast.CreateDatabaseConnectionStmt); ok {
+				violations = append(violations, executor.ValidateDatabaseConnection(dbStmt)...)
+			}
 			// Check view entity OQL
 			if viewStmt, ok := stmt.(*ast.CreateViewEntityStmt); ok {
 				if viewStmt.Query.RawQuery != "" {

@@ -7,6 +7,7 @@ import (
 
 	"github.com/mendixlabs/mxcli/model"
 	"github.com/mendixlabs/mxcli/modelsdk/element"
+	genDb "github.com/mendixlabs/mxcli/modelsdk/gen/databaseconnector"
 	genMf "github.com/mendixlabs/mxcli/modelsdk/gen/microflows"
 	genTexts "github.com/mendixlabs/mxcli/modelsdk/gen/texts"
 	"github.com/mendixlabs/mxcli/sdk/microflows"
@@ -371,6 +372,67 @@ func actionFromGen(el element.Element) microflows.MicroflowAction {
 		if webServiceActionRequiresRawBSON(raw) {
 			out.RawBSON = raw
 		}
+		return out
+
+	case *genDb.ExecuteDatabaseQueryAction:
+		// EXECUTE DATABASE QUERY. Read from raw against the keys the writer builds
+		// directly (Query / DynamicQuery / OutputVariableName / the two mapping
+		// lists) rather than through the gen accessors: gen exposes the named
+		// query as QueryQualifiedName, and pinning reader and writer to the same
+		// key set is what keeps the round trip honest.
+		//
+		// The action is authorable in MDL and already has a DESCRIBE formatter —
+		// only this mapping was missing, so it wrote fine and read back as
+		// "-- Empty action".
+		raw := a.Raw()
+		out := &microflows.ExecuteDatabaseQueryAction{
+			ErrorHandlingType:  microflows.ErrorHandlingType(rawStr(raw, "ErrorHandlingType")),
+			OutputVariableName: rawStr(raw, "OutputVariableName"),
+			Query:              rawStr(raw, "Query"),
+			DynamicQuery:       rawStr(raw, "DynamicQuery"),
+		}
+		// Mapping IDs are deliberately not carried across: the writer mints fresh
+		// ones (as the JavaActionCallAction mapping reader above also does), and a
+		// half-preserved ID is worse than none.
+		for _, md := range rawDocElements(raw, "ParameterMappings") {
+			pm := &microflows.DatabaseQueryParameterMapping{
+				ParameterName: rawStr(md, "ParameterName"),
+				Value:         rawStr(md, "Value"),
+			}
+			out.ParameterMappings = append(out.ParameterMappings, pm)
+		}
+		for _, md := range rawDocElements(raw, "ConnectionParameterMappings") {
+			cm := &microflows.DatabaseConnectionParameterMapping{
+				ParameterName: rawStr(md, "ParameterName"),
+				Value:         rawStr(md, "Value"),
+			}
+			out.ConnectionParameterMappings = append(out.ConnectionParameterMappings, cm)
+		}
+		out.ID = model.ID(a.ID())
+		return out
+
+	case *genMf.SynchronizeAction:
+		// SYNCHRONIZE (nanoflow-only). Type and ErrorHandlingType come off the gen
+		// accessors, but VariableNames must be read from raw: the model stores a
+		// BSON array of strings, while gen binds it as a scalar Primitive[string]
+		// (a codegen mismatch), so the accessor would hand back "" for a
+		// Specific-mode action and silently lose its variables.
+		//
+		// An absent Type means All — the platform default (#863).
+		raw := a.Raw()
+		out := &microflows.SynchronizeAction{
+			ErrorHandlingType: microflows.ErrorHandlingType(a.ErrorHandlingType()),
+			SyncType:          microflows.SynchronizationType(orDefault(a.Type(), string(microflows.SynchronizationTypeAll))),
+		}
+		if arr, ok := raw.Lookup("VariableNames").ArrayOK(); ok {
+			vals, _ := arr.Values()
+			for _, v := range vals {
+				if s, ok := v.StringValueOK(); ok {
+					out.VariableNames = append(out.VariableNames, s)
+				}
+			}
+		}
+		out.ID = model.ID(a.ID())
 		return out
 
 	case *genMf.DownloadFileAction:
@@ -899,4 +961,53 @@ func rangeFromGen(el element.Element) *microflows.Range {
 	default:
 		return nil
 	}
+}
+
+// errorHandlingTypeOf reads an action's ErrorHandlingType generically, by
+// property name rather than by concrete type. Every Microflows$*Action that
+// supports custom error handling stores it under this one key, so an action the
+// reader has no mapping for can still surrender the one field DESCRIBE needs to
+// keep its error handler attached (#863).
+//
+// Returns "" when the property is absent or is not a string-valued enum; callers
+// treat that as "no explicit error handling", the same as the stored default.
+func errorHandlingTypeOf(el element.Element) string {
+	if el == nil {
+		return ""
+	}
+	for _, p := range el.Properties() {
+		if p.Name() != "ErrorHandlingType" {
+			continue
+		}
+		if w, ok := p.(element.WritableProperty); ok {
+			if s, ok := w.BSONValue().(string); ok {
+				return s
+			}
+		}
+		return ""
+	}
+	return ""
+}
+
+// rawDocElements returns the document entries of a versioned BSON array.
+//
+// Element 0 of a Mendix array is a version marker (an int32), never data, so it
+// simply fails the document check and is skipped — the same shape the mapping
+// readers above rely on.
+func rawDocElements(raw bson.Raw, key string) []bson.Raw {
+	arr, ok := raw.Lookup(key).ArrayOK()
+	if !ok {
+		return nil
+	}
+	vals, err := arr.Values()
+	if err != nil {
+		return nil
+	}
+	out := make([]bson.Raw, 0, len(vals))
+	for _, v := range vals {
+		if md, ok := v.DocumentOK(); ok {
+			out = append(out, md)
+		}
+	}
+	return out
 }
