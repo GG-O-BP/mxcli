@@ -108,12 +108,46 @@ derivation, or reference remapping. Those remain available for a later, narrower
 purpose — a *smaller* diff when something genuinely changed — and are explicitly
 not prerequisites.
 
-**One policy has to change first.** `microflow_write.go` registers `StableId` as a
-`FreshGUIDField`, minting a new GUID on every microflow write. While that holds, a
-microflow always differs from itself and decision 1 skips nothing for the document
-type that dominates a script-authored app. Measured on a 27-unit project: 26 units
-canonically identical across two identical re-runs, 1 differing, and that one
-differing **only** in `StableId`.
+**One policy has to change first, and it is sufficient.**
+`microflow_write.go` registers `StableId` as a `FreshGUIDField`, minting a new GUID
+on every microflow write. While that holds, a microflow always differs from itself
+and decision 1 skips nothing for the document type that dominates a script-authored
+app.
+
+Measured on `mxcli-sudoku` — 412 units, MPR v2, an idempotent 30-document script
+set, two identical re-runs (~61s):
+
+```
+units                412
+  identical          386
+  volatile-only       26     all 26 are microflows
+  real differences     0
+```
+
+**Zero real differences at scale**, and the split falls exactly along document
+type rather than arbitrarily. `StableId` is registered on `Microflows$Microflow`
+only, and the result mirrors that precisely: of the 30 documents the scripts
+touch, the 26 microflows are volatile-only while the nanoflow, both pages and the
+navigation document are *identical*. So freezing `StableId` is not merely
+necessary for decision 1 — on this evidence it is **sufficient**.
+
+For one microflow across the two runs:
+
+```
+run a: canon=ec4c23b68471026a  masked=6bc0ff14154da8de
+run b: canon=46db2776c892421c  masked=6bc0ff14154da8de
+StableId run 1: 26LgMMVoiE+ex1dmtRbDHQ==
+StableId run 2: KwVkeqX3gU+s/ncDaO/7qw==
+```
+
+Canon moves, masked does not, and the field itself is what moved.
+
+**The zero is a measurement, not a blind spot.** The same probe was run against
+the withdrawn `PreserveIDs` binary on the same project and reported **10 real
+differences** — the 9 microflows and the 1 nanoflow in that script set, with the
+page unchanged. That independently reproduces the microflows-corrupt /
+pages-survive split, and demonstrates the probe can report non-zero on exactly
+the failure this ADR exists to prevent.
 
 **Verification has a standing shape.** `scripts/mprsnapshot -canon` emits per-unit
 canonical digests; two runs plus a diff answers "how many units would be skipped"
@@ -123,6 +157,32 @@ measurement on a project that contains microflows.
 **A green `mx check` is not evidence about the write path** unless the fixture
 contains the constructs at risk. This is the direct lesson of PR #125 and belongs
 in any future attempt's test plan.
+
+### Known limit of the evidence
+
+The measurements above cover microflows, nanoflows, pages and navigation — the
+*internal wiring* class, where this ADR's argument is strongest. They do **not**
+cover domain-model documents, because the probe needs scripts that apply cleanly
+twice and the available domain scripts do not (`create module` and
+`alter entity … add attribute` fail on a second run).
+
+That leaves untested precisely the exception this ADR names: an entity attribute's
+`$ID`, which the database synchronizer reads as identity. Two things are already
+true there and should be checked rather than assumed when it is measured:
+
+- `create or modify entity` **already reuses each retained attribute's existing ID
+  by name** (findings #13, `06a9face`) — so the identity concern is addressed on
+  that path, and a probe run over it would be confirming a fix rather than
+  discovering one.
+- `create or modify entity` still **rebuilds the entity from the statement alone**,
+  so any attribute the statement omits is deleted. It is no longer silent — a
+  non-blocking warning lists what is dropped (findings #24) — but a script used to
+  probe idempotence must list every attribute or it will measure a real change it
+  caused itself.
+
+Closing this gap needs an idempotent domain-model script. Until then, decision 1's
+safety argument for attributes rests on the identity fix above rather than on a
+measurement.
 
 ## Alternatives considered
 
