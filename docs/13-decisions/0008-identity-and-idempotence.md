@@ -114,6 +114,12 @@ on every microflow write. While that holds, a microflow always differs from itse
 and decision 1 skips nothing for the document type that dominates a script-authored
 app.
 
+That policy is also wrong on its own terms — see
+[What `StableId` is](#what-stableid-is) below. It is not an incidental GUID that
+happens to churn; it is the one field on a microflow whose stated purpose is to
+*not* change, and its value determines the identifier the browser uses to call
+that microflow.
+
 Measured on `mxcli-sudoku` — 412 units, MPR v2, an idempotent 30-document script
 set, two identical re-runs (~61s):
 
@@ -157,6 +163,98 @@ measurement on a project that contains microflows.
 **A green `mx check` is not evidence about the write path** unless the fixture
 contains the constructs at risk. This is the direct lesson of PR #125 and belongs
 in any future attempt's test plan.
+
+### What `StableId` is
+
+Freezing it was the last blocker, so "what breaks if we stop regenerating it?"
+had to be answered before decision 1 could be implemented. mxcli's own reference
+material is silent — the field appears nowhere in
+`reference/mendixmodellib/reflection-data/`, `reference/mendixmodelsdk/`, or
+`generated/metamodel/`. That silence means only that mxcli never had a
+description of it, so the evidence below comes from Mendix's own binaries and
+from a build's output.
+
+**Declaration** (`Mendix.Modeler.Microflows.dll`, via `monodis`):
+
+```
+.property instance System.Guid StableId ()
+  ModelPropertyAttribute("StableId", RetentionType.DesignTime)
+    SdkName      = "stableId"
+    IsIdentifier = true
+```
+
+Mendix's own metamodel marks it `IsIdentifier`. `RetentionType.DesignTime` means
+it is kept in the model but not exported as a property — matching a strict scan
+of all **624 runtime jars**, which finds the name zero times. (A loose substring
+scan appears to find three; they are `newPersistableIds`.)
+
+**Where it came from.** `MicroflowStableIdConversion` is an `IOneTimeConversion`
+that back-fills every microflow:
+
+```csharp
+foreach (var mf in project.GetAllStorageObjects<Microflow>())
+    mf.StableId = GuidUtil.Create(mf.ID, "stableId");
+```
+
+Seeded *once* from the storage `$ID`, then retained independently of it. The name
+is the specification: it is the identity that survives the `$ID` renumbering
+Studio Pro does freely (0 of 94 preserved, §"What is actually true about
+identity").
+
+**Studio Pro transplants it on module update.**
+`PackageUtils.RescueStableIDs` — sitting directly beside
+`PackageUtils.RescueDataStorageGuids` — matches old to new microflow **by
+`Name`** and copies the value across. Studio Pro's own marketplace path is
+replace-wholesale-then-transplant-durable-identity, which is decision 3 arrived
+at independently by the vendor.
+
+**It is load-bearing in the build.** `RuntimeOperationRegistry` in
+`Mendix.Modeler.WebUI.Export` keys every client-callable microflow operation on
+it:
+
+```
+GetOrCreateOperation(stableID: microflow.StableId.ToString(), namespaceId: project.ID)
+  -> StringUtil.CreateShortIdentifier(namespaceId, stableID)
+  -> GuidUtil.Create(namespaceId, stableID, version: 5)      // RFC 4122 v5, SHA-1
+  -> Convert.ToBase64String(guid.ToByteArray()).Replace("=", "")
+```
+
+Reproduced against a real build (Mendix 11.10, `mxbuild --target=deploy`): all
+**10 of 10** `callMicroflow` entries in `deployment/model/operations.json` are
+regenerated exactly by `base64(uuid5(projectId, StableId).bytes_le)`, e.g.
+
+```
+BERAieo94VWMPTH77gmtrA  Administration.ShowMyPasswordForm
+L6RSxgkEsVmFIgNwW/XX7Q  Administration.NewAccount
+```
+
+`com.mendix.webui.jar` reads that file. So the *property* is design-time, but its
+*value* reaches the runtime as the operation identifier the browser calls — and
+`operations.json` attaches `allowedUserRoleSets` per operation id.
+
+**Consequence.** A fresh `StableId` renames every client-callable microflow
+operation in the deployed model. Since `operationId` is a pure function of
+`(projectId, StableId)` and mxcli demonstrably moves `StableId` on every write,
+that rename follows with no gap — a build after an mxcli write emits different
+operation ids for unchanged microflows. Within a single build client and server
+still agree, so this is not a "the app is broken" claim and has not been measured
+as one; it is a claim about the artifact, which is exactly what decision 1 is
+about.
+
+**Scope.** Only `Microflows$Microflow` carries the field: in the 369-unit fixture,
+16 of 16 microflows have it and all 13 nanoflows do not. That independently
+explains the sudoku split — 26 microflows volatile-only, the nanoflow identical —
+and is why freezing this one field is sufficient rather than merely necessary.
+
+**How this was established**, for the next field that needs the same treatment:
+
+| Question | Method |
+|---|---|
+| Does it reach the runtime? | strict-boundary `strings` scan over every runtime jar — substring matching gives false positives |
+| Who declares it, with what semantics? | `monodis` the modeler assembly; read the `ModelPropertyAttribute` blob |
+| When did it appear, seeded how? | look for an `IOneTimeConversion` named after it |
+| Does Studio Pro preserve it? | search the package/import assembly for a get→set pair |
+| Does its value escape the model? | build with `mxbuild --target=deploy`, then reproduce the derivation against `deployment/` |
 
 ### Known limit of the evidence
 

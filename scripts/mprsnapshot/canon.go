@@ -43,6 +43,12 @@ import (
 // volatileFields are regenerated on every write regardless of content, so they
 // make a document differ from itself. Masking them measures what idempotence
 // would look like if the policy changed.
+//
+// StableId is not incidental churn. Mendix declares it IsIdentifier, seeds it
+// once via a one-time conversion, transplants it across a module update
+// (PackageUtils.RescueStableIDs), and derives each client-callable microflow's
+// operation id from it — operationId == base64(uuid5(projectId, StableId)).
+// See ADR-0008, "What StableId is".
 var volatileFields = map[string]bool{
 	"StableId": true,
 }
