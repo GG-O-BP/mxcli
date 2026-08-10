@@ -309,6 +309,7 @@ it is for pages.
 | Show page | `show page Module.PageName ($Param = $value);` | Also accepts `(Param: $value)` |
 | Close page | `close page;` | |
 | Download file | `download file $FileDocument [show in browser];` | Streams a `System.FileDocument` |
+| Database connection credentials | `connection string @Mod.Const`, `username @Mod.Const`, `password @Mod.Const` | Constant **references** only. A literal writes an unopenable project — MDL058 |
 | Synchronize (nanoflow only) | `synchronize all;` / `synchronize unsynchronized;` / `synchronize $Obj, $List;` | Offline sync. `unsynchronized` needs Mendix 9.4+. In a microflow this is MDL057 / CE0009 |
 | Validation | `validation feedback $entity/attribute message 'message';` | Requires attribute path + MESSAGE |
 | Log | `log info\|warning\|error [node 'name'] 'message';` | |

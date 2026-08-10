@@ -44,6 +44,18 @@ func createDatabaseConnection(ctx *ExecContext, stmt *ast.CreateDatabaseConnecti
 		}
 	}
 
+	// A literal where Mendix stores a ConstantIdentifier writes a project that
+	// cannot be LOADED, so this must fail before the write — `check` reporting it
+	// is not enough for a script that never ran `check` (the #833 lesson).
+	if vs := ValidateDatabaseConnection(stmt); len(vs) > 0 {
+		msgs := make([]string, 0, len(vs))
+		for _, v := range vs {
+			msgs = append(msgs, fmt.Sprintf("[%s] %s\n    %s", v.RuleID, v.Message, v.Suggestion))
+		}
+		return mdlerrors.NewValidationf("database connection '%s' has validation errors:\n  - %s",
+			stmt.Name.String(), strings.Join(msgs, "\n  - "))
+	}
+
 	// Build connection string ref
 	connStr := stmt.ConnectionString
 	userName := stmt.UserName

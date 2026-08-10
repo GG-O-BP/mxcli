@@ -74,6 +74,36 @@ begin
 end;
 ```
 
+**The `@` is not optional.** `connection string`, `username` and `password` are
+ConstantIdentifier properties — Mendix stores a *reference to a Constant
+document*, never a value. The grammar accepts a bare string there, but writing
+one produces a project that **cannot be opened at all**:
+
+```
+StorageLoadException: ... has an invalid value '' for property ConnectionString.
+The text 'jdbc:postgresql://...' is not a valid ConstantIdentifier.
+```
+
+That is a load failure, not a build error: `mx check` dies before validating
+anything, so the whole project goes down rather than one document. mxcli refuses
+it as **MDL058** at both `check` and `exec`.
+
+```sql
+-- WRONG — writes an unopenable .mpr
+connection string 'jdbc:postgresql://localhost:5432/app'
+username 'app'
+
+-- RIGHT — declare the constant, then reference it
+create constant Module.DbUrl  type String default 'jdbc:postgresql://localhost:5432/app';
+create constant Module.DbUser type String default 'app';
+
+connection string @Module.DbUrl
+username @Module.DbUser
+```
+
+The indirection is the point: the constant's value is per-environment, so a
+password is configured at deploy time instead of living in the model.
+
 ### Supported Database Types
 
 These are the values Studio Pro's own connector editor offers — read out of the
