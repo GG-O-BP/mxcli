@@ -120,6 +120,25 @@ happens to churn; it is the one field on a microflow whose stated purpose is to
 *not* change, and its value determines the identifier the browser uses to call
 that microflow.
 
+**Where this lives.** `modelsdk/canon` holds the whole policy: `Digest`/`Equal`
+(canonical comparison), `CarryIdentity` (the stored value of an identity property
+is carried onto the rebuilt document, keyed by `$Type`), and `Reconcile`, which
+composes them into the one decision a storage layer asks for. Both engines call
+it at their single write choke point — `modelsdk/mpr/writer_core.go`
+(`reconcileWithStored`, reached by `updateUnit` *and* `WriteTransaction.WriteUnit`,
+the latter being how `codec.Store` writes) and `sdk/mpr/writer_units.go`
+(`updateUnit`). Which engine ran is an `--engine` flag; it must not be visible in
+a user's diff. `MXCLI_ALWAYS_WRITE=1` disables elision for bisecting, and
+deliberately does *not* disable identity preservation: a forced write that
+re-minted `StableId` would renumber the deployed model's operation ids, which is
+a change to the app rather than a debugging aid.
+
+Note the ordering inside `Reconcile`: identity is carried **before** the
+comparison. That is what makes a re-run of an unchanged microflow compare equal at
+all, and it is why canonicalisation does not mask `StableId` — a field that
+reaches storage is content. Masking it in the comparison would skip the write
+while leaving stored and intended values silently disagreeing.
+
 Measured on `mxcli-sudoku` — 412 units, MPR v2, an idempotent 30-document script
 set, two identical re-runs (~61s):
 

@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/mendixlabs/mxcli/model"
+	"github.com/mendixlabs/mxcli/modelsdk/canon"
 	"github.com/mendixlabs/mxcli/sdk/domainmodel"
 )
 
@@ -133,6 +135,17 @@ func (w *Writer) insertUnit(unitID, containerID, containmentName, unitType strin
 func (w *Writer) updateUnit(unitID string, contents []byte) error {
 	if err := validateNoPlaceholderIDs(unitID, contents); err != nil {
 		return err
+	}
+
+	// No-op elision and identity preservation (ADR-0008 decision 1), sharing the
+	// modelsdk engine's policy rather than reimplementing it. The two engines
+	// must agree here: which one ran is an --engine flag, not something a user
+	// should be able to see in their diff.
+	if stored, err := w.reader.GetRawUnitBytes(model.ID(unitID)); err == nil {
+		var unchanged bool
+		if contents, unchanged = canon.Reconcile(contents, stored); unchanged {
+			return nil
+		}
 	}
 
 	// Convert UUID string to 16-byte blob

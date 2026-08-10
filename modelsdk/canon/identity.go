@@ -1,0 +1,184 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package canon
+
+import (
+	"bytes"
+	"os"
+
+	"go.mongodb.org/mongo-driver/v2/x/bsonx/bsoncore"
+)
+
+// Reconcile is ADR-0008 decision 1, as a single decision both storage engines
+// share: given the bytes a write wants to store and the bytes already stored, it
+// returns what should actually be written and whether the write can be skipped.
+//
+// Why a *canonical* comparison rather than comparing bytes: the rebuilt bytes
+// always differ, because every sub-element in a rebuild gets a freshly random
+// $ID. Byte comparison would skip nothing.
+//
+// Skipping is strictly safer than writing, not merely cheaper. Canonical
+// equality means the two documents differ only in which IDs they picked, and the
+// stored ones are the IDs every pointer inside that unit already agrees with —
+// so keeping them cannot dangle a reference, whereas rewriting them is how
+// PR #125 made projects unopenable. Nothing outside the unit can observe them:
+// of 9,910 binary $ID pointers in a real project, 0 cross a unit boundary.
+//
+// Every failure path falls through to writing. A false "different" costs a
+// redundant write, which is the behaviour that existed before this function; a
+// false "equal" would silently discard the user's intent.
+//
+// Callers pass stored == nil for a unit that does not exist yet.
+func Reconcile(contents, stored []byte) (out []byte, unchanged bool) {
+	if len(stored) == 0 {
+		return contents, false
+	}
+
+	// Identity is carried unconditionally. MXCLI_ALWAYS_WRITE turns off *eliding*
+	// the write, not preserving what the document is: a forced write that
+	// re-minted StableId would renumber the deployed model's operation ids, which
+	// is a change to the app rather than a debugging aid.
+	contents = CarryIdentity(contents, stored)
+
+	if alwaysWrite() {
+		return contents, false
+	}
+	eq, err := Equal(contents, stored)
+	if err != nil {
+		return contents, false
+	}
+	return contents, eq
+}
+
+// alwaysWrite disables no-op elision. An escape hatch for bisecting a suspected
+// elision bug ("does it still reproduce if every write lands?") without building
+// a patched binary — not a supported knob.
+//
+// Read per call rather than cached at init so a test can toggle it: the control
+// that proves elision is what stopped the churn has to be able to turn elision
+// off in-process.
+func alwaysWrite() bool { return os.Getenv("MXCLI_ALWAYS_WRITE") != "" }
+
+// identityFields lists, per document $Type, the top-level properties that carry
+// *identity* rather than content: values a rebuild has no business re-minting,
+// because something outside this document remembers them.
+//
+// Today that is exactly one field. Microflows$Microflow.StableId is declared by
+// Mendix as ModelPropertyAttribute("StableId", RetentionType.DesignTime) with
+// IsIdentifier = true. It is seeded once by a one-time conversion, transplanted
+// across a marketplace module update by PackageUtils.RescueStableIDs, and — the
+// part that makes it load-bearing rather than decorative — the build derives
+// every client-callable microflow's operation id from it:
+//
+//	operationId == base64(uuid5(projectId, StableId).bytes_le)
+//
+// verified against deployment/model/operations.json. Regenerating it on every
+// write renames those operations. See ADR-0008, "What StableId is".
+//
+// Adding a row here is a claim that Mendix treats the property as an identity,
+// which should be established the same way rather than assumed.
+var identityFields = map[string][]string{
+	"Microflows$Microflow": {"StableId"},
+}
+
+// CarryIdentity returns contents with each identity field of its $Type
+// replaced by the value the stored document already holds.
+//
+// Two rules from the overlay-write guidance (CLAUDE.md, ADR-0005) apply and are
+// both enforced by the shape of the patch:
+//
+//   - Only a key the document *already carries* is written. If either side is
+//     missing the field, or the two disagree about its type or width, nothing is
+//     carried. An absent optional property is filled in on load; a wrongly-typed
+//     one makes the document unopenable in Studio Pro.
+//   - The dispatch is on the stored $Type, not on what the caller believes it is
+//     writing.
+//
+// The patch is byte-for-byte in place: a BSON binary value is fixed-width, so
+// overwriting the payload of an equal-length binary cannot disturb any length
+// prefix. Nothing is re-marshalled, so a document the codec produced reaches
+// storage exactly as the codec produced it apart from these bytes.
+func CarryIdentity(contents, stored []byte) []byte {
+	typeName, ok := topLevelString(stored, "$Type")
+	if !ok {
+		return contents
+	}
+	fields := identityFields[typeName]
+	if len(fields) == 0 {
+		return contents
+	}
+
+	out := contents
+	patched := false
+	for _, field := range fields {
+		want, ok := topLevelBinary(stored, field)
+		if !ok {
+			continue
+		}
+		if !patched {
+			// Copy lazily: the overwhelming majority of writes are of types with
+			// no identity fields, and those must not pay for a copy.
+			out = append([]byte(nil), contents...)
+			patched = true
+		}
+		if !overwriteTopLevelBinary(out, field, want) {
+			// The new document lacks the field, or its shape differs. Leave it
+			// alone rather than inventing or reshaping a stored property.
+			continue
+		}
+	}
+	return out
+}
+
+// topLevelString reads a top-level string property.
+func topLevelString(raw []byte, key string) (string, bool) {
+	v, err := bsoncore.Document(raw).LookupErr(key)
+	if err != nil {
+		return "", false
+	}
+	s, ok := v.StringValueOK()
+	return s, ok
+}
+
+// topLevelBinary reads a top-level binary property, returning its subtype and
+// payload.
+func topLevelBinary(raw []byte, key string) (binaryValue, bool) {
+	v, err := bsoncore.Document(raw).LookupErr(key)
+	if err != nil {
+		return binaryValue{}, false
+	}
+	subtype, data, ok := v.BinaryOK()
+	if !ok {
+		return binaryValue{}, false
+	}
+	return binaryValue{subtype: subtype, data: data}, true
+}
+
+type binaryValue struct {
+	subtype byte
+	data    []byte
+}
+
+// overwriteTopLevelBinary replaces the payload of a top-level binary property in
+// place, and reports whether it did. It refuses unless the target is a binary of
+// the same subtype and the same length, so the document's framing is untouched.
+//
+// The patch relies on the looked-up value aliasing raw rather than copying out
+// of it, which is a property of the BSON library and not of this package. Rather
+// than assume it, the write is read back: if the library ever stops aliasing,
+// this reports false and the caller carries nothing — a lost preservation, not a
+// silently corrupt document.
+func overwriteTopLevelBinary(raw []byte, key string, want binaryValue) bool {
+	v, err := bsoncore.Document(raw).LookupErr(key)
+	if err != nil {
+		return false
+	}
+	subtype, data, ok := v.BinaryOK()
+	if !ok || subtype != want.subtype || len(data) != len(want.data) {
+		return false
+	}
+	copy(data, want.data)
+
+	got, ok := topLevelBinary(raw, key)
+	return ok && got.subtype == want.subtype && bytes.Equal(got.data, want.data)
+}
