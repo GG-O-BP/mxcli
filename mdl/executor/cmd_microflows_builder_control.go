@@ -756,6 +756,8 @@ func statementErrorHandling(stmt ast.MicroflowStatement) *ast.ErrorHandlingClaus
 		return s.ErrorHandling
 	case *ast.DownloadFileStmt:
 		return s.ErrorHandling
+	case *ast.SynchronizeStmt:
+		return s.ErrorHandling
 	case *ast.RestCallStmt:
 		return s.ErrorHandling
 	case *ast.SendRestRequestStmt:

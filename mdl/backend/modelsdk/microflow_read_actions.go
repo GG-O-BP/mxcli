@@ -373,6 +373,30 @@ func actionFromGen(el element.Element) microflows.MicroflowAction {
 		}
 		return out
 
+	case *genMf.SynchronizeAction:
+		// SYNCHRONIZE (nanoflow-only). Type and ErrorHandlingType come off the gen
+		// accessors, but VariableNames must be read from raw: the model stores a
+		// BSON array of strings, while gen binds it as a scalar Primitive[string]
+		// (a codegen mismatch), so the accessor would hand back "" for a
+		// Specific-mode action and silently lose its variables.
+		//
+		// An absent Type means All — the platform default (#863).
+		raw := a.Raw()
+		out := &microflows.SynchronizeAction{
+			ErrorHandlingType: microflows.ErrorHandlingType(a.ErrorHandlingType()),
+			SyncType:          microflows.SynchronizationType(orDefault(a.Type(), string(microflows.SynchronizationTypeAll))),
+		}
+		if arr, ok := raw.Lookup("VariableNames").ArrayOK(); ok {
+			vals, _ := arr.Values()
+			for _, v := range vals {
+				if s, ok := v.StringValueOK(); ok {
+					out.VariableNames = append(out.VariableNames, s)
+				}
+			}
+		}
+		out.ID = model.ID(a.ID())
+		return out
+
 	case *genMf.DownloadFileAction:
 		// DOWNLOAD FILE. Without this case it renders "-- Empty action". Mirror
 		// legacy parseDownloadFileAction, including the Rollback default for an
@@ -899,4 +923,30 @@ func rangeFromGen(el element.Element) *microflows.Range {
 	default:
 		return nil
 	}
+}
+
+// errorHandlingTypeOf reads an action's ErrorHandlingType generically, by
+// property name rather than by concrete type. Every Microflows$*Action that
+// supports custom error handling stores it under this one key, so an action the
+// reader has no mapping for can still surrender the one field DESCRIBE needs to
+// keep its error handler attached (#863).
+//
+// Returns "" when the property is absent or is not a string-valued enum; callers
+// treat that as "no explicit error handling", the same as the stored default.
+func errorHandlingTypeOf(el element.Element) string {
+	if el == nil {
+		return ""
+	}
+	for _, p := range el.Properties() {
+		if p.Name() != "ErrorHandlingType" {
+			continue
+		}
+		if w, ok := p.(element.WritableProperty); ok {
+			if s, ok := w.BSONValue().(string); ok {
+				return s
+			}
+		}
+		return ""
+	}
+	return ""
 }

@@ -267,6 +267,8 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 				v.checkXPathIdConstraint(stmt.Variable, xp)
 				v.checkXPathVariableTraversal(stmt.Variable, xp)
 			}
+		case *ast.SynchronizeStmt:
+			v.checkSynchronizeIsNanoflowOnly()
 		case *ast.CallMicroflowStmt:
 			v.checkAssociationObjectArgs("microflow "+stmt.MicroflowName.String(), stmt.Arguments)
 		case *ast.CallNanoflowStmt:
@@ -597,6 +599,23 @@ func (v *microflowValidator) checkXPathVariableTraversal(variable, xpath string)
 				"traversal starts at the entity being retrieved: `[%s/<Module.Entity> = $%s]`. Both forms build clean.",
 				root, firstHop, leaf, leaf, firstHop, root))
 	}
+}
+
+// checkSynchronizeIsNanoflowOnly rejects SYNCHRONIZE in a microflow.
+//
+// Offline synchronization is a client-side operation, so Mendix allows the
+// activity only in nanoflows. This validator runs over microflow bodies, so
+// reaching it at all is the error.
+//
+// Verified against mxbuild 11.13.0: the same nanoflow builds with 0 errors,
+// while a microflow containing it fails CE0009 "This action is not supported in
+// microflows."
+func (v *microflowValidator) checkSynchronizeIsNanoflowOnly() {
+	v.addViolation("MDL057", linter.SeverityError,
+		"`synchronize` is not supported in a microflow — offline synchronization runs on the client "+
+			"(CE0009 \"This action is not supported in microflows.\")",
+		"Move the statement into a nanoflow: `create nanoflow Module.NF_Sync () begin synchronize all; end;`. "+
+			"A microflow can call that nanoflow only from client-side logic, so the caller must be a nanoflow too.")
 }
 
 // xpathIdConstraintRe matches a constraint comparing the object id against a VALUE
@@ -1205,6 +1224,8 @@ func stmtErrorHandling(stmt ast.MicroflowStatement) *ast.ErrorHandlingClause {
 	case *ast.CallJavaActionStmt:
 		return s.ErrorHandling
 	case *ast.DownloadFileStmt:
+		return s.ErrorHandling
+	case *ast.SynchronizeStmt:
 		return s.ErrorHandling
 	case *ast.CallJavaScriptActionStmt:
 		return s.ErrorHandling

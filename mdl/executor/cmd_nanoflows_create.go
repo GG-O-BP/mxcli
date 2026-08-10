@@ -191,6 +191,18 @@ func execCreateNanoflow(ctx *ExecContext, s *ast.CreateNanoflowStmt) error {
 		return fmt.Errorf("%s", errMsg)
 	}
 
+	// SYNCHRONIZE UNSYNCHRONIZED is the one mode with a floor inside Mendix 9:
+	// SynchronizationType.Unsynchronized was introduced in 9.4.0, while the
+	// activity and its other two modes go back further. Gate the mode, not the
+	// statement, so a 9.0-9.3 project keeps `synchronize all`.
+	if bodyUsesUnsynchronized(s.Body) {
+		if err := checkFeature(ctx, "microflows", "synchronize_unsynchronized",
+			"synchronize unsynchronized",
+			"use `synchronize all` or `synchronize $Var`, or upgrade the project to 9.4+"); err != nil {
+			return err
+		}
+	}
+
 	// Build flow graph from body statements
 	varTypes := make(map[string]string)
 	declaredVars := make(map[string]string)
@@ -256,4 +268,34 @@ func execCreateNanoflow(ctx *ExecContext, s *ast.CreateNanoflowStmt) error {
 
 	invalidateHierarchy(ctx)
 	return nil
+}
+
+// bodyUsesUnsynchronized reports whether any SYNCHRONIZE in the body selects the
+// Unsynchronized mode. Recurses the same nesting validateNanoflowStatements does
+// — branches, loops and error-handler bodies — so a gated mode cannot slip
+// through by sitting inside an `if`.
+func bodyUsesUnsynchronized(stmts []ast.MicroflowStatement) bool {
+	for _, stmt := range stmts {
+		if s, ok := stmt.(*ast.SynchronizeStmt); ok && s.SyncType == "Unsynchronized" {
+			return true
+		}
+		switch s := stmt.(type) {
+		case *ast.IfStmt:
+			if bodyUsesUnsynchronized(s.ThenBody) || bodyUsesUnsynchronized(s.ElseBody) {
+				return true
+			}
+		case *ast.LoopStmt:
+			if bodyUsesUnsynchronized(s.Body) {
+				return true
+			}
+		case *ast.WhileStmt:
+			if bodyUsesUnsynchronized(s.Body) {
+				return true
+			}
+		}
+		if eh := getErrorHandling(stmt); eh != nil && bodyUsesUnsynchronized(eh.Body) {
+			return true
+		}
+	}
+	return false
 }

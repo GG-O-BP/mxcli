@@ -941,6 +941,10 @@ func getErrorHandlerBody(stmt ast.MicroflowStatement) []ast.MicroflowStatement {
 		if s.ErrorHandling != nil && s.ErrorHandling.Body != nil {
 			return s.ErrorHandling.Body
 		}
+	case *ast.SynchronizeStmt:
+		if s.ErrorHandling != nil && s.ErrorHandling.Body != nil {
+			return s.ErrorHandling.Body
+		}
 	case *ast.CallJavaScriptActionStmt:
 		if s.ErrorHandling != nil && s.ErrorHandling.Body != nil {
 			return s.ErrorHandling.Body
@@ -980,6 +984,10 @@ var execEnforcedMicroflowRules = map[string]bool{
 	"MDL047": true,
 	"MDL048": true,
 	"MDL055": true,
+	// MDL057: `synchronize` in a microflow is CE0009 at build time, verified on
+	// mxbuild 11.13.0 — the same class of "check caught it, exec did not" gap
+	// that #833 was about.
+	"MDL057": true,
 }
 
 // validateMicroflowRules runs the MDL0xx microflow rule set (ValidateMicroflow)

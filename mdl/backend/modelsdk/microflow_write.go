@@ -4,6 +4,7 @@ package modelsdkbackend
 
 import (
 	"fmt"
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"sort"
 
 	"github.com/mendixlabs/mxcli/model"
@@ -510,6 +511,18 @@ func microflowActionToGen(action microflows.MicroflowAction) element.Element {
 		addPartList(g, "ParameterMappings", params)
 		addStr(g, "Query", a.Query)
 		return g
+	case *microflows.SynchronizeAction:
+		// Built directly rather than through genMf.NewSynchronizeAction: gen binds
+		// VariableNames as a scalar Primitive[string] and exposes no setter for
+		// it, so a Specific-mode action could not be written at all through the
+		// generated type. An EnumList[string] encodes the BSON array of names the
+		// platform actually stores.
+		g := newElem("Microflows$SynchronizeAction", string(a.ID))
+		addStr(g, "ErrorHandlingType", orDefault(string(a.ErrorHandlingType), "Rollback"))
+		addStr(g, "Type", orDefault(string(a.SyncType), string(microflows.SynchronizationTypeAll)))
+		addStrList(g, "VariableNames", a.VariableNames)
+		return g
+
 	case *microflows.JavaActionCallAction:
 		// Built directly: the gen JavaActionCallAction binds the wrong BSON keys
 		// (JavaActionQualifiedName/OutputVariableName) vs the verified storage keys
@@ -926,6 +939,27 @@ func addInt32(b *element.Base, name string, val int32) {
 	p := property.NewPrimitive[int32](name, property.DecodeInt32)
 	b.AddProperty(p, uint(len(b.Properties())))
 	p.Set(val)
+}
+
+// addStrList adds a dirty string-list property (BSON key = name).
+//
+// The leading int32 is Mendix's array version marker, and it is load-bearing:
+// every array in a Mendix document carries one, and the reader treats element 0
+// as the version rather than as data. Written without it, a one-element list
+// reads back as an empty list — mxbuild reported CE2004 "No variables to
+// synchronize have been selected." for a Synchronize action whose VariableNames
+// array plainly held the variable (#863).
+//
+// property.EnumList is NOT used here for exactly that reason: its BSONValue
+// returns a bare []string, so the codec's scalar path emits an unmarked array.
+func addStrList(b *element.Base, name string, vals []string) {
+	arr := bson.A{int32(1)}
+	for _, v := range vals {
+		arr = append(arr, v)
+	}
+	p := property.NewPrimitive[bson.A](name, func(raw bson.Raw, key string) bson.A { return nil })
+	b.AddProperty(p, uint(len(b.Properties())))
+	p.Set(arr)
 }
 
 // addPart adds a dirty single-child property (BSON key = name).

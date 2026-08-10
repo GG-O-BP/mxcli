@@ -21,6 +21,12 @@ features:
     basic:
       min_version: "9.0.0"
       mdl: "CREATE MICROFLOW Module.Name (...) BEGIN ... END"
+    synchronize:
+      min_version: "9.0.0"
+      mdl: "SYNCHRONIZE ALL | $Var[, $Var...]  (nanoflow only)"
+    synchronize_unsynchronized:
+      min_version: "9.4.0"
+      mdl: "SYNCHRONIZE UNSYNCHRONIZED  (nanoflow only)"
 
   pages:
     basic:
