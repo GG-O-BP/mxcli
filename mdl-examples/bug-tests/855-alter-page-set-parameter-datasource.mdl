@@ -1,0 +1,56 @@
+-- ============================================================================
+-- Upstream #855: ALTER PAGE ... SET rejected a parameter datasource
+-- ============================================================================
+--
+-- `set DataSource = $Param` failed with
+--
+--   unsupported DataSource type for alter page set: parameter
+--
+-- while the identical change through REPLACE worked — REPLACE rebuilds the
+-- widget through the CREATE PAGE builder, which has always handled every
+-- datasource type. The capability existed; only the SET path lacked it.
+--
+-- Two gaps stacked:
+--   * the executor's convertASTDataSource had no `parameter` case;
+--   * the mutator's serializeDataSourceBson had no *pages.DataViewSource case.
+--
+-- The parameter form is a Forms$DataViewSource with TWO by-name halves —
+-- EntityRef (DomainModels$DirectEntityRef naming the parameter's entity) and
+-- SourceVariable (Forms$PageVariable naming the parameter). Mendix resolves
+-- either one it cannot find to null, which is the #854 unopenable-project shape,
+-- so the entity is resolved from the container's own Parameters list and an
+-- unknown parameter name is refused rather than written unresolved.
+--
+-- A snippet parameter is the same shape under `SnippetParameter` instead of
+-- `PageParameter`; the mutator reads which from the stored parameter's $Type.
+--
+-- Verified on Mendix 11.13.0: 0 errors after the ALTER, and DESCRIBE renders
+-- `dataview dvOrder (DataSource: $Order)`.
+-- ============================================================================
+
+create module P855;
+create persistent entity P855.Order (Code: String(20));
+
+create microflow P855.MF_GetOrder () returns P855.Order as $Result
+begin
+  retrieve $Orders from P855.Order;
+  $Result = head($Orders);
+  return $Result;
+end;
+
+create page P855.OrderPage (
+  params: { $Order: P855.Order },
+  title: 'Order',
+  layout: Atlas_Core.Atlas_Default
+) {
+  layoutgrid g { row r { column c (desktopwidth: 12) {
+    dataview dvOrder (datasource: microflow P855.MF_GetOrder) {
+      textbox tbCode (attribute: Code, label: 'Code')
+    }
+  } } }
+}
+
+-- The reported operation: retype the datasource from microflow to parameter.
+alter page P855.OrderPage {
+  set DataSource = $Order on dvOrder;
+}
