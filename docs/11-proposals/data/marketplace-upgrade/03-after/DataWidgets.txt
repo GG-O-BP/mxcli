@@ -1,0 +1,51 @@
+# mprsnapshot/1
+# project	/workspaces/mxcli/mx-test-projects/test1-app/Test1App.mpr
+# mendix	11.13.0
+# units	398
+# module	DataWidgets
+#
+# U = unit, E = nested element, R = cross-element pointer.
+# Columns: kind, path, $Type, id, hash-or-guid
+# hash covers the unit's contents with every $ID removed, so a changed
+# hash on an unchanged id means the element was edited in place.
+E	DataWidgets/ClientActivities/Clear_Selection/Parameters/targetName	JavaScriptActions$JavaScriptActionParameter	id=a3e2d22d-2d07-48d6-83fe-c156acb65396
+E	DataWidgets/ClientActivities/Export_To_Excel/Parameters/chunkSize	JavaScriptActions$JavaScriptActionParameter	id=9dd9a688-c851-4a5b-bca6-54559764ce84
+E	DataWidgets/ClientActivities/Export_To_Excel/Parameters/datagridName	JavaScriptActions$JavaScriptActionParameter	id=7e54dc02-2578-4318-81fa-1f18ef229c05
+E	DataWidgets/ClientActivities/Export_To_Excel/Parameters/fileName	JavaScriptActions$JavaScriptActionParameter	id=206d93d8-7201-4ece-a773-4b4ab73bff38
+E	DataWidgets/ClientActivities/Export_To_Excel/Parameters/includeColumnHeaders	JavaScriptActions$JavaScriptActionParameter	id=19b8e1eb-afa4-410d-8a93-e8de74aa96af
+E	DataWidgets/ClientActivities/Export_To_Excel/Parameters/sheetName	JavaScriptActions$JavaScriptActionParameter	id=a486945d-73e6-4cdb-97af-c90750a6d23a
+E	DataWidgets/ClientActivities/Filter_Operators/Values/between	Enumerations$EnumerationValue	id=77e45415-54e9-4776-a796-92e2a3765986
+E	DataWidgets/ClientActivities/Filter_Operators/Values/contains	Enumerations$EnumerationValue	id=65e136df-5fe2-4bda-8a8e-655fbdba8b47
+E	DataWidgets/ClientActivities/Filter_Operators/Values/empty	Enumerations$EnumerationValue	id=4e9905aa-4e08-469b-96c8-486749967bc7
+E	DataWidgets/ClientActivities/Filter_Operators/Values/endsWith	Enumerations$EnumerationValue	id=05efcb51-7281-44f4-abff-a0cb5343fd08
+E	DataWidgets/ClientActivities/Filter_Operators/Values/equal	Enumerations$EnumerationValue	id=5c7aa7bf-49b7-47b2-9cf9-68a4b03446de
+E	DataWidgets/ClientActivities/Filter_Operators/Values/greater	Enumerations$EnumerationValue	id=63e13112-691c-4add-838c-1f4f41b8ee87
+E	DataWidgets/ClientActivities/Filter_Operators/Values/greaterEqual	Enumerations$EnumerationValue	id=ffaf8bf0-7bb5-4975-9c14-66cc5e652d23
+E	DataWidgets/ClientActivities/Filter_Operators/Values/notEmpty	Enumerations$EnumerationValue	id=fcac4b69-5b43-4bb5-a6ed-ca38a80096cc
+E	DataWidgets/ClientActivities/Filter_Operators/Values/notEqual	Enumerations$EnumerationValue	id=e835856d-371c-455c-acb8-0ba3ee730e0c
+E	DataWidgets/ClientActivities/Filter_Operators/Values/smaller	Enumerations$EnumerationValue	id=657416e9-ccbc-4c3b-b213-7c1c607088a4
+E	DataWidgets/ClientActivities/Filter_Operators/Values/smallerEqual	Enumerations$EnumerationValue	id=fdfcf2ba-510f-4e24-884a-6a332919608b
+E	DataWidgets/ClientActivities/Filter_Operators/Values/startsWith	Enumerations$EnumerationValue	id=dbf68f2d-215e-4aac-ba73-6302799b4b90
+E	DataWidgets/ClientActivities/Reset_All_Filters/Parameters/setToDefault	JavaScriptActions$JavaScriptActionParameter	id=2206e6ce-3740-4239-ac57-3a696c1137cb
+E	DataWidgets/ClientActivities/Reset_All_Filters/Parameters/targetName	JavaScriptActions$JavaScriptActionParameter	id=66ae7963-4c24-406a-a363-8e476ef4583a
+E	DataWidgets/ClientActivities/Reset_Filter/Parameters/setToDefault	JavaScriptActions$JavaScriptActionParameter	id=52f24844-5f58-4278-bd1f-4737fe209a67
+E	DataWidgets/ClientActivities/Reset_Filter/Parameters/targetName	JavaScriptActions$JavaScriptActionParameter	id=9d90c20a-d98b-46c2-bee4-efaaa151c0e0
+E	DataWidgets/ClientActivities/Set_Filter/Parameters/dateTimeValue	JavaScriptActions$JavaScriptActionParameter	id=cd4a2a44-89f3-43c7-8654-6ab1d0f9c9b5
+E	DataWidgets/ClientActivities/Set_Filter/Parameters/dateTimeValue_2	JavaScriptActions$JavaScriptActionParameter	id=a0cf92f9-52f1-44d2-a161-c20f8100a20e
+E	DataWidgets/ClientActivities/Set_Filter/Parameters/numberValue	JavaScriptActions$JavaScriptActionParameter	id=abbb8343-98a3-429b-b8a6-813ab35a2505
+E	DataWidgets/ClientActivities/Set_Filter/Parameters/operators	JavaScriptActions$JavaScriptActionParameter	id=66ddba35-dee1-48ff-92ca-4c40c57c851f
+E	DataWidgets/ClientActivities/Set_Filter/Parameters/stringValue	JavaScriptActions$JavaScriptActionParameter	id=112322d1-e19c-4c26-a2e9-be10c9900fe1
+E	DataWidgets/ClientActivities/Set_Filter/Parameters/targetName	JavaScriptActions$JavaScriptActionParameter	id=d2a8a30c-eb1c-4333-8c67-418ab0f00c53
+E	DataWidgets/ClientActivities/Set_Filter/Parameters/useDefaultValue	JavaScriptActions$JavaScriptActionParameter	id=cb06e4cf-ae25-46ee-8f50-11173e894e7b
+E	DataWidgets/ModuleSecurity/ModuleRoles/User	Security$ModuleRole	id=f8d6361a-ccc3-41e2-9782-26ea5c7a0670
+U	DataWidgets	Projects$ModuleImpl	id=818f30b0-de2f-4ac6-b245-1231da3233c5	h=1b08a6832f42e584
+U	DataWidgets/ClientActivities	Projects$Folder	id=20a46637-0aaa-4a6f-a55e-b27ea3122837	h=ea1bbcc49d12a5af
+U	DataWidgets/ClientActivities/Clear_Selection	JavaScriptActions$JavaScriptAction	id=aa12ff24-944a-4e8e-b8d2-db59c61c9f4c	h=5e1df2a5d2cb9820
+U	DataWidgets/ClientActivities/Export_To_Excel	JavaScriptActions$JavaScriptAction	id=020b8aca-7813-48c1-b6c8-e2bb9b5089a6	h=70dcbb49d431ccf0
+U	DataWidgets/ClientActivities/Filter_Operators	Enumerations$Enumeration	id=4c7431fd-6bda-4201-becc-c04a14b355e8	h=2647f6d2c1ab7c43
+U	DataWidgets/ClientActivities/Reset_All_Filters	JavaScriptActions$JavaScriptAction	id=d62cdab7-7d39-44de-baa8-989e8f859f93	h=fb2e733653375058
+U	DataWidgets/ClientActivities/Reset_Filter	JavaScriptActions$JavaScriptAction	id=754e599b-9df1-4b4d-9a09-fe4aaa4ff6ac	h=f9d5ab24d6a251c3
+U	DataWidgets/ClientActivities/Set_Filter	JavaScriptActions$JavaScriptAction	id=89c7833a-d803-4e22-8226-677362d302ad	h=6a08908c2d1aa3f1
+U	DataWidgets/DomainModel	DomainModels$DomainModel	id=7977a916-c769-4245-8216-958c34ae51cb	h=a0c27aa85656df84
+U	DataWidgets/ModuleSecurity	Security$ModuleSecurity	id=7c421032-b4d8-4e31-b558-c99bd0933d0e	h=de6a428c20b3ec5a
+U	DataWidgets/ModuleSettings	Projects$ModuleSettings	id=6f15c3c9-9d60-4bc2-aec5-dd7cedab182e	h=5c8ae4348317b186
