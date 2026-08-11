@@ -1,3 +1,8 @@
+---
+description: Generate a full CRUD setup (pages, microflows, security) for an entity
+argument-hint: <Module.Entity>
+---
+
 # Create CRUD
 
 Generate a complete CRUD (Create, Read, Update, Delete) setup for an entity.

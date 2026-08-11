@@ -1,3 +1,8 @@
+---
+description: Validate an MDL script before executing it
+argument-hint: <script.mdl>
+---
+
 # Check Script
 
 Validate an MDL script before executing it.

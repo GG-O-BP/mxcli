@@ -1,3 +1,8 @@
+---
+description: Compare an MDL script against the project's current state
+argument-hint: <script.mdl>
+---
+
 # Diff Script
 
 Compare an MDL script against the current state of a Mendix project to see what would change.

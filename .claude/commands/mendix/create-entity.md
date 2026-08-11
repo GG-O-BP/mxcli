@@ -1,3 +1,8 @@
+---
+description: Create a new entity in the domain model using MDL
+argument-hint: <Module.Entity>
+---
+
 # Create Entity
 
 Create a new entity in the Mendix domain model using MDL.

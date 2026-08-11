@@ -7,8 +7,12 @@ type CallWorkflowStmt struct {
 	OutputVariable string
 	Workflow       QualifiedName
 	Arguments      []CallArgument
-	ErrorHandling  *ErrorHandlingClause
-	Annotations    *ActivityAnnotations
+	// ContextVariable carries the positional form `call workflow X ($Ctx)`. A
+	// workflow has exactly one context parameter and the model stores only the
+	// variable, so DESCRIBE can only emit that form — see the grammar note.
+	ContextVariable string
+	ErrorHandling   *ErrorHandlingClause
+	Annotations     *ActivityAnnotations
 }
 
 func (*CallWorkflowStmt) isMicroflowStatement() {}

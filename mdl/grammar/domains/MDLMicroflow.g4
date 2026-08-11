@@ -410,7 +410,12 @@ callExternalActionStatement
 
 // $Wf = CALL WORKFLOW Module.WF_Name ($ContextObj);
 callWorkflowStatement
-    : (VARIABLE EQUALS)? CALL WORKFLOW qualifiedName LPAREN callArgumentList? RPAREN onErrorClause?
+    // A workflow has exactly ONE context parameter, so the positional form is
+    // unambiguous — and it is what DESCRIBE emits, since the model stores only
+    // the context VARIABLE and not the parameter's name. Without this
+    // alternative, describing a `call workflow` produced MDL that would not
+    // parse on the way back in.
+    : (VARIABLE EQUALS)? CALL WORKFLOW qualifiedName LPAREN (callArgumentList | VARIABLE)? RPAREN onErrorClause?
     ;
 
 // $Data = GET WORKFLOW DATA $WorkflowVar AS Module.WorkflowName;
