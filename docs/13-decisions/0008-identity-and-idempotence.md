@@ -181,6 +181,27 @@ the loop the pre-implementation measurement opened: the 26 volatile-only units
 were volatile *only* because of `StableId`, and carrying it from storage moves
 them into the skipped set.
 
+**Breadth, from a second project.** `mxcli-formula1` — a multi-app solution using
+published OData services, external entities and the external database connector —
+also came back green. Its value is not another zero; it is *coverage*. Every
+measurement behind this ADR until then came from projects whose documents were
+microflows, nanoflows, pages and navigation, and the open question was whether
+elision holds for document types nobody had exercised.
+
+It matters most for the invariant named under
+[generalisation](#does-this-generalise-to-document-types-that-do-not-exist-yet):
+elision assumes no binary pointer crosses a unit boundary. A multi-app solution
+with external entities and OData contracts is exactly the shape where a
+cross-document binary reference would be most likely to exist, and where its
+absence has the most to say. It is corroboration rather than proof — a passing
+project shows no *observed* violation, not that none can occur — but it is the
+strongest evidence available short of enforcing the invariant in code.
+
+Recorded as coverage rather than as an idempotence measurement: unlike the
+sudoku run, it is not established here that the `MXCLI_ALWAYS_WRITE=1` control was
+taken alongside it, and by this ADR's own standard a clean result without its
+control is not an idempotence measurement.
+
 **Verification has a standing shape.** `scripts/mprsnapshot -canon` emits per-unit
 canonical digests; two runs plus a diff answers "how many units would be skipped"
 without changing any write behaviour. Now that elision is live, the more direct
