@@ -58,6 +58,22 @@ func lookupTypeDefaults(typeName string) (TypeDefaults, bool) {
 	return d, ok
 }
 
+// FreshGUIDRegistrations returns every registered FreshGUIDFields entry, keyed by
+// $Type. Exported for the drift guard in the backend package: a property the
+// encoder mints fresh on every write is, by construction, a property that makes a
+// document differ from itself, so each one has to be a deliberate decision about
+// whether it is identity (carry it) or content (churn it). Nothing else should
+// need this.
+func FreshGUIDRegistrations() map[string][]string {
+	out := make(map[string][]string)
+	for typeName, d := range registeredDefaults {
+		if len(d.FreshGUIDFields) > 0 {
+			out[typeName] = append([]string(nil), d.FreshGUIDFields...)
+		}
+	}
+	return out
+}
+
 // listMarkers maps a child element $Type to the leading typed-array marker
 // Studio Pro writes for a PartList of that element type. Most domain-model
 // member lists use 3 (the encoder default); some — notably the IndexedAttribute

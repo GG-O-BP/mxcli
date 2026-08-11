@@ -179,8 +179,9 @@ Statement 5: create page (never executed)
 **Recommendations:**
 1. Split scripts into phases when experimenting with uncertain syntax
 2. Use `create or replace` to make scripts idempotent
-3. Test new syntax patterns with minimal scripts first
-4. Keep a backup of your project before running large scripts
+3. Re-run and check `git status` — a settled script changes nothing
+4. Test new syntax patterns with minimal scripts first
+5. Keep a backup of your project before running large scripts
 
 ## Script Organization
 
