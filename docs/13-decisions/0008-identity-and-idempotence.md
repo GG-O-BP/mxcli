@@ -174,10 +174,25 @@ page unchanged. That independently reproduces the microflows-corrupt /
 pages-survive split, and demonstrates the probe can report non-zero on exactly
 the failure this ADR exists to prevent.
 
+**Confirmed after implementation.** The prediction above — that freezing
+`StableId` is sufficient, not merely necessary — was checked against
+`mxcli-sudoku` once decision 1 shipped, and the project re-runs clean. That closes
+the loop the pre-implementation measurement opened: the 26 volatile-only units
+were volatile *only* because of `StableId`, and carrying it from storage moves
+them into the skipped set.
+
 **Verification has a standing shape.** `scripts/mprsnapshot -canon` emits per-unit
 canonical digests; two runs plus a diff answers "how many units would be skipped"
-without changing any write behaviour. Any claim about idempotence should cite that
-measurement on a project that contains microflows.
+without changing any write behaviour. Now that elision is live, the more direct
+question — "did anything change?" — is answered by hashing the stored units
+(or `git status`) across a re-run.
+
+Any claim about idempotence should cite a measurement on a project that contains
+microflows, **and the control run with `MXCLI_ALWAYS_WRITE=1`**. A clean diff on
+its own is not evidence: the first end-to-end measurement taken during
+implementation reported zero changed units purely because the script aborted on
+its second run at `enumeration already exists` and wrote nothing — and the control
+reported zero too, which is what exposed it.
 
 **A green `mx check` is not evidence about the write path** unless the fixture
 contains the constructs at risk. This is the direct lesson of PR #125 and belongs

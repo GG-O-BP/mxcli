@@ -244,6 +244,46 @@ without guessing, run the new mxbuild's own migration over an old project
 (`mx convert -p -s <project>`) and diff the BSON: Mendix ships a one-time
 conversion per renamed property, so the converted document is authoritative.
 
+### Writes Are Conditional, and an `$ID` Is Never Renumbered In Place
+
+Storage does not write a unit whose new content is **semantically equal** to what
+is stored ([ADR-0008](docs/13-decisions/0008-identity-and-idempotence.md)). The
+comparison is on a canonical form — every element `$ID` replaced by its index in a
+containment walk — because a rebuild mints a fresh random `$ID` per sub-element,
+so comparing bytes would skip nothing. The policy lives in `modelsdk/canon`
+(`Reconcile`) and is called at the single write choke point of **both** engines:
+`modelsdk/mpr/writer_core.go` (`updateUnit` *and* `WriteTransaction.WriteUnit` —
+`codec.Store` reaches storage through the latter) and `sdk/mpr/writer_units.go`.
+
+Three rules follow, and each has already been violated once:
+
+1. **Never rewrite an element `$ID` without rewriting every reference to it in the
+   same pass.** Pointers are *primitive* properties holding an `element.ID`, not
+   `ChildProperty`, so a containment walk traverses the whole document and never
+   sees one. PR #125 renumbered IDs this way and made projects unopenable
+   (`KeyNotFoundException` at `ResolvePostponedProperties`). A unit is rewritten
+   wholesale or not at all.
+2. **Adding a write path means wiring it to `canon.Reconcile`.** A new choke point
+   that writes directly will silently churn while everything else is quiet — the
+   worst kind of inconsistency, because the diff blames the wrong change.
+3. **A new document type with an identity property needs a row in
+   `canon.identityFields`.** It cannot be generated: Mendix's `IsIdentifier` lives
+   in the modeler assemblies, not in the reflection data `generated/metamodel` is
+   built from. `TestFreshGUIDFieldsHaveAnIdentityDecision` catches the common case
+   (a property the codec mints fresh on every write) but cannot catch an identity property
+   the codec does not mint. Establish the property's status the way `StableId` was
+   — the method table is in ADR-0008.
+
+Elision itself is type-agnostic and covers new document types for free, but it
+assumes **no binary pointer crosses a unit boundary** (measured 0 of 9,910, not
+enforced). A document type that references another *unit* by `$ID` rather than by
+qualified name breaks that assumption and invalidates the argument in ADR-0008.
+
+`MXCLI_ALWAYS_WRITE=1` forces every write to land, for bisecting. It does not
+disable identity preservation. **Any test asserting "nothing changed" must include
+the control run with it set** — otherwise the test passes against a build that
+never had the fix, which is exactly how PR #125 shipped green.
+
 ### Theme Files: Where SCSS Actually Compiles
 
 Styling written to the wrong place fails **silently** — the build succeeds and the
@@ -596,6 +636,7 @@ Full syntax tables for all MDL statements (microflows, pages, security, navigati
 **Implemented:**
 - Default styling + runtime theme switching (`mxcli theme list/show/apply/remove/switcher`, `mxcli new --theme`): three embedded themes (**signal** light-first, **ledger** light-first, **console** dark-first), each a palette in `theme/web/custom-variables.scss` + a shared Atlas wiring partial + a theme partial imported from `theme/web/main.scss` (which compiles last), plus vendored fonts. **No model changes**, so it hot-applies under `run --local --watch` and cannot affect a build. Generated regions are digest-fenced: a block carrying local edits is refused rather than overwritten. Applying a theme removes the previous one. `--variant auto` (default) ships both palettes — the app follows `prefers-color-scheme` before first paint and honours a `theme-light`/`theme-dark` class on `<html>`; `light`/`dark` bakes one. `theme switcher install` is the only part that writes to the model (JS actions + a nanoflow for a toggle button). Package: `cmd/mxcli/theme/`. See `docs/11-proposals/PROPOSAL_default_styling.md`
 - MPR v1/v2 reading and writing
+- Idempotent writes (ADR-0008): a unit whose new content is semantically equal to what is stored is **not written**, so re-running an MDL script against an in-sync project leaves the `.mpr` and `mprcontents/` byte-identical and Studio Pro shows no version-control changes. Comparison is on a canonical form (element `$ID`s normalised away — a rebuild mints them randomly, so byte comparison would skip nothing); `Microflows$Microflow.StableId` is carried from the stored document rather than re-minted, because the build derives every client-callable microflow's operation id from it. One policy in `modelsdk/canon`, called from both engines' write choke points. `MXCLI_ALWAYS_WRITE=1` disables elision (not preservation) for bisecting. See `docs-site/src/internals/idempotent-writes.md`
 - Domain model (entities, attributes, associations)
 - ALTER ENTITY (add/rename/modify/drop attributes, indexes, documentation)
 - Microflows/Nanoflows with 60+ activity types, JavaScript action calls, nanoflow validation parity
