@@ -29,19 +29,37 @@
 --   …
 --
 -- A comment, not a clause, because DESCRIBE output must stay re-executable and
--- MDL has no anchor syntax yet — settling that needs an answer mxcli does not
--- have: whether the two integers are PERCENTAGES of the entity box or pixels.
--- Every observed value has x ∈ {0, 100} (the box's left and right edges), which
--- reads as percentages, but that is a hypothesis. One Studio Pro observation
--- decides it: drag an endpoint to the bottom-centre of a box and read the pair —
--- percent predicts "50;100", pixels predicts ~half the box width and its height.
+-- MDL has no anchor syntax yet.
 --
--- Two properties of the format, verified by hand-patching a project and running
--- `mx check` on 11.13.0:
+-- The units are PERCENTAGES of the entity box, 0..100. Measured across 88
+-- coordinate pairs in four Studio-Pro-authored sources — a blank 11.13 app plus
+-- the Advanced Audit Trail Core 4.0.0, Email Connector 6.4.2 and Workflow
+-- Commons 4.11.0 marketplace modules:
+--
+--   x range 0..100, y range 0..100, nothing outside it
+--   85 of 88 pairs pin one coordinate to exactly 0 or 100 while the other
+--     varies — "which edge, and how far along it". The 3 exceptions are all
+--     y=99, a hair off the bottom edge.
+--   distinct x: 0 9 11 17 18 47 49 50 65 77 78 84 87 100
+--   distinct y: 0 16 19 33 38 51 52 53 54 59 60 67 69 76 85 99 100
+--
+-- Pixels is ruled out by the model itself: `DomainModels$EntityImpl` stores only
+-- `Location` (canvas pixels, e.g. "910;450") and NO size — the box's dimensions
+-- are computed by the editor from the name and attribute list. A pixel anchor
+-- would have nothing to measure against and would drift as attributes are added.
+--
+-- What that does NOT settle is the SYNTAX. The pair is continuous, so the
+-- issue's proposed `@anchor(parent: bottom-left, child: top-right)` cannot
+-- express the observed values; mxcli's own default 0;50 already differs from
+-- Studio Pro's 0;54 by four points.
+--
+-- Two more properties of the format, verified by hand-patching a project and
+-- running `mx check` on 11.13.0:
 --   * both components must be INTEGERS — "0.5;50" is rejected at LOAD with
 --     StorageLoadException, before any validation runs;
---   * there is NO range validation — "0;500" and "-20;50" load with 0 errors, so
---     an out-of-range value must round-trip untouched rather than be clamped.
+--   * the LOADER does not range-check — "0;500" and "-20;50" load with 0 errors.
+--     Nothing Mendix writes is out of range, but a value that is must round-trip
+--     untouched rather than be clamped to something "sensible".
 --
 -- Not applicable to cross-module associations: `DomainModels$CrossAssociation`
 -- has no connection properties at all, and writing them there crashes Studio Pro

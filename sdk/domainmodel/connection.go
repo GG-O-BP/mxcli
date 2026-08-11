@@ -12,7 +12,10 @@ import (
 
 // An association's line anchors — where the connector attaches to the FROM
 // (ParentConnection) and TO (ChildConnection) entity boxes in the domain model
-// editor. Mendix stores each as the string "x;y".
+// editor. Mendix stores each as the string "x;y", a PERCENTAGE of the entity box
+// in 0..100 (measured across 88 pairs in four Studio-Pro-authored sources; and
+// it cannot be pixels, because DomainModels$EntityImpl stores no size — the box
+// is sized by the editor from the name and attribute list).
 //
 // These are the values mxcli writes for a NEW association. They are not
 // Mendix's: a blank 11.13 app's own `Administration.AccountPasswordData_Account`

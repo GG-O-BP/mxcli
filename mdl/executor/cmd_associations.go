@@ -554,15 +554,25 @@ func describeAssociation(ctx *ExecContext, name ast.QualifiedName) error {
 // — as an MDL COMMENT, above the statement.
 //
 // A comment rather than a clause on purpose: DESCRIBE output must stay
-// re-executable, and MDL has no syntax for anchors yet. Deciding that syntax
-// needs an answer mxcli does not have — whether the two numbers are percentages
-// of the entity box or pixels. Mendix stores them as an integer pair "x;y" with
-// no range validation, and every observed value has x ∈ {0, 100} (the box's left
-// and right edges), which reads as percentages; that is a hypothesis, not a
-// verified fact, and shipping `@anchor(parent: bottom-left, …)` on top of it
-// would bake in a vocabulary the storage does not have. What IS verifiable is
-// whether a hand-tuned anchor survived an mxcli write, and that is what this
-// line answers. (issue #872)
+// re-executable, and MDL has no syntax for anchors yet.
+//
+// The units are PERCENTAGES of the entity box, 0..100 — measured across 88
+// coordinate pairs in four Studio-Pro-authored sources (a blank 11.13 app plus
+// the Advanced Audit Trail Core, Email Connector and Workflow Commons modules):
+// nothing falls outside 0..100, and 85 of the 88 pin one coordinate to exactly 0
+// or 100 while the other varies, i.e. "which edge, and how far along it". Pixels
+// is ruled out by the model itself: `DomainModels$EntityImpl` stores only
+// `Location` and NO size, so the box's dimensions are computed from the name and
+// attribute list — a pixel anchor would have nothing to measure against and
+// would drift every time an attribute is added.
+//
+// That still does not settle the SYNTAX. The pair is continuous, not eight named
+// anchors: the observed x values are 0, 9, 11, 17, 18, 47, 49, 50, 65, 77, 78,
+// 84, 87, 100. A vocabulary like `@anchor(parent: bottom-left, …)` cannot express
+// them, and mxcli's own default 0;50 differs from Studio Pro's 0;54 by four
+// points. Until that design lands, what IS worth reporting is whether a
+// hand-tuned anchor survived an mxcli write, and that is what this line answers.
+// (issue #872)
 //
 // Only non-default anchors print, so the common case — an association mxcli
 // created itself — describes exactly as before.
