@@ -715,6 +715,26 @@ datefilter datefilter (attributes: [Module.Entity.CreateDate])
 dropdownfilter statusFilter (attributes: [Module.Entity.Status])
 ```
 
+Filter by an **association** instead of an attribute — the options are the
+associated objects. Giving the filter a `datasource:` (the OPTION list) selects
+this mode; all three parts are required:
+
+```sql
+column colCustomer (attribute: Order_Customer/Name, caption: 'Customer') {
+  dropdownfilter ddfCustomer (
+    Association: Sales.Order_Customer,          -- the reference on the GRID entity
+    datasource: database Sales.Customer,        -- the option list (associated entity)
+    CaptionAttribute: Name                      -- what each option shows
+  )
+}
+```
+
+> **A column cannot bind the association itself.** `column c (attribute: Order_Customer)`
+> is refused — Mendix has nowhere to store a reference in an attribute-typed widget
+> property, and writing one anyway fails the build with CE1613 *"The selected attribute
+> … no longer exists"*. To **show** a value from the associated object, traverse the
+> reference (`attribute: Order_Customer/Name`); to **filter** by it, use the mode above.
+
 ### NAVIGATIONLIST Widget
 
 Create a menu with action items:
