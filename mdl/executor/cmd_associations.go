@@ -519,6 +519,7 @@ func describeAssociation(ctx *ExecContext, name ast.QualifiedName) error {
 				fmt.Fprintf(ctx.Output, "/**\n * %s\n */\n", assoc.Documentation)
 			}
 
+			describeConnectionPoints(ctx, assoc)
 			fmt.Fprintf(ctx.Output, "create association %s.%s\n", module.Name, assoc.Name)
 			fmt.Fprintf(ctx.Output, "from %s to %s\n", fromEntity, toEntity)
 			formatAssocDetails(assoc.Type, assoc.Owner, assoc.StorageFormat, assoc.ChildDeleteBehavior)
@@ -546,6 +547,34 @@ func describeAssociation(ctx *ExecContext, name ast.QualifiedName) error {
 	}
 
 	return mdlerrors.NewNotFound("association", name.String())
+}
+
+// describeConnectionPoints emits the association's line anchors — where the
+// connector attaches to the FROM and TO entity boxes in the domain model editor
+// — as an MDL COMMENT, above the statement.
+//
+// A comment rather than a clause on purpose: DESCRIBE output must stay
+// re-executable, and MDL has no syntax for anchors yet. Deciding that syntax
+// needs an answer mxcli does not have — whether the two numbers are percentages
+// of the entity box or pixels. Mendix stores them as an integer pair "x;y" with
+// no range validation, and every observed value has x ∈ {0, 100} (the box's left
+// and right edges), which reads as percentages; that is a hypothesis, not a
+// verified fact, and shipping `@anchor(parent: bottom-left, …)` on top of it
+// would bake in a vocabulary the storage does not have. What IS verifiable is
+// whether a hand-tuned anchor survived an mxcli write, and that is what this
+// line answers. (issue #872)
+//
+// Only non-default anchors print, so the common case — an association mxcli
+// created itself — describes exactly as before.
+func describeConnectionPoints(ctx *ExecContext, assoc *domainmodel.Association) {
+	parent := domainmodel.FormatConnectionPoint(assoc.ParentConnection, domainmodel.DefaultParentConnection)
+	child := domainmodel.FormatConnectionPoint(assoc.ChildConnection, domainmodel.DefaultChildConnection)
+	if parent == domainmodel.DefaultParentConnection && child == domainmodel.DefaultChildConnection {
+		return
+	}
+	fmt.Fprintf(ctx.Output,
+		"-- line anchors (not yet authorable in MDL; preserved across writes): parent %s, child %s\n",
+		parent, child)
 }
 
 // --- Executor method wrappers for callers not yet migrated ---

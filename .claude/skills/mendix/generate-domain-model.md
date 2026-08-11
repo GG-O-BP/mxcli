@@ -113,6 +113,19 @@ The `@position(x, y)` annotation specifies where the entity appears in the domai
 - Organize related entities in logical groups
 - Example layout: Categories at y=100, Transactions at y=300, Reports at y=500
 
+**Association line anchors are not authorable, but they are preserved.** Where an
+association's connector attaches to each entity box is stored on the association
+and can only be set by dragging it in Studio Pro. mxcli writes a default for a
+new association and then leaves the value alone, so hand-tuned lines survive
+later `alter association` / `create or modify association` runs. `describe
+association` reports a non-default pair as a comment:
+
+```
+-- line anchors (not yet authorable in MDL; preserved across writes): parent 0;54, child 100;54
+```
+
+Cross-module associations have no anchors at all — Mendix does not store them.
+
 #### Persistent Entity
 
 ```sql

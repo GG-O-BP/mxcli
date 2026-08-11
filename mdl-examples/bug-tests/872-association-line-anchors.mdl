@@ -1,0 +1,68 @@
+-- ============================================================================
+-- Issue #872 — association line anchors survive an mxcli write
+-- ============================================================================
+--
+-- Reported as "line geometry is not exposed in DESCRIBE/CREATE ASSOCIATION".
+-- Investigating it turned up something worse than the missing feature: mxcli was
+-- not merely omitting the anchors, it was DESTROYING them.
+--
+-- `DomainModels$Association` carries `ParentConnection` / `ChildConnection` —
+-- where the connector attaches to the FROM and TO entity boxes — as the string
+-- "x;y". Both engines hardcoded "0;50" / "100;50" on every write and the parser
+-- never read them back, so because the writers rebuild the whole element, ANY
+-- association write reset them. Including a documentation-only one.
+--
+-- Measured on a blank Mendix 11.13 app, whose Studio-Pro-authored
+-- Administration.AccountPasswordData_Account stores 0;54 / 100;54:
+--
+--   statement                                    before        after
+--   alter entity … add attribute (unrelated)     0;54/100;54   0;54/100;54  (was fine)
+--   alter association … set comment              0;54/100;54   0;50/100;50  (destroyed)
+--   create or modify association …               0;54/100;54   0;50/100;50  (destroyed)
+--   …same, MXCLI_ENGINE=legacy                   0;54/100;54   0;50/100;50  (destroyed)
+--
+-- Now: read → write back verbatim (guard-don't-drop, ADR-0005), and DESCRIBE
+-- reports a non-default pair as a comment above the statement:
+--
+--   -- line anchors (not yet authorable in MDL; preserved across writes): parent 0;54, child 100;54
+--   create association Administration.AccountPasswordData_Account
+--   …
+--
+-- A comment, not a clause, because DESCRIBE output must stay re-executable and
+-- MDL has no anchor syntax yet — settling that needs an answer mxcli does not
+-- have: whether the two integers are PERCENTAGES of the entity box or pixels.
+-- Every observed value has x ∈ {0, 100} (the box's left and right edges), which
+-- reads as percentages, but that is a hypothesis. One Studio Pro observation
+-- decides it: drag an endpoint to the bottom-centre of a box and read the pair —
+-- percent predicts "50;100", pixels predicts ~half the box width and its height.
+--
+-- Two properties of the format, verified by hand-patching a project and running
+-- `mx check` on 11.13.0:
+--   * both components must be INTEGERS — "0.5;50" is rejected at LOAD with
+--     StorageLoadException, before any validation runs;
+--   * there is NO range validation — "0;500" and "-20;50" load with 0 errors, so
+--     an out-of-range value must round-trip untouched rather than be clamped.
+--
+-- Not applicable to cross-module associations: `DomainModels$CrossAssociation`
+-- has no connection properties at all, and writing them there crashes Studio Pro
+-- (issue #50).
+--
+-- This script only needs to build clean; the anchors it exercises are the
+-- defaults, since MDL cannot yet author others. The preservation itself is
+-- pinned by mdl/backend/modelsdk/association_connection_test.go and
+-- sdk/mpr/writer_domainmodel_test.go.
+-- ============================================================================
+
+@position(100, 100)
+create entity Anchors.Customer ( Name: String );
+@position(500, 300)
+create entity Anchors.Order ( Number: String );
+create association Anchors.Order_Customer
+  from Anchors.Order to Anchors.Customer;
+/
+
+-- The write that used to destroy the anchors.
+alter association Anchors.Order_Customer set comment 'touched';
+/
+
+describe association Anchors.Order_Customer;
