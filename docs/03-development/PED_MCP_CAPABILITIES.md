@@ -140,6 +140,15 @@ means it can change within a session. Combined with a togglable `oql_generate`,
 **tool presence must be probe-gated, never table-gated** — `capabilities.yaml` can
 describe what mxcli does with a tool, but not whether it is there.
 
+**Observed, and the reason this matters.** The *same* Studio Pro session reported
+**18 tools including `mcp_mendix-marketplace_*`, then 17 without it an hour later**,
+with no restart (2026-08-11). The federated tool comes and goes with Studio Pro's own
+client connection to the Marketplace server — the very thing 11.13's "repeated
+disconnect/reconnect" fix addresses. A table asserting that tool's presence would
+have been wrong within the hour. The fixture `testdata/tools-11.13.json` captures the
+18-tool state; treat its federated entry as a **sample, not a constant**, and do not
+write a test that asserts a federated tool is present.
+
 **Page reads are depth-truncated by default (the 11.13 regression).** Measured on
 `Administration.Account_Overview`: 32,594 bytes at full depth, **1,052 bytes** at
 the default, the entire widget tree collapsed to
