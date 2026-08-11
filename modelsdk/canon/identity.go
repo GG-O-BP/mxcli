@@ -81,6 +81,18 @@ var identityFields = map[string][]string{
 	"Microflows$Microflow": {"StableId"},
 }
 
+// IdentityFields returns the identity properties known for a $Type, or nil.
+//
+// This table is hand-maintained and cannot currently be generated: Mendix's
+// `IsIdentifier` flag lives only in the modeler assemblies, not in the reflection
+// data `generated/metamodel` is built from. A new document type with an identity
+// property therefore needs a row here, and nothing about adding that type will
+// remind you — which is why the backend package carries a drift guard that fails
+// when a property is minted fresh on every write without a decision recorded here.
+func IdentityFields(typeName string) []string {
+	return identityFields[typeName]
+}
+
 // CarryIdentity returns contents with each identity field of its $Type
 // replaced by the value the stored document already holds.
 //

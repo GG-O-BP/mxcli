@@ -275,6 +275,45 @@ and is why freezing this one field is sufficient rather than merely necessary.
 | Does Studio Pro preserve it? | search the package/import assembly for a get→set pair |
 | Does its value escape the model? | build with `mxbuild --target=deploy`, then reproduce the derivation against `deployment/` |
 
+### Does this generalise to document types that do not exist yet?
+
+The two halves answer differently, and the difference is worth keeping straight.
+
+**Elision generalises by construction.** It operates on raw BSON and knows nothing
+about document types: it collects `$ID`s by containment walk, normalises them, and
+compares. A document type added tomorrow is covered the day it is added, with no
+registration and no table. It also fails safe — a document it cannot parse (a
+custom blob, a future non-BSON unit) reports an error, and every error path
+writes.
+
+It rests on one invariant, which is measured rather than enforced: **no binary
+pointer crosses a unit boundary** (0 of 9,910 in a real project; cross-unit
+references are qualified-name strings). If a future document type introduced one,
+elision could produce a dangling reference from the *opposite* direction to
+PR #125: unit B is elided and keeps its stored IDs, while unit A is written
+holding pointers to the fresh IDs B's discarded rebuild had minted. Note the
+shape — the danger is not in the unit being skipped, but in another unit that was
+*not* skipped having already been built against the skipped unit's would-be IDs.
+Nothing in the code detects this, and it is invisible until a project fails to
+load. A new document type that references another unit by `$ID` rather than by
+qualified name invalidates the argument in this ADR and must be measured, not
+assumed.
+
+**Identity preservation does not generalise.** `identityFields` is hand-written
+and cannot currently be generated: Mendix's `IsIdentifier` flag lives in the
+modeler assemblies, and the reflection data `generated/metamodel` is built from
+does not carry it. A new document type with an identity property needs a row, and
+nothing about adding the type will remind you. The failure is silent — no error,
+no failing test, just churn quietly returning for that type.
+
+`TestFreshGUIDFieldsHaveAnIdentityDecision` closes the most likely path to that.
+A property registered as a codec `FreshGUIDField` is minted anew on every write,
+so by construction it makes a document differ from itself; the guard fails unless
+each one is recorded as either identity (carried) or deliberate churn (waived with
+a reason). It cannot catch an identity property the encoder does *not* mint fresh.
+For that there is no substitute for establishing the property's status the way
+`StableId` was established, before the document type ships.
+
 ### Known limit of the evidence
 
 The measurements above cover microflows, nanoflows, pages and navigation — the
