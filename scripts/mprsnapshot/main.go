@@ -46,6 +46,7 @@ func main() {
 	moduleFilter := flag.String("module", "", "restrict output to a single module")
 	includeUnnamed := flag.Bool("all", false, "include nested elements that carry no Name (index-keyed, noisy)")
 	showRefs := flag.Bool("refs", false, "also emit R lines: every cross-element pointer and its target $ID")
+	canon := flag.Bool("canon", false, "emit only C lines: per-unit canonical digests, with element IDs normalised away (for idempotence measurement)")
 	flag.Parse()
 
 	if *projectPath == "" {
@@ -53,7 +54,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	if err := run(*projectPath, *moduleFilter, *includeUnnamed, *showRefs); err != nil {
+	if err := run(*projectPath, *moduleFilter, *includeUnnamed, *showRefs, *canon); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
@@ -70,7 +71,7 @@ type unit struct {
 	path        string // resolved lazily from the containment tree
 }
 
-func run(projectPath, moduleFilter string, includeUnnamed, showRefs bool) error {
+func run(projectPath, moduleFilter string, includeUnnamed, showRefs, canon bool) error {
 	reader, err := mpr.Open(projectPath)
 	if err != nil {
 		return fmt.Errorf("opening project: %w", err)
@@ -118,6 +119,44 @@ func run(projectPath, moduleFilter string, includeUnnamed, showRefs bool) error 
 		fmt.Fprintf(out, "# module\t%s\n", moduleFilter)
 	}
 	fmt.Fprintf(out, "#\n")
+
+	// Canonical mode answers a different question from the rest of this tool, so
+	// it emits its own line type and returns: "if mxcli skipped writes that
+	// change nothing, how many of these units would it skip?"
+	//
+	// C <unit-id> <path> <type> <canon> <masked>
+	//
+	// Keyed by unit id, not path: several unnamed units share a path (they fall
+	// back to their containment name), so a path key is ambiguous and pairs the
+	// wrong units between two runs. A document keeps its own id across writes —
+	// that is the whole premise being measured — so the id is the stable join.
+	//
+	// Compare two runs with `diff`. A unit absent from the diff would have been
+	// skipped. A unit whose canon differs but whose masked matches differs only
+	// in a field mxcli regenerates by policy (volatileFields) — reachable, but
+	// only after that policy changes.
+	if canon {
+		sel := make([]*unit, 0, len(units))
+		for _, u := range units {
+			// inModule("x", "") is false — it tests prefix, not "unfiltered" —
+			// so an empty filter must be handled explicitly or this emits only
+			// the project root and an empty diff reads as "nothing changed".
+			if u.contents == nil || (moduleFilter != "" && !inModule(u.path, moduleFilter)) {
+				continue
+			}
+			sel = append(sel, u)
+		}
+		sort.Slice(sel, func(i, j int) bool { return sel[i].id < sel[j].id })
+		for _, u := range sel {
+			c, m := canonicalDigests(u.contents)
+			path := u.path
+			if path == "" {
+				path = "(root)"
+			}
+			fmt.Fprintf(out, "C\t%s\t%s\t%s\t%s\t%s\n", u.id, path, u.typ, c, m)
+		}
+		return nil
+	}
 	fmt.Fprintf(out, "# U = unit, E = nested element, R = cross-element pointer.\n")
 	fmt.Fprintf(out, "# Columns: kind, path, $Type, id, hash-or-guid\n")
 	fmt.Fprintf(out, "# hash covers the unit's contents with every $ID removed, so a changed\n")

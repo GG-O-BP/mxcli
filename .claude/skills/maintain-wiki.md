@@ -133,6 +133,7 @@ isn't better served by an existing page or a different doc artifact.
 | `architecture/mpr-read-write.md` | architecture | MPR v1/v2, BSON round-trip, write safety |
 | `architecture/widget-engine.md` | architecture | def.json, WidgetRegistry, V3 builders |
 | `models/association-pointers.md` | mental-model | why `ParentPointer` = FROM, `ChildPointer` = TO |
+| `models/element-identity.md` | mental-model | `$ID` vs `GUID` vs `StableId`; the unit as identity boundary |
 | `models/storage-vs-qualified-names.md` | mental-model | BSON `$type` vs SDK qualified name |
 | `models/version-gating.md` | mental-model | feature registry, `min_version`, `checkFeature()` |
 | `rationale/mdl-as-sql.md` | rationale | why MDL is SQL-shaped, design principles (cites ADRs) |
