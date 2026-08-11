@@ -1,0 +1,47 @@
+-- ============================================================================
+-- `split type` wrote a project mxbuild could not LOAD
+-- ============================================================================
+--
+-- `mxcli check` passed and `mxcli exec` reported success, but `mx check` died
+-- before validating anything:
+--
+--   ERROR: System.Collections.Generic.KeyNotFoundException: The given key
+--   '<guid>' was not present in the dictionary
+--     at StreamingBsonUnitReader.ResolvePostponedProperties()
+--
+-- Reproduced on Mendix 11.6.6 and 11.13.0. Two gaps in the modelsdk writer,
+-- both the #791 shape — an object dropped at serialization while the sequence
+-- flows pointing at it were still written:
+--
+--   1. microflowObjectToGen had no *microflows.InheritanceSplit case, so the
+--      split itself vanished. Three flows referenced its $ID.
+--   2. caseValueToGen had no InheritanceCase case, so every branch degraded to
+--      a bare Microflows$NoCase and lost the entity it selects on.
+--
+-- Diagnosed with the #791 recipe: dump the microflow, collect every $ID, and
+-- check each key ending in `Pointer` resolves. Before: 27 objects, 10 pointers,
+-- 3 dangling. After: 28 objects, 10 pointers, 0 dangling.
+--
+-- A type split must give every type an outgoing flow, INCLUDING the base type
+-- (CE0090 otherwise). An `else` does NOT substitute for the base-type case —
+-- verified on both versions.
+--
+-- To verify: run this script, then `mx check` — 0 errors.
+-- ============================================================================
+
+CREATE MODULE BugSplit;
+
+CREATE OR MODIFY PERSISTENT ENTITY BugSplit.Animal ( Name: String(50) );
+
+CREATE OR MODIFY PERSISTENT ENTITY BugSplit.Dog EXTENDS BugSplit.Animal ( Breed: String(50) );
+
+CREATE OR MODIFY MICROFLOW BugSplit.Classify ($A: BugSplit.Animal)
+RETURNS String
+BEGIN
+  split type $A
+  case BugSplit.Dog
+    cast $d;
+  case BugSplit.Animal
+  end split;
+  return 'done';
+END;

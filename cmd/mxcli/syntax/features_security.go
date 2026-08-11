@@ -21,8 +21,8 @@ func init() {
 		Keywords: []string{
 			"module role", "create role", "drop role",
 		},
-		Syntax:  "CREATE MODULE ROLE <module>.<role> [DESCRIPTION '<text>'];\nDROP MODULE ROLE <module>.<role>;",
-		Example: "CREATE MODULE ROLE Shop.Admin DESCRIPTION 'Full access';\nCREATE MODULE ROLE Shop.User DESCRIPTION 'Read-only access';",
+		Syntax:  "CREATE [OR MODIFY] MODULE ROLE <module>.<role> [DESCRIPTION '<text>'];\nDROP MODULE ROLE <module>.<role>;",
+		Example: "CREATE MODULE ROLE Shop.Admin DESCRIPTION 'Full access';\n-- OR MODIFY makes a security script re-runnable:\nCREATE OR MODIFY MODULE ROLE Shop.User DESCRIPTION 'Read-only access';",
 		SeeAlso: []string{"security.user-role", "security.entity-access"},
 	})
 

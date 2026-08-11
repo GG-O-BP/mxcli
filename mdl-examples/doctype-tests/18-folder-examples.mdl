@@ -89,4 +89,65 @@ drop folder 'Resources' in FolderTest;
 /
 
 -- cleanup
+-- ============================================================================
+-- Level 6: Java actions and published OData services
+-- ============================================================================
+
+/**
+ * Neither CREATE JAVA ACTION nor CREATE ODATA SERVICE takes a folder clause, so
+ * MOVE is the only way these documents ever leave the module root.
+ */
+create java action FolderTest.QueryHelper () returns Boolean as $$
+public class QueryHelper { }
+$$;
+
+move java action FolderTest.QueryHelper to folder 'Support/Java';
+
+create non-persistent entity FolderTest.ApiRow ( RowKey: string(60) );
+
+CREATE MICROFLOW FolderTest.Read_ApiRows ()
+  RETURNS List of FolderTest.ApiRow AS $Rows
+BEGIN
+  $Rows = CREATE LIST OF FolderTest.ApiRow;
+  RETURN $Rows;
+END;
+
+create odata service FolderTest.PublicApi (
+  path: 'odata/foldertest/',
+  version: '1.0.0',
+  ODataVersion: OData4,
+  namespace: 'FolderTest.PublicApi',
+  ServiceName: 'PublicApi'
+)
+{
+  publish entity FolderTest.ApiRow as 'ApiRows' (
+    ReadMode: microflow FolderTest.Read_ApiRows,
+    InsertMode: not_supported,
+    UpdateMode: not_supported,
+    DeleteMode: not_supported,
+    Countable: false
+  )
+  expose ( RowKey as 'rowKey' (KEY) );
+};
+
+move odata service FolderTest.PublicApi to folder 'Api/Published';
+
+-- ============================================================================
+-- Level 7: Read the layout back
+-- ============================================================================
+
+/**
+ * LIST FOLDERS is the counterpart to MOVE: it shows the folder layout and what
+ * sits in each folder, including empty folders and anything still at the module
+ * root. SHOW STRUCTURE groups by document type at every depth and never shows
+ * which folder a document is in.
+ */
+list folders in FolderTest;
+
+-- SHOW is accepted as the legacy verb for the same statement.
+show folders in FolderTest;
+
+-- With no IN clause, every module in the project.
+list folders;
+
 drop module FolderTest;

@@ -88,6 +88,27 @@ create or replace navigation Responsive
     );
   );
 
+-- ============================================================================
+-- ICON — a menu item's icon, as a qualified name into an icon collection
+-- (Atlas_Core.Atlas, Atlas_Core.Atlas_Filled, …), not an image collection.
+-- Written like any other model reference. Hyphenated Atlas names are
+-- double-quoted, the same way a keyword-colliding name is.
+-- ============================================================================
+
+create or replace navigation Responsive
+  home page NavTest.NavTest_Home
+  login page Administration.login
+  menu (
+    menu item 'Home' page NavTest.NavTest_Home icon Atlas_Core.Atlas.home;
+    menu 'Admin' icon Atlas_Core.Atlas.user (
+      menu item 'Users' page Administration.Account_Overview
+        icon Atlas_Core.Atlas."list-bullets";
+    );
+  );
+
+-- DESCRIBE round-trips the ICON clause, so this output is re-executable
+describe navigation Responsive;
+
 -- Clear the menu (empty MENU block removes all items)
 create or replace navigation Responsive
   home page NavTest.NavTest_Home

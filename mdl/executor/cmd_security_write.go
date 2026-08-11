@@ -12,6 +12,7 @@ import (
 	mdlerrors "github.com/mendixlabs/mxcli/mdl/errors"
 	"github.com/mendixlabs/mxcli/mdl/types"
 	"github.com/mendixlabs/mxcli/model"
+	"github.com/mendixlabs/mxcli/sdk/domainmodel"
 	"github.com/mendixlabs/mxcli/sdk/security"
 )
 
@@ -56,6 +57,18 @@ func execCreateModuleRole(ctx *ExecContext, s *ast.CreateModuleRoleStmt) error {
 			}
 			if !ctx.Quiet {
 				fmt.Fprintf(ctx.Output, "Module role %s.%s already exists (auto-provisioned)\n", s.Name.Module, s.Name.Name)
+			}
+			return nil
+		}
+		if s.CreateOrModify {
+			// Re-running a security script must not fail on a role that is
+			// already there. AddModuleRole overwrites, so this also adopts a new
+			// description and the caller's casing.
+			if err := ctx.Backend.AddModuleRole(ms.ID, s.Name.Name, s.Description); err != nil {
+				return mdlerrors.NewBackend("modify module role", err)
+			}
+			if !ctx.Quiet {
+				fmt.Fprintf(ctx.Output, "Modified module role: %s.%s\n", s.Name.Module, s.Name.Name)
 			}
 			return nil
 		}
@@ -405,38 +418,73 @@ func execGrantEntityAccess(ctx *ExecContext, s *ast.GrantEntityAccessStmt) error
 		})
 	}
 
-	// Create entries for associations where this entity is the FROM entity.
-	// In Mendix, ParentID = FROM entity (FK owner). MemberAccess for associations
-	// is only required on the FROM side; adding it to the TO side triggers CE0066.
+	// Audit members are stored as flags on the entity, not as entries in
+	// entity.Attributes, so the member walk above never yields them — naming
+	// `createdDate` in a GRANT was rejected as "entity has no member(s)", which
+	// is simply wrong: Mendix does consider them members (issuetracker #20).
+	//
+	// What Mendix does NOT have is a MemberAccess for them. An entity storing
+	// audit members checks clean with no entry, and mxbuild rejects a rule that
+	// carries one with CE0066 (verified on 11.12.1). Their access therefore comes
+	// from the rule's default and cannot be set per member — so naming one is
+	// accepted (it is a real member), but asking for rights that differ from the
+	// default is refused rather than silently dropped.
+	for _, sys := range storedAuditMembers(entity) {
+		grantedMembers[sys] = true
+		rights, clause := "", ""
+		if writeMemberSet[sys] {
+			rights, clause = "ReadWrite", "write"
+		} else if readMemberSet[sys] {
+			rights, clause = "ReadOnly", "read"
+		}
+		if rights != "" && rights != defaultMemberAccess {
+			return mdlerrors.NewValidationf(
+				"%s.%s is a Mendix audit member: its access follows the rule's default and cannot be set per member "+
+					"(Mendix stores no member access for it, and a rule that carries one fails the build with CE0066). "+
+					"Drop it from the %s (...) list and let `read *` / `write *` cover it, or change the rule's default.",
+				entityQN, sys, clause)
+		}
+	}
+
+	// Create entries for associations this entity owns. ParentID = FROM entity
+	// (FK owner), and for a Default-owner association MemberAccess belongs only
+	// on that side — adding it to the TO side triggers CE0066.
+	//
+	// `OWNER Both` is the exception: both ends own the association and Mendix
+	// expects a MemberAccess entry on each. Emitting it only on the FROM side
+	// left the TO entity's rule incomplete, which is CE0066 "Entity access is
+	// out of date" — the reported symptom (issuetracker #20). Verified against
+	// mxbuild 11.12.1: the same script with `OWNER Default` checks clean, so the
+	// owner mode is the trigger, not the reference set.
+	addAssociationAccess := func(name, ref string) {
+		rights := defaultMemberAccess
+		if writeMemberSet[name] {
+			rights = "ReadWrite"
+		} else if readMemberSet[name] {
+			rights = "ReadOnly"
+		}
+		grantedMembers[name] = true
+		memberAccesses = append(memberAccesses, types.EntityMemberAccess{
+			AssociationRef: ref,
+			AccessRights:   rights,
+		})
+	}
 	for _, assoc := range dm.Associations {
-		if assoc.ParentID == entity.ID {
-			rights := defaultMemberAccess
-			if writeMemberSet[assoc.Name] {
-				rights = "ReadWrite"
-			} else if readMemberSet[assoc.Name] {
-				rights = "ReadOnly"
-			}
-			grantedMembers[assoc.Name] = true
-			memberAccesses = append(memberAccesses, types.EntityMemberAccess{
-				AssociationRef: module.Name + "." + assoc.Name,
-				AccessRights:   rights,
-			})
+		ownedHere := assoc.ParentID == entity.ID ||
+			(assoc.Owner == domainmodel.AssociationOwnerBoth && assoc.ChildID == entity.ID)
+		if ownedHere {
+			addAssociationAccess(assoc.Name, module.Name+"."+assoc.Name)
 		}
 	}
 	for _, ca := range dm.CrossAssociations {
 		if ca.ParentID == entity.ID {
-			rights := defaultMemberAccess
-			if writeMemberSet[ca.Name] {
-				rights = "ReadWrite"
-			} else if readMemberSet[ca.Name] {
-				rights = "ReadOnly"
-			}
-			grantedMembers[ca.Name] = true
-			memberAccesses = append(memberAccesses, types.EntityMemberAccess{
-				AssociationRef: module.Name + "." + ca.Name,
-				AccessRights:   rights,
-			})
+			addAssociationAccess(ca.Name, module.Name+"."+ca.Name)
 		}
+	}
+	// A cross-module association owned by both ends is stored in the FROM
+	// entity's module, so this entity — the TO end — has to look for it there.
+	for _, other := range otherModuleBothOwnerAssociations(ctx, module.Name, entityQN) {
+		addAssociationAccess(other.Name, other.Ref)
 	}
 
 	// A member named in the GRANT that matched nothing used to be dropped in
@@ -1096,10 +1144,83 @@ func execCreateDemoUser(ctx *ExecContext, s *ast.CreateDemoUserStmt) error {
 	}
 
 	fmt.Fprintf(ctx.Output, "Created demo user: %s (entity: %s)\n", s.UserName, entity)
+	warnDemoUsersInert(ctx, ps.SecurityLevel)
 	return nil
 }
 
+// warnDemoUsersInert says so when demo users cannot materialise.
+//
+// With Security Level Off — the level a blank mxcli template ships with — the
+// runtime creates no accounts, serves no login page and enforces none of the
+// row-level rules, so the demo users sit in the model and never appear. Nothing
+// said this: `CREATE DEMO USER` reported success and `SHOW PROJECT SECURITY`
+// reported "Demo Users Enabled: true", while the running app had zero accounts.
+// (mxcli-todo findings #15)
+func warnDemoUsersInert(ctx *ExecContext, level string) {
+	if level != security.SecurityLevelOff {
+		return
+	}
+	fmt.Fprintf(ctx.Output, "  Note: project security level is Off, so the runtime creates no accounts "+
+		"and this demo user will not appear in the app.\n"+
+		"  Raise it first: alter project security level prototype;\n")
+}
+
 // detectUserEntity finds the entity that generalizes System.User.
+// storedAuditMembers returns the audit members the entity actually stores, under
+// the names Mendix uses for them. They are entity FLAGS rather than entries in
+// entity.Attributes, so a member walk never yields them and a GRANT naming one
+// was rejected as "no member" (issuetracker #20).
+func storedAuditMembers(e *domainmodel.Entity) []string {
+	if e == nil {
+		return nil
+	}
+	var out []string
+	if e.HasCreatedDate {
+		out = append(out, "createdDate")
+	}
+	if e.HasChangedDate {
+		out = append(out, "changedDate")
+	}
+	if e.HasOwner {
+		out = append(out, "owner")
+	}
+	if e.HasChangedBy {
+		out = append(out, "changedBy")
+	}
+	return out
+}
+
+// namedAssociation is an association reachable from an entity, with the
+// qualified reference to store in a MemberAccess.
+type namedAssociation struct{ Name, Ref string }
+
+// otherModuleBothOwnerAssociations finds cross-module associations owned by BOTH
+// ends whose TO end is entityQN. They are stored in the FROM entity's module, so
+// scanning only this entity's own domain model misses them.
+func otherModuleBothOwnerAssociations(ctx *ExecContext, thisModule, entityQN string) []namedAssociation {
+	dms, err := ctx.Backend.ListDomainModels()
+	if err != nil {
+		return nil
+	}
+	h, err := getHierarchy(ctx)
+	if err != nil {
+		return nil
+	}
+	var out []namedAssociation
+	for _, dm := range dms {
+		modName := h.GetModuleName(h.FindModuleID(dm.ContainerID))
+		if modName == "" || modName == thisModule {
+			continue
+		}
+		for _, ca := range dm.CrossAssociations {
+			if ca.Owner == domainmodel.AssociationOwnerBoth && ca.ChildRef == entityQN {
+				out = append(out, namedAssociation{Name: ca.Name, Ref: modName + "." + ca.Name})
+			}
+		}
+	}
+	return out
+}
+
 func detectUserEntity(ctx *ExecContext) (string, error) {
 	modules, err := ctx.Backend.ListModules()
 	if err != nil {

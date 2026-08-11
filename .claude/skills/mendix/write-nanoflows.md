@@ -492,6 +492,31 @@ These will produce validation errors:
 - `IMPORT FROM MAPPING` / `EXPORT TO MAPPING` — mapping operations are server-side
 - `TRANSFORM JSON` — JSON transformations are server-side
 - `DOWNLOAD FILE` — file downloads require server-side processing
+
+### Nanoflow-only: SYNCHRONIZE
+
+`SYNCHRONIZE` is the mirror image of the list above — it is allowed **only** in a
+nanoflow, because offline synchronization is a client-side operation. The same
+statement in a microflow fails the build with CE0009 "This action is not
+supported in microflows."; mxcli reports it as **MDL057** before you get there.
+
+```sql
+synchronize all;                 -- the whole offline database
+synchronize unsynchronized;      -- only objects with uncommitted offline changes (Mendix 9.4+)
+synchronize $Order, $Lines;      -- named objects/lists ("Specific" mode)
+
+synchronize all on error continue;
+synchronize all on error without rollback {
+  log error 'sync failed';
+};
+```
+
+The mode is always written out, including `all` — the statement says what it does
+rather than relying on the reader knowing the platform default.
+
+**Naming trap:** the variable form is stored as `Specific`, not `Selected`, even
+though Studio Pro's UI calls it "Selected object(s)". Storage enums come from the
+Model SDK's `SynchronizationType`, never from the UI wording.
 - All **workflow actions** (11 types: CallWorkflow, OpenWorkflow, SetTaskOutcome, etc.)
 
 ## Return Type Restrictions

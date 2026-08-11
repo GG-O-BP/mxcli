@@ -6,6 +6,8 @@
 package mprbackend
 
 import (
+	"errors"
+
 	"github.com/mendixlabs/mxcli/mdl/backend"
 	"github.com/mendixlabs/mxcli/mdl/linter"
 	"github.com/mendixlabs/mxcli/mdl/types"
@@ -500,6 +502,18 @@ func (b *MprBackend) UpdateDatabaseConnection(conn *model.DatabaseConnection) er
 }
 func (b *MprBackend) MoveDatabaseConnection(conn *model.DatabaseConnection) error {
 	return b.writer.MoveDatabaseConnection(conn)
+}
+func (b *MprBackend) MoveJavaAction(ja *javaactions.JavaAction) error {
+	if ja == nil {
+		return errors.New("MoveJavaAction: nil java action")
+	}
+	return b.writer.MoveUnitByID(string(ja.ID), string(ja.ContainerID))
+}
+func (b *MprBackend) MovePublishedODataService(svc *model.PublishedODataService) error {
+	if svc == nil {
+		return errors.New("MovePublishedODataService: nil service")
+	}
+	return b.writer.MoveUnitByID(string(svc.ID), string(svc.ContainerID))
 }
 func (b *MprBackend) DeleteDatabaseConnection(id model.ID) error {
 	return b.writer.DeleteDatabaseConnection(id)

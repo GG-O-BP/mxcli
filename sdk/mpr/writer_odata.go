@@ -238,6 +238,31 @@ func (w *Writer) serializePublishedODataService(svc *model.PublishedODataService
 		authTypes = append(authTypes, at)
 	}
 
+	// AllowedModuleRoles: BY_NAME references, storage marker 1 — the same array
+	// shape the working GRANT path writes (makeMendixStringArray).
+	//
+	// This document is serialized wholesale and written with updateUnit, so a
+	// field the serializer omits is not left alone: it is deleted. Omitting it
+	// silently revoked a service's access on every `create or modify`, and the
+	// next build failed with "At least one allowed role must be selected for the
+	// published OData service to be accessible." Grants are made by a separate
+	// statement (`grant access on odata service …`) and cannot be re-stated in
+	// the create script, so nothing in the script could put them back
+	// (mxcli-formula1 §26).
+	// Published microflows — OData actions. Mendix turns each into an
+	// ActionImport in $metadata; without them a parameterised resource has to be
+	// modelled as an entity set echoing its own arguments back as columns
+	// (mxcli-formula1 §47).
+	publishedMicroflows := bson.A{int32(3)}
+	for _, pm := range svc.Microflows {
+		publishedMicroflows = append(publishedMicroflows, serializePublishedMicroflow(pm))
+	}
+
+	allowedRoles := bson.A{int32(1)}
+	for _, name := range svc.AllowedModuleRoles {
+		allowedRoles = append(allowedRoles, name)
+	}
+
 	// Serialize entity types and build ID map for entity set pointers.
 	// Issue #595: key by qualified entity name (et.Entity), not ExposedName.
 	// PublishedEntitySet.EntityTypeName holds the qualified name, so keying
@@ -289,6 +314,7 @@ func (w *Writer) serializePublishedODataService(svc *model.PublishedODataService
 		{Key: "PublishAssociations", Value: svc.PublishAssociations},
 		{Key: "UseGeneralization", Value: svc.UseGeneralization},
 		{Key: "AuthenticationMicroflow", Value: svc.AuthMicroflow},
+		{Key: "AllowedModuleRoles", Value: allowedRoles},
 		{Key: "AuthenticationTypes", Value: authTypes},
 		{Key: "EntityTypes", Value: entityTypes},
 		{Key: "EntitySets", Value: entitySets},
@@ -298,13 +324,17 @@ func (w *Writer) serializePublishedODataService(svc *model.PublishedODataService
 		// to resolve the second's (CE6585) — observed when comparing a
 		// Studio Pro-authored multi-entity service against ours.
 		{Key: "Enumerations", Value: bson.A{int32(3)}},
-		{Key: "Microflows", Value: bson.A{int32(3)}},
+		{Key: "Microflows", Value: publishedMicroflows},
 		{Key: "IncludeMetadataByDefault", Value: true},
 		{Key: "ReplaceIllegalChars", Value: false},
 		{Key: "SupportsGraphQL", Value: false},
 	}
 	return marshalUnitIDFirst(doc)
 }
+
+// boolOrTrue resolves a tri-state query option: nil keeps Mendix's default of
+// true, and only an explicit false turns the capability off.
+func boolOrTrue(p *bool) bool { return p == nil || *p }
 
 // serializePublishedEntityType converts a PublishedEntityType to a BSON map.
 func serializePublishedEntityType(et *model.PublishedEntityType) bson.D {
@@ -344,12 +374,19 @@ func serializePublishedEntitySet(es *model.PublishedEntitySet, entityTypeID stri
 		// entity set to be considered valid. Without it the second
 		// published entity in a multi-entity service fails to resolve
 		// its key (CE6585) — see Studio Pro reference dump.
+		// nil means "not specified" and keeps Mendix's own default of true; only
+		// an explicit false turns one off. These were hardcoded true, so
+		// `publish entity … (TopSupported: No)` parsed, described back as No, and
+		// was published as Yes — mxcli asserting a capability the author had
+		// explicitly disowned. For a microflow-backed resource the claim is
+		// especially load-bearing: Mendix applies no query options itself, so the
+		// annotation is the only thing a client has to go on (mxcli-formula1 §20).
 		{Key: "QueryOptions", Value: bson.D{
 			{Key: "$ID", Value: idToBsonBinary(generateUUID())},
 			{Key: "$Type", Value: "ODataPublish$QueryOptions"},
-			{Key: "Countable", Value: true},
-			{Key: "SkipSupported", Value: true},
-			{Key: "TopSupported", Value: true},
+			{Key: "Countable", Value: boolOrTrue(es.Countable)},
+			{Key: "SkipSupported", Value: boolOrTrue(es.SkipSupported)},
+			{Key: "TopSupported", Value: boolOrTrue(es.TopSupported)},
 		}},
 	}
 
@@ -411,7 +448,7 @@ func serializePublishedMember(m *model.PublishedMember, ownerQN string) bson.D {
 		doc = append(doc, bson.E{Key: "Filterable", Value: m.Filterable})
 		doc = append(doc, bson.E{Key: "Sortable", Value: m.Sortable})
 		doc = append(doc, bson.E{Key: "IsPartOfKey", Value: m.IsPartOfKey})
-		doc = append(doc, bson.E{Key: "EnumerationAsString", Value: false})
+		doc = append(doc, bson.E{Key: "EnumerationAsString", Value: m.EnumerationAsString})
 		doc = append(doc, bson.E{Key: "StringAsGuid", Value: false})
 	case "association":
 		doc = append(doc, bson.E{Key: "$Type", Value: "ODataPublish$PublishedAssociationEnd"})
@@ -536,4 +573,63 @@ func serializeChangeMode(mode string) bson.D {
 			{Key: "$Type", Value: "ODataPublish$ChangeNotSupported"},
 		}
 	}
+}
+
+// serializePublishedMicroflow serializes an ODataPublish$PublishedMicroflow.
+//
+// Property names come from the generated metamodel; the MicroflowParameter ref
+// is Module.Microflow.Param, the shape the published-REST writer already ships.
+// DataTypes$* elements are built by the same rules serializeMicroflowDataType
+// uses for a microflow's own return type.
+func serializePublishedMicroflow(pm *model.PublishedMicroflow) bson.D {
+	params := bson.A{int32(3)}
+	for _, p := range pm.Parameters {
+		params = append(params, serializePublishedMicroflowParameter(p))
+	}
+	return bson.D{
+		{Key: "$ID", Value: idToBsonBinary(generateUUID())},
+		{Key: "$Type", Value: "ODataPublish$PublishedMicroflow"},
+		{Key: "ExposedName", Value: pm.ExposedName},
+		{Key: "AlternativeExposedName", Value: ""},
+		{Key: "Microflow", Value: pm.Microflow},
+		{Key: "Parameters", Value: params},
+		{Key: "ReturnType", Value: serializeODataDataType(pm.ReturnTypeKind, pm.ReturnTypeRef)},
+		{Key: "Summary", Value: pm.Summary},
+		{Key: "Description", Value: pm.Description},
+	}
+}
+
+func serializePublishedMicroflowParameter(p *model.PublishedMicroflowParameter) bson.D {
+	return bson.D{
+		{Key: "$ID", Value: idToBsonBinary(generateUUID())},
+		{Key: "$Type", Value: "ODataPublish$PublishedMicroflowParameter"},
+		{Key: "ExposedName", Value: p.ExposedName},
+		{Key: "MicroflowParameter", Value: p.MicroflowParameter},
+		{Key: "DataType", Value: serializeODataDataType(p.DataTypeKind, p.DataTypeRef)},
+		{Key: "CanBeEmpty", Value: p.CanBeEmpty},
+		{Key: "Summary", Value: p.Summary},
+		{Key: "Description", Value: p.Description},
+	}
+}
+
+// serializeODataDataType builds a DataTypes$* element from a kind and, for the
+// three kinds that name something, its qualified name. Object/List carry
+// `Entity`, Enumeration carries `Enumeration` — verified against
+// serializeMicroflowDataType, which writes the same family for microflow return
+// types and is already proven in the build.
+func serializeODataDataType(kind, ref string) interface{} {
+	if kind == "" {
+		return nil
+	}
+	doc := bson.D{
+		{Key: "$ID", Value: idToBsonBinary(generateUUID())},
+		{Key: "$Type", Value: "DataTypes$" + kind + "Type"},
+	}
+	switch kind {
+	case "Object", "List":
+		return append(doc, bson.E{Key: "Entity", Value: ref})
+	case "Enumeration":
+		return append(doc, bson.E{Key: "Enumeration", Value: ref})
+	}
+	return doc
 }

@@ -452,13 +452,18 @@ func (s *CallWebServiceStmt) isMicroflowStatement() {}
 
 // ExecuteDatabaseQueryStmt represents: EXECUTE DATABASE QUERY Module.Connection.QueryName ...
 type ExecuteDatabaseQueryStmt struct {
-	OutputVariable      string               // Optional output variable
-	QueryName           string               // Full 3-part identifier: Module.Connection.QueryName
-	DynamicQuery        string               // Optional dynamic SQL override
-	Arguments           []CallArgument       // Parameter mappings (query parameters)
-	ConnectionArguments []CallArgument       // Connection parameter mappings (runtime connection override)
-	ErrorHandling       *ErrorHandlingClause // Optional ON ERROR clause
-	Annotations         *ActivityAnnotations // Optional @position, @caption, @color, @annotation
+	OutputVariable string // Optional output variable
+	QueryName      string // Full 3-part identifier: Module.Connection.QueryName
+	DynamicQuery   string // Optional dynamic SQL override
+	// DynamicQueryIsExpression distinguishes `dynamic $Sql` from `dynamic 'SELECT …'`.
+	// Both reach the executor as a bare string, and the builder has to quote one
+	// and not the other: quoting an expression sends the literal text `$Sql` to
+	// the database, which is a syntax error at the far end, not a Mendix one.
+	DynamicQueryIsExpression bool
+	Arguments                []CallArgument       // Parameter mappings (query parameters)
+	ConnectionArguments      []CallArgument       // Connection parameter mappings (runtime connection override)
+	ErrorHandling            *ErrorHandlingClause // Optional ON ERROR clause
+	Annotations              *ActivityAnnotations // Optional @position, @caption, @color, @annotation
 }
 
 func (s *ExecuteDatabaseQueryStmt) isMicroflowStatement() {}
@@ -696,6 +701,20 @@ type DownloadFileStmt struct {
 }
 
 func (s *DownloadFileStmt) isMicroflowStatement() {}
+
+// SynchronizeStmt represents: SYNCHRONIZE ALL | UNSYNCHRONIZED | $Var[, $Var...]
+//
+// Nanoflow-only — Mendix rejects the activity in a (server-side) microflow.
+type SynchronizeStmt struct {
+	// SyncType is the platform enum value: All, Unsynchronized or Specific.
+	SyncType string
+	// Variables holds the object/list variable names (no $) for Specific mode.
+	Variables     []string
+	ErrorHandling *ErrorHandlingClause // Optional ON ERROR clause
+	Annotations   *ActivityAnnotations // Optional @position, @caption, @color, @annotation
+}
+
+func (s *SynchronizeStmt) isMicroflowStatement() {}
 
 // ValidationFeedbackStmt represents: VALIDATION FEEDBACK $Var/Attr MESSAGE 'message' OBJECTS [$Var1, $Var2];
 type ValidationFeedbackStmt struct {

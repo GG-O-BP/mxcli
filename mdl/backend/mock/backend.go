@@ -185,6 +185,8 @@ type MockBackend struct {
 	CreateDatabaseConnectionFunc    func(conn *model.DatabaseConnection) error
 	UpdateDatabaseConnectionFunc    func(conn *model.DatabaseConnection) error
 	MoveDatabaseConnectionFunc      func(conn *model.DatabaseConnection) error
+	MoveJavaActionFunc              func(ja *javaactions.JavaAction) error
+	MovePublishedODataServiceFunc   func(svc *model.PublishedODataService) error
 	DeleteDatabaseConnectionFunc    func(id model.ID) error
 	ListDataTransformersFunc        func() ([]*model.DataTransformer, error)
 	CreateDataTransformerFunc       func(dt *model.DataTransformer) error

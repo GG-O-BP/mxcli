@@ -43,6 +43,15 @@ end workflow;
 - The body closer is `end workflow`, **not** `end`. `end;` fails (`missing
   WORKFLOW`).
 
+**The context is always stored as `WorkflowContext`.** Whatever you name the
+variable in the header, mxcli writes the parameter as `WorkflowContext`, so
+`$WorkflowContext/Attribute` is the canonical way to reach it in an expression.
+The name you declared (`$Context` above) and any casing of the canonical name
+(`$workflowContext`) are rewritten to it on write — in decision conditions, user
+task due dates and XPath targeting, wait-for-timer delays, and `with (…)`
+parameter mappings. Anything else is an undefined variable and Mendix fails the
+build with `CE0117 "Error(s) in expression."`.
+
 `create or replace workflow …` and `create or modify workflow …` are supported.
 
 ## Activities
@@ -93,11 +102,16 @@ begin
 
   -- Call a sub-workflow
   call workflow Module.SubProcess comment 'delegate';
-
-  -- Sticky-note annotation
-  annotation 'Escalation path per policy 4.2';
 end workflow;
 ```
+
+> **Do NOT use `annotation '...'` in a workflow body.** It parses, but the
+> annotation is written into the workflow's activity flow, which Mendix loads by
+> constructing every child with a `Flow` parent — no annotation type takes one, so
+> the resulting `.mpr` **cannot be loaded at all**: Studio Pro will not open the
+> project and `mx check` fails before validating anything. `mxcli` now refuses the
+> statement (MDL-WF04) at both check and exec time. Keep the note as an MDL comment
+> (`-- ...`); workflow canvas annotations are not yet writable.
 
 **Boundary events** attach a timer to a user task / call-microflow / wait:
 

@@ -462,7 +462,9 @@ func TestDescribeODataService_ExposeRoundtrip(t *testing.T) {
 	assertNoError(t, describeODataService(ctx, ast.QualifiedName{Module: "MyModule", Name: "CatalogService"}))
 
 	out := buf.String()
-	assertContainsStr(t, out, "IsPartOfKey")
+	// KEY, not IsPartOfKey: both parse, but DESCRIBE emits the spelling the
+	// syntax help documents (mxcli-formula1 #10.5).
+	assertContainsStr(t, out, "(KEY)")
 
 	_, errs := visitor.Build(out)
 	if len(errs) > 0 {

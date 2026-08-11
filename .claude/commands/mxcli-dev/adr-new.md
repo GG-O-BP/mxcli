@@ -1,3 +1,8 @@
+---
+description: Write a new Architecture Decision Record in docs/13-decisions/
+argument-hint: <title>
+---
+
 # /mxcli-dev:adr-new — Create a New Architecture Decision Record
 
 Guide the contributor through writing a new ADR in `docs/13-decisions/`.

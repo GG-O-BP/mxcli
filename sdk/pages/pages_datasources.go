@@ -52,6 +52,10 @@ type MicroflowSource struct {
 	model.BaseElement
 	MicroflowID model.ID `json:"microflowId"`
 	Microflow   string   `json:"microflow"` // Qualified name (e.g., "Module.MicroflowName")
+	// Argument bindings for a parameterized source microflow. Mendix requires an
+	// argument for every parameter; dropping these builds to CE1571 "No argument
+	// has been selected for parameter 'X'" (#835).
+	ParameterMappings []*MicroflowParameterMapping `json:"parameterMappings,omitempty"`
 }
 
 func (MicroflowSource) isDataSource() {}
@@ -61,6 +65,9 @@ type NanoflowSource struct {
 	model.BaseElement
 	NanoflowID model.ID `json:"nanoflowId"`
 	Nanoflow   string   `json:"nanoflow"` // Qualified name (e.g., "Module.NanoflowName")
+	// Argument bindings for a parameterized source nanoflow — same rule as
+	// MicroflowSource above (#835).
+	ParameterMappings []*MicroflowParameterMapping `json:"parameterMappings,omitempty"`
 }
 
 func (NanoflowSource) isDataSource() {}

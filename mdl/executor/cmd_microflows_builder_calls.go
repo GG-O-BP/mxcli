@@ -870,6 +870,44 @@ func (fb *flowBuilder) addDownloadFileAction(s *ast.DownloadFileStmt) model.ID {
 	return activity.ID
 }
 
+// addSynchronizeAction creates a SYNCHRONIZE activity (nanoflow-only).
+func (fb *flowBuilder) addSynchronizeAction(s *ast.SynchronizeStmt) model.ID {
+	action := &microflows.SynchronizeAction{
+		BaseElement:       model.BaseElement{ID: model.ID(types.GenerateID())},
+		SyncType:          microflows.SynchronizationType(s.SyncType),
+		VariableNames:     s.Variables,
+		ErrorHandlingType: microflows.ErrorHandlingTypeRollback,
+	}
+	if action.SyncType == "" {
+		action.SyncType = microflows.SynchronizationTypeAll
+	}
+	if s.ErrorHandling != nil {
+		action.ErrorHandlingType = fb.ehType(s.ErrorHandling)
+	}
+
+	activity := &microflows.ActionActivity{
+		BaseActivity: microflows.BaseActivity{
+			BaseMicroflowObject: microflows.BaseMicroflowObject{
+				BaseElement: model.BaseElement{ID: model.ID(types.GenerateID())},
+				Position:    model.Point{X: fb.posX, Y: fb.posY},
+				Size:        model.Size{Width: ActivityWidth, Height: ActivityHeight},
+			},
+			AutoGenerateCaption: true,
+		},
+		Action: action,
+	}
+
+	activityX := fb.posX
+	fb.objects = append(fb.objects, activity)
+	fb.posX += fb.spacing
+	// Wire the custom error handler's own branch. Without this the activity
+	// stores CustomWithoutRollback with no outgoing error flow and mxbuild fails
+	// CE0011 "If custom error handling is enabled there must be an outgoing
+	// sequence flow set as error handler."
+	fb.finishCustomErrorHandler(activity.ID, activityX, s.ErrorHandling, "")
+	return activity.ID
+}
+
 // addClosePageAction creates a CLOSE PAGE statement.
 func (fb *flowBuilder) addClosePageAction(s *ast.ClosePageStmt) model.ID {
 	numPages := s.NumberOfPages
@@ -1344,13 +1382,28 @@ func buildRestParameterMappings(
 	return pathMappings, queryMappings
 }
 
+// dynamicQueryExpression renders the statement's dynamic query as the Mendix
+// expression the action stores.
+//
+// A literal SQL string has to be quoted, because the field holds an expression —
+// but an expression must be passed through untouched. Quoting `$Sql` sends the
+// four characters "$Sql" to the database:
+//
+//	ERROR - ExternalDatabaseConnector: Parser Error: syntax error at or near "$"
+//
+// which blocks runtime-built SQL entirely. The two spellings are only
+// distinguishable at parse time, hence DynamicQueryIsExpression.
+func dynamicQueryExpression(s *ast.ExecuteDatabaseQueryStmt) string {
+	q := s.DynamicQuery
+	if q == "" || s.DynamicQueryIsExpression || strings.HasPrefix(q, "'") {
+		return q
+	}
+	return "'" + strings.ReplaceAll(q, "'", "''") + "'"
+}
+
 // addExecuteDatabaseQueryAction creates an EXECUTE DATABASE QUERY statement.
 func (fb *flowBuilder) addExecuteDatabaseQueryAction(s *ast.ExecuteDatabaseQueryStmt) model.ID {
-	// DynamicQuery is a Mendix expression — string literals need single quotes
-	dynamicQuery := s.DynamicQuery
-	if dynamicQuery != "" && !strings.HasPrefix(dynamicQuery, "'") {
-		dynamicQuery = "'" + strings.ReplaceAll(dynamicQuery, "'", "''") + "'"
-	}
+	dynamicQuery := dynamicQueryExpression(s)
 
 	action := &microflows.ExecuteDatabaseQueryAction{
 		BaseElement:        model.BaseElement{ID: model.ID(types.GenerateID())},

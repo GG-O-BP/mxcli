@@ -120,7 +120,6 @@ microflowStatement
     | annotation* caseStatement SEMICOLON
     | annotation* inheritanceSplitStatement SEMICOLON
     | annotation* castObjectStatement SEMICOLON
-    | annotation* setStatement SEMICOLON
     | annotation* createListStatement SEMICOLON       // Must be before createObjectStatement to match "CREATE LIST OF"
     | annotation* createObjectStatement SEMICOLON
     | annotation* changeObjectStatement SEMICOLON
@@ -148,6 +147,7 @@ microflowStatement
     | annotation* showHomePageStatement SEMICOLON
     | annotation* showMessageStatement SEMICOLON
     | annotation* downloadFileStatement SEMICOLON
+    | annotation* synchronizeStatement SEMICOLON
     | annotation* throwStatement SEMICOLON
     | annotation* listOperationStatement SEMICOLON
     | annotation* aggregateListStatement SEMICOLON
@@ -170,6 +170,13 @@ microflowStatement
     | annotation* openWorkflowStatement SEMICOLON
     | annotation* lockWorkflowStatement SEMICOLON
     | annotation* unlockWorkflowStatement SEMICOLON
+    // LAST on purpose. Since SET became optional, `$X = <expr>` overlaps every
+    // `VARIABLE EQUALS <function-call>` statement above — aggregates, list
+    // operations, RANGE. Those rules must keep winning: a lower-numbered
+    // setStatement swallowed `$Sum = sum($List.Price)` into a Change Variable
+    // whose fallback conversion drops the attribute, which mxbuild rejects
+    // (CE0015 / CE0109). Last means it only claims what nothing else parses.
+    | annotation* setStatement SEMICOLON
     ;
 
 declareStatement
@@ -207,8 +214,13 @@ castObjectStatement
     | VARIABLE EQUALS CAST VARIABLE
     ;
 
+// SET is optional: `$Total = 5;` is what everyone writes, and every other
+// assignment form in MDL already works bare (`$X = HEAD($List)`,
+// `$X = execute database query …`). Requiring the keyword only here made the
+// rule unguessable — and the parse error named the token, not the missing
+// keyword (mxcli-formula1 findings #13).
 setStatement
-    : SET (VARIABLE | attributePath) EQUALS expression
+    : SET? (VARIABLE | attributePath) EQUALS expression
     ;
 
 // $NewProduct = CREATE MfTest.Product (Name = $Name, Code = $Code);
@@ -398,7 +410,12 @@ callExternalActionStatement
 
 // $Wf = CALL WORKFLOW Module.WF_Name ($ContextObj);
 callWorkflowStatement
-    : (VARIABLE EQUALS)? CALL WORKFLOW qualifiedName LPAREN callArgumentList? RPAREN onErrorClause?
+    // A workflow has exactly ONE context parameter, so the positional form is
+    // unambiguous — and it is what DESCRIBE emits, since the model stores only
+    // the context VARIABLE and not the parameter's name. Without this
+    // alternative, describing a `call workflow` produced MDL that would not
+    // parse on the way back in.
+    : (VARIABLE EQUALS)? CALL WORKFLOW qualifiedName LPAREN (callArgumentList | VARIABLE)? RPAREN onErrorClause?
     ;
 
 // $Data = GET WORKFLOW DATA $WorkflowVar AS Module.WorkflowName;
@@ -493,6 +510,19 @@ showHomePageStatement
 // SHOW MESSAGE 'Hello {1}' TYPE Information OBJECTS [$Name];
 showMessageStatement
     : SHOW MESSAGE expression (TYPE identifierOrKeyword)? (OBJECTS LBRACKET expressionList RBRACKET)?
+    ;
+
+// SYNCHRONIZE ALL;
+// SYNCHRONIZE UNSYNCHRONIZED;
+// SYNCHRONIZE $Order, $Lines;              -- Specific mode
+// SYNCHRONIZE ALL ON ERROR WITHOUT ROLLBACK { ... };
+//
+// Nanoflow-only: Mendix rejects a synchronize in a microflow, which is
+// server-side. The bare `SYNCHRONIZE;` form is deliberately absent — the mode is
+// always written out, so the statement says what it does without the reader
+// having to know that the platform default is All.
+synchronizeStatement
+    : SYNCHRONIZE (ALL | UNSYNCHRONIZED | VARIABLE (COMMA VARIABLE)*) onErrorClause?
     ;
 
 downloadFileStatement

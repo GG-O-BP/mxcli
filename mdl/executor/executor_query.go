@@ -15,6 +15,8 @@ func execShow(ctx *ExecContext, s *ast.ShowStmt) error {
 	switch s.ObjectType {
 	case ast.ShowModules:
 		return listModules(ctx)
+	case ast.ShowFolders:
+		return listFolders(ctx, s)
 	case ast.ShowEnumerations:
 		return listEnumerations(ctx, s.InModule)
 	case ast.ShowConstants:
@@ -226,7 +228,7 @@ func execDescribe(ctx *ExecContext, s *ast.DescribeStmt) error {
 		case ast.DescribeDatabaseConnection:
 			return describeDatabaseConnection(ctx, s.Name)
 		case ast.DescribeSettings:
-			return describeSettings(ctx)
+			return describeSettings(ctx, s.Qualifier)
 		case ast.DescribeFragment:
 			return describeFragment(ctx, s.Name)
 		case ast.DescribeImageCollection:

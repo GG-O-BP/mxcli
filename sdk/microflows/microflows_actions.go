@@ -1163,3 +1163,55 @@ type UnlockWorkflowAction struct {
 }
 
 func (UnlockWorkflowAction) isMicroflowAction() {}
+
+// SynchronizationType selects what a SYNCHRONIZE action sends to the server.
+//
+// Values are the ones the platform stores, taken from the Mendix Model SDK's
+// `SynchronizationType` (mendixmodelsdk, gen/microflows) — NOT from Studio Pro's
+// UI wording, which calls Specific "Selected object(s)" and would have led
+// straight to an invalid enum in the model.
+type SynchronizationType string
+
+const (
+	// SynchronizationTypeAll synchronizes the whole offline database. This is
+	// the platform default when the property is absent.
+	SynchronizationTypeAll SynchronizationType = "All"
+	// SynchronizationTypeUnsynchronized sends only objects with uncommitted
+	// offline changes. Introduced in Mendix 9.4.0.
+	SynchronizationTypeUnsynchronized SynchronizationType = "Unsynchronized"
+	// SynchronizationTypeSpecific synchronizes the objects and lists named in
+	// VariableNames.
+	SynchronizationTypeSpecific SynchronizationType = "Specific"
+)
+
+// SynchronizeAction synchronizes the offline database with the server. It is
+// nanoflow-only — Mendix rejects it in a microflow, which runs server-side.
+type SynchronizeAction struct {
+	model.BaseElement
+	ErrorHandlingType ErrorHandlingType   `json:"errorHandlingType,omitempty"`
+	SyncType          SynchronizationType `json:"syncType,omitempty"`
+	// VariableNames holds the object/list variables for SynchronizationTypeSpecific,
+	// stored as a BSON array of bare names (no `$`). Empty for the other modes.
+	VariableNames []string `json:"variableNames,omitempty"`
+}
+
+func (SynchronizeAction) isMicroflowAction() {}
+
+// UnsupportedAction is a read-only stand-in for a microflow action the reader
+// has no mapping for. It carries the stored `$Type` so DESCRIBE can name what it
+// could not render, instead of the anonymous "-- Empty action" that made a
+// missing mapping indistinguishable from an activity with no action at all
+// (upstream #863).
+//
+// It is deliberately inert on the write side: `microflowActionToGen` has no case
+// for it, so an UnsupportedAction never reaches BSON. That is the safe default —
+// the reader kept only the type name and the error-handling type, so writing it
+// back would produce an activity stripped of everything else.
+type UnsupportedAction struct {
+	model.BaseElement
+	// StorageType is the BSON `$Type`, e.g. "Microflows$SynchronizeAction".
+	StorageType       string            `json:"storageType,omitempty"`
+	ErrorHandlingType ErrorHandlingType `json:"errorHandlingType,omitempty"`
+}
+
+func (UnsupportedAction) isMicroflowAction() {}

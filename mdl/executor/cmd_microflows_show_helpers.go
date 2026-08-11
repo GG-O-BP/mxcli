@@ -540,6 +540,15 @@ func emitActivityStatement(
 	// exec. Emit the comment on its own instead.
 	if strings.HasPrefix(strings.TrimSpace(stmt), "--") {
 		*lines = append(*lines, indentStr+stmt)
+		// The early return above used to end the function, which also skipped the
+		// error-handler traversal further down — so an activity the describer
+		// could not render lost its entire error branch without a word (#863).
+		// The branch cannot be emitted as live MDL (an `on error { … }` block has
+		// no statement to attach to here), but it must not disappear either:
+		// render it commented-out, so the artifact still shows what the model
+		// holds. Guard-don't-drop, in a path that cannot round-trip.
+		emitCommentedErrorHandler(
+			ctx, obj, flowsByOrigin, activityMap, entityNames, microflowNames, lines, indentStr)
 		return
 	}
 
@@ -588,6 +597,58 @@ func emitActivityStatement(
 	} else {
 		*lines = append(*lines, indentStr+stmt)
 	}
+}
+
+// emitCommentedErrorHandler renders an activity's error branch as MDL line
+// comments. It is the fallback for activities the describer can only emit as a
+// comment: the branch has no live statement to hang an `on error { … }` block
+// off, so the choice is between showing it commented-out and losing it.
+//
+// Commenting is load-bearing, not cosmetic. Emitting these statements as live
+// MDL would be worse than dropping them — on the next exec they would run
+// unconditionally in the main flow rather than on failure, quietly changing the
+// microflow's behaviour instead of merely shrinking it.
+func emitCommentedErrorHandler(
+	ctx *ExecContext,
+	obj microflows.MicroflowObject,
+	flowsByOrigin map[model.ID][]*microflows.SequenceFlow,
+	activityMap map[model.ID]microflows.MicroflowObject,
+	entityNames map[model.ID]string,
+	microflowNames map[model.ID]string,
+	lines *[]string,
+	indentStr string,
+) {
+	errorHandlerFlow := findErrorHandlerFlow(flowsByOrigin[obj.GetID()])
+	if errorHandlerFlow == nil {
+		return
+	}
+
+	// The error-handling type lives on the action, which is exactly what is
+	// missing here — fall back to the activity level and, failing that, to the
+	// shape Studio Pro gives a hand-drawn error flow.
+	errType := getActionErrorHandlingType(activity(obj))
+	suffix := strings.TrimSpace(formatErrorHandlingSuffix(errType))
+	if suffix == "" {
+		suffix = "on error without rollback"
+	}
+
+	errStmts := collectErrorHandlerStatements(
+		ctx, errorHandlerFlow.DestinationID, activityMap, flowsByOrigin, entityNames, microflowNames)
+	if len(errStmts) == 0 {
+		*lines = append(*lines, indentStr+"-- "+suffix+" { };")
+		return
+	}
+	*lines = append(*lines, indentStr+"-- "+suffix+" {")
+	for _, errStmt := range errStmts {
+		*lines = append(*lines, indentStr+"--   "+strings.TrimSpace(errStmt))
+	}
+	*lines = append(*lines, indentStr+"-- };")
+}
+
+// activity narrows a MicroflowObject to *ActionActivity, or nil.
+func activity(obj microflows.MicroflowObject) *microflows.ActionActivity {
+	a, _ := obj.(*microflows.ActionActivity)
+	return a
 }
 
 // recordSourceMap records the source map entry for a node if sourceMap is non-nil.
@@ -1399,8 +1460,19 @@ func emitInheritanceSplitStatement(
 		traverseFlowUntilMerge(ctx, flow.DestinationID, branchStopID, activityMap, flowsByOrigin, flowsByDest, splitMergeMap, cloneVisited(visited), entityNames, microflowNames, lines, indent+1, sourceMap, headerLineCount, annotationsByTarget)
 	}
 	if elseFlow != nil {
+		elseLineIdx := len(*lines)
 		*lines = append(*lines, indentStr+"else")
 		traverseFlowUntilMerge(ctx, elseFlow.DestinationID, branchStopID, activityMap, flowsByOrigin, flowsByDest, splitMergeMap, cloneVisited(visited), entityNames, microflowNames, lines, indent+1, sourceMap, headerLineCount, annotationsByTarget)
+		// Remove an empty else block, as the if/else emitters above do. On an
+		// object-type decision this flow is the `(empty)` case (for a null
+		// object), which the builder emits unconditionally — CE0089 without it —
+		// so a split that never had an authored `else` still has the flow. Left
+		// in, DESCRIBE printed a bare `else` the author never wrote and a
+		// describe→exec roundtrip accumulated one each pass. Exec re-creates the
+		// flow, so dropping the empty rendering is lossless.
+		if len(*lines) == elseLineIdx+1 {
+			*lines = (*lines)[:elseLineIdx]
+		}
 	}
 	*lines = append(*lines, indentStr+"end split;")
 }
@@ -1810,6 +1882,13 @@ func getActionErrorHandlingType(activity *microflows.ActionActivity) microflows.
 	case *microflows.CommitObjectsAction:
 		return action.ErrorHandlingType
 	case *microflows.DownloadFileAction:
+		return action.ErrorHandlingType
+	case *microflows.SynchronizeAction:
+		return action.ErrorHandlingType
+	case *microflows.UnsupportedAction:
+		// Read off the stored action by property name — see errorHandlingTypeOf.
+		// Without this the handler on an unmapped action reads as "no error
+		// handling" and its branch is dropped (#863).
 		return action.ErrorHandlingType
 	default:
 		// Fall back to activity level for action types without ErrorHandlingType field

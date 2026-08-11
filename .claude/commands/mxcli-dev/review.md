@@ -1,3 +1,7 @@
+---
+description: Review the branch's changes against the CLAUDE.md PR checklist
+---
+
 # /mxcli-dev:review — PR Review
 
 Run a structured review of the current branch's changes against the CLAUDE.md
@@ -40,6 +44,10 @@ proactively. Add a row after every review that surfaces something new.
 | 15 | New MDL document type or `OR MODIFY` variant added but `cmd/mxcli/syntax/features_*.go` not updated — `mxcli syntax <topic>` and REPL `help` show stale syntax | Docs quality | Add/update `SyntaxFeature` entries: new type → new `Register(...)` block; changed syntax → update `Syntax` field of existing topic; grep `Path:` to confirm topic exists |
 | 16 | Bug-fix PR missing `mdl-examples/bug-tests/<issue>-description.mdl` — checklist requires one per fix so Studio Pro can validate the regression case | Test coverage | Add minimal MDL that reproduces the symptom; commit alongside the fix; the PR description often contains the exact reproduction snippet already |
 | 17 | Commit message claims a change (e.g. `"PERF001": "Performance"` mapping in `report.go`) that is not present in the diff — git body overstates the actual change, often referencing an example rule as if it were shipped | Docs quality | Diff the file the commit names (`git show <sha> -- <file>`); if the change isn't there, fix the commit body so it doesn't imply shipped behavior |
+
+| 18 | A generated artifact hardcodes a value that an exported constant also declares (e.g. `SwitcherStorageKey = "mxcli-theme"` beside four literal `"mxcli-theme"` in the template) — the constant and the artifact can drift, and a test asserting `Contains(output, TheConst)` keeps passing because it is checking the literal, not the link | Test coverage | Substitute the constant into the template (`{{KEY}}` + `strings.NewReplacer`) so there is one source of truth; assert the placeholder is expanded *and* the expected occurrence count |
+| 19 | Docs rewritten in one section while an earlier section still points at the removed content — e.g. "Copy the scaffold below" left in place after the scaffold was replaced by "do not hand-roll a scaffold", producing a direct contradiction two paragraphs apart in a skill `mxcli init` syncs into every user project | Docs quality | After deleting or replacing a doc section, grep the whole file for phrases that referred to it ("below", "scaffold", the old heading) and for the old anchor in the Contents list |
+| 20 | Asset-driven feature (themes, templates) whose correctness depends on a toolchain the Go tests never run — SCSS that must compile, a mixin whose name must match its `@include`. A broken asset ships and fails at the user's build, not in CI | Test coverage | Assert the naming/structural contract in Go (`@mixin X {` and `@include X;` both present, every `url()` resolves to a shipped file); compile once by hand against a real project and record it in the proposal |
 
 ---
 

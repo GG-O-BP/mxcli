@@ -1,3 +1,8 @@
+---
+description: Create a structured feature proposal in docs/11-proposals/
+argument-hint: <feature name>
+---
+
 # /mxcli-dev:proposal — Create Feature Proposal
 
 Guide the contributor through creating a well-structured feature proposal for

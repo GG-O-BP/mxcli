@@ -25,6 +25,9 @@ type ODataBackend interface {
 	DeleteConsumedODataService(id model.ID) error
 	CreatePublishedODataService(svc *model.PublishedODataService) error
 	UpdatePublishedODataService(svc *model.PublishedODataService) error
+	// MovePublishedODataService reparents the service document to an
+	// already-updated ContainerID, leaving its contents alone.
+	MovePublishedODataService(svc *model.PublishedODataService) error
 	DeletePublishedODataService(id model.ID) error
 }
 

@@ -12,6 +12,8 @@ import (
 type JavaBackend interface {
 	ListJavaActions() ([]*types.JavaAction, error)
 	ListJavaActionsFull() ([]*javaactions.JavaAction, error)
+	// MoveJavaAction reparents a Java action to an already-updated ContainerID.
+	MoveJavaAction(ja *javaactions.JavaAction) error
 	ListJavaScriptActions() ([]*types.JavaScriptAction, error)
 	ReadJavaActionByName(qualifiedName string) (*javaactions.JavaAction, error)
 	ReadJavaScriptActionByName(qualifiedName string) (*types.JavaScriptAction, error)

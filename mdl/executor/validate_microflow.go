@@ -88,6 +88,11 @@ func (v *microflowValidator) validate(body []ast.MicroflowStatement) {
 	// Duplicate loop iterator names — a Mendix loop variable is scoped to the whole
 	// microflow, so reusing a name across loops is CE0111 at build time.
 	v.checkDuplicateLoopVariables(body)
+
+	// The other half of that rule: names are unique flow-wide, but a loop's
+	// variables are only VISIBLE inside its body, so using one after the loop
+	// is CE0108.
+	v.checkLoopScoping(body)
 }
 
 // checkDuplicateLoopVariables flags a loop iterator name used by more than one
@@ -157,9 +162,9 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 			v.walkBody(stmt.ThenBody)
 			v.walkBody(stmt.ElseBody)
 		case *ast.EnumSplitStmt:
-			// Mendix enumeration splits map to exclusive splits with one outgoing
-			// flow per enum value. Multiple values per branch and a default (else)
-			// flow are not supported — Studio Pro will reject both with CE errors.
+			// A Mendix enumeration split is an exclusive split that needs an
+			// outgoing flow for every enum value AND for (empty); a default flow
+			// is not offered. Verified on mxbuild 11.6.6.
 			if len(stmt.ElseBody) > 0 {
 				v.addViolation("MDL008", linter.SeverityError,
 					fmt.Sprintf("case statement on '$%s' has an else branch; "+
@@ -168,14 +173,14 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 						stmt.Variable),
 					"Add an explicit when branch for every enum value instead of using else")
 			}
+			// MDL009 used to error here on a branch listing more than one value,
+			// claiming Mendix required exactly one per branch. That was wrong —
+			// `when Open, Pending then` covering every value builds with 0 errors,
+			// and the write-microflows skill documents that form — so the rule
+			// rejected valid MDL. It is retired rather than repurposed; MDL056
+			// below checks what actually fails the build.
+			v.checkEnumSplitEmptyBranch(stmt)
 			for _, c := range stmt.Cases {
-				if len(c.Values) > 1 {
-					v.addViolation("MDL009", linter.SeverityError,
-						fmt.Sprintf("case statement on '$%s': when branch lists %d values (%s); "+
-							"Mendix enumeration splits require exactly one value per branch.",
-							stmt.Variable, len(c.Values), strings.Join(c.Values, ", ")),
-						"Split into separate when branches, one per enum value")
-				}
 				v.walkBody(c.Body)
 			}
 			v.walkBody(stmt.ElseBody)
@@ -260,7 +265,10 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 				xp := expressionToXPath(stmt.Where)
 				v.checkXPathAssociationEmpty(stmt.Variable, xp)
 				v.checkXPathIdConstraint(stmt.Variable, xp)
+				v.checkXPathVariableTraversal(stmt.Variable, xp)
 			}
+		case *ast.SynchronizeStmt:
+			v.checkSynchronizeIsNanoflowOnly()
 		case *ast.CallMicroflowStmt:
 			v.checkAssociationObjectArgs("microflow "+stmt.MicroflowName.String(), stmt.Arguments)
 		case *ast.CallNanoflowStmt:
@@ -554,6 +562,60 @@ func (v *microflowValidator) checkXPathAssociationEmpty(variable, xpath string) 
 				"(CE0161 \"Error(s) in XPath constraint\") — `= empty` works on attributes, not associations", variable, assoc),
 			fmt.Sprintf("Test for the absence of the associated object with negation: `[not(%s/<Module.TargetEntity>)]`.", assoc))
 	}
+}
+
+// xpathVarTraversalRe matches a path rooted at a $variable with TWO OR MORE
+// segments (`$P/Mod.Assoc/Name`). One segment is deliberately not matched: both
+// `$P/Code` (the parameter's own attribute) and `$P/Mod.Assoc` (one hop to the
+// associated object) are valid XPath. The boundary is the hop count, not whether
+// a segment is module-qualified — see checkXPathVariableTraversal.
+var xpathVarTraversalRe = regexp.MustCompile(`\$(\w+)((?:/[A-Za-z_][\w.]*){2,})`)
+
+// checkXPathVariableTraversal flags a retrieve constraint that traverses an
+// association FROM a variable (`[Name = $RefProduct/Mod.Product_Category/Name]`).
+// Mendix XPath reaches at most one hop off a variable, so this fails the build
+// with CE0161 while mxcli accepted it silently (issue #831).
+//
+// Verified against mxbuild 11.6.6 — the boundary is narrower than it looks:
+//
+//	$Var/Attr             VALID   a parameter's own attribute
+//	$Var/Mod.Assoc        VALID   one hop, the associated object
+//	$Var/Mod.Assoc/Attr   CE0161  two or more hops
+//
+// There is no valid serialization of the two-hop form, which is why this is a
+// rejection rather than a writer fix: the constraint has to be restructured, and
+// only the author knows which of the two shapes they meant.
+func (v *microflowValidator) checkXPathVariableTraversal(variable, xpath string) {
+	for _, m := range xpathVarTraversalRe.FindAllStringSubmatch(xpath, -1) {
+		root, path := m[1], "$"+m[1]+m[2]
+		segs := strings.Split(strings.TrimPrefix(m[2], "/"), "/")
+		firstHop, leaf := segs[0], segs[len(segs)-1]
+		v.addViolation("MDL055", linter.SeverityError,
+			fmt.Sprintf("retrieve '$%s' constraint traverses an association from a variable (`%s`), which Mendix XPath "+
+				"does not support (CE0161 \"Error(s) in XPath constraint\") — a constraint reaches at most one hop off a variable",
+				variable, path),
+			fmt.Sprintf("Retrieve the associated object first, then constrain on its own attribute: "+
+				"`retrieve $Related from $%s/%s;` and use `[%s = $Related/%s]`. Or invert the constraint so the "+
+				"traversal starts at the entity being retrieved: `[%s/<Module.Entity> = $%s]`. Both forms build clean.",
+				root, firstHop, leaf, leaf, firstHop, root))
+	}
+}
+
+// checkSynchronizeIsNanoflowOnly rejects SYNCHRONIZE in a microflow.
+//
+// Offline synchronization is a client-side operation, so Mendix allows the
+// activity only in nanoflows. This validator runs over microflow bodies, so
+// reaching it at all is the error.
+//
+// Verified against mxbuild 11.13.0: the same nanoflow builds with 0 errors,
+// while a microflow containing it fails CE0009 "This action is not supported in
+// microflows."
+func (v *microflowValidator) checkSynchronizeIsNanoflowOnly() {
+	v.addViolation("MDL057", linter.SeverityError,
+		"`synchronize` is not supported in a microflow — offline synchronization runs on the client "+
+			"(CE0009 \"This action is not supported in microflows.\")",
+		"Move the statement into a nanoflow: `create nanoflow Module.NF_Sync () begin synchronize all; end;`. "+
+			"A microflow can call that nanoflow only from client-side logic, so the caller must be a nanoflow too.")
 }
 
 // xpathIdConstraintRe matches a constraint comparing the object id against a VALUE
@@ -1163,6 +1225,8 @@ func stmtErrorHandling(stmt ast.MicroflowStatement) *ast.ErrorHandlingClause {
 		return s.ErrorHandling
 	case *ast.DownloadFileStmt:
 		return s.ErrorHandling
+	case *ast.SynchronizeStmt:
+		return s.ErrorHandling
 	case *ast.CallJavaScriptActionStmt:
 		return s.ErrorHandling
 	case *ast.CallWebServiceStmt:
@@ -1200,4 +1264,41 @@ func isEmptyMessage(expr ast.Expression) bool {
 		}
 	}
 	return false
+}
+
+// checkEnumSplitEmptyBranch (MDL056) flags an enumeration split with no
+// `(empty)` branch. A Mendix enum split needs an outgoing flow for every value
+// AND for the unset case; without one the build fails with
+//
+//	CE0079 "The '(empty)' condition value should be configured in properties
+//	        for an outgoing flow."
+//
+// Verified on mxbuild 11.6.6, and the requirement is universal — it holds even
+// when the split is on a `not null` enum attribute, so no nullability analysis
+// is needed and the check works from the statement alone.
+//
+// This replaces the retired MDL009, which asserted the opposite of what Mendix
+// does (see the EnumSplitStmt arm). A new ID was used rather than repurposing
+// MDL009 so that anything referring to the old number still refers to the old,
+// wrong meaning.
+//
+// Value coverage — every enum member having a branch, the other half of CE0079 —
+// is deliberately NOT checked here: it needs the enumeration's member list,
+// which means resolving the split variable's type against the script or the
+// project. ValidateMicroflow sees only one statement. Worth adding where that
+// context exists; guessing it here would trade one false positive for another.
+func (v *microflowValidator) checkEnumSplitEmptyBranch(stmt *ast.EnumSplitStmt) {
+	for _, c := range stmt.Cases {
+		for _, val := range c.Values {
+			if strings.EqualFold(strings.TrimSpace(val), "(empty)") {
+				return
+			}
+		}
+	}
+	v.addViolation("MDL056", linter.SeverityError,
+		fmt.Sprintf("case statement on '$%s' has no `(empty)` branch; a Mendix enumeration split needs an "+
+			"outgoing flow for the unset value too, so this builds as CE0079 \"The '(empty)' condition value "+
+			"should be configured in properties for an outgoing flow\"", stmt.Variable),
+		"Add a `when (empty) then …` branch. It is required even when the attribute is `not null`. "+
+			"A branch may list several values (`when Open, (empty) then …`) if they share a path.")
 }

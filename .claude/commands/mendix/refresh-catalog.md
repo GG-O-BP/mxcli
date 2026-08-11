@@ -1,3 +1,8 @@
+---
+description: Rebuild the catalog database used for querying project metadata
+argument-hint: [full]
+---
+
 # Refresh Catalog
 
 Rebuild the catalog database for querying project metadata.

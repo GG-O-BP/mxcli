@@ -1,39 +1,50 @@
 -- ============================================================================
--- Ledger finding #52: `break` inside a conditional in a loop → unloadable model
+-- Ledger finding #52: `break`/`continue` inside a conditional in a loop
 -- ============================================================================
 --
--- Symptom (before fix): a `break` nested inside an `if`/`case` within a loop
--- passed `mxcli check --references` but serialized a DANGLING sequence-flow
--- reference. `mx check` then CRASHED loading the project with an unhandled
--- System.AggregateException ("The given key '<guid>' was not present in the
--- dictionary") — an unrecoverable project-load failure, not a normal error.
+-- History:
+--   * Originally, a `break` nested in an `if` within a loop passed
+--     `mxcli check` but serialized a DANGLING sequence-flow reference, and
+--     `mx check` CRASHED loading the project (unrecoverable AggregateException).
+--   * mendixlabs/mxcli#791 fixed the serialization (the Break/Continue event was
+--     being dropped); MDL051 (an interim reject-at-check guard) was then removed.
+--   * This finding surfaced the remaining gap: when the `if <cond> then break`
+--     was the LAST statement in the loop body, the decision was built with only
+--     its TRUE outgoing flow (→ break) — the FALSE case was deferred to a
+--     following statement that never came, so `mx check` reported CE0079
+--     ("the 'false' condition value should be configured on an outgoing
+--     sequence flow"). Recoverable, but the microflow would not deploy.
 --
--- A `break` placed DIRECTLY in the loop body serializes fine; only the useful
--- conditional form (`if <cond> then break`) is affected.
+-- Fix: the loop-body builder now honours the deferred FALSE case and, when it
+-- falls off the end of the loop body, wires it to a Continue event — the valid
+-- Mendix representation of "didn't break, so continue to the next iteration".
 --
--- After fix: MDL051 rejects the conditional-break form at check time (a diagnostic
--- beats a crash) until the flow serialization is fixed. Workaround — a guard
--- variable (verified clean on mx check):
---   declare $Done Boolean = false;
---   loop $R in $Rules begin
---     if not($Done) then
---       if <condition> then set $Done = true; end if;
---     end if;
---   end loop
---
--- Usage (expected to FAIL check):
---   mxcli check mdl-examples/bug-tests/ledger-52-break-in-conditional.fail.mdl
+-- Verified: exec -> raw `mx check` (Mendix 11.12.1) = 0 errors; the decision
+-- carries both a `true` flow (→ Break) and a `false` flow (→ Continue).
 -- ============================================================================
 
-create microflow MyModule.FirstActive (
-  $Rules: list of MyModule.Rule
-)
-returns boolean
+create entity Ledger52.Rule (Name: String, Active: Boolean);
+create module role Ledger52.User;
+
+-- break as the LAST statement in the loop (the CE0079 case)
+create microflow Ledger52.FirstActive ($Rules: list of Ledger52.Rule) returns Boolean
 begin
   loop $R in $Rules begin
     if $R/Active then
-      break;                 -- MDL051: crashes mx check (unloadable model)
+      break;
     end if;
+  end loop;
+  return true;
+end
+
+-- continue in a conditional
+create microflow Ledger52.SkipInactive ($Rules: list of Ledger52.Rule) returns Boolean
+begin
+  loop $R in $Rules begin
+    if $R/Active then
+      continue;
+    end if;
+    commit $R;
   end loop;
   return true;
 end

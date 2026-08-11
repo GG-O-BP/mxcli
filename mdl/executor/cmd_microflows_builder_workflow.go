@@ -32,7 +32,7 @@ func (fb *flowBuilder) wrapAction(action microflows.MicroflowAction, errorHandli
 
 func (fb *flowBuilder) addCallWorkflowAction(s *ast.CallWorkflowStmt) model.ID {
 	wfQN := s.Workflow.Module + "." + s.Workflow.Name
-	ctxVar := ""
+	ctxVar := s.ContextVariable
 	if len(s.Arguments) > 0 {
 		ctxVar = fb.exprToString(s.Arguments[0].Value)
 		// Strip leading $ if present
@@ -87,9 +87,22 @@ func (fb *flowBuilder) addWorkflowOperationAction(s *ast.WorkflowOperationStmt) 
 	var op microflows.WorkflowOperation
 	switch s.OperationType {
 	case "abort":
+		// The reason lands in a Microflows$StringTemplate's Text, which holds
+		// LITERAL text rather than an MDL expression. Dumping the expression
+		// string put the surrounding quotes into the model, so Mendix rendered
+		// them at runtime and DESCRIBE re-quoted what it read back: each round
+		// trip doubled the quoting, without bound. Unwrap a plain string literal
+		// to its value; any other expression goes through unchanged.
 		reason := ""
 		if s.Reason != nil {
-			reason = fb.exprToString(s.Reason)
+			if lit, ok := s.Reason.(*ast.LiteralExpr); ok && lit.Kind == ast.LiteralString {
+				if v, ok := lit.Value.(string); ok {
+					reason = v
+				}
+			}
+			if reason == "" {
+				reason = fb.exprToString(s.Reason)
+			}
 		}
 		op = &microflows.AbortOperation{
 			BaseElement:      model.BaseElement{ID: model.ID(types.GenerateID())},

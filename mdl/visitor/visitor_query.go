@@ -104,6 +104,16 @@ func (b *Builder) ExitShowStatement(ctx *parser.ShowStatementContext) {
 				Name:       &name,
 			})
 		}
+	} else if ctx.FOLDERS() != nil {
+		stmt := &ast.ShowStmt{ObjectType: ast.ShowFolders}
+		if ctx.IN() != nil {
+			if qn := ctx.QualifiedName(); qn != nil {
+				stmt.InModule = getQualifiedNameText(qn)
+			} else if id := ctx.IDENTIFIER(); id != nil {
+				stmt.InModule = id.GetText()
+			}
+		}
+		b.statements = append(b.statements, stmt)
 	} else if ctx.ENUMERATIONS() != nil {
 		stmt := &ast.ShowStmt{ObjectType: ast.ShowEnumerations}
 		if ctx.IN() != nil {
@@ -800,11 +810,18 @@ func (b *Builder) ExitDescribeStatement(ctx *parser.DescribeStatementContext) {
 		return
 	}
 
-	// Handle DESCRIBE SETTINGS
+	// Handle DESCRIBE SETTINGS [CONFIGURATION 'Name']
 	if ctx.SETTINGS() != nil {
-		b.statements = append(b.statements, &ast.DescribeStmt{
-			ObjectType: ast.DescribeSettings,
-		})
+		stmt := &ast.DescribeStmt{ObjectType: ast.DescribeSettings}
+		// `alter settings configuration 'X'` is the write form, so the read
+		// form has to accept the same shape — reaching for it and getting a
+		// parse error is the wrong lesson (mxcli-formula1 findings #8).
+		if ctx.CONFIGURATION() != nil {
+			if sl := ctx.STRING_LITERAL(); sl != nil {
+				stmt.Qualifier = unquoteString(sl.GetText())
+			}
+		}
+		b.statements = append(b.statements, stmt)
 		return
 	}
 

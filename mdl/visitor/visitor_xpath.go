@@ -122,6 +122,17 @@ func buildXPathValueExpr(ctx parser.IXpathValueExprContext) ast.Expression {
 		return buildXPathFunctionCall(fc)
 	}
 
+	// Unary minus: -7, -12.5, -(expr). The grammar admits this so that a
+	// negative numeric literal can be written unquoted inside a constraint
+	// (issuetracker finding #18); without a case here the operand is dropped
+	// and `[Amount > -7]` serializes to `[Amount > ]`.
+	if valCtx.MINUS() != nil {
+		return &ast.UnaryExpr{
+			Operator: "-",
+			Operand:  buildXPathValueExpr(valCtx.XpathValueExpr()),
+		}
+	}
+
 	// Path: step/step/step
 	if path := valCtx.XpathPath(); path != nil {
 		return buildXPathPath(path)

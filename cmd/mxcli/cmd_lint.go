@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/mendixlabs/mxcli/mdl/linter"
 	"github.com/mendixlabs/mxcli/mdl/linter/rules"
@@ -46,7 +47,10 @@ Bundled Starlark rules (in .claude/lint-rules/):
   - Entity business key (ARCH003) - persistent entities need a unique key
   Quality:
   - McCabe complexity (QUAL001) - microflow cyclomatic complexity threshold
-  - Missing documentation (QUAL002) - entities/microflows need documentation
+  - Missing documentation (QUAL002) - every document type (modules, entities,
+      pages, microflows, workflows, Java/JavaScript actions and their parameters,
+      REST services, mappings, constants, ...). Attributes and associations are
+      off by default; see the check_* options.
   - Long microflows (QUAL003) - microflows with too many activities
   - Orphaned elements (QUAL004) - unreferenced elements in the project
   Design:
@@ -186,6 +190,20 @@ Examples:
 			if len(cfg.ExcludeModules) > 0 {
 				merged := append(excludeModules, cfg.ExcludeModules...)
 				ctx.SetExcludedModules(merged)
+				// An exclude always wins over --modules (LintContext.IsExcluded
+				// checks the exclude set first), so asking for a module the
+				// config excludes yields zero findings with no explanation.
+				// `mxcli init` now ships a config excluding System, which makes
+				// `lint -m System` exactly that trap — say so rather than
+				// returning a silent empty result.
+				if shadowed := intersect(moduleFilter, cfg.ExcludeModules); len(shadowed) > 0 {
+					fmt.Fprintf(os.Stderr,
+						"Warning: --modules names %s, but %s excluded by %s — no findings will be reported for %s. Remove it from excludeModules to lint it.\n",
+						strings.Join(shadowed, ", "),
+						pluralIsAre(len(shadowed)),
+						configPath,
+						pluralItThem(len(shadowed)))
+				}
 			}
 			cfg.ApplyConfig(lint)
 		} else {
@@ -232,6 +250,24 @@ Examples:
 			os.Exit(1)
 		}
 
+		// A failed catalog query means some iterator yielded nothing and the
+		// findings above are incomplete. Reported on stderr so it survives
+		// `| jq` on the results, and treated as a failure: silently passing CI
+		// on a lint run that could not read the model is the worst outcome.
+		queryErrs := lint.QueryErrors()
+		for _, qe := range queryErrs {
+			fmt.Fprintf(os.Stderr,
+				"Error: lint could not read the catalog for %s: %v\n", qe.Iterator, qe.Err)
+		}
+		if len(queryErrs) > 0 {
+			fmt.Fprintf(os.Stderr,
+				"Results are INCOMPLETE (%d failed %s). The cached catalog is usually the cause; "+
+					"delete %s and re-run.\n",
+				len(queryErrs), map[bool]string{true: "query", false: "queries"}[len(queryErrs) == 1],
+				filepath.Join(projectDir, ".mxcli", "catalog.db"))
+			os.Exit(1)
+		}
+
 		// Exit with error if there are errors
 		summary := linter.Summarize(violations)
 		if summary.Errors > 0 {
@@ -251,4 +287,39 @@ func catalogRefreshCommand(mode linter.CatalogMode) string {
 	default:
 		return "REFRESH CATALOG"
 	}
+}
+
+// intersect returns the values of want that appear in have, preserving want's
+// order and dropping duplicates.
+func intersect(want, have []string) []string {
+	if len(want) == 0 || len(have) == 0 {
+		return nil
+	}
+	inHave := make(map[string]bool, len(have))
+	for _, h := range have {
+		inHave[h] = true
+	}
+	seen := make(map[string]bool, len(want))
+	var out []string
+	for _, w := range want {
+		if inHave[w] && !seen[w] {
+			seen[w] = true
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+func pluralIsAre(n int) string {
+	if n == 1 {
+		return "it is"
+	}
+	return "they are"
+}
+
+func pluralItThem(n int) string {
+	if n == 1 {
+		return "it"
+	}
+	return "them"
 }

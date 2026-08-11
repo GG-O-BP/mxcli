@@ -307,6 +307,28 @@ func (r *Registry) Sessions(viewerLogin string) []SessionView {
 	history := r.sessions.Snapshot() // nil-safe
 	r.mu.Unlock()
 
+	// Earliest sighting per endpoint slot. A live backend's RegisteredAt restarts
+	// whenever it re-registers after a reap, so first-seen has to come from the
+	// durable log to survive a reconnect (and to carry across sessions, since the
+	// slot — and therefore the URL — is the same one).
+	firstSeen := map[epKey]time.Time{}
+	for _, rec := range history {
+		if rec.RegisteredAt.IsZero() {
+			continue
+		}
+		k := rec.slot()
+		if cur, ok := firstSeen[k]; !ok || rec.RegisteredAt.Before(cur) {
+			firstSeen[k] = rec.RegisteredAt
+		}
+	}
+	for k, ev := range live {
+		ev.FirstSeenAt = ev.RegisteredAt
+		if f, ok := firstSeen[k]; ok && (ev.FirstSeenAt.IsZero() || f.Before(ev.FirstSeenAt)) {
+			ev.FirstSeenAt = f
+		}
+		live[k] = ev
+	}
+
 	// Group by session. Live endpoints override any offline record for the same slot.
 	type grp struct {
 		owner string
@@ -333,14 +355,19 @@ func (r *Registry) Sessions(viewerLogin string) []SessionView {
 			continue
 		}
 		g := ensure(rec.Session, rec.Owner)
-		k := strings.Join([]string{rec.Owner, rec.Prefix, rec.Solution, rec.Project, rec.Branch, rec.Worktree}, "\x00")
+		k := rec.slot()
 		if _, isLive := g.eps[k]; isLive {
 			continue // live entry wins
+		}
+		first := rec.RegisteredAt
+		if f, ok := firstSeen[k]; ok && (first.IsZero() || f.Before(first)) {
+			first = f
 		}
 		g.eps[k] = EndpointView{
 			Subdomain: rec.Subdomain, URL: rec.URL, Prefix: rec.Prefix, Project: rec.Project,
 			Solution: rec.Solution, Branch: rec.Branch, Worktree: rec.Worktree,
-			State: "offline", RegisteredAt: rec.RegisteredAt, LastSeenAt: rec.LastSeenAt,
+			State: "offline", RegisteredAt: rec.RegisteredAt, FirstSeenAt: first,
+			LastSeenAt: rec.LastSeenAt,
 		}
 	}
 
@@ -352,8 +379,8 @@ func (r *Registry) Sessions(viewerLogin string) []SessionView {
 			if ev.State != "offline" {
 				sv.Online = true
 			}
-			if sv.FirstSeen.IsZero() || (!ev.RegisteredAt.IsZero() && ev.RegisteredAt.Before(sv.FirstSeen)) {
-				sv.FirstSeen = ev.RegisteredAt
+			if sv.FirstSeen.IsZero() || (!ev.FirstSeenAt.IsZero() && ev.FirstSeenAt.Before(sv.FirstSeen)) {
+				sv.FirstSeen = ev.FirstSeenAt
 			}
 			if ev.LastSeenAt.After(sv.LastSeen) {
 				sv.LastSeen = ev.LastSeenAt

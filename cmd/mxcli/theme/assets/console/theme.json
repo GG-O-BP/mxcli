@@ -1,0 +1,48 @@
+{
+  "name": "console",
+  "title": "Console",
+  "version": "1",
+  "summary": "Dark-first, high contrast, geometric type, 28px rows, 6px radius",
+  "description": "A dark-first operational theme: near-black ground, teal signal colour with a violet accent, Space Grotesk over JetBrains Mono, 6px corners and 28px rows. Surfaces separate by lightness rather than by shadow. Ships dark and light palettes; dark is the default.",
+  "colorway": [
+    "#2DD4BF",
+    "#A78BFA",
+    "#3FB950",
+    "#D29922",
+    "#F85149",
+    "#9AA6B4"
+  ],
+  "defaultVariant": "dark",
+  "files": [
+    {
+      "path": "theme/web/custom-variables.scss",
+      "mode": "block",
+      "purpose": "Layer 1 \u2014 the Console palette (dark): brand, surfaces, ink, density"
+    },
+    {
+      "path": "theme/web/_mxcli-atlas-map.scss",
+      "mode": "block",
+      "purpose": "the Atlas wiring \u2014 shared by every mxcli theme, identical in each"
+    },
+    {
+      "path": "theme/web/_mxcli-console.scss",
+      "mode": "block",
+      "purpose": "Layer 2 \u2014 light palette, variant blocks, fonts, recipes"
+    },
+    {
+      "path": "theme/web/_mxcli-widgets.scss",
+      "mode": "block",
+      "purpose": "the widget-module layer \u2014 rules for colours Sass bakes before any token exists"
+    },
+    {
+      "path": "theme/web/main.scss",
+      "mode": "block",
+      "purpose": "variant switch + imports \u2014 this file compiles last, so the partials win"
+    },
+    {
+      "path": "theme/web/mxcli-fonts/",
+      "mode": "verbatim",
+      "purpose": "vendored Space Grotesk + JetBrains Mono (SIL OFL 1.1) \u2014 no CDN at runtime"
+    }
+  ]
+}

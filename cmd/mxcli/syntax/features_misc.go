@@ -105,7 +105,7 @@ DISCONNECT;`,
 		Summary: "Create or replace a navigation profile with home pages, menus, and login page",
 		Keywords: []string{
 			"create navigation", "replace navigation", "home page",
-			"login page", "not found page", "menu item",
+			"login page", "not found page", "menu item", "menu icon",
 		},
 		Syntax: `CREATE OR REPLACE NAVIGATION <profile>
   HOME PAGE Module.Page
@@ -113,18 +113,25 @@ DISCONNECT;`,
   [LOGIN PAGE Module.LoginPage]
   [NOT FOUND PAGE Module.Custom404]
   [MENU (
-    MENU ITEM 'Label' PAGE Module.Page;
-    MENU 'Group' ( ... );
-  )];`,
+    MENU ITEM 'Label' PAGE Module.Page [ICON Module.IconCollection.Name];
+    MENU 'Group' [ICON Module.IconCollection.Name] ( ... );
+  )];
+
+-- ICON is a qualified name into an ICON COLLECTION (Atlas_Core.Atlas,
+-- Atlas_Core.Atlas_Filled, Atlas_Core.Atlas_Styling, or your own) -- a model
+-- reference, not a string. Hyphenated Atlas names are double-quoted:
+--   ICON Atlas_Core.Atlas."align-center"
+-- Browse the available names with:
+--   SHOW ICON COLLECTION  /  DESCRIBE ICON COLLECTION Module.Name`,
 		Example: `CREATE OR REPLACE NAVIGATION Responsive
   HOME PAGE MyModule.Home_Web
   HOME PAGE MyModule.AdminDashboard FOR Administration.Administrator
   LOGIN PAGE Administration.Login
   MENU (
-    MENU ITEM 'Home' PAGE MyModule.Home_Web;
-    MENU 'Orders' (
-      MENU ITEM 'All Orders' PAGE Orders.Order_Overview;
-      MENU ITEM 'New Order' PAGE Orders.Order_New;
+    MENU ITEM 'Home' PAGE MyModule.Home_Web ICON Atlas_Core.Atlas.home;
+    MENU 'Orders' ICON Atlas_Core.Atlas."shopping-cart" (
+      MENU ITEM 'All Orders' PAGE Orders.Order_Overview ICON Atlas_Core.Atlas."list-bullets";
+      MENU ITEM 'New Order' PAGE Orders.Order_New ICON Atlas_Core.Atlas.add;
     );
   );`,
 		SeeAlso: []string{"navigation.show"},
@@ -151,7 +158,7 @@ DISCONNECT;`,
 			"settings", "project settings", "configuration",
 			"startup", "shutdown", "hash algorithm", "java version",
 		},
-		Syntax:  "SHOW SETTINGS;\nDESCRIBE SETTINGS;\nALTER SETTINGS MODEL <key> = <value>;\nALTER SETTINGS CONFIGURATION '<name>' <key> = <value>;",
+		Syntax:  "SHOW SETTINGS;\nDESCRIBE SETTINGS;\nDESCRIBE SETTINGS CONFIGURATION '<name>';   -- just one configuration\nALTER SETTINGS MODEL <key> = <value>;\nALTER SETTINGS CONFIGURATION '<name>' <key> = <value>;",
 		Example: "SHOW SETTINGS;\nALTER SETTINGS MODEL AfterStartupMicroflow = 'Module.MF_Startup';",
 		SeeAlso: []string{"settings.show", "settings.alter"},
 	})
@@ -162,8 +169,8 @@ DISCONNECT;`,
 		Keywords: []string{
 			"show settings", "describe settings", "list settings",
 		},
-		Syntax:  "SHOW SETTINGS;\nDESCRIBE SETTINGS;",
-		Example: "SHOW SETTINGS;\nDESCRIBE SETTINGS;",
+		Syntax:  "SHOW SETTINGS;\nDESCRIBE SETTINGS;\nDESCRIBE SETTINGS CONFIGURATION '<name>';",
+		Example: "SHOW SETTINGS;\nDESCRIBE SETTINGS;\nDESCRIBE SETTINGS CONFIGURATION 'Default';",
 	})
 
 	Register(SyntaxFeature{
@@ -237,6 +244,8 @@ SHOW STRUCTURE DEPTH 1 ALL;`,
 			"move folder", "drop folder",
 		},
 		Syntax: `MOVE <doctype> Module.Name TO FOLDER 'Path';
+-- doctype: PAGE | MICROFLOW | NANOFLOW | SNIPPET | ENUMERATION | CONSTANT
+--        | DATABASE CONNECTION | JAVA ACTION | ODATA SERVICE | ENTITY | FOLDER
 MOVE <doctype> Module.Name TO TargetModule;
 MOVE <doctype> OldModule.Name TO FOLDER 'Path' IN NewModule;
 MOVE FOLDER Module.FolderName TO FOLDER 'Path';
@@ -250,12 +259,50 @@ MOVE MICROFLOW MyModule.ACT_ProcessOrder TO FOLDER 'Orders/Processing';
 -- Move entity to different module
 MOVE ENTITY OldModule.Customer TO NewModule;
 
+-- Java actions and published OData services have no folder clause on CREATE,
+-- so MOVE is the only way to place them
+MOVE JAVA ACTION MyModule.ODataQuery TO FOLDER 'Support';
+MOVE ODATA SERVICE MyModule.PublicApi TO FOLDER 'Api/Published';
+
 -- Check impact before cross-module move
 SHOW IMPACT OF OldModule.CustomerPage;
 MOVE PAGE OldModule.CustomerPage TO NewModule;
 
 -- Drop empty folder
-DROP FOLDER 'OldFolder' IN Module;`,
+DROP FOLDER 'OldFolder' IN Module;
+
+-- Read the placement back
+LIST FOLDERS IN MyModule;`,
+		SeeAlso: []string{"folders"},
+	})
+
+	// ── Folders ─────────────────────────────────────────────────────────
+
+	Register(SyntaxFeature{
+		Path:    "folders",
+		Summary: "LIST FOLDERS — the folder layout of a module, with what is in each folder",
+		Keywords: []string{
+			"folders", "list folders", "show folders", "layout",
+			"folder tree", "where is this document", "unfiled",
+		},
+		Syntax: "LIST FOLDERS [IN <module>];",
+		Example: `-- Layout of one module
+LIST FOLDERS IN MyModule;
+
+-- Every module in the project
+LIST FOLDERS;
+
+-- As rows, to diff against an intended layout
+mxcli -p app.mpr --json -c "LIST FOLDERS IN MyModule"
+
+-- Complements MOVE: MOVE places a document in a folder, LIST FOLDERS reads
+-- the placement back. SHOW STRUCTURE is organised by document type at every
+-- depth, so it never shows which folder a document sits in.
+--
+-- Empty folders are listed too (with [0]), and documents still at the module
+-- root appear under "(module root)" — so the output is the whole layout and
+-- can be diffed against an intended one.`,
+		SeeAlso: []string{"move", "structure"},
 	})
 
 	// ── Search ──────────────────────────────────────────────────────────
@@ -291,18 +338,28 @@ SEARCH 'word*';`,
 
 	Register(SyntaxFeature{
 		Path:    "test",
-		Summary: "Microflow testing — run .test.mdl or .test.md files against a Mendix project in Docker",
+		Summary: "Microflow testing — run .test.mdl or .test.md files against a Mendix project (local warm loop, or Docker)",
 		Keywords: []string{
 			"test", "testing", "microflow test", "nanoflow test",
 			"test.mdl", "test.md", "junit", "docker",
 			"@test", "@expect", "@throws", "@cleanup",
+			"watch", "attach", "test endpoint", "warm",
 		},
 		Syntax: `mxcli test <file|dir> -p app.mpr [flags]
 
 Flags:
   -l, --list          List tests without executing
   -j, --junit FILE    Write JUnit XML results
-  -s, --skip-build    Skip Docker build (reuse existing)
+  -s, --skip-build    Skip the build (reuse existing deployment)
+      --local         Run on mxcli's own runtime — no Docker daemon needed
+  -w, --watch         With --local: keep the runtime warm and re-run on
+                      every test or model change (Ctrl-C to stop)
+      --attach        Run against an app already started with
+                      'mxcli run --local --test-endpoint' — no boot at all
+      --skip-app-startup
+                      With --local, do not run the project's own
+                      after-startup microflow (it runs by default)
+      --legacy-runner With --local: use the old after-startup runner
   -v, --verbose       Show runtime log lines
   -t, --timeout DUR   Runtime startup timeout (default: 5m)
 
@@ -311,7 +368,27 @@ Annotations:
   @expect $var = value      Assert variable equals value
   @expect $obj/Attr = val   Assert entity attribute
   @throws 'message'         Expect error
-  @cleanup rollback|none    Cleanup strategy (default: rollback)`,
+  @cleanup rollback|none    What happens to the test's database writes.
+                            rollback (the default) wraps the test in a
+                            transaction and rolls it back, so nothing it
+                            wrote survives — including when it throws.
+                            none lets the writes commit. --local only:
+                            the Docker path always commits. An unknown
+                            value is a parse error, not a silent commit.
+
+How --local runs tests: one microflow per test, invoked by name over a
+token-guarded HTTP endpoint the app registers at boot. A test that throws
+fails only itself, and results are returned rather than scraped from the log.
+Docker still uses the older after-startup runner.
+
+Boot also runs the project's own after-startup microflow, chained after the
+endpoint registration, so tests see the app in the state it really boots into
+and a suite behaves the same under --local and --attach.
+
+Cost of a run:
+  cold (--local)            ~30s   boots a runtime on its own ports + DB
+  warm (--local --watch)    ~2s    runtime stays up between runs
+  attached (--attach)       ~2s    no boot; uses the running app's database`,
 		Example: `-- .test.mdl file format
 /**
  * @test String concatenation
@@ -323,8 +400,14 @@ $result = CALL MICROFLOW MyModule.ConcatNames(
 /
 
 -- Run tests
-mxcli test tests/ -p app.mpr
-mxcli test tests/ -p app.mpr --junit results.xml`,
+mxcli test tests/ -p app.mpr                      -- Docker
+mxcli test tests/ -p app.mpr --local              -- no Docker daemon
+mxcli test tests/ -p app.mpr --local --watch      -- warm loop, re-runs on change
+mxcli test tests/ -p app.mpr --junit results.xml
+
+-- Or attach to an app you already have running:
+mxcli run  --local --test-endpoint -p app.mpr     -- terminal 1
+mxcli test tests/ -p app.mpr --attach             -- terminal 2`,
 	})
 
 	// ── Errors ──────────────────────────────────────────────────────────

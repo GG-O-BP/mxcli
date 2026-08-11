@@ -616,6 +616,82 @@ func stripExpressionIdentifierQuotes(s string) string {
 	return b.String()
 }
 
+// extractExpressionText lifts a Mendix expression's source text, without the MDL
+// comments the raw input stream would otherwise carry into the model.
+//
+// Use this rather than extractOriginalText for anything stored as a Mendix
+// expression. OQL keeps extractOriginalText: `--` is a legitimate SQL comment
+// there, and stripping it would change a different language's meaning.
+func extractExpressionText(ctx antlr.ParserRuleContext) string {
+	return stripMDLComments(extractOriginalText(ctx))
+}
+
+// stripMDLComments removes MDL comments from text lifted out of the input stream.
+//
+// extractOriginalText reads the raw source between two token positions, which is
+// what preserves an expression's spacing — and also drags in anything the lexer
+// sent to a hidden channel. MDL comments are `--` to end of line and `/* … */`;
+// Mendix expressions use neither, so a comment written between two operands
+// ended up stored *inside* the expression and the build failed with CE0117
+// "Error(s) in expression" (mxcli-formula1 suggested issue 11):
+//
+//	declare $Msg String = 'a' +
+//	  -- explain the second half
+//	  'b';
+//
+// A comment is replaced by a single space rather than deleted, so `1 --c\n+ 2`
+// does not become `1+ 2`… and more importantly `'a'--c\n'b'` cannot silently
+// weld into one token.
+//
+// Single-quoted string literals are respected: a Mendix string may legitimately
+// contain `--` or `/*`, and removing those would corrupt the value.
+func stripMDLComments(s string) string {
+	if !strings.Contains(s, "--") && !strings.Contains(s, "/*") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	inString := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '\'' {
+			if inString && i+1 < len(s) && s[i+1] == '\'' {
+				b.WriteByte(c)
+				b.WriteByte(s[i+1])
+				i++
+				continue
+			}
+			inString = !inString
+			b.WriteByte(c)
+			continue
+		}
+		if !inString && c == '-' && i+1 < len(s) && s[i+1] == '-' {
+			for i < len(s) && s[i] != '\n' {
+				i++
+			}
+			// Keep the newline itself: it is the statement's own layout, and a
+			// multi-line expression stays readable in DESCRIBE.
+			if i < len(s) {
+				b.WriteByte('\n')
+			}
+			continue
+		}
+		if !inString && c == '/' && i+1 < len(s) && s[i+1] == '*' {
+			end := strings.Index(s[i+2:], "*/")
+			if end < 0 {
+				// Unterminated: the parser would already have complained. Drop
+				// the rest rather than emit half a comment into the model.
+				break
+			}
+			i += 2 + end + 1
+			b.WriteByte(' ')
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
 // ----------------------------------------------------------------------------
 // Microflow Statements
 // ----------------------------------------------------------------------------

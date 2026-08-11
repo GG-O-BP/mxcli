@@ -244,6 +244,89 @@ without guessing, run the new mxbuild's own migration over an old project
 (`mx convert -p -s <project>`) and diff the BSON: Mendix ships a one-time
 conversion per renamed property, so the converted document is authoritative.
 
+### Writes Are Conditional, and an `$ID` Is Never Renumbered In Place
+
+Storage does not write a unit whose new content is **semantically equal** to what
+is stored ([ADR-0008](docs/13-decisions/0008-identity-and-idempotence.md)). The
+comparison is on a canonical form — every element `$ID` replaced by its index in a
+containment walk — because a rebuild mints a fresh random `$ID` per sub-element,
+so comparing bytes would skip nothing. The policy lives in `modelsdk/canon`
+(`Reconcile`) and is called at the single write choke point of **both** engines:
+`modelsdk/mpr/writer_core.go` (`updateUnit` *and* `WriteTransaction.WriteUnit` —
+`codec.Store` reaches storage through the latter) and `sdk/mpr/writer_units.go`.
+
+Three rules follow, and each has already been violated once:
+
+1. **Never rewrite an element `$ID` without rewriting every reference to it in the
+   same pass.** Pointers are *primitive* properties holding an `element.ID`, not
+   `ChildProperty`, so a containment walk traverses the whole document and never
+   sees one. PR #125 renumbered IDs this way and made projects unopenable
+   (`KeyNotFoundException` at `ResolvePostponedProperties`). A unit is rewritten
+   wholesale or not at all.
+2. **Adding a write path means wiring it to `canon.Reconcile`.** A new choke point
+   that writes directly will silently churn while everything else is quiet — the
+   worst kind of inconsistency, because the diff blames the wrong change.
+3. **A new document type with an identity property needs a row in
+   `canon.identityFields`.** It cannot be generated: Mendix's `IsIdentifier` lives
+   in the modeler assemblies, not in the reflection data `generated/metamodel` is
+   built from. `TestFreshGUIDFieldsHaveAnIdentityDecision` catches the common case
+   (a property the codec mints fresh on every write) but cannot catch an identity property
+   the codec does not mint. Establish the property's status the way `StableId` was
+   — the method table is in ADR-0008.
+
+Elision itself is type-agnostic and covers new document types for free, but it
+assumes **no binary pointer crosses a unit boundary** (measured 0 of 9,910, not
+enforced). A document type that references another *unit* by `$ID` rather than by
+qualified name breaks that assumption and invalidates the argument in ADR-0008.
+
+`MXCLI_ALWAYS_WRITE=1` forces every write to land, for bisecting. It does not
+disable identity preservation. **Any test asserting "nothing changed" must include
+the control run with it set** — otherwise the test passes against a build that
+never had the fix, which is exactly how PR #125 shipped green.
+
+### Theme Files: Where SCSS Actually Compiles
+
+Styling written to the wrong place fails **silently** — the build succeeds and the
+rules are simply absent, which is indistinguishable in the browser from a
+specificity problem. Verified on Mendix 11.13 (probe rules compiled, then grepped
+out of `theme-cache/web/theme.compiled.css`):
+
+- **`theme/web/main.scss` compiles LAST** — after Atlas Core *and* after every
+  module theme source. A partial imported from it overrides any Atlas rule with no
+  `!important`. This is the home for app-level styling (Layer 2), and it is a
+  three-line file of Mendix's own imports, not an Atlas-owned file.
+- **`themesource/<name>/` is only compiled when `<name>` matches a real module.**
+  mxbuild walks the model's modules; it never globs the directory. An invented
+  folder is skipped without a warning. Use a module's theme source only when the
+  styling belongs to that module.
+- **`theme/web/custom-variables.scss` is imported once per module** (8× in a blank
+  app), so it must hold **declarations only** — a rule there is emitted N times.
+  Tokens go here (Layer 1); rules go in the partial.
+- **Mendix 11 Atlas is CSS-custom-property-first**: `:root { --brand-primary: … }`,
+  not SCSS `!default`. The derived ramp is CSS `color-mix()` against
+  `var(--brand-primary)`, so retuning the primary re-derives it live.
+
+`cmd/mxcli/theme` encodes all four. Its embed uses `//go:embed all:assets` — a
+plain `go:embed assets` skips `_`-prefixed files, which is exactly how SCSS spells
+a partial. Files the project already owns are written as digest-fenced blocks
+(guard-don't-drop, as in ADR-0005): a block with local edits is refused, not
+overwritten.
+
+Two more, learned by flipping the variant on a running app:
+
+- **Atlas ships `:root.theme-dark` / `:root.theme-neutral` in `theme/web/` but
+  nothing that applies them** — the slot exists, the switcher does not. A theme's
+  own dark block must be declared at `:root.theme-dark` *after* Mendix's
+  `_theme-dark.scss` (same specificity, later wins), or the app reverts to stock
+  Mendix blue the moment the class appears. Because the class lands on `<html>`,
+  popups and modals rendered at `<body>` follow it too.
+- **Never pin an Atlas leaf to a literal colour.** Map it to a theme token
+  (`--bg-color: var(--mxt-ground)`) so a variant restates ~30 values instead of
+  ~60. A hardcoded `--font-color-default` is invisible the moment the ground goes
+  dark. Two Atlas rules also assume a *dark navigation rail* and paint topbar text
+  with `--color-base`, so every mxcli theme keeps the rail dark in both variants
+  and forces `color: inherit` on those widgets.
+
 ### Association Parent/Child Pointer Semantics (Counter-Intuitive)
 
 **CRITICAL**: Mendix BSON uses inverted naming for association pointers:
@@ -453,7 +536,7 @@ go build -o bin/mxcli ./cmd/mxcli
 | **Full-text search** | `search 'keyword'` | Search across all strings and source |
 | **Linting** | `mxcli lint -p app.mpr [--format json\|sarif]` | 15 built-in rules + 27 Starlark rules (MDL, SEC, QUAL, ARCH, DESIGN, CONV) |
 | **Report** | `mxcli report -p app.mpr [--format markdown\|json\|html]` | Scored best practices report with category breakdown |
-| **Testing** | `mxcli test tests/ -p app.mpr` | `.test.mdl` / `.test.md` files, requires Docker |
+| **Testing** | `mxcli test tests/ -p app.mpr [--local] [--watch] [--attach]` | `.test.mdl` / `.test.md` files. `--local` runs on mxcli's own runtime (no Docker daemon), on its own ports + `<project>_test` database, driving a **token-guarded test endpoint** (one microflow per test, invoked over HTTP — a throwing test fails only itself, results are returned not log-scraped). `--watch` keeps the runtime warm (~30s first run, then ~2s). `--attach` runs against an app already up under `run --local --test-endpoint` (no boot; uses **that app's** database) |
 | **Diff** | `mxcli diff -p app.mpr changes.mdl` | Compare script against project state |
 | **Diff local** | `mxcli diff-local -p app.mpr --ref head` | Git diff for MPR v2 projects |
 | **Diff revisions** | `mxcli diff-local -p app.mpr --ref main..feature` | Compare two arbitrary git revisions |
@@ -463,7 +546,9 @@ go build -o bin/mxcli ./cmd/mxcli
 | **Data import** | `import from <alias> query '...' into Module.Entity map (...)` | Import from external DB into Mendix app PostgreSQL (batch insert with ID generation) |
 | **Connector gen** | `sql <alias> generate connector into <module> [tables (...)] [views (...)] [exec]` | Auto-generate Database Connector MDL from discovered schema |
 | **Diagnostics** | `mxcli diag [--bundle]` | Session logs, version info, bug report bundles |
-| **New project** | `mxcli new <name> --version X.Y.Z [--output-dir dir]` | Downloads mxbuild, creates blank project, runs init, installs Linux mxcli for devcontainer |
+| **New project** | `mxcli new <name> --version X.Y.Z [--output-dir dir] [--theme none]` | Downloads mxbuild, creates blank project, applies default styling, runs init, installs Linux mxcli for devcontainer |
+| **Default styling** | `mxcli theme list\|show\|apply\|remove` | Applies a built-in theme (signal/ledger/console) — files under `theme/` only, the model is never touched |
+| **Theme switching** | `mxcli theme apply <name> --variant auto\|light\|dark`, `mxcli theme switcher install` | `auto` ships both palettes (follows the OS + honours a `theme-light`/`theme-dark` class); `switcher install` adds the JS actions + nanoflow for a user toggle (**this one does write to the model**) |
 | **Setup mxcli** | `mxcli setup mxcli [--os linux] [--arch amd64] [--output ./mxcli]` | Download platform-specific mxcli binary from GitHub releases |
 
 ### mxcli new
@@ -475,7 +560,7 @@ mxcli new MyApp --version 11.8.0
 mxcli new MyApp --version 10.24.0 --output-dir ./projects/my-app
 ```
 
-Steps performed: downloads MxBuild → `mx create-project` → `mxcli init` → downloads correct Linux mxcli binary for devcontainer. The result is a ready-to-open project with `.devcontainer/`, AI tooling, and a working `./mxcli` binary.
+Steps performed: downloads MxBuild → `mx create-project` → `mxcli theme apply` → `mxcli init` → one `mxbuild --target=deploy` run (`--skip-build` to skip) → downloads correct Linux mxcli binary for devcontainer. That build settles the JS/Java action stubs MxBuild rewrites on first build (48 tracked files in a blank 11.12 app), so a fresh clone does not go dirty the first time anyone builds it. The result is a ready-to-open project with `.devcontainer/`, AI tooling, mxcli's default styling, and a working `./mxcli` binary. Pass `--theme none` for plain Atlas.
 
 ### Slash Command Namespaces
 
@@ -549,7 +634,9 @@ Full syntax tables for all MDL statements (microflows, pages, security, navigati
 ## Current Implementation Status
 
 **Implemented:**
+- Default styling + runtime theme switching (`mxcli theme list/show/apply/remove/switcher`, `mxcli new --theme`): three embedded themes (**signal** light-first, **ledger** light-first, **console** dark-first), each a palette in `theme/web/custom-variables.scss` + a shared Atlas wiring partial + a theme partial imported from `theme/web/main.scss` (which compiles last), plus vendored fonts. **No model changes**, so it hot-applies under `run --local --watch` and cannot affect a build. Generated regions are digest-fenced: a block carrying local edits is refused rather than overwritten. Applying a theme removes the previous one. `--variant auto` (default) ships both palettes — the app follows `prefers-color-scheme` before first paint and honours a `theme-light`/`theme-dark` class on `<html>`; `light`/`dark` bakes one. `theme switcher install` is the only part that writes to the model (JS actions + a nanoflow for a toggle button). Package: `cmd/mxcli/theme/`. See `docs/11-proposals/PROPOSAL_default_styling.md`
 - MPR v1/v2 reading and writing
+- Idempotent writes (ADR-0008): a unit whose new content is semantically equal to what is stored is **not written**, so re-running an MDL script against an in-sync project leaves the `.mpr` and `mprcontents/` byte-identical and Studio Pro shows no version-control changes. Comparison is on a canonical form (element `$ID`s normalised away — a rebuild mints them randomly, so byte comparison would skip nothing); `Microflows$Microflow.StableId` is carried from the stored document rather than re-minted, because the build derives every client-callable microflow's operation id from it. One policy in `modelsdk/canon`, called from both engines' write choke points. `MXCLI_ALWAYS_WRITE=1` disables elision (not preservation) for bisecting. See `docs-site/src/internals/idempotent-writes.md`
 - Domain model (entities, attributes, associations)
 - ALTER ENTITY (add/rename/modify/drop attributes, indexes, documentation)
 - Microflows/Nanoflows with 60+ activity types, JavaScript action calls, nanoflow validation parity
@@ -564,6 +651,7 @@ Full syntax tables for all MDL statements (microflows, pages, security, navigati
 - LSP server with hover, go-to-definition, completion, diagnostics, symbols, folding
 - VS Code extension (`vscode-mdl`) with context menu commands (Run/Check/Selection)
 - Docker build integration (`mxcli docker build`) with PAD patching (Phase 1)
+- Warm test loop (`mxcli test --local [--watch]`, `--attach`, `run --local --test-endpoint`): local test runs go through a **token-guarded HTTP endpoint** registered by a generated Java custom request handler, instead of compiling the suite into the project's after-startup microflow. Boot registers the endpoint and then **chains the project's own after-startup microflow**, so tests see the app as it really boots (`--skip-app-startup` opts out) — without that, a suite depending on startup state passed under `--attach` and failed under `--local`. One microflow per test, resolved by name at request time from `Core.getMicroflowNames()` and invoked with `Core.microflowCall(...).execute(...)` — so a throwing test fails only itself (not the boot), results are returned rather than scraped from the runtime log, and each test has its own variable scope. Owning the `IContext` is also what finally makes **`@cleanup rollback`** (the annotation's documented default, previously parsed and ignored) real: the handler wraps the call in `startTransaction()`/`rollbackTransaction()`, so a test's writes do not survive it — verified against Postgres, with `@cleanup none` as the in-run control. A rollback that fails is reported per test and summarised, never silent; an unknown strategy is a parse error. The handler **survives `reload_model`** (after-startup does not re-run, the JVM is unchanged), which is what makes `--watch` possible: ~30s first run, then ~2s from an edit — to a test *or* to the microflow under test — to a verdict. `--attach` skips even that boot by running against an app already up under `run --local --test-endpoint`, driving that process's serve + admin APIs over loopback; it uses **that app's database**, only ever adds/removes its own test microflows, and refuses a change needing a restart. Security: the handler is **not registered at all** without `MXCLI_TEST_TOKEN` in the runtime env (so a project that kept the `MxTest` module through a failed cleanup is inert in production), the token is constant-time compared, non-loopback callers are refused, `/list` is clamped to the test namespace, and only `MxTest.Test_*` may be invoked. The token reaches the runtime via its environment and is never written into the project. Docker keeps the after-startup runner (`--legacy-runner` selects it locally). Packages: `cmd/mxcli/testrunner/` (`endpoint.go`, `client.go`, `watch.go`, `host.go`, `handshake.go`). See `docs/15-testing/SPIKE_test_endpoint_request_handler.md`
 - Warm local dev loop (`mxcli run --local [--watch] [--screenshot]`): Docker-free `mxbuild --serve` + standalone runtime, hot `reload_model` for behavioural changes and restart+DDL for structural ones (chosen from the serve build's `restartRequired`). Bundles the browser client (`web/dist/` via mxbuild's rollup runner, which the serve Deploy target skips) so Mendix 11.x apps render in a browser. `--watch` keeps an incremental rollup bundler hot (CHOKIDAR_USEPOLLING for container fs; ~3-4s page re-bundle, skipped for model-only edits) and watches only model source (`.mpr`+`mprcontents/`). `--ensure-db` provisions the local Postgres + app database if missing; `--setup` does the non-blocking prerequisites (cache mxbuild+runtime, ensure DB) and exits — `mxcli init` wires it into a Claude Code SessionStart hook so a fresh/reaped web session self-bootstraps, and `docs-site/src/tools/bootstrap-prompt.md` is the empty-repo seed prompt. `--screenshot` captures a Playwright PNG each change (pixel-perfect page loop), with `--screenshot-url` deep links (repeatable for multi-page sets, one PNG per page) and `--screenshot-user`/`--screenshot-password` form login (session saved as Playwright storage state, reused via `screenshot --load-storage`). See `docs/11-proposals/PROPOSAL_mxcli_dev_warm_loop.md`
 - External browser preview (`mxcli run --hub <url>` + `mxcli tunnel-hub`): the app stays local and reverse-tunnels out over a single 443 connection (embedded chisel) to a static relay, so it is reachable in a browser at a public URL — works from egress-only environments (Claude Code web), verified live through the session's MITM egress proxy. `run --hub` implies `--local`, boots the runtime with `ApplicationRootUrl` set to the assigned URL (so the SPA/`originURI` work under the public origin), resolves the control proxy honouring `NO_PROXY`, and retries forever. `mxcli tunnel-hub --domain <base>` is the **multi-tenant** relay: a registry keyed by prefix/project/solution/branch/worktree (stable URLs on reconnect) fronts many previews at per-subdomain hosts (`[prefix-]project[-branch].<base>`; main collapses to the project) over one 443 with per-subdomain autocert, a registration API (`/api/register|status|deregister|backends|sessions`), and an availability overview at `hub.<base>/` **grouped by Claude Code session** (`/api/sessions`): each session lists the endpoints it exposed and links back to its `claude.ai/code` conversation. Client identity flags: `--hub-prefix`/`--hub-project`/`--hub-solution`/`--hub-branch`/`--hub-worktree` (project + branch auto-detected); `--hub-session` groups a session's endpoints (auto-detected from `CLAUDE_CODE_REMOTE_SESSION_ID`). Past sessions are retained: a durable per-session endpoint history (`--sessions-file`, default `~/.mxcli/hub-sessions.json`) survives restarts and reaping, and is pruned after `--session-retention` (default 30d) — so the overview shows offline sessions too (`SessionLog` in `cmd/mxcli/tunnelhub/sessions.go`). Package: `cmd/mxcli/tunnelhub/`. See `docs/11-proposals/PROPOSAL_mxcli_dev_warm_loop.md` (slices 3–4)
 - Tunnel-hub GitHub authentication (opt-in, gated on `--github-oauth-client-id`; absent = today's open hub): **viewer plane** — GitHub OAuth web flow + HMAC-signed SSO session cookie (`Domain=.<domain>`), owner-checked previews (`--require-auth` default on → 302 to login / 403 non-owner; soft mode filters the listing only), `/api/backends` filtered to the viewer (unauthenticated → 401), admin "signed in as" via `/api/whoami`. **Registration plane** — durable, hashed hub API keys (`--keys-file`, default `~/.mxcli/hub-keys.json`, survive restarts) presented as `X-Hub-Key` → stamps `Backend.Owner`; shared `X-Hub-Secret` still works as an owner-less fallback. **Key issuance** — the hub's `/cli` browser page mints a key from the session cookie (no PAT; the device flow was removed as Claude Code containers block GitHub's device endpoints), rotate-by-default + count + revoke-all; `mxcli auth hub login --token <pat>` is the headless path; `run --hub` reads `MXCLI_HUB_KEY` (env → `~/.mxcli/auth.json`) and degrades to local-only if registration fails. Append-only JSONL audit trail (`--audit-log`, no secrets). Packages: `cmd/mxcli/tunnelhub/` (+`audit/`), `cmd/mxcli/hubauth/`. See `docs/11-proposals/PROPOSAL_hub_authentication.md`

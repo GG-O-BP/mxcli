@@ -101,6 +101,7 @@ This preserves the audit trail.
 | [0005](0005-semantic-model-interface-currency.md) | Semantic model is the backend-interface currency; storage formats are swappable adapters | Accepted |
 | [0006](0006-mcp-capability-model.md) | Version-aware MCP capability model | Proposed |
 | [0007](0007-mcp-read-model-session-overlay.md) | MCP backend read model — disk base with session overlay | Proposed |
+| [0008](0008-identity-and-idempotence.md) | Skip unchanged writes; never renumber element IDs in place | Accepted |
 
 ## Candidates to back-fill
 

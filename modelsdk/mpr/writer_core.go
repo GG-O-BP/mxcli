@@ -17,6 +17,8 @@ import (
 	"log"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
+
+	"github.com/mendixlabs/mxcli/modelsdk/canon"
 )
 
 // idToBsonBinary converts a UUID string to BSON Binary format.
@@ -160,6 +162,15 @@ func (w *Writer) BeginWriteTransaction() (*WriteTransaction, error) {
 // WriteUnit writes a unit within the transaction.
 // The actual file write is deferred until Commit.
 func (wt *WriteTransaction) WriteUnit(unitID string, contents []byte) error {
+	// Same no-op elision as updateUnit. This is a second write path into the
+	// same storage (codec.Store.SaveUnit / FlushUnits reach it), so leaving it
+	// out would mean the codec engine's own document writes kept churning while
+	// UpdateRawUnit's stopped — a difference no caller could reason about.
+	contents, unchanged := wt.writer.reconcileWithStored(unitID, contents)
+	if unchanged {
+		return nil
+	}
+
 	unitIDBlob := uuidToBlob(unitID)
 
 	if wt.writer.reader.version == MPRVersionV2 {
@@ -462,6 +473,11 @@ func (w *Writer) updateUnit(unitID string, contents []byte) error {
 		return w.sessionBuf(unitID, contents)
 	}
 
+	contents, unchanged := w.reconcileWithStored(unitID, contents)
+	if unchanged {
+		return nil
+	}
+
 	// Convert UUID string to 16-byte blob
 	unitIDBlob := uuidToBlob(unitID)
 
@@ -508,6 +524,16 @@ func (w *Writer) updateUnit(unitID string, contents []byte) error {
 		UPDATE Unit SET Contents = ? WHERE UnitID = ?
 	`, contents, unitIDBlob)
 	return err
+}
+
+// reconcileWithStored applies the shared no-op-elision policy (canon.Reconcile,
+// ADR-0008 decision 1) to a write against this project.
+func (w *Writer) reconcileWithStored(unitID string, contents []byte) (out []byte, unchanged bool) {
+	stored, err := w.reader.GetRawUnitBytes(unitID)
+	if err != nil {
+		return contents, false // new unit, or unreadable — write it
+	}
+	return canon.Reconcile(contents, stored)
 }
 
 // UpdateRawUnit saves raw BSON bytes for a unit, bypassing deserialization.

@@ -184,9 +184,25 @@ func (s *ServeServer) waitReady(timeout time.Duration) error {
 
 // Build sends a build request to the warm server and parses the result. The
 // caller inspects RestartRequired to decide reload_model vs restart.
+//
+// A relative ProjectFilePath is resolved here rather than by each caller.
+// MxBuild rejects one outright ("the project file path should be an absolute
+// path") and answers with a page of Windows sample requests, which tells a user
+// who typed `-p app.mpr` nothing about what to do. `mxcli run` learned to
+// absolutize at the CLI layer (findings #17), but that left the requirement
+// unenforced for every other caller — and `mxcli test --local` then hit exactly
+// the same error through StartLocalApp. Doing it at the one place that talks to
+// MxBuild is what stops a third caller finding it again.
 func (s *ServeServer) Build(req BuildRequest) (*BuildResult, error) {
 	if req.Target == "" {
 		req.Target = TargetDeploy
+	}
+	if req.ProjectFilePath != "" && !filepath.IsAbs(req.ProjectFilePath) {
+		abs, err := filepath.Abs(req.ProjectFilePath)
+		if err != nil {
+			return nil, fmt.Errorf("resolving project path %q: %w", req.ProjectFilePath, err)
+		}
+		req.ProjectFilePath = abs
 	}
 	bodyBytes, err := json.Marshal(req)
 	if err != nil {

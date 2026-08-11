@@ -1,0 +1,225 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package testrunner
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestGenerateTestFlowsOneMicroflowPerTest(t *testing.T) {
+	suite := &TestSuite{
+		Name: "suite",
+		Tests: []TestCase{
+			{ID: "test_1", Name: "first", MDL: "$r = CALL MICROFLOW Mod.A();"},
+			{ID: "test_2", Name: "second", MDL: "$r = CALL MICROFLOW Mod.B();"},
+		},
+	}
+	mdl := GenerateTestFlows(suite)
+
+	for _, want := range []string{
+		"CREATE OR REPLACE MICROFLOW MxTest.Test_test_1 ()",
+		"CREATE OR REPLACE MICROFLOW MxTest.Test_test_2 ()",
+	} {
+		if !strings.Contains(mdl, want) {
+			t.Errorf("generated MDL is missing %q", want)
+		}
+	}
+	if n := strings.Count(mdl, "CREATE OR REPLACE MICROFLOW"); n != 2 {
+		t.Errorf("got %d microflows, want one per test (2)", n)
+	}
+}
+
+// TestGenerateTestFlowsNoVariableRenaming pins the simplification that per-test
+// microflows buy. The monolithic runner has to suffix every variable to keep
+// test 1's $result apart from test 2's; separate microflows have separate
+// scopes, so the same name in two tests must survive unmangled.
+func TestGenerateTestFlowsNoVariableRenaming(t *testing.T) {
+	suite := &TestSuite{
+		Tests: []TestCase{
+			{ID: "test_1", Name: "a", MDL: "$result = CALL MICROFLOW Mod.A();",
+				Expects: []Expect{{Variable: "$result", Operator: "=", Value: "'x'"}}},
+			{ID: "test_2", Name: "b", MDL: "$result = CALL MICROFLOW Mod.B();",
+				Expects: []Expect{{Variable: "$result", Operator: "=", Value: "'y'"}}},
+		},
+	}
+	mdl := GenerateTestFlows(suite)
+
+	if strings.Contains(mdl, "$result_1") || strings.Contains(mdl, "$result_2") {
+		t.Error("variables were suffix-renamed; per-test microflows have their own scope")
+	}
+	if n := strings.Count(mdl, "$result"); n < 4 {
+		t.Errorf("expected $result to survive in both tests, found %d references", n)
+	}
+}
+
+func TestGenerateTestFlowsExpectAssertion(t *testing.T) {
+	suite := &TestSuite{Tests: []TestCase{{
+		ID: "test_1", Name: "equality", MDL: "$r = CALL MICROFLOW Mod.A();",
+		Expects: []Expect{{Variable: "$r", Operator: "=", Value: "'John'"}},
+	}}}
+	mdl := GenerateTestFlows(suite)
+
+	if !strings.Contains(mdl, "IF $r = 'John' THEN") {
+		t.Errorf("missing the equality check:\n%s", mdl)
+	}
+	if !strings.Contains(mdl, verdictFailPrefix+"expected $r = ''John''") {
+		t.Errorf("missing the failure verdict with the expected value:\n%s", mdl)
+	}
+}
+
+// TestGenerateTestFlowsNotEqualIsCompiledAsEquality pins the inherited
+// constraint: `<>` produced Mendix expression errors, so it must never reach the
+// model — a <> expectation is the same equality with the branches swapped.
+func TestGenerateTestFlowsNotEqualIsCompiledAsEquality(t *testing.T) {
+	suite := &TestSuite{Tests: []TestCase{{
+		ID: "test_1", Name: "inequality", MDL: "$r = CALL MICROFLOW Mod.A();",
+		Expects: []Expect{{Variable: "$r", Operator: "<>", Value: "'John'"}},
+	}}}
+	mdl := GenerateTestFlows(suite)
+
+	if strings.Contains(mdl, "$r <> 'John'") {
+		t.Error("the <> operator reached the generated Mendix expression")
+	}
+	if !strings.Contains(mdl, "IF $r = 'John' THEN") {
+		t.Errorf("<> was not compiled as a swapped equality:\n%s", mdl)
+	}
+}
+
+func TestGenerateTestFlowsWrapsCallsWithErrorHandling(t *testing.T) {
+	suite := &TestSuite{Tests: []TestCase{{
+		ID: "test_1", Name: "throwing", MDL: "$r = CALL MICROFLOW Mod.A();",
+	}}}
+	mdl := GenerateTestFlows(suite)
+
+	if !strings.Contains(mdl, "ON ERROR {") {
+		t.Errorf("the CALL was not wrapped in ON ERROR:\n%s", mdl)
+	}
+	if !strings.Contains(mdl, verdictFailPrefix+"exception during execution") {
+		t.Errorf("the error handler does not set a FAIL verdict:\n%s", mdl)
+	}
+}
+
+// TestGenerateTestFlowsThrowsTestStartsFailed pins that an @throws test whose
+// body completes normally fails: the verdict is pre-set to a failure and only
+// the error handler clears it.
+func TestGenerateTestFlowsThrowsTestStartsFailed(t *testing.T) {
+	suite := &TestSuite{Tests: []TestCase{{
+		ID: "test_1", Name: "expects a throw", MDL: "$r = CALL MICROFLOW Mod.A();",
+		Throws: "boom",
+	}}}
+	mdl := GenerateTestFlows(suite)
+
+	failIdx := strings.Index(mdl, verdictFailPrefix+"expected an exception")
+	handlerIdx := strings.Index(mdl, "ON ERROR {")
+	if failIdx < 0 {
+		t.Fatalf("no pre-set failure verdict:\n%s", mdl)
+	}
+	if handlerIdx < 0 {
+		t.Fatalf("no error handler:\n%s", mdl)
+	}
+	if failIdx > handlerIdx {
+		t.Error("the failure verdict is set after the handler; a non-throwing body would pass")
+	}
+	if !strings.Contains(mdl[handlerIdx:], "SET $Verdict = '"+verdictPass+"';") {
+		t.Error("the error handler does not clear the failure verdict")
+	}
+}
+
+func TestGenerateTestFlowsMultiLineCall(t *testing.T) {
+	suite := &TestSuite{Tests: []TestCase{{
+		ID: "test_1", Name: "multiline",
+		MDL: "$r = CALL MICROFLOW Mod.A(\n  FirstName = 'John',\n  LastName = 'Doe'\n);",
+	}}}
+	mdl := GenerateTestFlows(suite)
+
+	if !strings.Contains(mdl, ") ON ERROR {") {
+		t.Errorf("a statement spanning lines was not joined before ON ERROR was attached:\n%s", mdl)
+	}
+	if strings.Count(mdl, "ON ERROR {") != 1 {
+		t.Errorf("expected exactly one handler for one call:\n%s", mdl)
+	}
+}
+
+// TestGenerateTestFlowsEscapesNameInComment pins that a test name cannot close
+// the javadoc block it is written into and break the generated MDL.
+func TestGenerateTestFlowsEscapesNameInComment(t *testing.T) {
+	suite := &TestSuite{Tests: []TestCase{{
+		ID: "test_1", Name: "ends the comment */ CREATE MODULE Evil;", MDL: "",
+	}}}
+	mdl := GenerateTestFlows(suite)
+
+	head := mdl[:strings.Index(mdl, "CREATE OR REPLACE MICROFLOW")]
+	if strings.Count(head, "*/") != 1 {
+		t.Errorf("the test name closed the javadoc block early:\n%s", head)
+	}
+}
+
+func TestEndpointCleanupCommands(t *testing.T) {
+	suite := &TestSuite{Tests: []TestCase{{ID: "test_1"}, {ID: "test_2"}}}
+
+	tests := []struct {
+		name    string
+		state   projectState
+		present bool
+		want    []string
+	}{
+		{
+			name:    "drops the whole module when the runner created it",
+			state:   projectState{afterStartup: "Mod.ASU", createdMxTest: true},
+			present: true,
+			want: []string{
+				"ALTER SETTINGS MODEL AfterStartupMicroflow = 'Mod.ASU'",
+				"DROP MODULE MxTest",
+			},
+		},
+		{
+			name:    "drops only the generated documents from a user's module",
+			state:   projectState{createdMxTest: false},
+			present: true,
+			want: []string{
+				"ALTER SETTINGS MODEL AfterStartupMicroflow = ''",
+				"DROP MICROFLOW MxTest.Test_test_1",
+				"DROP MICROFLOW MxTest.Test_test_2",
+				"DROP MICROFLOW " + endpointStartupFlow,
+				"DROP JAVA ACTION " + endpointRegisterAction,
+			},
+		},
+		{
+			name:    "drops nothing when the module never landed",
+			state:   projectState{afterStartup: "Mod.ASU", createdMxTest: true},
+			present: false,
+			want:    []string{"ALTER SETTINGS MODEL AfterStartupMicroflow = 'Mod.ASU'"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := endpointCleanupCommands(tc.state, suite, tc.present)
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %d commands %q, want %d %q", len(got), got, len(tc.want), tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("command %d: got %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestEndpointCleanupRestoreIsAlwaysFirst pins the ordering: after-startup must
+// stop pointing at the startup microflow before that microflow is dropped.
+func TestEndpointCleanupRestoreIsAlwaysFirst(t *testing.T) {
+	suite := &TestSuite{Tests: []TestCase{{ID: "test_1"}}}
+	for _, st := range []projectState{
+		{createdMxTest: true},
+		{createdMxTest: false},
+		{afterStartup: "Mod.ASU", createdMxTest: true},
+	} {
+		cmds := endpointCleanupCommands(st, suite, true)
+		if !strings.HasPrefix(cmds[0], "ALTER SETTINGS MODEL AfterStartupMicroflow") {
+			t.Errorf("state %+v: first command is %q, want the after-startup restore", st, cmds[0])
+		}
+	}
+}

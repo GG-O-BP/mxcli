@@ -117,6 +117,7 @@
 
 # Part V: Project Tools
 
+- [Default Styling](tools/theme.md)
 - [Code Navigation](tools/code-navigation.md)
   - [SHOW CALLERS / CALLEES](tools/callers-callees.md)
   - [SHOW REFERENCES / IMPACT](tools/references-impact.md)
@@ -313,6 +314,7 @@
   - [Package Structure](internals/packages.md)
   - [Design Decisions](internals/design-decisions.md)
 - [MPR File Format](internals/mpr-format.md)
+  - [Idempotent Writes](internals/idempotent-writes.md)
   - [v1 vs v2](internals/mpr-v1-v2.md)
   - [BSON Document Structure](internals/bson-structure.md)
   - [Storage Names vs Qualified Names](internals/storage-names.md)

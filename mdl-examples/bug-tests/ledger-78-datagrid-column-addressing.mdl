@@ -1,0 +1,41 @@
+-- ============================================================================
+-- Ledger finding #78: DataGrid2 column addressing
+-- ============================================================================
+--
+-- DataGrid2 columns carry no stored name in the Mendix model, so the authored
+-- MDL name (`column colFoo (...)`) does not survive a write. mxcli addresses a
+-- column by a *derived* name: the bound attribute for an attribute column, the
+-- caption otherwise. `describe page` shows the addressable names.
+--
+-- Two hazards this fix removes:
+--
+--   1. A bare `ON <name>` that matches MORE THAN ONE column (duplicate captions
+--      on dynamic-text/custom columns collide) is now REJECTED with an
+--      ambiguity error, instead of silently mutating the first and leaving the
+--      second unreachable.
+--   2. Addressing a column by a name that resolves to nothing now lists the
+--      available (derived) column names and explains the derived-name model,
+--      instead of a bare "widget not found".
+--
+-- This script creates a grid and then addresses its columns by their DERIVED
+-- names (Merchant, Who) — the names `describe page` reports and `ON` accepts.
+-- ============================================================================
+
+create entity Ledger.Txn (Merchant: String, Amount: Decimal);
+
+create or replace page Ledger.Grid78 (Title: 'Grid', Layout: Atlas_Core.Atlas_Default) {
+  layoutgrid g { row r { column c (DesktopWidth: 12) {
+    datagrid dg (DataSource: DATABASE FROM Ledger.Txn) {
+      -- attribute column → derived name is the attribute leaf: "Merchant"
+      column colMerchant (attribute: Merchant, caption: 'Store')
+      -- dynamic-text column → derived name is the caption: "Who"
+      column colAmount (ShowContentAs: dynamicText, caption: 'Who', Content: '{1}', ContentParams: [{1} = Amount])
+    }
+  } } }
+}
+
+-- Address the columns by their DERIVED names (not the authored colMerchant/colAmount).
+alter page Ledger.Grid78 {
+  set Alignment = right ON Merchant;
+  set WrapText = true ON "Who";
+};

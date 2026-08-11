@@ -343,7 +343,7 @@ func appendSourceExpressionSuffix(
 	expr ast.Expression,
 	suffix string,
 ) ast.Expression {
-	source := strings.TrimSpace(extractOriginalText(exprCtx.(antlr.ParserRuleContext)))
+	source := strings.TrimSpace(extractExpressionText(exprCtx.(antlr.ParserRuleContext)))
 	innerExpr := expr
 	if sourceExpr, ok := expr.(*ast.SourceExpr); ok {
 		source = sourceExpr.Source
@@ -574,6 +574,7 @@ func buildExecuteDatabaseQueryStatement(ctx parser.IExecuteDatabaseQueryStatemen
 			stmt.DynamicQuery = unquoteDollarString(ds.GetText())
 		} else if expr := execCtx.Expression(); expr != nil {
 			stmt.DynamicQuery = expr.GetText()
+			stmt.DynamicQueryIsExpression = true
 		}
 	}
 
@@ -1201,6 +1202,34 @@ func buildDownloadFileStatement(ctx parser.IDownloadFileStatementContext) *ast.D
 	}
 	stmt.ShowInBrowser = dlCtx.BROWSER() != nil
 	if errClause := dlCtx.OnErrorClause(); errClause != nil {
+		stmt.ErrorHandling = buildOnErrorClause(errClause)
+	}
+	return stmt
+}
+
+// buildSynchronizeStatement converts synchronizeStatement context to SynchronizeStmt.
+// Grammar: SYNCHRONIZE (ALL | UNSYNCHRONIZED | VARIABLE (COMMA VARIABLE)*) onErrorClause?
+//
+// The mode words map to the platform's SynchronizationType values, which are NOT
+// Studio Pro's UI wording: the variable form is "Specific", not "Selected".
+func buildSynchronizeStatement(ctx parser.ISynchronizeStatementContext) *ast.SynchronizeStmt {
+	if ctx == nil {
+		return nil
+	}
+	syncCtx := ctx.(*parser.SynchronizeStatementContext)
+	stmt := &ast.SynchronizeStmt{}
+	switch {
+	case syncCtx.UNSYNCHRONIZED() != nil:
+		stmt.SyncType = "Unsynchronized"
+	case syncCtx.ALL() != nil:
+		stmt.SyncType = "All"
+	default:
+		stmt.SyncType = "Specific"
+		for _, v := range syncCtx.AllVARIABLE() {
+			stmt.Variables = append(stmt.Variables, strings.TrimPrefix(v.GetText(), "$"))
+		}
+	}
+	if errClause := syncCtx.OnErrorClause(); errClause != nil {
 		stmt.ErrorHandling = buildOnErrorClause(errClause)
 	}
 	return stmt

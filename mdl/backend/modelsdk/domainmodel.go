@@ -266,6 +266,24 @@ func attributeFromGen(a *genDm.Attribute) *domainmodel.Attribute {
 		// View-entity attribute: the OQL column reference must survive a
 		// read-modify-write (e.g. MOVE ENTITY) or the view goes out of sync (CE6770).
 		attr.Value = &domainmodel.AttributeValue{ViewReference: v.Reference()}
+	case *genRest.ODataMappedValue:
+		// External-entity attribute: the mapping to the remote OData property.
+		// Reading it back is what makes a read-modify-write safe — without it
+		// every attribute of an external entity comes back unmapped, and the
+		// writer's `isExternal && a.RemoteName != ""` arm falls through to a
+		// plain StoredValue. The entity then no longer matches the contract:
+		// "Attribute 'year' of external entity 'Stg_Season' is not supported."
+		attr.RemoteName = v.RemoteName()
+		attr.RemoteType = v.RemoteType()
+		attr.Filterable = v.Filterable()
+		attr.Sortable = v.Sortable()
+		attr.Creatable = v.Creatable()
+		attr.Updatable = v.Updatable()
+	case *genRest.ODataMappedPrimitiveCollectionValue:
+		// The single attribute of a primitive-collection NPE (issue #718).
+		attr.RemoteName = v.RemoteName()
+		attr.RemoteType = v.RemoteType()
+		attr.IsPrimitiveCollection = true
 	}
 	return attr
 }
@@ -453,6 +471,24 @@ func assocFromGen(a *genDm.Association) *domainmodel.Association {
 	if db, ok := a.DeleteBehavior().(*genDm.AssociationDeleteBehavior); ok && db != nil {
 		out.ParentDeleteBehavior = &domainmodel.DeleteBehavior{Type: domainmodel.DeleteBehaviorType(db.ParentDeleteBehavior())}
 		out.ChildDeleteBehavior = &domainmodel.DeleteBehavior{Type: domainmodel.DeleteBehaviorType(db.ChildDeleteBehavior())}
+	}
+
+	// Read the external (OData) source back. RemoteParentNavigationProperty in
+	// particular is the only durable link from an association to the OData
+	// navigation property it was generated from, and CREATE EXTERNAL ENTITIES
+	// dedupes on it. Dropping it here meant a re-import could not recognise an
+	// association it had itself created once the name carried a numeric suffix
+	// (module-wide uniqueness turns a second `season` into `season_2`), so every
+	// re-run appended two more — unbounded, and invisible to `mx check`.
+	if src, ok := a.Source().(*genRest.ODataRemoteAssociationSource); ok && src != nil {
+		out.Source = "Rest$ODataRemoteAssociationSource"
+		out.Navigability2 = src.Navigability2()
+		out.RemoteParentNavigationProperty = src.RemoteParentNavigationProperty()
+		out.RemoteChildNavigationProperty = src.RemoteChildNavigationProperty()
+		out.CreatableFromParent = src.CreatableFromParent()
+		out.CreatableFromChild = src.CreatableFromChild()
+		out.UpdatableFromParent = src.UpdatableFromParent()
+		out.UpdatableFromChild = src.UpdatableFromChild()
 	}
 	return out
 }

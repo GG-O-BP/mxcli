@@ -88,6 +88,12 @@ type LocalRuntimeOptions struct {
 	// ReadyTimeout bounds how long StartLocalRuntime waits for the admin API
 	// (default 90s).
 	ReadyTimeout time.Duration
+	// Env are extra "KEY=value" entries layered onto the runtime JVM's
+	// environment, last-wins over the inherited process environment. Used to hand
+	// the runtime a secret that must not be written to disk — the test runner
+	// passes its per-run endpoint token this way rather than baking it into the
+	// generated Java source, which would land in the user's javasource/ tree.
+	Env []string
 	// Stdout/Stderr receive progress messages (default os.Stdout/os.Stderr).
 	Stdout io.Writer
 	Stderr io.Writer
@@ -161,14 +167,17 @@ func (o *LocalRuntimeOptions) jvmArgs() []string {
 
 // localRuntimeEnv builds the environment for the runtime JVM, layered on the
 // current process environment. PrepareMxCommand later adds the FreeType fix.
+// o.Env is appended last so a caller-supplied value wins over both the inherited
+// environment and these defaults.
 func localRuntimeEnv(o LocalRuntimeOptions) []string {
-	return append(os.Environ(),
+	env := append(os.Environ(),
 		"M2EE_ADMIN_PASS="+o.AdminPass,
 		fmt.Sprintf("M2EE_ADMIN_PORT=%d", o.AdminPort),
 		"M2EE_ADMIN_LISTEN_ADDRESSES="+o.ListenAddr,
 		"MX_INSTALL_PATH="+o.InstallPath,
 		"MX_LOG_LEVEL=i",
 	)
+	return append(env, o.Env...)
 }
 
 // otelAgentJar locates the OpenTelemetry Java agent bundled with the runtime

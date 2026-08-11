@@ -1,3 +1,8 @@
+---
+description: Run the app's microflow tests and verify it in the browser
+argument-hint: [tests/]
+---
+
 # Test App
 
 Verify the running Mendix application using playwright-cli.

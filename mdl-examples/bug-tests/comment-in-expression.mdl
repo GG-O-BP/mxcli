@@ -1,0 +1,30 @@
+-- mxcli-formula1 suggested issue 11: an MDL comment between two operands was
+-- lifted into the Mendix expression along with the source text, and the build
+-- failed CE0117 "Error(s) in expression". Mendix expressions have no `--`.
+--
+-- Verified against mxbuild 11.12.1: 1 error before the fix, 0 after.
+
+create module CmtExpr;
+
+create microflow CmtExpr.Build ()
+returns string as $Msg
+begin
+  -- A comment between operands: the classic case.
+  declare $Msg String = 'a' +
+    -- explain the second half
+    'b';
+
+  -- A block comment mid-expression.
+  declare $N Integer = 1 /* one */ + 2;
+
+  -- A string that legitimately CONTAINS the comment markers must survive intact.
+  declare $Literal String = 'a--b' + '/*not a comment*/';
+
+  -- An escaped quote keeps the string open, so the `--` inside stays.
+  declare $Escaped String = 'it''s -- fine';
+
+  return $Msg;
+end;
+/
+
+drop module CmtExpr;

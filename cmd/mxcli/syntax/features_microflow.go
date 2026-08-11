@@ -16,6 +16,18 @@ func init() {
 	})
 
 	Register(SyntaxFeature{
+		Path:    "microflow.synchronize",
+		Summary: "SYNCHRONIZE — offline data synchronization (nanoflow only)",
+		Keywords: []string{
+			"synchronize", "sync", "offline", "unsynchronized", "specific",
+			"offline first", "nanoflow",
+		},
+		Syntax:  "SYNCHRONIZE ALL [ON ERROR ...];\nSYNCHRONIZE UNSYNCHRONIZED [ON ERROR ...];   -- Mendix 9.4+\nSYNCHRONIZE $Var[, $Var...] [ON ERROR ...];\n\nNanoflow only: in a microflow this is MDL057 / CE0009.",
+		Example: "CREATE NANOFLOW MyModule.NF_Sync ($Order: MyModule.Order)\nBEGIN\n  SYNCHRONIZE ALL;\n  SYNCHRONIZE UNSYNCHRONIZED;\n  SYNCHRONIZE $Order;\n  SYNCHRONIZE ALL ON ERROR WITHOUT ROLLBACK {\n    LOG ERROR 'sync failed';\n  };\nEND;",
+		SeeAlso: []string{"microflow.nanoflow", "microflow.error-handling"},
+	})
+
+	Register(SyntaxFeature{
 		Path:    "microflow.create",
 		Summary: "Create a microflow with parameters, return type, and body",
 		Keywords: []string{
@@ -34,8 +46,12 @@ func init() {
 			"declare", "variable", "set", "assign", "change",
 			"attribute", "expression",
 		},
-		Syntax:  "DECLARE $Var Type;\nDECLARE $Var Type = expression;\nSET $Var = expression;\nSET $Var/Attribute = expression;",
-		Example: "DECLARE $Count Integer = 0;\nDECLARE $Name String;\nSET $Name = 'Hello';\nSET $Order/Status = 'Pending';",
+		Syntax: "DECLARE $Var Type;                 -- a variable must be declared before it is assigned\n" +
+			"DECLARE $Var Type = expression;\n" +
+			"$Var = expression;                -- assign; SET is optional\n" +
+			"$Var/Attribute = expression;\n" +
+			"SET $Var = expression;            -- same statement, explicit form",
+		Example: "DECLARE $Count Integer = 0;\nDECLARE $Name String;\n$Count = $Count + 1;\n$Name = 'Hello';\nSET $Order/Status = 'Pending';",
 		SeeAlso: []string{"microflow.object-operations"},
 	})
 

@@ -122,6 +122,29 @@ set PopupResizable = true
 > }
 > ```
 
+#### Changing a widget's DataSource
+
+`SET DataSource` retypes a data source in place — including across shapes, e.g.
+from a microflow to a page parameter:
+
+```sql
+ALTER PAGE MyModule.OrderPage {
+  SET DataSource = $Order ON dvOrder;                       -- page/snippet parameter
+  SET DataSource = database MyModule.Order ON dgOrders;      -- database
+  SET DataSource = microflow MyModule.MF_Get ON dvOrder;     -- microflow
+  SET DataSource = nanoflow MyModule.NF_Get ON dvOrder;      -- nanoflow
+  SET DataSource = selection dgOrders ON dvDetail;           -- listen to widget
+}
+```
+
+The parameter must exist on the page (or snippet) being altered — its entity is
+read from the container's own parameter list, and an unknown name is refused
+rather than written as an unresolved reference.
+
+`association` sources are **not** supported by SET. Use REPLACE for those, which
+rebuilds the widget through the CREATE PAGE path and handles every datasource
+type; the error message says so.
+
 ### INSERT - Add Widgets
 
 ```sql
@@ -207,6 +230,10 @@ If an ALTER targeting a DataGrid column completes without error but makes no cha
 - Caption with only special chars (e.g. `"---"`) → falls back to `col1`, `col2`, … (1-based index)
 
 If the column name you copied from DESCRIBE still doesn't work, check whether the column has an attribute binding — attribute names take priority over captions.
+
+**The authored `column colFoo (...)` name is NOT how you address it.** A column carries no stored name in the Mendix model, so the name you wrote in `create page` is dropped on write — always address a column by its *derived* name (the one `describe page` shows). Using the authored name now fails with an error that lists the available column names, rather than a bare "not found".
+
+**Duplicate captions are ambiguous and rejected.** Two dynamic-text (or custom-content) columns with the same caption derive the same name, so `ON "Amount"` can't tell them apart. mxcli now refuses the operation with an ambiguity error instead of silently mutating the first and leaving the second unreachable. Give such columns distinct captions to address them individually. (Non-attribute column handles are the caption, so `set Caption = ...` also *renames* the handle — plan multi-step caption edits accordingly.)
 
 ### ADD Variables - Add a Page Variable
 

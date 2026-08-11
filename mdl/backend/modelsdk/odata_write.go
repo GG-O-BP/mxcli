@@ -29,8 +29,18 @@ func init() {
 	codec.RegisterListMarker("ODataPublish$PublishedAttribute", 3)
 	codec.RegisterListMarker("ODataPublish$PublishedAssociationEnd", 3)
 	codec.RegisterListMarker("ODataPublish$PublishedId", 3)
+	// Published microflows (OData actions) and their parameters. Marker 3 like
+	// every other part list in this document.
+	codec.RegisterListMarker("ODataPublish$PublishedMicroflow", 3)
+	codec.RegisterListMarker("ODataPublish$PublishedMicroflowParameter", 3)
+	// AllowedModuleRoles empties as marker 1, not 3 — it is a BY_NAME role list,
+	// not a part list. Without the entry, a service with no grants omits the key
+	// entirely, and since the document is serialized wholesale that DELETES the
+	// stored grants on the next modify (CE0307). An empty list is only reached
+	// when the property itself wrote nothing, because ByNameRefList marks dirty
+	// on Append.
 	codec.RegisterTypeDefaults("ODataPublish$PublishedODataService2", codec.TypeDefaults{
-		MandatoryListMarkers: map[string]int32{"AuthenticationTypes": 3, "EntityTypes": 3, "EntitySets": 3, "Enumerations": 3, "Microflows": 3},
+		MandatoryListMarkers: map[string]int32{"AllowedModuleRoles": 1, "AuthenticationTypes": 3, "EntityTypes": 3, "EntitySets": 3, "Enumerations": 3, "Microflows": 3},
 	})
 	codec.RegisterTypeDefaults("ODataPublish$EntityType", codec.TypeDefaults{
 		MandatoryListMarkers: map[string]int32{"ChildMembers": 3},
@@ -231,6 +241,18 @@ func publishedODataServiceToGen(svc *model.PublishedODataService) element.Elemen
 	addBool(g, "PublishAssociations", svc.PublishAssociations)
 	addBool(g, "UseGeneralization", svc.UseGeneralization)
 	addStr(g, "AuthenticationMicroflow", svc.AuthMicroflow)
+	// AllowedModuleRoles is written unconditionally, marker 1, matching
+	// sdk/mpr/writer_odata.go. This document is serialized wholesale, so a key
+	// the serializer omits is not left alone — it is deleted, silently revoking
+	// the service's access on every `create or modify`. Grants are made by a
+	// separate statement (`grant access on odata service …`) and cannot be
+	// restated in the create script, so nothing in the script can put them back;
+	// the next build fails CE0307 "At least one allowed role must be selected".
+	//
+	// The §26 fix went into the mpr writer only, and this one had no reference to
+	// the field at all, so the bug survived here for a full release with a green
+	// suite (mxcli-formula1 §41).
+	addByNameRefList(g, "AllowedModuleRoles", "", svc.AllowedModuleRoles)
 	if len(svc.AuthenticationTypes) > 0 {
 		addByNameRefListV3(g, "AuthenticationTypes", svc.AuthenticationTypes)
 	}
@@ -257,12 +279,88 @@ func publishedODataServiceToGen(svc *model.PublishedODataService) element.Elemen
 		addPartList(g, "EntitySets", esElems)
 	}
 
+	if len(svc.Microflows) > 0 {
+		mfElems := make([]element.Element, 0, len(svc.Microflows))
+		for _, pm := range svc.Microflows {
+			mfElems = append(mfElems, publishedMicroflowToGen(pm))
+		}
+		addPartList(g, "Microflows", mfElems)
+	}
+
 	addBool(g, "Excluded", svc.Excluded)
-	// Enumerations / Microflows: empty marker-3 (via TypeDefaults).
+	// Enumerations: empty marker-3 (via TypeDefaults). Microflows too when the
+	// service publishes no actions.
 	addBool(g, "IncludeMetadataByDefault", true)
 	addBool(g, "ReplaceIllegalChars", false)
 	addBool(g, "SupportsGraphQL", false)
 	return g
+}
+
+// publishedMicroflowToGen builds an ODataPublish$PublishedMicroflow — the
+// element Mendix turns into an ActionImport.
+//
+// Property names and kinds come from the generated metamodel
+// (modelsdk/gen/odatapublish): ExposedName, AlternativeExposedName, a BY_NAME
+// Microflow ref, a Parameters part list, a ReturnType part, Summary and
+// Description. The MicroflowParameter ref is Module.Microflow.Param — the shape
+// the published-REST writer already ships.
+func publishedMicroflowToGen(pm *model.PublishedMicroflow) element.Element {
+	g := newElem("ODataPublish$PublishedMicroflow", string(pm.ID))
+	addStr(g, "ExposedName", pm.ExposedName)
+	addStr(g, "AlternativeExposedName", "")
+	addStr(g, "Microflow", pm.Microflow)
+	if len(pm.Parameters) > 0 {
+		params := make([]element.Element, 0, len(pm.Parameters))
+		for _, p := range pm.Parameters {
+			params = append(params, publishedMicroflowParameterToGen(p))
+		}
+		addPartList(g, "Parameters", params)
+	}
+	if rt := dataTypeElement(pm.ReturnTypeKind, pm.ReturnTypeRef); rt != nil {
+		addPart(g, "ReturnType", rt)
+	}
+	addStr(g, "Summary", pm.Summary)
+	addStr(g, "Description", pm.Description)
+	return g
+}
+
+func publishedMicroflowParameterToGen(p *model.PublishedMicroflowParameter) element.Element {
+	g := newElem("ODataPublish$PublishedMicroflowParameter", string(p.ID))
+	addStr(g, "ExposedName", p.ExposedName)
+	addStr(g, "MicroflowParameter", p.MicroflowParameter)
+	if dt := dataTypeElement(p.DataTypeKind, p.DataTypeRef); dt != nil {
+		addPart(g, "DataType", dt)
+	}
+	addBool(g, "CanBeEmpty", p.CanBeEmpty)
+	addStr(g, "Summary", p.Summary)
+	addStr(g, "Description", p.Description)
+	return g
+}
+
+// dataTypeElement builds a DataTypes$* element from a kind and, where the kind
+// names something, its qualified name. The kind strings are the ones
+// microflows.DataType.GetTypeName() produces, so the two stay in step.
+func dataTypeElement(kind, ref string) element.Element {
+	if kind == "" {
+		return nil
+	}
+	switch kind {
+	case "Object":
+		e := newElem("DataTypes$ObjectType", "")
+		addStr(e, "Entity", ref)
+		return e
+	case "List":
+		e := newElem("DataTypes$ListType", "")
+		addStr(e, "Entity", ref)
+		return e
+	case "Enumeration":
+		e := newElem("DataTypes$EnumerationType", "")
+		addStr(e, "Enumeration", ref)
+		return e
+	default:
+		// Boolean, String, Integer, Long, Decimal, DateTime, Binary, Void …
+		return newElem("DataTypes$"+kind+"Type", "")
+	}
 }
 
 func publishedEntityTypeToGen(et *model.PublishedEntityType) element.Element {
@@ -287,10 +385,14 @@ func publishedEntitySetToGen(es *model.PublishedEntitySet, entityTypeID string) 
 	addStr(g, "AlternativeExposedName", "")
 	addBool(g, "UsePaging", es.UsePaging)
 	addInt64(g, "PageSize", int64(es.PageSize))
+	// Query options default to true (Mendix's own defaults) and are only turned
+	// off when the author says so. Countable is not free: it forces the read
+	// microflow to take a System.ODataResponse parameter and compute a count.
+	// (mxcli-formula1 findings #10.3.)
 	qo := newElem("ODataPublish$QueryOptions", "")
-	addBool(qo, "Countable", true)
-	addBool(qo, "SkipSupported", true)
-	addBool(qo, "TopSupported", true)
+	addBool(qo, "Countable", boolOrDefault(es.Countable, true))
+	addBool(qo, "SkipSupported", boolOrDefault(es.SkipSupported, true))
+	addBool(qo, "TopSupported", boolOrDefault(es.TopSupported, true))
 	addPart(g, "QueryOptions", qo)
 	if entityTypeID != "" {
 		addIDRef(g, "EntityTypePointer", model.ID(entityTypeID))
@@ -350,7 +452,7 @@ func publishedMemberToGen(m *model.PublishedMember, ownerQN string) element.Elem
 		addBool(g, "Filterable", m.Filterable)
 		addBool(g, "Sortable", m.Sortable)
 		addBool(g, "IsPartOfKey", m.IsPartOfKey)
-		addBool(g, "EnumerationAsString", false)
+		addBool(g, "EnumerationAsString", m.EnumerationAsString)
 		addBool(g, "StringAsGuid", false)
 		return g
 	}
@@ -424,4 +526,12 @@ func addByNameRefListV3(b *element.Base, name string, qnames []string) {
 	for _, qn := range qnames {
 		p.Append(qn)
 	}
+}
+
+// boolOrDefault resolves an optional bool: nil means "not specified".
+func boolOrDefault(v *bool, def bool) bool {
+	if v == nil {
+		return def
+	}
+	return *v
 }

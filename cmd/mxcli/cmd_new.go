@@ -10,6 +10,7 @@ import (
 	"runtime"
 
 	"github.com/mendixlabs/mxcli/cmd/mxcli/docker"
+	"github.com/mendixlabs/mxcli/cmd/mxcli/theme"
 	"github.com/mendixlabs/mxcli/sdk/mpr"
 	"github.com/spf13/cobra"
 )
@@ -22,13 +23,16 @@ var newCmd = &cobra.Command{
 This command performs the following steps:
   1. Downloads MxBuild for the specified Mendix version
   2. Creates a blank Mendix project using mx create-project
-  3. Initializes AI tooling and devcontainer configuration (mxcli init)
-  4. Downloads the correct mxcli binary for the devcontainer (linux)
+  3. Applies mxcli's default styling (--theme, see 'mxcli theme list')
+  4. Initializes AI tooling and devcontainer configuration (mxcli init)
+  5. Runs one build so generated sources are settled (--skip-build to skip)
+  6. Links this mxcli into the project (or downloads a Linux build on macOS/Windows)
 
 Examples:
   mxcli new MyApp
   mxcli new MyApp --version 11.8.0
   mxcli new MyApp --version 10.24.0 --output-dir ./projects/my-app
+  mxcli new MyApp --version 11.8.0 --theme none
 `,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
@@ -36,10 +40,21 @@ Examples:
 		mendixVersion, _ := cmd.Flags().GetString("version")
 		outputDir, _ := cmd.Flags().GetString("output-dir")
 		skipInit, _ := cmd.Flags().GetBool("skip-init")
+		themeName, _ := cmd.Flags().GetString("theme")
+		skipBuild, _ := cmd.Flags().GetBool("skip-build")
 
 		if mendixVersion == "" {
 			fmt.Fprintln(os.Stderr, "Error: --version is required (e.g., --version 11.8.0)")
 			os.Exit(1)
+		}
+
+		// Validate the theme before downloading ~800MB of MxBuild: a typo should
+		// fail in a second, not after the slowest step in the command.
+		if themeName != theme.NoneName {
+			if _, err := theme.Get(themeName); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
 		}
 
 		// Resolve output directory
@@ -62,7 +77,7 @@ Examples:
 		// On Windows and macOS, Studio Pro ships a native mx binary — prefer it.
 		// CDN downloads contain Linux ELF binaries that cannot run on those platforms.
 		// On Linux (CI, devcontainers), download mxbuild from CDN and derive mx.
-		fmt.Printf("Step 1/4: Resolving MxBuild %s...\n", mendixVersion)
+		fmt.Printf("Step 1/6: Resolving MxBuild %s...\n", mendixVersion)
 		mxPath, err := docker.ResolveMxForNewProject(mendixVersion, os.Stdout)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: could not find mx binary for version %s: %v\n", mendixVersion, err)
@@ -73,7 +88,7 @@ Examples:
 		}
 
 		// Step 2: Create project
-		fmt.Printf("\nStep 2/4: Creating Mendix project '%s'...\n", appName)
+		fmt.Printf("\nStep 2/6: Creating Mendix project '%s'...\n", appName)
 		if err := os.MkdirAll(absDir, 0755); err != nil {
 			fmt.Fprintf(os.Stderr, "Error creating directory: %v\n", err)
 			os.Exit(1)
@@ -138,16 +153,53 @@ Examples:
 			fmt.Printf("  Mendix version: %s\n", created)
 		}
 
-		// Step 3: Initialize tooling
-		if !skipInit {
-			fmt.Printf("\nStep 3/4: Initializing AI tooling...\n")
-			initCmd.Run(initCmd, []string{absDir})
+		// Step 3: Default styling. A blank Atlas app is unmistakably a blank Atlas
+		// app; a generated one should look like a product on first boot. This
+		// writes files under theme/ only — the model is untouched, so the theme
+		// can be re-applied, swapped or removed at any point.
+		if themeName != theme.NoneName {
+			fmt.Printf("\nStep 3/6: Applying '%s' styling...\n", themeName)
+			res, err := theme.Apply(absDir, themeName, theme.Options{})
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error applying theme: %v\n", err)
+				os.Exit(1)
+			}
+			for _, f := range res.Files {
+				fmt.Printf("  %-9s %s\n", f.Action, f.Path)
+			}
 		} else {
-			fmt.Printf("\nStep 3/4: Skipped (--skip-init)\n")
+			fmt.Printf("\nStep 3/6: Skipped styling (--theme none)\n")
 		}
 
-		// Step 4: Ensure correct mxcli binary for devcontainer
-		fmt.Printf("\nStep 4/4: Setting up mxcli binary...\n")
+		// Step 4: Initialize tooling
+		if !skipInit {
+			fmt.Printf("\nStep 4/6: Initializing AI tooling...\n")
+			initCmd.Run(initCmd, []string{absDir})
+		} else {
+			fmt.Printf("\nStep 4/6: Skipped (--skip-init)\n")
+		}
+
+		// Step 5: Settle the sources MxBuild generates. The template ships the JS
+		// and Java action stubs in a slightly older shape and the first build
+		// rewrites all of them — 48 tracked files in a blank Mendix 11.12 app — so
+		// without this the project goes dirty the first time anyone builds it, with
+		// changes nobody wrote (mxcli-todo #7). Doing it here puts the settled form
+		// in the first commit. Best-effort: this is a nicety, not a precondition
+		// for a usable project, so a missing JDK or a build failure is a warning.
+		if skipBuild {
+			fmt.Printf("\nStep 5/6: Skipped first build (--skip-build)\n")
+		} else {
+			fmt.Printf("\nStep 5/6: Running the first build (settles generated sources)...\n")
+			if err := docker.SettleGeneratedSources(mprPath, mxPath, mendixVersion, os.Stdout); err != nil {
+				fmt.Fprintf(os.Stderr, "  Warning: could not run the first build: %v\n", err)
+				fmt.Fprintln(os.Stderr, "  The project is usable. Note that the first build will rewrite the")
+				fmt.Fprintln(os.Stderr, "  generated action stubs under javascriptsource/ and javasource/ —")
+				fmt.Fprintln(os.Stderr, "  that diff is build output, so commit it and move on.")
+			}
+		}
+
+		// Step 6: Ensure correct mxcli binary for devcontainer
+		fmt.Printf("\nStep 6/6: Setting up mxcli binary...\n")
 		mxcliBinPath := filepath.Join(absDir, "mxcli")
 		if runtime.GOOS != "linux" {
 			// Running on Windows/macOS — download the Linux binary for devcontainer
@@ -244,6 +296,10 @@ func init() {
 	newCmd.Flags().String("version", "", "Mendix version (e.g., 11.8.0) — required")
 	newCmd.Flags().String("output-dir", "", "Output directory (default: ./<app-name>)")
 	newCmd.Flags().Bool("skip-init", false, "Skip AI tooling initialization (mxcli init)")
+	newCmd.Flags().Bool("skip-build", false,
+		"Skip the first build (leaves generated action stubs to be rewritten by the next build)")
+	newCmd.Flags().String("theme", theme.DefaultName,
+		"Default styling to apply ('none' to keep plain Atlas; see 'mxcli theme list')")
 
 	rootCmd.AddCommand(newCmd)
 }

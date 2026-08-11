@@ -310,15 +310,21 @@ func formatWorkflowActivities(flow *workflows.Flow, indent string) []string {
 			if target == "" {
 				target = "?"
 			}
-			caption := a.Caption
-			if caption == "" {
-				caption = a.Name
-			}
 			if a.Annotation != "" {
 				actLines = append(actLines, formatAnnotation(a.Annotation, indent))
 			}
-			escapedCaption := strings.ReplaceAll(caption, "'", "''")
-			actLines = append(actLines, fmt.Sprintf("%sjump to %s comment '%s'", indent, mdlIdent(target), escapedCaption))
+			// Only emit `comment '...'` when it carries information the author
+			// wrote. buildJumpTo defaults Caption to the target name, so echoing it
+			// unconditionally rendered a plain `jump to Triage;` as
+			// `jump to Triage comment 'Triage'` — a phantom comment nobody authored
+			// (issuetracker #16). Re-applying the shorter form rebuilds the same
+			// Caption, so dropping it is lossless.
+			if caption := a.Caption; caption != "" && caption != target && caption != a.Name {
+				escapedCaption := strings.ReplaceAll(caption, "'", "''")
+				actLines = append(actLines, fmt.Sprintf("%sjump to %s comment '%s'", indent, mdlIdent(target), escapedCaption))
+			} else {
+				actLines = append(actLines, fmt.Sprintf("%sjump to %s", indent, mdlIdent(target)))
+			}
 		case *workflows.WaitForTimerActivity:
 			caption := a.Caption
 			if caption == "" {

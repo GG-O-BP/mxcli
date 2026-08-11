@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mendixlabs/mxcli/model"
 	"github.com/mendixlabs/mxcli/sdk/mpr"
 )
 
@@ -26,6 +28,17 @@ import (
 // (page/microflow/text) or a runtime restart (entity/view/association) — the
 // serve build's restartRequired flag decides which. See
 // docs/11-proposals/PROPOSAL_mxcli_dev_warm_loop.md.
+
+// LocalAppInfo is what a running local app exposes to another process: the
+// loopback ports it serves on, and the admin password needed to drive its M2EE
+// API. The admin password is separate from any application-level credential —
+// conflating the two is an authentication failure at the first admin call.
+type LocalAppInfo struct {
+	AppPort   int
+	AdminPort int
+	ServePort int
+	AdminPass string
+}
 
 // LocalRunOptions configures RunLocal.
 type LocalRunOptions struct {
@@ -118,6 +131,15 @@ type LocalRunOptions struct {
 	// charts, since the console exporter omits timestamps/parent span IDs.
 	// Implies Trace.
 	TraceOTLP string
+	// Env are extra "KEY=value" entries for the runtime JVM (see
+	// LocalRuntimeOptions.Env) — how a secret reaches the runtime without being
+	// written to disk. `--test-endpoint` passes the test-endpoint token this way.
+	Env []string
+	// OnReady, when set, is called once the app is serving, with everything a
+	// second process needs to drive it. Used by `--test-endpoint` to publish its
+	// handshake only after there is something for `mxcli test --attach` to
+	// connect to.
+	OnReady func(LocalAppInfo)
 	// RuntimeSettings are raw "Key=Value" runtime settings merged into the boot
 	// update_configuration payload (Value is parsed as JSON, else a string), e.g.
 	// 'Metrics.Registries=[{"type":"otlp"}]' or
@@ -235,6 +257,86 @@ func parseRuntimeSetting(s string) (string, any, error) {
 
 // deriveDBName turns a project file name into a safe Postgres database name:
 // lowercased, non-alphanumerics collapsed to underscores, leading digit prefixed.
+// configuredApplicationRootURL returns the ApplicationRootUrl set on the
+// project's server configuration, plus the name of the configuration it came
+// from. Empty when no configuration sets one, which is the default.
+//
+// The model has no "active configuration" marker — Studio Pro remembers the
+// selection per developer — so the one named "Default" wins, falling back to
+// the first configuration that actually sets a URL. A settings read failure is
+// not fatal: the run simply proceeds without a root URL, exactly as before.
+func configuredApplicationRootURL(reader *mpr.Reader) (rootURL, configName string) {
+	settings, err := reader.GetProjectSettings()
+	if err != nil {
+		return "", ""
+	}
+	return applicationRootURLFrom(settings)
+}
+
+// applicationRootURLFrom implements the selection rule over already-read
+// settings, so it is testable without a project on disk.
+func applicationRootURLFrom(settings *model.ProjectSettings) (rootURL, configName string) {
+	if settings == nil || settings.Configuration == nil {
+		return "", ""
+	}
+	first, firstName := "", ""
+	for _, cfg := range settings.Configuration.Configurations {
+		if cfg == nil || cfg.ApplicationRootUrl == "" {
+			continue
+		}
+		if strings.EqualFold(cfg.Name, "Default") {
+			return cfg.ApplicationRootUrl, cfg.Name
+		}
+		if first == "" {
+			first, firstName = cfg.ApplicationRootUrl, cfg.Name
+		}
+	}
+	return first, firstName
+}
+
+// customHostRootURL reports whether an ApplicationRootUrl names a host worth
+// telling the runtime about.
+//
+// A blank Mendix app already ships `http://localhost:8080/`, so "set" does not
+// mean "chosen". Passing that back would be a behaviour change for every
+// existing project — and an actively wrong one under --app-port, where the
+// stock value names a port the app is not serving on. A loopback host also adds
+// nothing: with no ApplicationRootUrl the runtime derives one from the listen
+// address, which is the same thing. So only a real host name — the case this
+// exists for, giving each app in a solution its own name — is honoured.
+func customHostRootURL(rootURL string) bool {
+	if rootURL == "" {
+		return false
+	}
+	u, err := url.Parse(rootURL)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "localhost" || host == "::1" {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return false
+	}
+	return true
+}
+
+// urlPort returns the explicit port of a URL, or "" when it has none.
+func urlPort(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return u.Port()
+}
+
+// DeriveDBName is the local-run database name for a project: the .mpr file name
+// lowercased and sanitised to a legal identifier. Exported so callers that boot
+// their own local app (e.g. the test runner, which appends a suffix to keep test
+// data out of the dev database) derive the same base name.
+func DeriveDBName(projectPath string) string { return deriveDBName(projectPath) }
+
 func deriveDBName(projectPath string) string {
 	base := strings.TrimSuffix(filepath.Base(projectPath), filepath.Ext(projectPath))
 	var b strings.Builder
@@ -321,14 +423,11 @@ func checkTargetPortsFree(o LocalRunOptions) error {
 	} {
 		hostPort := fmt.Sprintf("%s:%d", host, c.port)
 		if err := pingTCP(hostPort, 500*time.Millisecond); err == nil {
-			return fmt.Errorf("port %d (%s) is already in use — a previous 'mxcli run --local' "+
-				"or a stray mxbuild --serve/runtime is likely still serving on it.\n"+
+			return fmt.Errorf("port %d (%s) is already in use.\n"+
 				"  A stale process is silently adopted otherwise, so edits appear to do nothing (looks like a stale cache — it isn't).\n"+
-				"  Free the ports, then retry:\n"+
-				"    pgrep -af 'mxbuild --serve|runtimelauncher|mxcli run'   # find them\n"+
-				"    kill <pid>                                             # stop each; confirm with: curl -s -o /dev/null -w '%%{http_code}' http://%s:%d  (want 000)\n"+
+				"%s"+
 				"  Or run on different ports with %s (and --admin-port/--serve-port).",
-				c.port, c.role, host, o.AppPort, c.flag)
+				c.port, c.role, portCulpritAdvice(c.port, host, o.AppPort), c.flag)
 		}
 	}
 	return nil
@@ -451,6 +550,15 @@ func RunLocal(opts LocalRunOptions) error {
 		return fmt.Errorf("opening project: %w", err)
 	}
 	pv := reader.ProjectVersion()
+	// Read the configured application root URL while the project is open — the
+	// app's own configuration is where a custom host name belongs (App Settings ->
+	// Configurations in Studio Pro, `alter settings` in MDL), versioned with the
+	// app rather than repeated on every command line.
+	modelRootURL, modelRootConfig := configuredApplicationRootURL(reader)
+	// Managed Java dependencies are declared in the model but resolved by a
+	// separate step; collect them here so the boot can vendor any that are
+	// missing (mxcli-formula1 findings #12).
+	declaredJars := declaredJarDependencies(reader)
 	reader.Close()
 	version := pv.ProductVersion
 	fmt.Fprintf(w, "  Mendix version: %s\n", version)
@@ -466,7 +574,22 @@ func RunLocal(opts LocalRunOptions) error {
 		return fmt.Errorf("setting up runtime: %w", err)
 	}
 
-	// 3. Ensure the database is available. With --ensure-db, provision it (start
+	// 3. Vendor any declared Java dependency that is not in vendorlib/. MxBuild
+	// does not resolve these (a full build emits no dependencies block), so
+	// without this the app builds green and throws "no driver found" at runtime.
+	// Best-effort: it needs network, and a project whose jars are already
+	// vendored — the common case — does no work at all.
+	if missing := UnvendoredJarDependencies(filepath.Dir(opts.ProjectPath), declaredJars); len(missing) > 0 {
+		fmt.Fprintf(w, "Resolving %d managed Java dependency/dependencies (%s)...\n",
+			len(missing), strings.Join(missing, ", "))
+		if err := SyncJavaDependencies(opts.ProjectPath, "", version, w); err != nil {
+			fmt.Fprintf(stderr, "  Warning: could not resolve Java dependencies: %v\n", err)
+			fmt.Fprintln(stderr, "  The app will build, but code needing those jars fails at runtime.")
+			fmt.Fprintf(stderr, "  Retry with: mxcli sync-java-deps -p %s\n", opts.ProjectPath)
+		}
+	}
+
+	// 4. Ensure the database is available. With --ensure-db, provision it (start
 	// local Postgres + create the role/db if missing); otherwise just check
 	// reachability and point the user at --ensure-db.
 	if opts.EnsureDB {
@@ -488,7 +611,7 @@ func RunLocal(opts LocalRunOptions) error {
 		return nil
 	}
 
-	// 4. Start the warm build server.
+	// 5. Start the warm build server.
 	fmt.Fprintln(w, "Starting mxbuild --serve...")
 	serve, err := StartServe(ServeOptions{
 		Version: version,
@@ -560,6 +683,22 @@ func RunLocal(opts LocalRunOptions) error {
 		}
 	}
 
+	// No hub URL: fall back to the one configured in the project. This is what
+	// makes "give each app its own host name" work for a local run — Mendix needs
+	// to know the URL it is reached at to generate absolute URLs (OIDC/SAML
+	// redirect URIs, deep links) that point at the host name rather than the
+	// listen address. A hub assignment wins, since that URL is the one actually
+	// serving the app.
+	if appRootURL == "" && customHostRootURL(modelRootURL) {
+		appRootURL = modelRootURL
+		fmt.Fprintf(w, "Application root URL from configuration %q: %s\n", modelRootConfig, appRootURL)
+		if port := urlPort(appRootURL); port != "" && port != fmt.Sprint(opts.AppPort) {
+			fmt.Fprintf(stderr, "Warning: configuration %q says port %s but the app is serving on %d — "+
+				"absolute URLs will point at %s. Update the configuration or pass --app-port %s.\n",
+				modelRootConfig, port, opts.AppPort, appRootURL, port)
+		}
+	}
+
 	// 6. Boot the runtime against the fresh deployment. Tee the runtime's own
 	// stdout/stderr to a log file so server-side errors are debuggable ("-"
 	// disables). (findings #25)
@@ -589,6 +728,7 @@ func RunLocal(opts LocalRunOptions) error {
 		Trace:              opts.Trace,
 		TraceServiceName:   traceService,
 		TraceOTLPEndpoint:  opts.TraceOTLP,
+		Env:                opts.Env,
 		Stdout:             w,
 		Stderr:             stderr,
 	})
@@ -596,6 +736,27 @@ func RunLocal(opts LocalRunOptions) error {
 		return err
 	}
 	defer rt.Stop()
+
+	// 6b. The boot's Gradle `package` pass repopulates deployment/web, and when
+	// Gradle had work to do it takes dist/ with it — deleting the bundle step 5b
+	// wrote seconds ago. Verify after the boot, because before it proves nothing
+	// (mxcli-formula1 §35). Costs a stat when the bundle survived.
+	if _, err := EnsureWebClientBundle(WebClientOptions{
+		DeployDir: opts.DeployDir, MxBuildPath: mxbuildPath, Stdout: w,
+	}); err != nil {
+		// The app is up and its services answer; only the browser is broken. Say so
+		// and keep running rather than tearing down a working runtime.
+		fmt.Fprintf(stderr, "Warning: %v\n", err)
+	}
+
+	if opts.OnReady != nil {
+		opts.OnReady(LocalAppInfo{
+			AppPort:   opts.AppPort,
+			AdminPort: opts.AdminPort,
+			ServePort: opts.ServePort,
+			AdminPass: opts.AdminPass,
+		})
+	}
 
 	fmt.Fprintf(w, "\nApp is running at %s\n", rt.AppURL())
 	// The local runtime boots with the live-preview dev flags (see
@@ -698,7 +859,7 @@ func RunLocal(opts LocalRunOptions) error {
 		fmt.Fprintf(w, "Logging in as %q for authenticated screenshots...\n", opts.ScreenshotUser)
 		if err := LoginAndSaveStorage(LoginOptions{
 			AppURL: rt.AppURL(), Username: opts.ScreenshotUser, Password: opts.ScreenshotPassword,
-			StoragePath: storage, MxBuildPath: mxbuildPath,
+			StoragePath: storage, MxBuildPath: mxbuildPath, RuntimeLogPath: runtimeLog,
 		}); err != nil {
 			fmt.Fprintf(stderr, "  screenshot login failed (continuing unauthenticated): %v\n", err)
 		} else {
@@ -1018,4 +1179,25 @@ func watchAndApply(opts LocalRunOptions, serve *ServeServer, rt *LocalRuntime, w
 			last = sourceMTime(opts.ProjectPath)
 		}
 	}
+}
+
+// declaredJarDependencies collects the managed Java dependency coordinates the
+// model declares, across every module.
+func declaredJarDependencies(reader *mpr.Reader) []JarDependencyRef {
+	all, err := reader.ListModuleSettings()
+	if err != nil {
+		return nil
+	}
+	var out []JarDependencyRef
+	for _, ms := range all {
+		if ms == nil {
+			continue
+		}
+		for _, d := range ms.JarDependencies {
+			out = append(out, JarDependencyRef{
+				Group: d.GroupID, Artifact: d.ArtifactID, Version: d.Version,
+			})
+		}
+	}
+	return out
 }

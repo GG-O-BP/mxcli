@@ -1,0 +1,62 @@
+-- ============================================================================
+-- Upstream #863 (follow-up): EXECUTE DATABASE QUERY described as
+-- `-- Empty action` — write-only, on the default engine
+-- ============================================================================
+--
+-- The action is authorable in MDL and already had a DESCRIBE formatter. Only the
+-- modelsdk reader's mapping was missing, so the activity wrote correctly and
+-- read back with a nil Action:
+--
+--   -- Unsupported action: DatabaseConnector$ExecuteDatabaseQueryAction
+--   -- on error without rollback {
+--   --   log error node 'Application' 'query failed';
+--   -- };
+--
+-- (That output is itself the #863 fix working — before it, the same activity
+-- said "-- Empty action" and the error handler was gone entirely.)
+--
+-- Storage note: the $Type is DatabaseConnector$ExecuteDatabaseQueryAction, NOT
+-- Microflows$ — the action lives in its own sub-metamodel, which is why probing
+-- for it under the Microflows$ prefix proves nothing either way.
+--
+-- CREDENTIALS MUST BE CONSTANTS. `connection string` / `username` / `password`
+-- are ConstantIdentifier properties. The grammar also accepts a string literal
+-- there, and writing one produces a project Mendix CANNOT LOAD:
+--
+--   StorageLoadException: ... has an invalid value '' for property
+--   ConnectionString. The text 'jdbc:...' is not a valid ConstantIdentifier.
+--
+-- That is a separate, still-open mxcli defect (same class as #854) — the form
+-- below is the one that works.
+--
+-- Verified on Mendix 11.13.0: the project loads, describe→exec→describe is
+-- byte-stable, and the only remaining check error is CE5278 (the PostgreSQL JDBC
+-- driver is not in module settings), which is a dependency the example does not
+-- ship rather than a model defect.
+-- ============================================================================
+
+create module DbQ863;
+create persistent entity DbQ863.Row (N: Integer);
+
+create constant DbQ863.DbUrl  type String default 'jdbc:postgresql://localhost:5432/app';
+create constant DbQ863.DbUser type String default 'app';
+create constant DbQ863.DbPass type String default 'secret';
+
+create database connection DbQ863.Conn
+  type 'PostgreSQL'
+  connection string @DbQ863.DbUrl
+  username @DbQ863.DbUser
+  password @DbQ863.DbPass
+begin
+  query GetRows
+    sql 'select n from rows where status = $Status'
+    parameter Status: String
+    returns DbQ863.Row map (n as N);
+end;
+
+create microflow DbQ863.MF_Query ($Status: String)
+begin
+  $Rows = execute database query DbQ863.Conn.GetRows (Status = $Status) on error without rollback {
+    log error 'query failed';
+  };
+end;

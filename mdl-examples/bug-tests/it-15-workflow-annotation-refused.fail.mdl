@@ -1,0 +1,44 @@
+-- ============================================================================
+-- Issue-tracker finding #15: a standalone `annotation` in a workflow body
+-- produced a model Mendix could not LOAD
+-- ============================================================================
+--
+-- Symptom (before fix): `annotation '...'` passed `mxcli check`, executed, and
+-- then the project could not be opened at all:
+--
+--   ERROR: System.InvalidOperationException: Type
+--   Mendix.Modeler.Workflows.Model.Annotation does not contain a constructor
+--   with a parameter of type Mendix.Modeler.Workflows.Model.Flow.
+--
+-- Not a build error — a LOAD failure. Studio Pro would not open the project and
+-- `mx check` died before validating anything, so the whole project went down,
+-- not one document.
+--
+-- Root cause: mxcli writes the annotation into the workflow's activity flow.
+-- Mendix constructs every child of that list with a Flow parent, and neither
+-- `Workflows$Annotation` (Description only — it attaches to a Flow) nor
+-- `Workflows$FloatingAnnotation` (the canvas sticky note) accepts one. Switching
+-- the storage name alone does not help: the placement is what is wrong, and the
+-- correct container is not determinable without a Studio Pro reference.
+--
+-- Fix: refuse the statement rather than emit an unopenable model — MDL-WF04 at
+-- check time and a hard error at exec time. Note stays as an MDL comment.
+--
+-- Usage (expected to FAIL check):
+--   mxcli check mdl-examples/bug-tests/it-15-workflow-annotation-refused.fail.mdl
+-- ============================================================================
+
+create module IT15;
+create entity IT15.Issue (Title: String);
+create page IT15.ReviewPage (Title: 'Review', Layout: Atlas_Core.Atlas_Default) {
+  layoutgrid g { row r { column c (DesktopWidth: 12) { dynamictext t (Content: 'review') } } }
+}
+
+create workflow IT15.WF_Issue
+  parameter $Context: IT15.Issue
+begin
+  annotation 'Escalation path per policy 4.2';   -- MDL-WF04: unloadable model
+  user task ReviewTask 'Review the issue'
+    page IT15.ReviewPage
+    outcomes 'Approve' { } 'Reject' { };
+end workflow;

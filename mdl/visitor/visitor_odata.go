@@ -45,8 +45,10 @@ func (b *Builder) ExitCreateODataClientStatement(ctx *parser.CreateODataClientSt
 			stmt.UseAuthentication = strings.EqualFold(value, "true") || strings.EqualFold(value, "yes")
 		case "httpusername":
 			stmt.HttpUsername = value
+			stmt.HttpUsernameIsLiteral = odataValueIsLiteral(prop)
 		case "httppassword":
 			stmt.HttpPassword = value
+			stmt.HttpPasswordIsLiteral = odataValueIsLiteral(prop)
 		case "clientcertificate":
 			stmt.ClientCertificate = value
 		case "configurationmicroflow":
@@ -70,6 +72,8 @@ func (b *Builder) ExitCreateODataClientStatement(ctx *parser.CreateODataClientSt
 			stmt.ProxyPassword = value
 		case "folder":
 			stmt.Folder = value
+		default:
+			stmt.UnknownProperties = append(stmt.UnknownProperties, name)
 		}
 	}
 
@@ -119,14 +123,24 @@ func (b *Builder) ExitCreateODataServiceStatement(ctx *parser.CreateODataService
 			stmt.Description = value
 		case "publishassociations":
 			stmt.PublishAssociations = strings.EqualFold(value, "true") || strings.EqualFold(value, "yes")
+			stmt.PublishAssociationsSet = true
 		case "folder":
 			stmt.Folder = value
+		default:
+			stmt.UnknownProperties = append(stmt.UnknownProperties, name)
 		}
 	}
 
 	// Parse authentication clause
 	if authCtx := ctx.OdataAuthenticationClause(); authCtx != nil {
-		stmt.AuthenticationTypes = parseODataAuthTypes(authCtx)
+		stmt.AuthenticationTypes, stmt.AuthMicroflow = parseODataAuthTypes(authCtx)
+	}
+
+	// Parse PUBLISH MICROFLOW blocks (OData actions)
+	for _, blockCtx := range ctx.AllPublishMicroflowBlock() {
+		if mf := parsePublishMicroflowBlock(blockCtx); mf != nil {
+			stmt.Microflows = append(stmt.Microflows, mf)
+		}
 	}
 
 	// Parse PUBLISH ENTITY blocks
@@ -188,6 +202,8 @@ func (b *Builder) ExitCreateExternalEntityStatement(ctx *parser.CreateExternalEn
 			stmt.Updatable = &boolVal
 		case "allowcreatechangelocally", "allowcreatingandchanginglocally", "createchangelocally":
 			stmt.AllowCreateChangeLocally = &boolVal
+		default:
+			stmt.UnknownProperties = append(stmt.UnknownProperties, name)
 		}
 	}
 
@@ -289,6 +305,18 @@ func odataValueText(val *parser.OdataPropertyValueContext) string {
 	return ""
 }
 
+// odataValueIsLiteral reports whether an OData property value was written as a
+// quoted string rather than a constant reference. odataValueText strips a
+// literal's quotes, so this is the only thing that still tells the two apart —
+// and mxcli can only use a literal for the design-time $metadata fetch.
+func odataValueIsLiteral(prop *parser.OdataPropertyAssignmentContext) bool {
+	valCtx := prop.OdataPropertyValue()
+	if valCtx == nil {
+		return false
+	}
+	return valCtx.(*parser.OdataPropertyValueContext).STRING_LITERAL() != nil
+}
+
 // odataAssignmentValueText extracts the string value from an OData property assignment.
 func odataAssignmentValueText(prop *parser.OdataPropertyAssignmentContext) string {
 	valCtx := prop.OdataPropertyValue()
@@ -298,10 +326,15 @@ func odataAssignmentValueText(prop *parser.OdataPropertyAssignmentContext) strin
 	return odataValueText(valCtx.(*parser.OdataPropertyValueContext))
 }
 
-// parseODataAuthTypes extracts authentication types from the clause.
-func parseODataAuthTypes(authCtx parser.IOdataAuthenticationClauseContext) []string {
+// parseODataAuthTypes extracts authentication types from the clause, and the
+// microflow named by `authentication microflow X`.
+//
+// The grammar has always accepted the qualified name; only the name was
+// discarded, so `authentication microflow M.Auth` parsed, checked and executed
+// while the model got a Microflow auth type with no microflow — a service that
+// then failed to build with CE0333 (mxcli-formula1 §40).
+func parseODataAuthTypes(authCtx parser.IOdataAuthenticationClauseContext) (types []string, microflow string) {
 	clause := authCtx.(*parser.OdataAuthenticationClauseContext)
-	var types []string
 
 	for _, atCtx := range clause.AllOdataAuthType() {
 		at := atCtx.(*parser.OdataAuthTypeContext)
@@ -313,12 +346,15 @@ func parseODataAuthTypes(authCtx parser.IOdataAuthenticationClauseContext) []str
 			types = append(types, "Guest")
 		} else if at.MICROFLOW() != nil {
 			types = append(types, "Microflow")
+			if qn := at.QualifiedName(); qn != nil {
+				microflow = buildQualifiedName(qn).String()
+			}
 		} else if at.IDENTIFIER() != nil {
 			types = append(types, at.IDENTIFIER().GetText())
 		}
 	}
 
-	return types
+	return types, microflow
 }
 
 // parsePublishEntityBlock converts a PUBLISH ENTITY parse context into an AST node.
@@ -355,6 +391,14 @@ func parsePublishEntityBlock(ctx parser.IPublishEntityBlockContext) *ast.Publish
 			if n, err := strconv.Atoi(value); err == nil {
 				entity.PageSize = n
 			}
+		case "countable":
+			entity.Countable = odataBoolPtr(value)
+		case "skipsupported":
+			entity.SkipSupported = odataBoolPtr(value)
+		case "topsupported":
+			entity.TopSupported = odataBoolPtr(value)
+		default:
+			entity.UnknownProperties = append(entity.UnknownProperties, name)
 		}
 	}
 
@@ -375,13 +419,62 @@ func parseODataHeaders(ctx parser.IOdataHeadersClauseContext) []ast.HeaderDef {
 		entry := entryCtx.(*parser.OdataHeaderEntryContext)
 		key := unquoteString(entry.STRING_LITERAL().GetText())
 		value := ""
+		isLiteral := false
 		if valCtx := entry.OdataPropertyValue(); valCtx != nil {
-			value = odataValueText(valCtx.(*parser.OdataPropertyValueContext))
+			vc := valCtx.(*parser.OdataPropertyValueContext)
+			value = odataValueText(vc)
+			isLiteral = vc.STRING_LITERAL() != nil
 		}
-		headers = append(headers, ast.HeaderDef{Key: key, Value: value})
+		headers = append(headers, ast.HeaderDef{Key: key, Value: value, ValueIsLiteral: isLiteral})
 	}
 
 	return headers
+}
+
+// parsePublishMicroflowBlock converts a PUBLISH MICROFLOW block (an OData
+// action) into an AST node. Parameter types and the return type are not read
+// here: they come off the microflow at execution time, so the two cannot drift.
+func parsePublishMicroflowBlock(ctx parser.IPublishMicroflowBlockContext) *ast.PublishedMicroflowDef {
+	block := ctx.(*parser.PublishMicroflowBlockContext)
+	if block.QualifiedName() == nil {
+		return nil
+	}
+	def := &ast.PublishedMicroflowDef{
+		Microflow: buildQualifiedName(block.QualifiedName()),
+	}
+	if sl := block.STRING_LITERAL(); sl != nil {
+		def.ExposedName = unquoteString(sl.GetText())
+	}
+	if exposeCtx := block.ExposeClause(); exposeCtx != nil {
+		expose := exposeCtx.(*parser.ExposeClauseContext)
+		if expose.STAR() != nil {
+			def.ExposeAll = true
+		}
+		for _, memberCtx := range expose.AllExposeMember() {
+			member := memberCtx.(*parser.ExposeMemberContext)
+			if member.IdentifierOrKeyword() == nil {
+				continue
+			}
+			p := &ast.PublishedParamDef{Name: member.IdentifierOrKeyword().GetText()}
+			if sl := member.STRING_LITERAL(); sl != nil {
+				p.ExposedName = unquoteString(sl.GetText())
+			}
+			if opts := member.ExposeMemberOptions(); opts != nil {
+				optsCtx := opts.(*parser.ExposeMemberOptionsContext)
+				for _, id := range optsCtx.AllIdentifierOrKeyword() {
+					if strings.EqualFold(id.GetText(), "canbeempty") ||
+						strings.EqualFold(id.GetText(), "optional") {
+						p.CanBeEmpty = true
+					}
+				}
+			}
+			def.Parameters = append(def.Parameters, p)
+		}
+	} else {
+		// No clause at all means every parameter, under its own name.
+		def.ExposeAll = true
+	}
+	return def
 }
 
 // parseExposeMembers converts an EXPOSE clause into AST member definitions.
@@ -430,4 +523,12 @@ func parseExposeMembers(ctx parser.IExposeClauseContext) []*ast.PublishedMemberD
 	}
 
 	return members
+}
+
+// odataBoolPtr parses an OData property value as a bool, keeping "specified"
+// distinct from "true": these properties default to true, so only an explicit
+// value may turn one off.
+func odataBoolPtr(value string) *bool {
+	b := strings.EqualFold(value, "true") || strings.EqualFold(value, "yes")
+	return &b
 }

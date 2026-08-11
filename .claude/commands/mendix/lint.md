@@ -1,3 +1,8 @@
+---
+description: Check the project for naming, security and best-practice issues
+argument-hint: [--format json|sarif]
+---
+
 # Lint Project
 
 Check a Mendix project for common issues like naming convention violations, security gaps, and best practice deviations.

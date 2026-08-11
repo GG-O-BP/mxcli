@@ -4,6 +4,7 @@ package modelsdkbackend
 
 import (
 	"fmt"
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"sort"
 
 	"github.com/mendixlabs/mxcli/model"
@@ -307,6 +308,21 @@ func microflowObjectToGen(obj microflows.MicroflowObject) element.Element {
 			g.SetSplitCondition(sc)
 		}
 		return g
+	case *microflows.InheritanceSplit:
+		// Without this the split hit `default: return nil` and was dropped, while
+		// the sequence flows referencing its $ID were still written — a dangling
+		// pointer that mxbuild cannot even load ("KeyNotFoundException ... at
+		// StreamingBsonUnitReader.ResolvePostponedProperties"). Same shape as the
+		// ErrorEvent/BreakEvent gap in #791. Fields mirror the legacy serializer
+		// in sdk/mpr/writer_microflow.go.
+		g := genMf.NewInheritanceSplit()
+		g.SetID(element.ID(o.ID))
+		g.SetCaption(o.Caption)
+		g.SetDocumentation(o.Documentation)
+		g.SetRelativeMiddlePoint(pointStr(o.Position))
+		g.SetSize(sizeStr(o.Size))
+		g.SetSplitVariableName(o.VariableName)
+		return g
 	case *microflows.ExclusiveMerge:
 		g := genMf.NewExclusiveMerge()
 		g.SetID(element.ID(o.ID))
@@ -495,6 +511,18 @@ func microflowActionToGen(action microflows.MicroflowAction) element.Element {
 		addPartList(g, "ParameterMappings", params)
 		addStr(g, "Query", a.Query)
 		return g
+	case *microflows.SynchronizeAction:
+		// Built directly rather than through genMf.NewSynchronizeAction: gen binds
+		// VariableNames as a scalar Primitive[string] and exposes no setter for
+		// it, so a Specific-mode action could not be written at all through the
+		// generated type. An EnumList[string] encodes the BSON array of names the
+		// platform actually stores.
+		g := newElem("Microflows$SynchronizeAction", string(a.ID))
+		addStr(g, "ErrorHandlingType", orDefault(string(a.ErrorHandlingType), "Rollback"))
+		addStr(g, "Type", orDefault(string(a.SyncType), string(microflows.SynchronizationTypeAll)))
+		addStrList(g, "VariableNames", a.VariableNames)
+		return g
+
 	case *microflows.JavaActionCallAction:
 		// Built directly: the gen JavaActionCallAction binds the wrong BSON keys
 		// (JavaActionQualifiedName/OutputVariableName) vs the verified storage keys
@@ -542,6 +570,21 @@ func microflowActionToGen(action microflows.MicroflowAction) element.Element {
 			mappings = append(mappings, m)
 		}
 		addPartList(g, "ParameterMappings", mappings)
+		return g
+	case *microflows.DownloadFileAction:
+		// DOWNLOAD FILE. Without this case the action fell through to
+		// `default: return nil` and the enclosing ActionActivity was written with
+		// no Action at all — `mxcli exec` reported "Created microflow" and only
+		// `mx check` noticed, as CE0008 "No action defined." (issue #850).
+		//
+		// The storage key is ShowFileInBrowser, not ShowInBrowser; the gen setter
+		// binds the right one (legacy's parseDownloadFileAction reads the wrong
+		// key — see TestActionFromGen_DownloadFile).
+		g := genMf.NewDownloadFileAction()
+		g.SetID(element.ID(a.ID))
+		g.SetErrorHandlingType(orDefault(string(a.ErrorHandlingType), "Rollback"))
+		g.SetFileDocumentVariableName(a.FileDocument)
+		g.SetShowFileInBrowser(a.ShowInBrowser)
 		return g
 	case *microflows.LogMessageAction:
 		g := genMf.NewLogMessageAction()
@@ -744,6 +787,20 @@ func microflowActionToGen(action microflows.MicroflowAction) element.Element {
 		// set task outcome, workflow operation pause/continue/abort/…, etc.).
 		// Mirrors sdk/mpr/writer_microflow_workflow.go field-for-field.
 		return workflowMicroflowActionToGen(a)
+	case *microflows.TransformJsonAction:
+		// "transform $In with Module.Transformer". Without this case the action
+		// fell through to `default: return nil` and the enclosing ActionActivity
+		// was written with NO action at all — `mxcli exec` reported success and
+		// mxbuild then failed CE0008 "No action defined." This is the #850 shape,
+		// and it means `transform` was unusable on the default engine while the
+		// legacy writer handled it. Keys mirror sdk/mpr.serializeTransformJsonAction.
+		g := newElem("Microflows$TransformJsonAction", string(a.ID))
+		addStr(g, "ErrorHandlingType", orDefault(string(a.ErrorHandlingType), "Rollback"))
+		addStr(g, "InputVariableName", a.InputVariableName)
+		addStr(g, "OutputVariableName", a.OutputVariableName)
+		addStr(g, "Transformation", a.Transformation)
+		return g
+
 	case *microflows.RestOperationCallAction:
 		// "call rest operation" — Microflows$RestOperationCallAction. Mirrors
 		// serializeRestOperationCallAction.
@@ -896,6 +953,27 @@ func addInt32(b *element.Base, name string, val int32) {
 	p := property.NewPrimitive[int32](name, property.DecodeInt32)
 	b.AddProperty(p, uint(len(b.Properties())))
 	p.Set(val)
+}
+
+// addStrList adds a dirty string-list property (BSON key = name).
+//
+// The leading int32 is Mendix's array version marker, and it is load-bearing:
+// every array in a Mendix document carries one, and the reader treats element 0
+// as the version rather than as data. Written without it, a one-element list
+// reads back as an empty list — mxbuild reported CE2004 "No variables to
+// synchronize have been selected." for a Synchronize action whose VariableNames
+// array plainly held the variable (#863).
+//
+// property.EnumList is NOT used here for exactly that reason: its BSONValue
+// returns a bare []string, so the codec's scalar path emits an unmarked array.
+func addStrList(b *element.Base, name string, vals []string) {
+	arr := bson.A{int32(1)}
+	for _, v := range vals {
+		arr = append(arr, v)
+	}
+	p := property.NewPrimitive[bson.A](name, func(raw bson.Raw, key string) bson.A { return nil })
+	b.AddProperty(p, uint(len(b.Properties())))
+	p.Set(arr)
 }
 
 // addPart adds a dirty single-child property (BSON key = name).
@@ -1072,6 +1150,8 @@ func caseValueToGen(cv microflows.CaseValue) element.Element {
 		cv = &c
 	case microflows.NoCase:
 		cv = &c
+	case microflows.InheritanceCase:
+		cv = &c
 	}
 	switch c := cv.(type) {
 	case *microflows.EnumerationCase:
@@ -1083,6 +1163,14 @@ func caseValueToGen(cv microflows.CaseValue) element.Element {
 		g := genMf.NewEnumerationCase()
 		g.SetID(element.ID(c.ID))
 		g.SetValue(c.Expression)
+		return g
+	case *microflows.InheritanceCase:
+		// A type-split branch selects on an entity. Without this it fell through
+		// to NoCase, so every branch lost the entity it matches on — the second
+		// half of the `split type` corruption.
+		g := genMf.NewInheritanceCase()
+		g.SetID(element.ID(c.ID))
+		g.SetValueQualifiedName(c.EntityQualifiedName)
 		return g
 	default:
 		return genMf.NewNoCase()

@@ -421,14 +421,26 @@ Use `case` when a microflow branches on an enumeration value.
 case $Status
   when Open, Pending then
     return true;
-  when (empty) then
+  when Closed then
     return false;
-  else
+  when (empty) then
     return false;
 end case;
 ```
 
 `(empty)` represents an unset enumeration value. Multiple values can share one `when` branch by separating them with commas. Case values are bare identifiers — do **not** quote them.
+
+> **Every value needs a branch, including `(empty)` — and there is no `else`.**
+> A Mendix enum split is an exclusive split with one outgoing flow per condition
+> value, so an uncovered value fails the build with **CE0079** *"The 'X' condition
+> value should be configured in properties for an outgoing flow."* `mxcli check`
+> reports a missing `(empty)` branch as **MDL056**, and an `else` branch as
+> **MDL008** (an `else` does not stand in for the missing flows: mxbuild reports
+> CE0079 for each uncovered value *and* CE0773 on the else flow itself).
+>
+> The `(empty)` branch is required **even when the attribute is `not null`** —
+> verified on Mendix 11.6.6. If several values share a path, put them in one
+> branch (`when Open, Pending then`) rather than reaching for `else`.
 
 ### Type Split And Cast Statements
 
@@ -436,16 +448,36 @@ Use `split type` when a microflow branches on an object's runtime specialization
 Use `cast` inside a type branch to create the specialized variable used by the branch body.
 
 ```mdl
+declare $IsSpecialized boolean = false;
 split type $Input
 case Sample.SpecializedInput
   cast $SpecificInput;
-  return true;
-else
-  return false;
+  set $IsSpecialized = true;
+case Sample.BaseInput
 end split;
+return $IsSpecialized;
 ```
 
-`case` values are qualified entity names. The optional `else` branch handles objects that do not match any listed specialization.
+`case` values are qualified entity names.
+
+> **Every type needs a branch — including the base entity.** An object-type
+> decision gets one outgoing flow per listed type, and a type with no flow fails
+> the build with **CE0090** *"The 'X' value should be configured for an outgoing
+> flow."* The base entity (the split variable's own type) counts: `case
+> Sample.BaseInput` above is what covers "it is not any of the specializations".
+>
+> **`else` does not stand in for the base-type case.** It is accepted — it
+> serializes as `Microflows$NoCase` — but it does not satisfy coverage, so
+> `case Spec` + `else` still fails CE0090. Once every type has a branch, `else`
+> is redundant. Verified on Mendix 11.6.6 and 11.13.0.
+>
+> **The split needs somewhere to go afterwards.** Branch bodies converge on a
+> merge that continues to the microflow's end event, so a non-void microflow
+> needs a `return` after `end split;` — otherwise `mxcli check` reports MDL003
+> and the build fails **CE0067** *"The 'Return value' property is required."*
+> Doing the per-branch work into a variable and returning it once (above) is the
+> clearest shape; returning inside every branch also works, but still needs the
+> trailing `return`.
 
 **`cast` only stores the output variable.** Studio Pro persists Microflows$CastAction with a single `VariableName` field — the source variable is implicit (the type-split's input). Use `cast $SpecificName;` to give the specialized variable its name. The two-variable form `$Output = cast $Source;` parses but `$Source` is dropped on roundtrip; prefer the single-variable form.
 
@@ -490,6 +522,33 @@ end loop;
 - Loop variable (`$Product`) is scoped to the loop body
 - The loop variable type is **automatically derived** from the list type (e.g., `list of Test.Product` → `Test.Product`)
 - CHANGE statements inside loops use the derived type to resolve attribute names
+
+> **Nothing a loop defines survives past `end loop;`.** The iterator *and*
+> anything the body creates (a `retrieve`, a `$X = create …`, a call output) are
+> visible only inside the body; using one afterwards is
+> `CE0108 "Variable 'X' is defined but not in scope at this location."`
+> (`mxcli check` flags it as **MDL053**).
+>
+> ```mdl
+> -- WRONG: $Last is created inside the loop, read outside it
+> loop $Item in $Items
+> begin
+>   $Last = create Test.Product (Name = $Item/Name);
+> end loop;
+> commit $Last;                        -- MDL053 / CE0108
+>
+> -- RIGHT: declare before the loop, assign inside, read after
+> declare $LastName string = '';
+> loop $Item in $Items
+> begin
+>   set $LastName = $Item/Name;
+> end loop;
+> log info node 'Test' $LastName;
+> ```
+>
+> Visibility and *naming* are separate rules: names must also be unique across
+> the **whole** microflow, so two loops cannot share an iterator name either
+> (`CE0111`, flagged as **MDL052**).
 
 ### Performance: Batch Commit After Loop
 

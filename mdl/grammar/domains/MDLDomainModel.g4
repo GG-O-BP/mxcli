@@ -211,14 +211,16 @@ alterEntityAction
     | SET ALLOW_CREATE_CHANGE_LOCALLY EQUALS (TRUE | FALSE)
     | ADD INDEX indexDefinition
     | DROP INDEX IDENTIFIER
-    | ADD EVENT HANDLER eventHandlerDefinition
-    | DROP EVENT HANDLER ON eventMoment eventType
+    | ADD EVENT HANDLER ifNotExists? eventHandlerDefinition
+    | DROP EVENT HANDLER ifExists? ON eventMoment eventType
     ;
 
-// Idempotency guards for a re-runnable domain script: ADD ATTRIBUTE IF NOT
-// EXISTS skips (with a notice) when the attribute is already present, and DROP
-// ATTRIBUTE IF EXISTS skips when it is already gone — instead of erroring and
-// halting the run.
+// Idempotency guards for a re-runnable domain script: ADD ... IF NOT EXISTS
+// skips (with a notice) when the member is already present, and DROP ... IF
+// EXISTS skips when it is already gone — instead of erroring and halting the
+// run. Accepted on ATTRIBUTE and on EVENT HANDLER, which has no other way to be
+// re-run: a defensive drop-then-add fails on the drop when the handler is
+// absent, and on the add when it is present. (mxcli-todo findings #18)
 ifNotExists
     : IF NOT EXISTS
     ;

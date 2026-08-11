@@ -334,6 +334,13 @@ func (w *Writer) UpdateOqlQueriesForMovedEntity(oldQualifiedName, newQualifiedNa
 }
 
 // moveUnitByID changes a unit's ContainerID without modifying its contents.
+// MoveUnitByID reparents any top-level document unit. Exported so backends can
+// move doctypes that have no dedicated writer method of their own (Java actions,
+// published OData services) — the containment row is all that changes.
+func (w *Writer) MoveUnitByID(unitID string, newContainerID string) error {
+	return w.moveUnitByID(unitID, newContainerID)
+}
+
 func (w *Writer) moveUnitByID(unitID string, newContainerID string) error {
 	unitIDBlob := uuidToBlob(unitID)
 	containerIDBlob := uuidToBlob(newContainerID)

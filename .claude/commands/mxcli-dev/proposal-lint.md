@@ -1,3 +1,7 @@
+---
+description: Audit docs/11-proposals/ for status drift and convention violations
+---
+
 # /mxcli-dev:proposal-lint — Audit and Clean Up Proposals
 
 Audit `docs/11-proposals/` for status drift, missing frontmatter,

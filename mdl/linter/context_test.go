@@ -20,7 +20,13 @@ func setupModuleFilterDB(t *testing.T) catalog.CatalogDB {
 		t.Fatalf("open db: %v", err)
 	}
 
-	_, err = db.Exec(`CREATE TABLE modules (Name TEXT PRIMARY KEY, Source TEXT)`)
+	// Id is part of the real `modules` view and is load-bearing: platform
+	// filtering keys off the System module's sentinel Id, because Source cannot
+	// tell System apart from a user module (both empty). Omitting it here made
+	// every iterator query error out — and these iterators swallow query errors
+	// and yield nothing, so the drift surfaced as "no entities were returned"
+	// rather than "no such column".
+	_, err = db.Exec(`CREATE TABLE modules (Id TEXT, Name TEXT PRIMARY KEY, Source TEXT)`)
 	if err != nil {
 		t.Fatalf("create modules table: %v", err)
 	}
@@ -44,7 +50,7 @@ func setupModuleFilterDB(t *testing.T) catalog.CatalogDB {
 
 	modules := []string{"ModA", "ModB", "ModC"}
 	for _, mod := range modules {
-		if _, err := db.Exec(`INSERT INTO modules VALUES (?, '')`, mod); err != nil {
+		if _, err := db.Exec(`INSERT INTO modules VALUES (?, ?, '')`, mod+"-id", mod); err != nil {
 			t.Fatalf("insert module %s: %v", mod, err)
 		}
 		if _, err := db.Exec(`INSERT INTO entities VALUES (?, ?, ?, ?, '', 'PERSISTENT', '', '', 0, 0, 0, 0, 0)`,

@@ -214,6 +214,16 @@ create odata service MyModule.CustomerAPI (
   namespace: 'MyModule.Customers'
 )
 authentication basic, session
+-- Inside the { } body, alongside `publish entity`, a microflow can be published
+-- as an OData action (an ActionImport in $metadata):
+--   publish microflow Module.DoThing as 'DoThing'
+--     expose ( Note as 'note', Amount as 'amount' (CanBeEmpty) );
+-- Parameter types and the return type are read off the microflow, not restated.
+-- or: authentication microflow Module.Authenticate
+--   Custom authentication. The microflow takes a List of System.HttpHeader and
+--   returns a System.User (empty denies). It removes the per-request password
+--   hash that `basic` pays on every call. Requires app security on (CE6600) and
+--   a microflow to be named (CE0333, flagged as MDL-ODATA04).
 {
   publish entity MyModule.Customer as 'Customers' (
     ReadMode: source,
@@ -299,6 +309,8 @@ it is for pages.
 | Show page | `show page Module.PageName ($Param = $value);` | Also accepts `(Param: $value)` |
 | Close page | `close page;` | |
 | Download file | `download file $FileDocument [show in browser];` | Streams a `System.FileDocument` |
+| Database connection credentials | `connection string @Mod.Const`, `username @Mod.Const`, `password @Mod.Const` | Constant **references** only. A literal writes an unopenable project — MDL058 |
+| Synchronize (nanoflow only) | `synchronize all;` / `synchronize unsynchronized;` / `synchronize $Obj, $List;` | Offline sync. `unsynchronized` needs Mendix 9.4+. In a microflow this is MDL057 / CE0009 |
 | Validation | `validation feedback $entity/attribute message 'message';` | Requires attribute path + MESSAGE |
 | Log | `log info\|warning\|error [node 'name'] 'message';` | |
 | Position | `@position(x, y)` | Canvas position (before activity) |
@@ -333,6 +345,7 @@ it is for pages.
 
 | Statement | Syntax | Notes |
 |-----------|--------|-------|
+| List folders | `list folders [in module];` | The folder layout, with the documents in each folder |
 | Microflow folder | `folder 'path'` (before BEGIN) | `create microflow ... folder 'ACT' begin ... end;` |
 | Page folder | `folder: 'path'` (in properties) | `create page ... (folder: 'pages/Detail') { ... }` |
 | Drop folder | `drop folder 'path' in module;` | Folder must be empty |
@@ -355,7 +368,7 @@ Nested folders use `/` separator: `'Parent/Child/Grandchild'`. Missing folders a
 | Show demo users | `show demo users;` | Configured demo users |
 | Show access on element | `show access on microflow\|nanoflow\|page\|entity Mod.Name;` | Which roles can access |
 | Show security matrix | `show security matrix [in module];` | Full access overview |
-| Create module role | `create module role Mod.Role [description 'text'];` | |
+| Create module role | `create [or modify] module role Mod.Role [description 'text'];` | `or modify` updates an existing role instead of failing, so a security script can be re-run |
 | Drop module role | `drop module role Mod.Role;` | |
 | Create user role | `create user role Name (Mod.Role, ...) [manage all roles];` | Aggregates module roles |
 | Alter user role | `alter user role Name add\|remove module roles (Mod.Role, ...);` | |
@@ -485,6 +498,7 @@ alter workflow Module.OrderApproval
 | Full types | `show structure depth 3;` | Typed attributes, named parameters |
 | Filter by module | `show structure in ModuleName;` | Single module only |
 | Include all modules | `show structure depth 1 all;` | Include system/marketplace modules |
+| Folder layout | `list folders [in module];` | `show structure` is by document type at every depth and never shows folders — use this to read back where a `move` put something |
 
 ## Navigation
 
@@ -504,12 +518,24 @@ create or replace navigation Responsive
   login page Administration.Login
   not found page MyModule.Custom404
   menu (
-    menu item 'Home' page MyModule.Home_Web;
-    menu 'Admin' (
+    menu item 'Home' page MyModule.Home_Web icon Atlas_Core.Atlas.home;
+    menu 'Admin' icon Atlas_Core.Atlas."align-center" (
       menu item 'Users' page Administration.Account_Overview;
     );
   );
 ```
+
+`icon` is optional and is a **qualified name** into an **icon collection** —
+`Atlas_Core.Atlas`, `Atlas_Core.Atlas_Filled`, `Atlas_Core.Atlas_Styling`, or one
+of your own — written like any other model reference. Hyphenated Atlas names
+(`align-center`) are double-quoted, the same way a keyword-colliding name is:
+`Atlas_Core.Atlas."align-center"`. List the available names with `describe icon
+collection Atlas_Core.Atlas`.
+
+Studio Pro can also set a *glyph* icon (a numeric character code) or an *image*
+icon (pointing into an image collection). Those are different elements; MDL
+writes only the icon-collection form, and `describe navigation` marks the other
+two with a comment instead of emitting an `icon` clause that would convert them.
 
 ## Project Settings
 

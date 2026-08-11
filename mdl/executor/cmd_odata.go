@@ -348,16 +348,19 @@ func outputPublishedODataServiceMDL(ctx *ExecContext, svc *model.PublishedODataS
 
 	fmt.Fprintln(ctx.Output, ")")
 
-	// Authentication types
+	// Authentication types. The custom-authentication microflow is part of the
+	// clause, not a comment beside it: emitted as a comment the output looked
+	// complete but replayed into a service Mendix rejects with CE0333
+	// (mxcli-formula1 §40).
 	if len(svc.AuthenticationTypes) > 0 {
-		fmt.Fprintf(ctx.Output, "authentication %s\n", strings.Join(svc.AuthenticationTypes, ", "))
-	}
-	if svc.AuthMicroflow != "" {
-		fmt.Fprintf(ctx.Output, "-- Auth Microflow: %s\n", svc.AuthMicroflow)
+		fmt.Fprintf(ctx.Output, "authentication %s\n", odataAuthClause(svc))
+	} else if svc.AuthMicroflow != "" {
+		// A microflow with no type recorded still has to survive the round trip.
+		fmt.Fprintf(ctx.Output, "authentication microflow %s\n", svc.AuthMicroflow)
 	}
 
 	// Published entities block
-	if len(svc.EntityTypes) > 0 || len(svc.EntitySets) > 0 {
+	if len(svc.EntityTypes) > 0 || len(svc.EntitySets) > 0 || len(svc.Microflows) > 0 {
 		fmt.Fprintln(ctx.Output, "{")
 
 		// Build entity set lookup by exposed name and entity type name for merging
@@ -392,25 +395,46 @@ func outputPublishedODataServiceMDL(ctx *ExecContext, svc *model.PublishedODataS
 				es = entitySetByEntityName[et.Entity]
 			}
 
-			// PUBLISH ENTITY line with modes
-			fmt.Fprintf(ctx.Output, "  publish entity %s as '%s'", et.Entity, et.ExposedName)
+			// PUBLISH ENTITY line with modes.
+			//
+			// `AS '<name>'` is the ENTITY SET's exposed name — that is what the
+			// served $metadata calls the set, and what re-executing this output
+			// must reproduce. Printing the entity TYPE's exposed name here
+			// silently renamed the set on a describe -> exec round trip
+			// (mxcli-formula1 findings #10.5).
+			exposedName := et.ExposedName
+			if es != nil && es.ExposedName != "" {
+				exposedName = es.ExposedName
+			}
+			fmt.Fprintf(ctx.Output, "  publish entity %s as '%s'", et.Entity, exposedName)
 			if es != nil {
 				var modeProps []string
 				if es.ReadMode != "" {
-					modeProps = append(modeProps, fmt.Sprintf("ReadMode: %s", es.ReadMode))
+					modeProps = append(modeProps, fmt.Sprintf("ReadMode: %s", odataModeToMDL(es.ReadMode)))
 				}
 				if es.InsertMode != "" {
-					modeProps = append(modeProps, fmt.Sprintf("InsertMode: %s", es.InsertMode))
+					modeProps = append(modeProps, fmt.Sprintf("InsertMode: %s", odataModeToMDL(es.InsertMode)))
 				}
 				if es.UpdateMode != "" {
-					modeProps = append(modeProps, fmt.Sprintf("UpdateMode: %s", es.UpdateMode))
+					modeProps = append(modeProps, fmt.Sprintf("UpdateMode: %s", odataModeToMDL(es.UpdateMode)))
 				}
 				if es.DeleteMode != "" {
-					modeProps = append(modeProps, fmt.Sprintf("DeleteMode: %s", es.DeleteMode))
+					modeProps = append(modeProps, fmt.Sprintf("DeleteMode: %s", odataModeToMDL(es.DeleteMode)))
 				}
 				if es.UsePaging {
 					modeProps = append(modeProps, "UsePaging: Yes")
 					modeProps = append(modeProps, fmt.Sprintf("PageSize: %d", es.PageSize))
+				}
+				// Only a turned-off query option is worth printing; true is the
+				// default and would be noise on every resource.
+				if es.Countable != nil && !*es.Countable {
+					modeProps = append(modeProps, "Countable: No")
+				}
+				if es.SkipSupported != nil && !*es.SkipSupported {
+					modeProps = append(modeProps, "SkipSupported: No")
+				}
+				if es.TopSupported != nil && !*es.TopSupported {
+					modeProps = append(modeProps, "TopSupported: No")
 				}
 				if len(modeProps) > 0 {
 					fmt.Fprintf(ctx.Output, " (\n    %s\n  )", strings.Join(modeProps, ",\n    "))
@@ -430,10 +454,17 @@ func outputPublishedODataServiceMDL(ctx *ExecContext, svc *model.PublishedODataS
 						modifiers = append(modifiers, "Sortable")
 					}
 					if m.IsPartOfKey {
-						modifiers = append(modifiers, "IsPartOfKey")
+						// KEY is the spelling the syntax help documents;
+						// IsPartOfKey parses too, but only one belongs in
+						// output meant to be re-executed.
+						modifiers = append(modifiers, "KEY")
 					}
 
-					line := fmt.Sprintf("    %s as '%s'", m.Name, m.ExposedName)
+					// The member is stored fully qualified
+					// (Module.Entity.Member), while `expose (...)` takes a bare
+					// member name — so emitting the stored form produced MDL
+					// that does not parse (mxcli-formula1 findings #10.5).
+					line := fmt.Sprintf("    %s as '%s'", bareMemberName(m.Name), m.ExposedName)
 					if len(modifiers) > 0 {
 						line += fmt.Sprintf(" (%s)", strings.Join(modifiers, ", "))
 					}
@@ -445,6 +476,13 @@ func outputPublishedODataServiceMDL(ctx *ExecContext, svc *model.PublishedODataS
 				fmt.Fprintln(ctx.Output, "  );")
 			}
 			fmt.Fprintln(ctx.Output)
+		}
+
+		// OData actions. Emitted as part of the block, not as a comment beside
+		// it: a comment reads as complete and replays into a service without the
+		// action (mxcli-formula1 §47.1).
+		for _, pm := range svc.Microflows {
+			printPublishedMicroflowMDL(ctx.Output, pm)
 		}
 
 		fmt.Fprintln(ctx.Output, "}")
@@ -1099,9 +1137,15 @@ Got: %s`, stmt.ServiceUrl)
 		}
 		newSvc.MetadataUrl = normalizedUrl
 
-		metadata, hash, err := fetchODataMetadata(normalizedUrl)
+		auth := metadataAuthFromStmt(ctx, stmt)
+		metadata, hash, err := fetchODataMetadata(normalizedUrl, auth)
 		if err != nil {
 			fmt.Fprintf(ctx.Output, "Warning: could not fetch $metadata: %v\n", err)
+			for _, hint := range auth.hints() {
+				fmt.Fprintf(ctx.Output, "  %s\n", hint)
+			}
+			fmt.Fprintf(ctx.Output, "  The client is created with no cached entity types, so a following\n")
+			fmt.Fprintf(ctx.Output, "  'create external entities from %s.%s' will import nothing.\n", stmt.Name.Module, stmt.Name.Name)
 		} else if metadata != "" {
 			newSvc.Metadata = metadata
 			newSvc.MetadataHash = hash
@@ -1305,6 +1349,8 @@ func createODataService(ctx *ExecContext, stmt *ast.CreateODataServiceStmt) erro
 			modName := h.GetModuleName(modID)
 			if strings.EqualFold(modName, stmt.Name.Module) && strings.EqualFold(svc.Name, stmt.Name.Name) {
 				if stmt.CreateOrModify {
+					// Snapshot the grants before anything below can clear them.
+					existingRoles := append([]string(nil), svc.AllowedModuleRoles...)
 					svc.Documentation = stmt.Documentation
 					if stmt.Path != "" {
 						svc.Path = stmt.Path
@@ -1320,6 +1366,10 @@ func createODataService(ctx *ExecContext, stmt *ast.CreateODataServiceStmt) erro
 					}
 					if stmt.ServiceName != "" {
 						svc.ServiceName = stmt.ServiceName
+					} else if svc.ServiceName == "" {
+						// Heal a service written before ServiceName was defaulted:
+						// re-running the script repairs a model that cannot build.
+						svc.ServiceName = svc.Name
 					}
 					if stmt.Summary != "" {
 						svc.Summary = stmt.Summary
@@ -1327,9 +1377,56 @@ func createODataService(ctx *ExecContext, stmt *ast.CreateODataServiceStmt) erro
 					if stmt.Description != "" {
 						svc.Description = stmt.Description
 					}
-					svc.PublishAssociations = stmt.PublishAssociations
+					if stmt.PublishAssociationsSet {
+						svc.PublishAssociations = stmt.PublishAssociations
+					}
+					if len(stmt.Microflows) > 0 {
+						published, mfErr := astMicroflowDefsToModel(ctx, stmt.Microflows)
+						if mfErr != nil {
+							return mfErr
+						}
+						svc.Microflows = published
+					}
 					if len(stmt.AuthenticationTypes) > 0 {
 						svc.AuthenticationTypes = stmt.AuthenticationTypes
+						// Restated auth replaces the microflow too, including
+						// clearing it when the new clause is not `microflow`.
+						svc.AuthMicroflow = stmt.AuthMicroflow
+					}
+					// Published entities are replaced wholesale when the statement
+					// supplies any. Previously the modify branch ignored them
+					// entirely: editing a `publish entity` block and re-running
+					// left the served $metadata unchanged, so `Filterable` or
+					// `Countable` changes appeared to do nothing and the only
+					// thing that worked was drop + create. Replacing rather than
+					// merging is what makes the script the description of the
+					// service — a member removed from the script is removed from
+					// the service, which merging could never express.
+					if len(stmt.Entities) > 0 {
+						svc.EntityTypes = nil
+						svc.EntitySets = nil
+						for _, entityDef := range stmt.Entities {
+							entityType, entitySet := astEntityDefToModel(ctx, entityDef)
+							svc.EntityTypes = append(svc.EntityTypes, entityType)
+							svc.EntitySets = append(svc.EntitySets, entitySet)
+						}
+					}
+					// AllowedModuleRoles is granted by a separate statement
+					// (`grant access on odata service …`) and cannot be expressed
+					// here, so a modify must carry it through or the build fails
+					// with "At least one allowed role must be selected for the
+					// published OData service to be accessible."
+					//
+					// The reported loss (mxcli-formula1 §26) was real, and this
+					// carry-through was never what fixed it: the grants were read
+					// and carried correctly, then dropped one layer down, because
+					// serializePublishedODataService did not write the field at
+					// all. Looking for the loss at model level and concluding "does
+					// not reproduce" was the mistake — the round trip to BSON is
+					// where a wholesale re-serialization deletes what it omits.
+					// Kept as a guard for a caller that clears the slice.
+					if len(svc.AllowedModuleRoles) == 0 && len(existingRoles) > 0 {
+						svc.AllowedModuleRoles = existingRoles
 					}
 					if err := ctx.Backend.UpdatePublishedODataService(svc); err != nil {
 						return mdlerrors.NewBackend("update OData service", err)
@@ -1353,6 +1450,17 @@ func createODataService(ctx *ExecContext, stmt *ast.CreateODataServiceStmt) erro
 		containerID = folderID
 	}
 
+	// Name (the document) and ServiceName (the name in the OData metadata
+	// document) are different properties, and Mendix requires the second to be
+	// non-empty — an empty one fails the build with CE0729 "The service name
+	// should not be empty", which `mxcli check` cannot see. Default it to the
+	// document name, exactly as the CONSUMED path does for CE0339 above.
+	// (mxcli-formula1 findings #10.1.)
+	serviceName := stmt.ServiceName
+	if serviceName == "" {
+		serviceName = stmt.Name.Name
+	}
+
 	newSvc := &model.PublishedODataService{
 		ContainerID:         containerID,
 		Name:                stmt.Name.Name,
@@ -1361,12 +1469,21 @@ func createODataService(ctx *ExecContext, stmt *ast.CreateODataServiceStmt) erro
 		Version:             stmt.Version,
 		ODataVersion:        stmt.ODataVersion,
 		Namespace:           stmt.Namespace,
-		ServiceName:         stmt.ServiceName,
+		ServiceName:         serviceName,
 		Summary:             stmt.Summary,
 		Description:         stmt.Description,
-		PublishAssociations: stmt.PublishAssociations,
+		PublishAssociations: publishAssociationsFor(stmt),
 		AuthenticationTypes: stmt.AuthenticationTypes,
+		AuthMicroflow:       stmt.AuthMicroflow,
 	}
+
+	// OData actions. Resolved against the project's microflows so the parameter
+	// types and return type come off the microflow rather than being restated.
+	publishedMFs, mfErr := astMicroflowDefsToModel(ctx, stmt.Microflows)
+	if mfErr != nil {
+		return mfErr
+	}
+	newSvc.Microflows = publishedMFs
 
 	// Map AST entity definitions to model entity types and entity sets.
 	// Pass ctx so the executor can resolve exposed members against the
@@ -1376,6 +1493,18 @@ func createODataService(ctx *ExecContext, stmt *ast.CreateODataServiceStmt) erro
 		entityType, entitySet := astEntityDefToModel(ctx, entityDef)
 		newSvc.EntityTypes = append(newSvc.EntityTypes, entityType)
 		newSvc.EntitySets = append(newSvc.EntitySets, entitySet)
+	}
+
+	// An explicit false on a non-persistable entity is unbuildable whatever the
+	// key is: object-id mode needs a published ID, and Mendix forbids publishing
+	// the ID of a non-persistable entity. Say so rather than let CE7375 be the
+	// first anyone hears of it.
+	if !newSvc.PublishAssociations {
+		if nonPersistable := nonPersistablePublishedEntities(ctx, stmt.Entities); len(nonPersistable) > 0 {
+			fmt.Fprintf(ctx.Output,
+				"  Warning: PublishAssociations is false, but %s %s non-persistable — associations-as-object-id requires a published ID, which Mendix forbids there. The build will fail with CE7375; remove the property to get the default (true).\n",
+				strings.Join(nonPersistable, ", "), pluralIsAre(len(nonPersistable)))
+		}
 	}
 
 	if err := ctx.Backend.CreatePublishedODataService(newSvc); err != nil {
@@ -1563,8 +1692,12 @@ type assocMembership struct {
 // return empty collections rather than failing the whole publish.
 // mendixAttrTypeToEdm maps a Mendix attribute type to the OData EDM type Studio
 // Pro publishes it as (the PublishedAttribute.EdmType field). Inverse of
-// edmToDomainModelAttrType. String/Decimal/Boolean/DateTimeOffset verified
-// against Studio Pro output; the rest follow the standard OData mapping.
+// edmToDomainModelAttrType.
+//
+// Every case here has been adjudicated by mxbuild rather than assumed: an
+// attribute published as the wrong EDM type is CE5016 ("has type Integer, but is
+// published as Edm.Int32"), one error per attribute. Verified on 11.12.1 by
+// publishing one attribute of each type and reading the errors.
 func mendixAttrTypeToEdm(t domainmodel.AttributeType) string {
 	if t == nil {
 		return ""
@@ -1572,9 +1705,10 @@ func mendixAttrTypeToEdm(t domainmodel.AttributeType) string {
 	switch t.GetTypeName() {
 	case "String", "HashedString":
 		return "Edm.String"
-	case "Integer":
-		return "Edm.Int32"
-	case "Long", "AutoNumber":
+	case "Integer", "Long", "AutoNumber":
+		// Mendix publishes Integer as Int64 too, not Int32 — an Integer is
+		// 64-bit in the Mendix type system, and Int32 is CE5016 on every whole
+		// number in the service.
 		return "Edm.Int64"
 	case "Decimal":
 		return "Edm.Decimal"
@@ -1583,18 +1717,38 @@ func mendixAttrTypeToEdm(t domainmodel.AttributeType) string {
 	case "DateTime", "Date":
 		return "Edm.DateTimeOffset"
 	case "Binary":
+		// Kept so the mapping is total, but a Binary attribute cannot actually
+		// be exposed over OData — Mendix rejects it outright with CE5013
+		// regardless of the published type.
 		return "Edm.Binary"
 	case "Enumeration":
-		// Enums exposed as string (EnumerationAsString path). A non-string enum
-		// exposure would use the enum's own type — not yet modelled.
+		// Paired with EnumerationAsString=true (see enumPublishedAsString).
+		// Edm.String with that flag false is rejected: Mendix then wants the
+		// enumeration published in the service and typed as its own EDM enum.
 		return "Edm.String"
 	default:
 		return "Edm.String"
 	}
 }
 
-func lookupEntityMembers(ctx *ExecContext, entityQN ast.QualifiedName) (map[string]string, map[string]*assocMembership) {
-	attrs := make(map[string]string) // attr name -> OData EDM type (for the published EdmType)
+// publishedAttrType is how one Mendix attribute publishes over OData: the EDM
+// type, plus whether it is an enumeration flattened to a string. The two travel
+// together because Edm.String alone is ambiguous — a String and an
+// EnumerationAsString enum both carry it, and only the flag tells them apart.
+type publishedAttrType struct {
+	Edm      string
+	AsString bool
+}
+
+// enumPublishedAsString reports whether a published attribute needs the
+// EnumerationAsString flag — i.e. whether it is an enumeration at all. The flag
+// and the Edm.String type are a matched pair; see mendixAttrTypeToEdm.
+func enumPublishedAsString(t domainmodel.AttributeType) bool {
+	return t != nil && t.GetTypeName() == "Enumeration"
+}
+
+func lookupEntityMembers(ctx *ExecContext, entityQN ast.QualifiedName) (map[string]publishedAttrType, map[string]*assocMembership) {
+	attrs := make(map[string]publishedAttrType) // attr name -> how it publishes
 	assocs := make(map[string]*assocMembership)
 	if ctx == nil || ctx.Backend == nil {
 		return attrs, assocs
@@ -1619,7 +1773,10 @@ func lookupEntityMembers(ctx *ExecContext, entityQN ast.QualifiedName) (map[stri
 	}
 	if thisEntity != nil {
 		for _, a := range thisEntity.Attributes {
-			attrs[a.Name] = mendixAttrTypeToEdm(a.Type)
+			attrs[a.Name] = publishedAttrType{
+				Edm:      mendixAttrTypeToEdm(a.Type),
+				AsString: enumPublishedAsString(a.Type),
+			}
 		}
 	}
 	for _, a := range dm.Associations {
@@ -1684,9 +1841,10 @@ func astEntityDefToModel(ctx *ExecContext, def *ast.PublishedEntityDef) (*model.
 			member.ExposedName = member.Name
 		}
 		// Auto-detect kind: attribute first, association as fallback.
-		if edmType, ok := entityAttrs[m.Name]; ok {
+		if pub, ok := entityAttrs[m.Name]; ok {
 			member.Kind = "attribute"
-			member.EdmType = edmType
+			member.EdmType = pub.Edm
+			member.EnumerationAsString = pub.AsString
 		} else if assoc := moduleAssocs[m.Name]; assoc != nil {
 			member.Kind = "association"
 			member.ExposedAssociationName = m.Name
@@ -1722,6 +1880,9 @@ func astEntityDefToModel(ctx *ExecContext, def *ast.PublishedEntityDef) (*model.
 		UpdateMode:     def.UpdateMode,
 		DeleteMode:     def.DeleteMode,
 		UsePaging:      def.UsePaging,
+		Countable:      def.Countable,
+		SkipSupported:  def.SkipSupported,
+		TopSupported:   def.TopSupported,
 		PageSize:       def.PageSize,
 	}
 
@@ -1736,7 +1897,156 @@ func astEntityDefToModel(ctx *ExecContext, def *ast.PublishedEntityDef) (*model.
 // Returns the metadata XML and its SHA-256 hash, or empty strings if the fetch fails.
 // Note: metadataUrl is expected to be already normalized by NormalizeURL() in createODataClient,
 // so all relative paths have been converted to absolute file:// URLs.
-func fetchODataMetadata(metadataUrl string) (metadata string, hash string, err error) {
+// metadataFetchAuth carries the credentials and headers used for the
+// design-time $metadata fetch.
+//
+// Only *literal* values are usable here. MDL stores a quoted literal with its
+// quotes ('f1api') and a constant reference bare (Module.ApiUser); at design
+// time mxcli has no runtime to resolve a constant against, so a reference is
+// reported rather than sent as if it were the value itself.
+type metadataFetchAuth struct {
+	Username string            // literal, quotes already stripped
+	Password string            // literal, quotes already stripped
+	Headers  map[string]string // literal values only
+	// Unresolved names the caller referenced by constant, for the message.
+	Unresolved []string
+}
+
+// apply sets basic auth and headers on the request. A nil receiver is a no-op,
+// so an unauthenticated fetch needs no special case at the call site.
+func (a *metadataFetchAuth) apply(req *http.Request) {
+	if a == nil {
+		return
+	}
+	if a.Username != "" || a.Password != "" {
+		req.SetBasicAuth(a.Username, a.Password)
+	}
+	for k, v := range a.Headers {
+		req.Header.Set(k, v)
+	}
+}
+
+// metadataAuthFromStmt collects the statement's own credentials and headers for
+// the design-time fetch, keeping only the literals.
+func metadataAuthFromStmt(ctx *ExecContext, stmt *ast.CreateODataClientStmt) *metadataFetchAuth {
+	auth := &metadataFetchAuth{Headers: map[string]string{}}
+	consts := designTimeConstants(ctx)
+
+	if v, ok := resolveCredential(stmt.HttpUsername, stmt.HttpUsernameIsLiteral, consts); ok {
+		auth.Username = v
+	} else if stmt.HttpUsername != "" {
+		auth.Unresolved = append(auth.Unresolved, "HttpUsername ("+stmt.HttpUsername+")")
+	}
+	if v, ok := resolveCredential(stmt.HttpPassword, stmt.HttpPasswordIsLiteral, consts); ok {
+		auth.Password = v
+	} else if stmt.HttpPassword != "" {
+		// Named, not printed: a constant reference is a name, but the value it
+		// resolves to is a secret and this line goes to the console.
+		auth.Unresolved = append(auth.Unresolved, "HttpPassword ("+stmt.HttpPassword+")")
+	}
+	for _, h := range stmt.Headers {
+		if v, ok := resolveCredential(h.Value, h.ValueIsLiteral, consts); ok {
+			auth.Headers[h.Key] = v
+		} else if h.Value != "" {
+			auth.Unresolved = append(auth.Unresolved, "header "+h.Key+" ("+h.Value+")")
+		}
+	}
+	sort.Strings(auth.Unresolved)
+	return auth
+}
+
+// resolveCredential turns an MDL property value into the string to send on the
+// design-time fetch.
+//
+// Three spellings reach here and all three have to work, because the shape MDL
+// pushes users towards is the constant reference — mxcli requires a constant for
+// ServiceUrl, so a client written the documented way has constants for its
+// credentials too (mxcli-formula1 #23 follow-up):
+//
+//	HttpUsername: 'f1api'            a literal
+//	HttpUsername: @Module.ApiUser    a constant reference
+//	HttpUsername: '@Module.ApiUser'  the same reference, quoted
+//
+// The quoted form is the trap: it is a STRING_LITERAL, so the isLiteral flag says
+// "literal" and the naive reading sends the eleven characters `@Module.ApiUser`
+// as the username. Worse than a 401, because it looks like it tried.
+//
+// A constant's design-time default is exactly what Studio Pro uses for the same
+// fetch, so resolving it here is not a workaround — it is the value.
+func resolveCredential(value string, isLiteral bool, consts map[string]string) (string, bool) {
+	if value == "" {
+		return "", false
+	}
+	if ref, ok := constantReference(value, isLiteral); ok {
+		v, found := consts[strings.ToLower(ref)]
+		return v, found && v != ""
+	}
+	if isLiteral {
+		return value, true
+	}
+	return "", false
+}
+
+// constantReference reports whether a property value names a constant, and which
+// one. A leading @ marks a reference in either spelling; an unquoted qualified
+// name is one too, since a bare Module.Name cannot be a credential.
+func constantReference(value string, isLiteral bool) (string, bool) {
+	if rest, found := strings.CutPrefix(value, "@"); found {
+		return rest, true
+	}
+	if !isLiteral && strings.Contains(value, ".") {
+		return value, true
+	}
+	return "", false
+}
+
+// designTimeConstants maps a constant's qualified name (lowercased) to its
+// default value. Best-effort: a project that cannot be read yields an empty map,
+// and every reference then reports itself unresolved rather than failing the
+// statement.
+func designTimeConstants(ctx *ExecContext) map[string]string {
+	out := map[string]string{}
+	if ctx == nil || ctx.Backend == nil {
+		return out
+	}
+	consts, err := ctx.Backend.ListConstants()
+	if err != nil {
+		return out
+	}
+	h, err := getHierarchy(ctx)
+	if err != nil {
+		return out
+	}
+	for _, c := range consts {
+		if c == nil {
+			continue
+		}
+		mod := h.GetModuleName(h.FindModuleID(c.ContainerID))
+		if mod == "" {
+			continue
+		}
+		out[strings.ToLower(mod+"."+c.Name)] = c.DefaultValue
+	}
+	return out
+}
+
+// hints explains a failed fetch when the reason is credentials mxcli could not
+// resolve, and points at the workaround that also happens to be better practice.
+func (a *metadataFetchAuth) hints() []string {
+	var out []string
+	if a == nil {
+		return out
+	}
+	if len(a.Unresolved) > 0 {
+		out = append(out, "These are constant references, which only the runtime can resolve, so the fetch went out without them: "+strings.Join(a.Unresolved, ", "))
+	}
+	out = append(out,
+		"Fetch the contract once and point MetadataUrl at the file — it commits, so the",
+		"model rebuilds without the service running and a contract change is a reviewable diff.")
+	return out
+}
+
+func fetchODataMetadata(metadataUrl string, auth *metadataFetchAuth) (metadata string, hash string, err error) {
 	if metadataUrl == "" {
 		return "", "", nil
 	}
@@ -1758,7 +2068,16 @@ func fetchODataMetadata(metadataUrl string) (metadata string, hash string, err e
 	} else {
 		// HTTP(S) fetch
 		client := &http.Client{Timeout: 30 * time.Second}
-		resp, err := client.Get(metadataUrl)
+		req, reqErr := http.NewRequest(http.MethodGet, metadataUrl, nil)
+		if reqErr != nil {
+			return "", "", mdlerrors.NewBackend(fmt.Sprintf("build $metadata request for %s", metadataUrl), reqErr)
+		}
+		// The credentials and headers already on the statement apply to this
+		// fetch too. Without them a service behind `authentication basic`
+		// answers 401, the client is created with no cached entity types, and
+		// the CREATE EXTERNAL ENTITIES that follows silently imports nothing.
+		auth.apply(req)
+		resp, err := client.Do(req)
 		if err != nil {
 			return "", "", mdlerrors.NewBackend(fmt.Sprintf("fetch $metadata from %s", metadataUrl), err)
 		}
@@ -1782,3 +2101,142 @@ func fetchODataMetadata(metadataUrl string) (metadata string, hash string, err e
 }
 
 // Executor wrappers for unmigrated callers.
+// nonPersistablePublishedEntities returns the qualified names of the published
+// entities that are non-persistable, in statement order. Entities it cannot
+// resolve are treated as persistable: this drives a silent default correction,
+// so an unreadable entity must not change what gets written.
+func nonPersistablePublishedEntities(ctx *ExecContext, defs []*ast.PublishedEntityDef) []string {
+	if ctx == nil || ctx.Backend == nil {
+		return nil
+	}
+	var out []string
+	seen := make(map[string]bool)
+	for _, def := range defs {
+		if def == nil || seen[def.Entity.String()] {
+			continue
+		}
+		seen[def.Entity.String()] = true
+		module, err := findModule(ctx, def.Entity.Module)
+		if err != nil {
+			continue
+		}
+		dm, err := ctx.Backend.GetDomainModel(module.ID)
+		if err != nil {
+			continue
+		}
+		for _, e := range dm.Entities {
+			if e.Name == def.Entity.Name && !e.Persistable {
+				out = append(out, def.Entity.String())
+				break
+			}
+		}
+	}
+	return out
+}
+
+// pluralIsAre picks the verb for a list of n names.
+func pluralIsAre(n int) string {
+	if n == 1 {
+		return "is"
+	}
+	return "are"
+}
+
+// publishAssociationsFor picks the PublishAssociations value to store.
+//
+// false means "expose associations as an associated object id", and Mendix then
+// requires the system ID attribute to be published as the entity key — so a
+// service whose key is an ordinary attribute (what MDL's `expose (Attr (KEY))`
+// writes) fails the build with CE7375, and a non-persistable entity cannot
+// satisfy it at all because publishing its ID is forbidden. Verified on 11.12.1:
+// the identical service builds 0 errors with true and CE7375 with false, for a
+// persistent entity with a unique key.
+//
+// Defaulting to true therefore does not pick a preference; it picks the value
+// that can build from the MDL people actually write. An explicit
+// `PublishAssociations: false` is still honoured — that author has published an
+// ID key, or wants to know. (mxcli-formula1 findings #10.4.)
+func publishAssociationsFor(stmt *ast.CreateODataServiceStmt) bool {
+	if !stmt.PublishAssociationsSet {
+		return true
+	}
+	return stmt.PublishAssociations
+}
+
+// odataModeToMDL turns a stored Read/Change mode into the MDL spelling that
+// parses back. The backend stores a microflow-backed mode as
+// "CallMicroflow:Module.Name" (and accepts "MICROFLOW Module.Name" on the way
+// in), but a bare `CallMicroflow:Qualified.Name` matches no MDL value — so
+// DESCRIBE was emitting something it could not read (mxcli-formula1 #10.5).
+func odataModeToMDL(mode string) string {
+	for _, prefix := range []string{"CallMicroflow:", "MICROFLOW ", "microflow "} {
+		if rest := strings.TrimPrefix(mode, prefix); rest != mode {
+			return "microflow " + strings.TrimSpace(rest)
+		}
+	}
+	return mode
+}
+
+// bareMemberName strips a Module.Entity. prefix from a published member name,
+// leaving the member name `expose (...)` accepts.
+func bareMemberName(name string) string {
+	if i := strings.LastIndex(name, "."); i >= 0 {
+		return name[i+1:]
+	}
+	return name
+}
+
+// odataAuthClause renders a service's authentication methods as MDL, attaching
+// the microflow to the `Microflow` method rather than trailing it as a comment.
+// Custom authentication is the only method that names a target.
+func odataAuthClause(svc *model.PublishedODataService) string {
+	parts := make([]string, 0, len(svc.AuthenticationTypes))
+	named := false
+	for _, t := range svc.AuthenticationTypes {
+		if strings.EqualFold(t, "Microflow") && svc.AuthMicroflow != "" {
+			parts = append(parts, t+" "+svc.AuthMicroflow)
+			named = true
+			continue
+		}
+		parts = append(parts, t)
+	}
+	// A stored microflow with no matching method would otherwise be dropped.
+	if !named && svc.AuthMicroflow != "" {
+		parts = append(parts, "Microflow "+svc.AuthMicroflow)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// printPublishedMicroflowMDL writes a `publish microflow` block. Parameter data
+// types and the return type are deliberately absent: they are read off the
+// microflow at execution time, so restating them here would let the emitted
+// script and the microflow drift apart.
+func printPublishedMicroflowMDL(w io.Writer, pm *model.PublishedMicroflow) {
+	head := "  publish microflow " + pm.Microflow
+	if pm.ExposedName != "" {
+		head += fmt.Sprintf(" as '%s'", pm.ExposedName)
+	}
+	if len(pm.Parameters) == 0 {
+		fmt.Fprintln(w, head+";")
+		return
+	}
+	fmt.Fprintln(w, head)
+	parts := make([]string, 0, len(pm.Parameters))
+	for _, p := range pm.Parameters {
+		// The stored ref is Module.Microflow.Param; MDL names the parameter
+		// alone, so take the last segment.
+		name := p.MicroflowParameter
+		if i := strings.LastIndex(name, "."); i >= 0 {
+			name = name[i+1:]
+		}
+		part := name
+		if p.ExposedName != "" && p.ExposedName != name {
+			part += fmt.Sprintf(" as '%s'", p.ExposedName)
+		}
+		if p.CanBeEmpty {
+			part += " (CanBeEmpty)"
+		}
+		parts = append(parts, part)
+	}
+	fmt.Fprintf(w, "    expose ( %s );\n", strings.Join(parts, ", "))
+}

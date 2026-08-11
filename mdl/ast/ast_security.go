@@ -10,6 +10,10 @@ package ast
 type CreateModuleRoleStmt struct {
 	Name        QualifiedName
 	Description string
+	// CreateOrModify makes the statement idempotent: an existing role has its
+	// description updated instead of the statement failing, so a security script
+	// can be re-run.
+	CreateOrModify bool
 }
 
 func (s *CreateModuleRoleStmt) isStatement() {}

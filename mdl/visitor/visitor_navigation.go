@@ -91,19 +91,25 @@ func buildNavMenuItemDef(ctx parser.INavMenuItemDefContext) ast.NavMenuItemDef {
 		caption = unquoteString(sl.GetText())
 	}
 
-	item := ast.NavMenuItemDef{
-		Caption: caption,
-	}
+	item := ast.NavMenuItemDef{Caption: caption}
 
-	// The grammar uses a single qualifiedName for either PAGE or MICROFLOW target
-	qn := c.QualifiedName()
-
-	if c.PAGE() != nil && qn != nil {
-		built := buildQualifiedName(qn)
+	// Both the PAGE/MICROFLOW target and the ICON are qualifiedNames, so they
+	// arrive in one indexed list. The target always comes first when present;
+	// whatever remains after it is the icon.
+	names := c.AllQualifiedName()
+	next := 0
+	switch {
+	case c.PAGE() != nil && len(names) > next:
+		built := buildQualifiedName(names[next])
 		item.Page = &built
-	} else if c.MICROFLOW() != nil && qn != nil {
-		built := buildQualifiedName(qn)
+		next++
+	case c.MICROFLOW() != nil && len(names) > next:
+		built := buildQualifiedName(names[next])
 		item.Microflow = &built
+		next++
+	}
+	if c.ICON() != nil && len(names) > next {
+		item.Icon = buildQualifiedName(names[next]).String()
 	}
 
 	// Recurse into sub-items (for MENU 'caption' (...))

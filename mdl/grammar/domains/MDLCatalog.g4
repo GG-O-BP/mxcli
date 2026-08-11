@@ -26,6 +26,11 @@ showStatement
     | showOrList SNIPPETS (IN (qualifiedName | IDENTIFIER))?
     | showOrList BUILDING BLOCKS (IN (qualifiedName | IDENTIFIER))?
     | showOrList ENUMERATIONS (IN (qualifiedName | IDENTIFIER))?
+    // LIST FOLDERS is the layout view: which folders exist and what is in them.
+    // MOVE could place a document but nothing could read the placement back, so
+    // a layout could not be confirmed or diffed without opening the .mpr as
+    // SQLite (mxcli-formula1 #32).
+    | showOrList FOLDERS (IN (qualifiedName | IDENTIFIER))?
     | showOrList CONSTANTS (IN (qualifiedName | IDENTIFIER))?
     | showOrList CONSTANT VALUES (IN (qualifiedName | IDENTIFIER))?
     | showOrList LAYOUTS (IN (qualifiedName | IDENTIFIER))?
@@ -158,7 +163,7 @@ describeStatement
     | DESCRIBE CATALOG DOT (catalogTableName)  // DESCRIBE CATALOG.ENTITIES
     | DESCRIBE BUSINESS EVENT SERVICE qualifiedName  // DESCRIBE BUSINESS EVENT SERVICE Module.Name
     | DESCRIBE DATABASE CONNECTION qualifiedName       // DESCRIBE DATABASE CONNECTION Module.Name
-    | DESCRIBE SETTINGS                               // DESCRIBE SETTINGS
+    | DESCRIBE SETTINGS (CONFIGURATION STRING_LITERAL)?  // DESCRIBE SETTINGS [CONFIGURATION 'Default']
     | DESCRIBE FRAGMENT FROM PAGE qualifiedName WIDGET identifierOrKeyword     // DESCRIBE FRAGMENT FROM PAGE Module.Page WIDGET name
     | DESCRIBE FRAGMENT FROM SNIPPET qualifiedName WIDGET identifierOrKeyword  // DESCRIBE FRAGMENT FROM SNIPPET Module.Snippet WIDGET name
     | DESCRIBE IMAGE COLLECTION qualifiedName           // DESCRIBE IMAGE COLLECTION Module.Name

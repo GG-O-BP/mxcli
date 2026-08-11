@@ -1,3 +1,8 @@
+---
+description: Diff uncommitted mxunit changes against a git reference (MPR v2 only)
+argument-hint: [--ref <rev>]
+---
+
 # Diff Local Changes
 
 Compare local (uncommitted) changes in mxunit files against a git reference to see what has changed.

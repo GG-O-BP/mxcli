@@ -14,7 +14,8 @@ func (b *Builder) ExitCreateModuleRoleStatement(ctx *parser.CreateModuleRoleStat
 		return
 	}
 	stmt := &ast.CreateModuleRoleStmt{
-		Name: buildQualifiedName(qn),
+		Name:           buildQualifiedName(qn),
+		CreateOrModify: ctx.MODIFY() != nil,
 	}
 	if ctx.DESCRIPTION() != nil {
 		if sl := ctx.STRING_LITERAL(); sl != nil {

@@ -667,13 +667,13 @@ func (unsupportedBackend) ListFolders() (r0 []*types.FolderInfo, err1 error) {
 	return
 }
 
-func (unsupportedBackend) ListImageCollections() (r0 []*types.ImageCollection, err1 error) {
-	err1 = errUnsupported("ListImageCollections")
+func (unsupportedBackend) ListIconCollections() (r0 []*types.IconCollection, err1 error) {
+	err1 = errUnsupported("ListIconCollections")
 	return
 }
 
-func (unsupportedBackend) ListIconCollections() (r0 []*types.IconCollection, err1 error) {
-	err1 = errUnsupported("ListIconCollections")
+func (unsupportedBackend) ListImageCollections() (r0 []*types.ImageCollection, err1 error) {
+	err1 = errUnsupported("ListImageCollections")
 	return
 }
 
@@ -827,6 +827,11 @@ func (unsupportedBackend) MoveImportMapping(_ *model.ImportMapping) (err0 error)
 	return
 }
 
+func (unsupportedBackend) MoveJavaAction(_ *javaactions.JavaAction) (err0 error) {
+	err0 = errUnsupported("MoveJavaAction")
+	return
+}
+
 func (unsupportedBackend) MoveMicroflow(_ *microflows.Microflow) (err0 error) {
 	err0 = errUnsupported("MoveMicroflow")
 	return
@@ -839,6 +844,11 @@ func (unsupportedBackend) MoveNanoflow(_ *microflows.Nanoflow) (err0 error) {
 
 func (unsupportedBackend) MovePage(_ *pages.Page) (err0 error) {
 	err0 = errUnsupported("MovePage")
+	return
+}
+
+func (unsupportedBackend) MovePublishedODataService(_ *model.PublishedODataService) (err0 error) {
+	err0 = errUnsupported("MovePublishedODataService")
 	return
 }
 

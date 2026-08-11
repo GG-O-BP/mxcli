@@ -79,6 +79,7 @@ so structural changes need a restart; behavioural changes do not.
 | `--screenshot-url` | app root | Page to shoot: full URL, or a path relative to the app root (e.g. `/p/customers`). Repeat for a multi-page set. |
 | `--screenshot-user` / `--screenshot-password` | — | Log in once (Mendix form auth) and reuse the session, so pages behind login render authenticated |
 | `--runtime-log` | `<projectDir>/.mxcli/runtime.log` | Runtime log file — JVM stdout/stderr **and** the application log (server stack traces + microflow `LOG` output); `-` disables |
+| `--test-endpoint` | off | Host mxcli's token-guarded test endpoint so [`mxcli test … --attach`](running-tests.md) runs a suite against this app with no boot of its own. Installed before the boot (the handler registers from after-startup, so it cannot be added to a running app); your project's own after-startup microflow is chained, not displaced. Removed on exit. Tests then use **this app's database** |
 | `--debug` | off | Enable the microflow debugger at boot; then use [`mxcli debug`](debug-microflows.md) from another terminal. Behaviour-neutral until a breakpoint is set |
 | `--debug-pass` | `mxdebug` | Debugger password when `--debug` is set |
 | `--metrics` | off | Register a Prometheus meter registry; metrics served at `http://127.0.0.1:<admin-port>/prometheus` |
@@ -186,6 +187,10 @@ projects, solutions, branches, and worktrees — with a sortable overview at
   older ones: the hub persists a per-session endpoint history to `--sessions-file` (default
   `~/.mxcli/hub-sessions.json`, survives restarts) and prunes it after `--session-retention`
   (default 30 days). Re-registering keeps a **stable URL**.
+- Each endpoint shows **first seen** alongside last-seen, last-used, and uptime. First seen
+  is read from that persisted history, so it is the first time the endpoint was *ever*
+  exposed — unlike uptime, it does not reset when an idle container is reaped and the
+  preview reconnects.
 - `--hub` **implies `--local`**, boots the runtime with `ApplicationRootUrl` set to the
   assigned URL (so the SPA and `originURI` cookie work), and the tunnel reconnects forever.
   Combine with `--watch` for the full remote loop: edit here → hot-apply → refresh the tab.
@@ -277,16 +282,42 @@ If you started `run --local` in the background and the wrapping shell exited non
 (e.g. a chained `sleep`/`curl` that failed), the `run --local` process can die while
 its `mxbuild --serve` + runtime keep serving on `:8080`. Launch `run --local` as the
 **sole** command in its own invocation — don't chain a `sleep`/status check after it in
-the same shell — and poll separately. To recover from a stale process:
+the same shell — and poll separately.
 
-```bash
-pgrep -af 'mxbuild --serve|runtimelauncher|mxcli run'   # find them
-kill <pid>                                              # stop each
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080  # want 000 (port free)
+**The refusal names the offending process.** On Linux mxcli resolves the port's
+listener through `/proc` and prints its pid and command line, so recovery is one
+command rather than a `pgrep` hunt:
+
+```
+port 8080 (app) is already in use.
+  A stale process is silently adopted otherwise, so edits appear to do nothing
+  (looks like a stale cache — it isn't).
+  Held by pid 11893: /root/.mxcli/mxbuild/11.13.0/modeler/mxbuild --serve …
+  That is a leftover from an earlier run that did not shut down cleanly
+  (a kill -9 or a reaped container skips mxcli's own teardown).
+    kill 11893
+    # confirm it is gone: curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080   (want 000)
+  Or run on different ports with --app-port (and --admin-port/--serve-port).
 ```
 
-Then start `run --local` again. Or run on different ports with `--app-port` /
-`--admin-port` / `--serve-port`.
+The two cases need opposite remedies, so they are reported differently. A **leftover
+of a previous run** is safe to kill, as above. A **foreign** listener — anything mxcli
+did not start — is not, and mxcli says so instead of offering a `kill`:
+
+```
+  Held by pid 4820: python3 -m http.server 8080
+  That is not a process mxcli started, so it is not a leftover run —
+  pick another port rather than killing it.
+```
+
+Off Linux, or when the listener belongs to another user (so `/proc/<pid>/fd` cannot be
+read), it falls back to a generic hint.
+
+A *graceful* stop needs none of this: each child — mxbuild's JVM, the runtime, the
+rollup bundler — is started in its own process group and the whole group is killed on
+Ctrl-C/SIGTERM. Seeing this error means the previous run never got to run its teardown:
+`kill -9`, a crash, or a reaped container. Avoid `pkill -f 'mxcli run'` — that pattern
+also matches the shell you type it into.
 
 ## Pages render in the browser
 

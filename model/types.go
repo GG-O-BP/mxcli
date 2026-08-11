@@ -438,8 +438,40 @@ type PublishedODataService struct {
 	AuthMicroflow       string                 `json:"authMicroflow,omitempty"`
 	EntityTypes         []*PublishedEntityType `json:"entityTypes,omitempty"`
 	EntitySets          []*PublishedEntitySet  `json:"entitySets,omitempty"`
-	AllowedModuleRoles  []string               `json:"allowedModuleRoles,omitempty"`
-	Excluded            bool                   `json:"excluded,omitempty"`
+	// Microflows are published as OData actions (ActionImport in $metadata).
+	Microflows         []*PublishedMicroflow `json:"microflows,omitempty"`
+	AllowedModuleRoles []string              `json:"allowedModuleRoles,omitempty"`
+	Excluded           bool                  `json:"excluded,omitempty"`
+}
+
+// PublishedMicroflow is a microflow exposed as an OData action.
+type PublishedMicroflow struct {
+	BaseElement
+	Microflow   string `json:"microflow,omitempty"`   // BY_NAME ref, Module.Microflow
+	ExposedName string `json:"exposedName,omitempty"` // the ActionImport name
+	Summary     string `json:"summary,omitempty"`
+	Description string `json:"description,omitempty"`
+	// The microflow's own return type, read off the microflow rather than
+	// authored so the two cannot drift. Kind and Ref are kept apart on purpose:
+	// "Module.X" alone cannot say whether X is an entity or an enumeration —
+	// the ambiguity CLAUDE.md documents for the MDL visitor.
+	ReturnTypeKind string                         `json:"returnTypeKind,omitempty"` // Boolean|String|…|Object|List|Enumeration
+	ReturnTypeRef  string                         `json:"returnTypeRef,omitempty"`  // qualified name for Object/List/Enumeration
+	Parameters     []*PublishedMicroflowParameter `json:"parameters,omitempty"`
+}
+
+// PublishedMicroflowParameter is one argument of a published microflow.
+type PublishedMicroflowParameter struct {
+	BaseElement
+	// MicroflowParameter is a BY_NAME ref of the form Module.Microflow.Param,
+	// the same shape the published-REST writer uses.
+	MicroflowParameter string `json:"microflowParameter,omitempty"`
+	ExposedName        string `json:"exposedName,omitempty"`
+	DataTypeKind       string `json:"dataTypeKind,omitempty"`
+	DataTypeRef        string `json:"dataTypeRef,omitempty"`
+	CanBeEmpty         bool   `json:"canBeEmpty,omitempty"`
+	Summary            string `json:"summary,omitempty"`
+	Description        string `json:"description,omitempty"`
 }
 
 // GetName returns the service's name.
@@ -473,6 +505,12 @@ type PublishedEntitySet struct {
 	DeleteMode     string `json:"deleteMode,omitempty"`
 	UsePaging      bool   `json:"usePaging,omitempty"`
 	PageSize       int    `json:"pageSize,omitempty"`
+
+	// OData query options. nil means "not specified" and is written as Mendix's
+	// own default of true; only an explicit false turns one off.
+	Countable     *bool `json:"countable,omitempty"`
+	SkipSupported *bool `json:"skipSupported,omitempty"`
+	TopSupported  *bool `json:"topSupported,omitempty"`
 }
 
 // PublishedMember represents a member (attribute/association/id) published in an OData entity type.
@@ -489,6 +527,13 @@ type PublishedMember struct {
 	// "Edm.String"). Studio Pro stores this on every ODataPublish$PublishedAttribute;
 	// without it `mx check` reports CE5016 ("published as ."). Attribute members only.
 	EdmType string `json:"edmType,omitempty"`
+
+	// EnumerationAsString publishes an enumeration attribute as Edm.String
+	// rather than as its own EDM enum type. The two are one setting, not two:
+	// with this false, Mendix expects the enumeration itself to be published in
+	// the service and rejects Edm.String (CE5016 + CE4583 "Enumeration is not
+	// published in this service"). Attribute members only.
+	EnumerationAsString bool `json:"enumerationAsString,omitempty"`
 
 	// Association-specific fields (Kind == "association"). Studio Pro's
 	// ODataPublish$PublishedAssociationEnd records both the association

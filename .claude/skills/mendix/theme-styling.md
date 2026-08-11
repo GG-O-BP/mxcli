@@ -49,9 +49,128 @@ MyProject/
 5. MXUI components
 6. Core styles (base, animations, spacing, flex)
 7. Widget-specific styles
-8. Module-specific styles from `themesource/*/web/*.scss`
+
+Then each **module's** `themesource/<module>/web/main.scss`, and **last of all**
+`theme/web/main.scss`.
 
 Variables declared earlier are overridden by later declarations (with `!default` flag). This means `custom-variables.scss` overrides `atlas_core/web/variables.scss` values.
+
+### Where to put app-level styling — three rules that are not obvious
+
+Verified against a real Mendix 11.13 project (probe rules compiled with
+`mxbuild --target=deploy`, then grepped out of `theme-cache/web/theme.compiled.css`).
+
+**1. `theme/web/main.scss` compiles LAST — it is the right home for app styling.**
+After Atlas Core *and* after every module theme source, so a partial imported
+here overrides any Atlas rule with **no `!important`**. It is a three-line file of
+Mendix's own imports, not an Atlas-owned file; appending one `@import` is safe:
+
+```scss
+@import "custom-variables";
+@import "theme-dark";
+@import "theme-neutral";
+@import "my-app";          // -> theme/web/_my-app.scss
+```
+
+**2. A `themesource/<name>/` folder is only compiled when `<name>` is a real module.**
+mxbuild walks the model's modules and pulls each one's theme source; it never
+globs the directory. An invented folder (`themesource/my_theme/`) is **silently
+skipped** — build succeeds, rules simply absent. Use a module's theme source only
+when the styling belongs to that module (it then exports with the `.mpk`).
+
+> Debugging "my CSS doesn't apply": first prove the file is compiled *at all* —
+> grep a unique probe selector in `theme-cache/web/theme.compiled.css`. Absent and
+> overridden look identical in the browser, and only one of them is a
+> specificity problem.
+
+**3. `theme/web/custom-variables.scss` is imported once PER MODULE** (8× in a
+blank app). It must hold **declarations only** — a CSS rule there is emitted once
+per module. Tokens go here; rules go in the Layer-2 partial.
+
+### Mendix 11: CSS custom properties, not SCSS variables
+
+The stock `theme/web/custom-variables.scss` is a `:root { --brand-primary: … }`
+block plus a few SCSS switches (`$font-family-import`, `$btn-bordered`,
+`$use-css-variables`). Legacy Sass variables are still mapped
+(`_css-variables-mappings.scss`), but the modern idiom is `:root` declarations.
+The derived ramp (`--brand-primary-50…900`) is built with CSS `color-mix()`
+against `var(--brand-primary)`, so retuning the primary re-derives the whole ramp
+live — no SCSS recompilation of variants needed.
+
+### Fonts: vendor them under `theme/web/`
+
+`theme/web/<subdir>/` is copied to the deployment web root, and
+`theme.compiled.css` is served from that root — so fonts at
+`theme/web/fonts/x.woff2` are referenced as `url("./fonts/x.woff2")`. Prefer this
+over `@import url('…fonts.googleapis…')`: no `@import`-ordering trap, no
+third-party request per page load, and the app renders correctly air-gapped.
+
+`mxcli theme apply` does exactly this — see `mxcli theme show signal`.
+
+### Light/dark: Mendix ships the slot, not the switcher
+
+`theme/web/_theme-dark.scss` and `_theme-neutral.scss` declare `:root.theme-dark`
+and `:root.theme-neutral`. **Nothing in Atlas ever applies those classes** — grep
+`themesource/` and you will find no reference. They are a slot for you to drive.
+
+Three consequences worth knowing before building any light/dark support:
+
+1. **A token flip really does repaint Atlas.** Adding `theme-dark` to `<html>` on
+   a running Mendix 11 app turns the page ground, cards, form controls, sidebar,
+   buttons and DataGrid2 dark, with no per-widget CSS. This is materially better
+   than Atlas 3, where the same trick left widgets light. And because the class
+   is on `<html>`, popups and modals rendered at `<body>` follow it too.
+2. **Your dark block must come after Mendix's.** `_theme-dark.scss` hardcodes
+   stock Mendix blue at `:root.theme-dark`. Declare the same selector from a file
+   imported later in `theme/web/main.scss` — same specificity, later wins — or
+   your brand vanishes the moment the class appears.
+3. **Never pin an Atlas variable to a literal colour.** Map it to a token
+   (`--bg-color: var(--my-ground)`) so a variant restates the tokens, not the
+   wiring. A hardcoded `--font-color-default` is invisible on a dark ground.
+
+The rail is the one place Atlas still assumes: several topbar widgets paint text
+with `--color-base`, expecting white, because they expect a dark navigation rail.
+Keep the rail dark in both variants, or force `color: inherit` on those widgets.
+
+For a working implementation of all of the above, read the generated
+`theme/web/_mxcli-atlas-map.scss` in any themed project.
+
+### Tokens stop at Atlas Core — the widget modules bake their colours
+
+Re-pointing Atlas's custom properties covers the app, and then a few things stay
+stubbornly off-palette: the Data Grid 2 pager caption, row-select checkboxes,
+popover shadows. One cause: the theme source shipped by the **widget modules**
+(`themesource/datawidgets`, `atlas_web_content`) styles some things with Sass
+variables and literals. Sass resolves those at compile time, before any custom
+property exists, so the value is baked into `theme.compiled.css` and **no token
+can move it**. Only a later CSS rule can.
+
+The worst case is `datawidgets/web/variables.scss:18`,
+`$pagination-caption-color: #0a1325` — the "1–15 of 77" caption, which measured
+**1.02:1** on a dark ground. The pager *buttons* beside it were fine, because
+they resolve `var(--gray-darker, …)` through Atlas. Same bar, two mechanisms.
+
+**The obvious fix does not work.** Each module's `main.scss` imports
+`theme/web/custom-variables` *before* its own `!default` variables, so setting
+`$pagination-caption-color: var(--my-muted)` there would win and Sass would
+substitute the `var()` into every use site. Tempting, and wrong here:
+
+1. The names collide with Atlas Core's, and Atlas Core feeds them to Sass colour
+   functions — `atlas_core/web/_variables.scss:20` computes
+   `mix($brand-primary, #e7e7e9, 10%)`. Handing `mix()` a `var()` is a compile
+   error, so the app stops building.
+2. The worst offenders are not behind a variable at all:
+   `_three-state-checkbox.scss` writes `#264ae5` and `rgba(#264ae5, 0.4)`
+   directly, so overriding `$brand-primary` would not reach them.
+
+So it is a rule set, in a partial imported after the theme's own — see the
+generated `theme/web/_mxcli-widgets.scss`.
+
+**Read the compiled CSS, not the SCSS, when building one.** The sources are full
+of `var(--token, #fallback)` declarations that already resolve correctly; only
+the bare literals are a problem. In one measured app the stock blue `#264ae5`
+appeared in 46 declarations — **24 of them harmless fallbacks**. Grepping the
+source would have produced twice the rules for no benefit.
 
 ## CSS Hot-Reload Workflow
 
@@ -89,6 +208,30 @@ container ctn (style: 'color: red;') {
 ```
 
 This also applies to `alter styling` and `alter page set style` — never target a DYNAMICTEXT widget with Style.
+
+### Clipped navigation labels are the CLOSED sidebar, not the theme
+
+A sidebar item reading `All task` instead of `All tasks` is Atlas's **closed**
+sidebar, which is an icon rail: `--navsidebar-width-closed: 48px`, set in Atlas's
+own `themesource/atlas_core/web/themes/_theme-default.scss`. Measured against a
+real compiled theme in a browser, the `<a>` for "All tasks" is **57px wide inside
+a 48px rail** — the same overflow reported from a live app (56 in 48).
+
+No mxcli theme sets any navigation *width*; the themes map colours only. So this
+reproduces identically under `signal`, `ledger` and `console`, in both variants —
+a layout constant, not a palette.
+
+The fix is in the app, not the theme:
+
+- **Give each nav item an icon.** That is what the closed rail is for; the icon is
+  what stays visible when the sidebar is closed.
+- **Or keep the sidebar open**, where the label has room.
+- Shorter labels help, but only until the next one is too long.
+
+Do **not** reach for `text-overflow: ellipsis` on the nav item as a blanket fix.
+Tried and rejected: where Atlas does not also set `white-space: nowrap`, the label
+wraps to two lines and reads fine — and the ellipsis rule turns that readable
+`All / tasks` into `All / t…`. It trades one truncation for a worse one.
 
 ### DataGrid2 Renders ARIA `<div>`s, Not a `<table>` — and `Size` Is a Flex Weight
 

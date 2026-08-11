@@ -1,0 +1,59 @@
+-- Issue #843: a consumed REST operation's response mapping was silently dropped.
+--
+-- Symptom (as reported): `create rest client` succeeded without warnings, but
+-- `describe rest client` showed no `Query:` line and `Response: none`. BSON
+-- inspection showed the query parameters stored correctly while ResponseHandling
+-- was Rest$NoResponseHandling — the mapping was gone.
+--
+-- Two independent defects, both fixed:
+--
+-- 1. WRITE PATH. model.RestClientOperation documents BodyType/ResponseType as
+--    upper-case tokens, and both serializers plus the REST-call microflow
+--    builder compare against that spelling. The MDL executor stored the
+--    visitor's lower-case source text, so `ResponseType == "MAPPING"` never
+--    matched and every response mapping fell through to the else-branch:
+--    Rest$NoResponseHandling. Nothing errored, because the else-branch is a
+--    legitimate outcome for an operation with no mapping.
+--
+-- 2. READ PATH. restOperationFromGen only populated Name/HttpMethod/Path/
+--    Timeout, and type-asserted Rest$RestParameter for both parameter lists —
+--    the writer emits Rest$OperationParameter and Rest$QueryParameter, two
+--    different types. So parameters, headers and the response were all dropped
+--    on read even when stored correctly.
+--
+-- After the fix this script stores Rest$ImplicitMappingResponseHandling with a
+-- full ImportMappings$ObjectMappingElement tree, and `describe rest client`
+-- re-emits it verbatim (describe → exec → describe is a fixed point).
+--
+-- Verified on Mendix 11.13.0: `mx check` reports 0 errors.
+
+create module ZZB;
+create module role ZZB.User;
+
+@position(100, 100)
+create non-persistent entity ZZB."Routing" (
+  "RoutingCode": String(100),
+  "RoutingName": String(200)
+);
+
+create rest client ZZB."MESSlice" (
+  BaseUrl: 'http://localhost:3001/api/mes/core/v1',
+  Authentication: none
+)
+{
+  operation "SearchRoutes" {
+    Method: get,
+    Path: '/routes/{id}',
+    Parameters: ($id: String),
+    Query: ($page: String, $pageSize: String),
+    Headers: ('X-Tenant-Id' = 'demo-tenant-01'),
+    Timeout: 300,
+    -- The clause names the target ENTITY and maps JSON fields onto it. Mendix
+    -- stores this inline on the operation; it is not a reference to an import
+    -- mapping document (see 843-rest-response-mapping-no-body.fail.mdl).
+    Response: mapping ZZB.Routing {
+      RoutingCode = routing_code,
+      RoutingName = routing_name
+    }
+  }
+};

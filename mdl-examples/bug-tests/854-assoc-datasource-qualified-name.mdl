@@ -1,0 +1,82 @@
+-- ============================================================================
+-- Upstream #854 (follow-on): an association DATASOURCE wrote the association
+-- name unqualified, making the .mpr unloadable
+-- ============================================================================
+--
+-- #854 itself — a cross-module association datasource writing
+-- `DestinationEntity: ""` — no longer reproduces: the destination now resolves
+-- through `CrossAssociations` (f0d1aea) and an unresolved one is refused
+-- outright (18de30b, see it-14-assoc-destination-entity.mdl).
+--
+-- What survived is the OTHER half of the same EntityRefStep. Both halves are
+-- BY_NAME references and Mendix resolves either one it cannot find to null, but
+-- only the destination was being guarded. A bare association name was written
+-- through verbatim:
+--
+--   System.InvalidOperationException: An error occurred when trying to set the
+--   'Association' property of a Entity ref step in a Page with ID ...
+--   ---> System.ArgumentNullException: Value cannot be null. (Parameter 'value')
+--       at ...DomainModels.Refs.EntityRefStep.set_AssociationId
+--
+-- Same unopenable project as #854, one property over. Not a build error: the
+-- loader dies before validation, so `mx check` reports nothing about the page.
+--
+-- The explicit-destination form below is the one that mattered. Supplying the
+-- destination satisfied the empty-DestinationEntity guard, so nothing else stood
+-- between a bare name and the crash — and `Assoc/Module.Entity` is precisely the
+-- spelling that guard's error message tells the author to use.
+--
+-- Fix: qualify a bare association with the context entity's module (the rule
+-- attribute-path hops already follow), and verify an author-supplied
+-- destination's association actually exists rather than taking it on trust.
+--
+-- Verified on Mendix 11.13.0: this script checks 0 errors and the project opens.
+-- ============================================================================
+
+create module M854A;
+create module M854B;
+
+create persistent entity M854A.Order (OrderNumber: String(50));
+create persistent entity M854A.Note (Body: String(200));
+create persistent entity M854B.Line (Product: String(100));
+
+-- control: both ends in the same module
+create association M854A.Order_Note from M854A.Order to M854A.Note type ReferenceSet;
+-- subject: destination lives in another module
+create association M854A.Order_Line from M854A.Order to M854B.Line type ReferenceSet;
+
+create page M854A.OrderDetail (
+  Params: { $Order: M854A.Order },
+  Title: 'Order Detail',
+  Layout: Atlas_Core.Atlas_Default
+) {
+  layoutgrid g { row r { column c (DesktopWidth: 12) {
+    dataview dvOrder (datasource: $Order) {
+      textbox tbNumber (attribute: OrderNumber, label: 'Order #')
+
+      -- bare name, same module
+      datagrid dgNotes (datasource: association Order_Note) {
+        column colBody (attribute: Body, caption: 'Note')
+      }
+
+      -- bare name, destination in another module
+      datagrid dgLines (datasource: association Order_Line) {
+        column colProduct (attribute: Product, caption: 'Product')
+      }
+
+      -- bare name + explicit destination: the guard's own suggested spelling,
+      -- and the form that used to crash the loader
+      datagrid dgLines2 (datasource: association Order_Line/M854B.Line) {
+        column colProduct2 (attribute: Product, caption: 'Product')
+      }
+
+      -- fully qualified, with and without an explicit destination
+      datagrid dgLines3 (datasource: association M854A.Order_Line) {
+        column colProduct3 (attribute: Product, caption: 'Product')
+      }
+      datagrid dgLines4 (datasource: association M854A.Order_Line/M854B.Line) {
+        column colProduct4 (attribute: Product, caption: 'Product')
+      }
+    }
+  } } }
+}

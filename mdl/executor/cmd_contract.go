@@ -444,13 +444,18 @@ func edmToMendixType(p *types.EdmProperty) string {
 
 // reservedEntityAttrNames are Mendix-reserved attribute names that must be
 // renamed when imported from an OData property of the same name.
-// These names conflict with Mendix system members or runtime internals.
 // The check is case-insensitive (see attrNameForOData).
+//
+// Every entry is one Mendix rejects with CE7247 "The name 'x' is a reserved
+// word." Verified on 11.12.1 by importing a contract with a property for each
+// name and prefixing disabled: seven errors, one per name below. `name` was on
+// this list and is NOT among them — an external entity with an attribute
+// literally named `name` builds clean, and prefixing it mangled the commonest
+// property in any contract (mxcli-formula1 #28). Do not add a name here without
+// a CE7247 to point at.
 var reservedEntityAttrNames = map[string]bool{
 	// Mendix internal identifier
 	"id": true,
-	// Mendix system-managed attribute for the object name (present on many entities)
-	"name": true,
 	// System ownership association (HasOwner / System.owner)
 	"owner": true,
 	// System audit associations (HasChangedBy / System.changedBy)
@@ -523,6 +528,10 @@ func createExternalEntities(ctx *ExecContext, s *ast.CreateExternalEntitiesStmt)
 
 	serviceRef := s.ServiceRef.String()
 	var created, updated, skipped, failed int
+	// Attribute names the import had to change because Mendix reserves them.
+	// Reported at the end so the local name never silently diverges from the
+	// contract; the mapping still points at the remote property either way.
+	var renamed []string
 
 	for _, schema := range doc.Schemas {
 		for _, et := range schema.EntityTypes {
@@ -598,6 +607,16 @@ func createExternalEntities(ctx *ExecContext, s *ast.CreateExternalEntitiesStmt)
 			}
 			nonInsertable := make(map[string]bool)
 			nonUpdatable := make(map[string]bool)
+			// Filter/Sort restrictions name the properties the service refuses to
+			// filter or sort on. Marking them filterable anyway is CE6630
+			// ("'latitude' is marked Filterable=False in the OData service, but
+			// True in the app") — one per property, on an import whose whole job
+			// is to match the contract.
+			// Both restrictions have two shapes — a per-property exclusion list and
+			// a whole-set boolean — so they are resolved by EdmEntitySet rather
+			// than read field by field here; consulting one shape and not the
+			// other is what produced 28 × CE6630 on a single service
+			// (mxcli-formula1 §48). AttrFilterable/AttrSortable are nil-safe.
 			if entitySet != nil {
 				for _, name := range entitySet.NonInsertableProperties {
 					nonInsertable[name] = true
@@ -636,13 +655,19 @@ func createExternalEntities(ctx *ExecContext, s *ast.CreateExternalEntitiesStmt)
 				}
 
 				attrName := attrNameForOData(p.Name, et.Name)
+				if attrName != p.Name {
+					// Never let a rename be discovered later, when a page written
+					// against the published $metadata fails with "The selected
+					// attribute … no longer exists" (mxcli-formula1 #28).
+					renamed = append(renamed, fmt.Sprintf("%s.%s: %s -> %s", mendixName, p.Name, p.Name, attrName))
+				}
 				attr := &domainmodel.Attribute{
 					Name:       attrName,
 					Type:       edmToDomainModelAttrType(p, keyPropSet[p.Name]),
 					RemoteName: p.Name,
 					RemoteType: p.Type,
-					Filterable: true,
-					Sortable:   true,
+					Filterable: entitySet.AttrFilterable(p.Name),
+					Sortable:   entitySet.AttrSortable(p.Name),
 					Creatable:  creatable,
 					Updatable:  updatable,
 				}
@@ -718,6 +743,15 @@ func createExternalEntities(ctx *ExecContext, s *ast.CreateExternalEntitiesStmt)
 
 	fmt.Fprintf(ctx.Output, "\nFrom %s into %s: %d created, %d updated, %d skipped, %d failed\n",
 		svcQN, targetModule, created, updated, skipped, failed)
+
+	if len(renamed) > 0 {
+		sort.Strings(renamed)
+		fmt.Fprintf(ctx.Output, "\n  %d attribute name(s) changed — Mendix reserves the contract's spelling (CE7247),\n", len(renamed))
+		fmt.Fprintf(ctx.Output, "  so a page or expression must use the local name, not the one in $metadata:\n")
+		for _, r := range renamed {
+			fmt.Fprintf(ctx.Output, "    %s\n", r)
+		}
+	}
 
 	return nil
 }
@@ -973,20 +1007,7 @@ func createNavigationAssociations(
 	// nav-property key relies on RemoteParentNavigationProperty, which the
 	// legacy read preserves; the modelsdk read does not, so the natural
 	// association name (== nav-property name) is the fallback skip signal.
-	existingAssocs := make(map[assocKey]bool)
-	existingNav := make(map[assocKey]bool)
-	for _, a := range dm.Associations {
-		// Find parent entity name for this association
-		for _, ent := range dm.Entities {
-			if ent.ID == a.ParentID {
-				existingAssocs[assocKey{ent.Name, a.Name}] = true
-				if a.RemoteParentNavigationProperty != "" {
-					existingNav[assocKey{ent.Name, a.RemoteParentNavigationProperty}] = true
-				}
-				break
-			}
-		}
-	}
+	existingAssocs, existingNav := indexExistingAssociations(dm)
 
 	count := 0
 	for _, schema := range doc.Schemas {
@@ -1100,6 +1121,41 @@ func createNavigationAssociations(
 	return count
 }
 
+// indexExistingAssociations builds the two lookup tables the re-import dedup
+// needs, both keyed by (parent entity name, name):
+//
+//   - byName — the association's own name.
+//   - byNav  — the OData navigation property it was generated from.
+//
+// byNav is the one that matters, and it is not a convenience. Association names
+// are unique per MODULE, so the second entity with a `season` nav property gets
+// `season_2`. Such an association can never match itself by name, so without
+// byNav a re-import recreates it — computing a fresh suffix each time, two more
+// per run, unbounded and invisible to `mx check` (mxcli-formula1 §50).
+//
+// byNav is only populated for associations that carry
+// RemoteParentNavigationProperty, which is why the modelsdk reader must read the
+// OData source back; dropping it there silently reduced this to the name match.
+func indexExistingAssociations(dm *domainmodel.DomainModel) (byName, byNav map[assocKey]bool) {
+	byName = make(map[assocKey]bool)
+	byNav = make(map[assocKey]bool)
+	parentName := make(map[model.ID]string, len(dm.Entities))
+	for _, ent := range dm.Entities {
+		parentName[ent.ID] = ent.Name
+	}
+	for _, a := range dm.Associations {
+		p, ok := parentName[a.ParentID]
+		if !ok {
+			continue
+		}
+		byName[assocKey{p, a.Name}] = true
+		if a.RemoteParentNavigationProperty != "" {
+			byNav[assocKey{p, a.RemoteParentNavigationProperty}] = true
+		}
+	}
+	return byName, byNav
+}
+
 // uniqueAssocName returns a Mendix-safe association name for an OData nav
 // property. If the requested name collides with an existing entity name OR an
 // already-created association name, append a numeric suffix.
@@ -1157,7 +1213,12 @@ func applyExternalEntityFields(
 		ent.Source = "Rest$ODataRemoteEntitySource"
 		ent.Persistable = true
 		ent.RemoteEntitySet = entitySet.Name
-		ent.Countable = true
+		// Countable follows the contract when it says so. OData's own default is
+		// countable, so an unannotated set stays true — but a service that
+		// declares CountRestrictions/Countable=false and an app that says true is
+		// CE6630 ("marked Countable=False in the OData service, but True in the
+		// app"), which is the whole point of generating from $metadata.
+		ent.Countable = entitySet.Countable == nil || *entitySet.Countable
 		// Capabilities default to false (Mendix's conservative read-only default)
 		// when the entity set has no Insert/Delete restriction annotation — an
 		// unannotated service is treated as read-only, and the app must match or
@@ -1169,8 +1230,15 @@ func applyExternalEntityFields(
 		ent.Creatable = entitySet.Insertable != nil && *entitySet.Insertable
 		ent.Deletable = entitySet.Deletable != nil && *entitySet.Deletable
 		ent.Updatable = false
-		ent.SkipSupported = true
-		ent.TopSupported = true
+		// Skip/Top follow the contract for the same reason Countable does. They
+		// were stamped true regardless, which made `TopSupported: No` on the
+		// PUBLISHING side unusable: the contract correctly said Bool="false", the
+		// consuming app said true, and the consumer failed to build with CE6630
+		// "'Seasons' is marked supports $top=False in the OData service, but True
+		// in the app". OData's own default is supported, so an unannotated set
+		// stays true (mxcli-formula1 §42).
+		ent.SkipSupported = entitySet.SkipSupported == nil || *entitySet.SkipSupported
+		ent.TopSupported = entitySet.TopSupported == nil || *entitySet.TopSupported
 		// CreateChangeLocally is deliberately NOT set. Unlike the capability flags
 		// above it cannot be derived from the service contract — it is a local
 		// modelling choice ("Allow creating and changing objects locally"), so
