@@ -195,6 +195,10 @@ func validateProgram(ctx *ExecContext, prog *ast.Program) []error {
 		}
 	}
 	errors = append(errors, validateForwardPageRefs(ctx, prog)...)
+	// Resolve icon-collection references. Needs the project (the collections
+	// are documents in it), so it belongs here rather than in the no-project
+	// pass — MxBuild otherwise reports the typo as CE1613.
+	errors = append(errors, validateIconRefs(ctx, prog)...)
 	return errors
 }
 

@@ -277,6 +277,21 @@ Create a button with action binding:
 actionbutton widgetName (caption: 'Caption', action: ACTION_TYPE [, buttonstyle: style] [, icon: 'Module.IconCollection.IconName'])
 ```
 
+`icon:` names an icon inside an icon collection — `Module.Collection.IconName`,
+e.g. `'Atlas_Core.Atlas_Filled.pencil'`. Browse what a project has with
+`show icon collection` and `describe icon collection Atlas_Core.Atlas_Filled`.
+
+A wrong icon name is a **build error** (CE1613, *"The selected custom icon … no
+longer exists"*), so check it before building:
+
+```bash
+mxcli check script.mdl -p app.mpr --references
+```
+
+That resolves every icon reference against the project's collections and
+suggests near matches for a typo. It needs `-p` — the collections are documents
+in the project, so a plain `mxcli check` cannot see them.
+
 Use `linkbutton` instead of `actionbutton` for a button rendered as a link (same
 properties). Both accept an `icon:` — an **icon-collection** reference, e.g.
 `icon: 'Atlas_Core.Atlas_Filled.pencil'` (the modern Atlas icon set). The name
