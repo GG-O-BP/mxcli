@@ -498,6 +498,78 @@ func actionFromGen(el element.Element) microflows.MicroflowAction {
 		}
 		return out
 
+	case *genMf.TransformJsonAction:
+		// TRANSFORM $In WITH Module.Transformer. Read against the keys the writer
+		// builds (mirroring the legacy serializer) rather than the gen accessors.
+		raw := a.Raw()
+		out := &microflows.TransformJsonAction{
+			ErrorHandlingType:  microflows.ErrorHandlingType(rawStr(raw, "ErrorHandlingType")),
+			InputVariableName:  rawStr(raw, "InputVariableName"),
+			OutputVariableName: rawStr(raw, "OutputVariableName"),
+			Transformation:     rawStr(raw, "Transformation"),
+		}
+		out.ID = model.ID(a.ID())
+		return out
+
+	case *genMf.CallExternalAction:
+		// CALL EXTERNAL ACTION. `VariableName` holds the result variable here —
+		// the model's own key, not gen's — and ResultDataType is deliberately NOT
+		// reconstructed: it is resolved from the consumed service's cached
+		// $metadata at write time, so inferring it from the stored
+		// VariableDataType would let a stale value round-trip as if authored.
+		raw := a.Raw()
+		out := &microflows.CallExternalAction{
+			ErrorHandlingType:    microflows.ErrorHandlingType(rawStr(raw, "ErrorHandlingType")),
+			ConsumedODataService: rawStr(raw, "ConsumedODataService"),
+			Name:                 rawStr(raw, "Name"),
+			ResultVariableName:   rawStr(raw, "VariableName"),
+		}
+		out.UseReturnVariable = out.ResultVariableName != ""
+		for _, md := range rawDocElements(raw, "ParameterMappings") {
+			pm := &microflows.ExternalActionParameterMapping{
+				ParameterName: rawStr(md, "ParameterName"),
+				Argument:      rawStr(md, "Argument"),
+			}
+			if b, ok := md.Lookup("CanBeEmpty").BooleanOK(); ok {
+				pm.CanBeEmpty = b
+			}
+			out.ParameterMappings = append(out.ParameterMappings, pm)
+		}
+		out.ID = model.ID(a.ID())
+		return out
+
+	case *genMf.RestOperationCallAction:
+		// CALL REST OPERATION. The output and body variables are single-child
+		// documents rather than scalars, and the two mapping lists use different
+		// key names for the same idea (`Parameter` vs `QueryParameter`) — mirror
+		// the writer rather than assuming symmetry.
+		raw := a.Raw()
+		out := &microflows.RestOperationCallAction{
+			ErrorHandlingType: microflows.ErrorHandlingType(rawStr(raw, "ErrorHandlingType")),
+			Operation:         rawStr(raw, "Operation"),
+		}
+		if ov, ok := raw.Lookup("OutputVariable").DocumentOK(); ok {
+			out.OutputVariable = &microflows.RestOutputVar{VariableName: rawStr(ov, "VariableName")}
+		}
+		if bv, ok := raw.Lookup("BodyVariable").DocumentOK(); ok {
+			out.BodyVariable = &microflows.RestBodyVar{VariableName: rawStr(bv, "VariableName")}
+		}
+		for _, md := range rawDocElements(raw, "ParameterMappings") {
+			out.ParameterMappings = append(out.ParameterMappings, &microflows.RestParameterMapping{
+				Parameter: rawStr(md, "Parameter"),
+				Value:     rawStr(md, "Value"),
+			})
+		}
+		for _, md := range rawDocElements(raw, "QueryParameterMappings") {
+			out.QueryParameterMappings = append(out.QueryParameterMappings, &microflows.RestQueryParameterMapping{
+				Parameter: rawStr(md, "QueryParameter"),
+				Value:     rawStr(md, "Value"),
+				Included:  rawStr(md, "Included"),
+			})
+		}
+		out.ID = model.ID(a.ID())
+		return out
+
 	case *genMf.WorkflowCallAction,
 		*genMf.GetWorkflowDataAction,
 		*genMf.GetWorkflowsAction,

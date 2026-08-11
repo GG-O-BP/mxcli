@@ -3,6 +3,32 @@
 package syntax
 
 func init() {
+	// ── CREATE modifiers ────────────────────────────────────────────────
+
+	// OR MODIFY / OR REPLACE sit on the top-level createStatement rule, so they
+	// apply to every CREATE uniformly. Individual entries documented them
+	// unevenly — most said nothing, none mentioned OR REPLACE — which read as
+	// "not supported here". Documented once, and referenced from the entries
+	// where the question comes up, rather than repeated across all 27.
+	Register(SyntaxFeature{
+		Path:    "create-modifiers",
+		Summary: "OR REPLACE / OR MODIFY — re-running a CREATE without dropping first",
+		Keywords: []string{
+			"or replace", "or modify", "create or replace", "create or modify",
+			"idempotent", "upsert", "re-run", "already exists", "overwrite",
+		},
+		Syntax: "CREATE [OR REPLACE | OR MODIFY] <anything>;\n\n" +
+			"-- Applies to every CREATE statement — entity, microflow, page, workflow,\n" +
+			"-- REST client, security role, and the rest. Without a modifier, creating\n" +
+			"-- something that already exists is an error.\n" +
+			"--   OR REPLACE  discard the existing document and write a fresh one\n" +
+			"--   OR MODIFY   update the existing document in place\n" +
+			"-- Both reuse the existing element's ID, so references from other\n" +
+			"-- documents survive.",
+		Example: "CREATE OR REPLACE MICROFLOW MyModule.ACT_Recalculate ()\nBEGIN\n  RETURN;\nEND;\n\nCREATE OR MODIFY PERSISTENT ENTITY MyModule.Customer (\n  Name: String(200)\n);",
+		SeeAlso: []string{"microflow", "domain-model.entity", "page"},
+	})
+
 	// ── Connection ──────────────────────────────────────────────────────
 
 	Register(SyntaxFeature{

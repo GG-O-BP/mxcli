@@ -62,6 +62,7 @@ Page-specific patterns:
 
 | Skill | Purpose | Use When |
 |-------|---------|----------|
+| [bootstrap-app.md](bootstrap-app.md) | Provision a new Mendix app in an empty repo | Starting from nothing: interview, `mxcli new`, hook + brief, commit, boot |
 | [generate-domain-model.md](generate-domain-model.md) | Complete domain model generation | Generating full domain models |
 | [create-custom-widget.md](create-custom-widget.md) | Custom pluggable widget AIGC | Creating custom React widgets from scratch |
 | [migrate-design-prototype.md](migrate-design-prototype.md) | Turn a Claude Design prototype into a themed Mendix app | Reproducing a design handoff/prototype as an SCSS theme + styled pages |
@@ -78,6 +79,7 @@ Load skills based on the task:
 
 | User Request | Load These Skills |
 |--------------|-------------------|
+| "Set this empty repo up as a Mendix app" | `bootstrap-app.md` |
 | "Create entity/domain model" | `mdl-entities.md` |
 | "Write microflow" | `write-microflows.md`, `cheatsheet-variables.md` |
 | "Create validation" | `validation-microflows.md`, `patterns-crud.md` |
