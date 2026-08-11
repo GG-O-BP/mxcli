@@ -160,8 +160,20 @@ func convertASTDataSource(value interface{}) (pages.DataSource, error) {
 		return &pages.MicroflowSource{Microflow: ds.Reference}, nil
 	case "nanoflow":
 		return &pages.NanoflowSource{Nanoflow: ds.Reference}, nil
+	case "parameter":
+		// "Data from context". Only the parameter name is known here; the entity
+		// it is typed with lives in the container's own Parameters list, which
+		// the mutator holds — it resolves and validates the name (#855).
+		return &pages.DataViewSource{ParameterName: strings.TrimPrefix(ds.Reference, "$")}, nil
 	default:
-		return nil, mdlerrors.NewUnsupported("unsupported DataSource type for alter page set: " + ds.Type)
+		// Name the way out. The REPLACE path rebuilds the widget through the
+		// CREATE PAGE builder, which handles every datasource type, so an
+		// unsupported SET is an inconvenience rather than a dead end — saying so
+		// beats leaving the author to discover it (#855).
+		return nil, mdlerrors.NewUnsupported(fmt.Sprintf(
+			"unsupported DataSource type for alter page set: %s — "+
+				"use `replace <widget> with …` instead, which rebuilds the widget through the "+
+				"CREATE PAGE path and supports every datasource type", ds.Type))
 	}
 }
 

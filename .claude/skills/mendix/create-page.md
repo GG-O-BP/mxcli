@@ -736,8 +736,30 @@ Embed a reusable snippet:
 snippetcall snippetName (snippet: Module.SnippetName)
 
 -- With parameters
-snippetcall actions (snippet: Module.EntityActions, params: {entity: $currentObject})
+snippetcall actions (snippet: Module.EntityActions, params: {entity: $Param})
 ```
+
+**A parameter satisfied by the enclosing data context takes NO mapping.** Mendix
+has no variable meaning "the surrounding context" — the correct model is the
+*absence* of a mapping, which is what Studio Pro writes. So inside a DataView
+bound to the parameter's entity, just omit `Params:`:
+
+```sql
+dataview dvOrder (datasource: $Order) {
+  snippetcall scActions (snippet: MyModule.OrderActions)   -- parameter comes from dvOrder
+}
+```
+
+`params: {Order: $currentObject}` means the same thing and produces the same
+(empty) mapping. Naming a real page parameter or variable produces a real
+mapping, as expected:
+
+```sql
+snippetcall scActions (snippet: MyModule.OrderActions, params: {Order: $Order})
+```
+
+Omitting `Params:` where the context is a *different* entity is still an error —
+nothing there can satisfy the parameter.
 
 ### IMAGE / STATICIMAGE / DYNAMICIMAGE Widgets
 

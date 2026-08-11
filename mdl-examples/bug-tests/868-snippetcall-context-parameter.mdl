@@ -1,0 +1,68 @@
+-- ============================================================================
+-- Upstream #868: SNIPPETCALL for a parameterised snippet had no valid spelling
+-- ============================================================================
+--
+--   omit Params:  -> mxcli refused: "snippet ... requires parameter $Order"
+--   give Params:  -> accepted, then mxbuild rejected the page with
+--                    [CE0115] "The arguments that are passed to snippet ... do
+--                    not match the expected parameters and need to be refreshed."
+--
+-- mxbuild also shows the bug is narrower than reported: passing a REAL page
+-- parameter always built at 0 errors. Only `$currentObject` failed, because it
+-- was translated into
+--
+--   Forms$PageVariable{ PageParameter: "currentObject" }
+--
+-- a by-name reference to a page parameter that does not exist.
+--
+-- "Satisfied by the enclosing data context" is not a variable in Mendix — it is
+-- the ABSENCE of a mapping. That is why Studio Pro's output has none, and why
+-- its "Refresh snippet parameters" deletes what mxcli wrote.
+--
+-- Omitting Params is now legal exactly when the surrounding data context is the
+-- parameter's entity; a context of a different entity still gets the guidance
+-- rather than a build error later.
+--
+-- Verified on Mendix 11.13.0: all three pages below build at 0 errors, with
+-- empty ParameterMappings for A and B and a real mapping for C.
+-- ============================================================================
+
+create module S868;
+create persistent entity S868.Order (Code: String(20));
+
+create snippet S868.OrderActions ( params: { $Order: S868.Order } ) {
+  dataview dvInner (datasource: $Order) {
+    textbox tbCode (attribute: Code, label: 'Code')
+  }
+}
+
+-- A: Params omitted, call sits inside a DataView on the parameter's entity
+create page S868.PageOmitted (
+  params: { $Order: S868.Order }, title: 'A', layout: Atlas_Core.Atlas_Default
+) {
+  layoutgrid g { row r { column c (desktopwidth: 12) {
+    dataview dvOrder (datasource: $Order) {
+      snippetcall scActions (snippet: S868.OrderActions)
+    }
+  } } }
+}
+
+-- B: $currentObject named explicitly — same meaning, same output
+create page S868.PageCurrentObject (
+  params: { $Order: S868.Order }, title: 'B', layout: Atlas_Core.Atlas_Default
+) {
+  layoutgrid g { row r { column c (desktopwidth: 12) {
+    dataview dvOrder (datasource: $Order) {
+      snippetcall scActions (snippet: S868.OrderActions, params: {Order: $currentObject})
+    }
+  } } }
+}
+
+-- C: a real page parameter — the form that already worked
+create page S868.PageRealParam (
+  params: { $Order: S868.Order }, title: 'C', layout: Atlas_Core.Atlas_Default
+) {
+  layoutgrid g { row r { column c (desktopwidth: 12) {
+    snippetcall scActions (snippet: S868.OrderActions, params: {Order: $Order})
+  } } }
+}

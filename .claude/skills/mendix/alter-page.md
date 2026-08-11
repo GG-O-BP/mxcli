@@ -122,6 +122,29 @@ set PopupResizable = true
 > }
 > ```
 
+#### Changing a widget's DataSource
+
+`SET DataSource` retypes a data source in place — including across shapes, e.g.
+from a microflow to a page parameter:
+
+```sql
+ALTER PAGE MyModule.OrderPage {
+  SET DataSource = $Order ON dvOrder;                       -- page/snippet parameter
+  SET DataSource = database MyModule.Order ON dgOrders;      -- database
+  SET DataSource = microflow MyModule.MF_Get ON dvOrder;     -- microflow
+  SET DataSource = nanoflow MyModule.NF_Get ON dvOrder;      -- nanoflow
+  SET DataSource = selection dgOrders ON dvDetail;           -- listen to widget
+}
+```
+
+The parameter must exist on the page (or snippet) being altered — its entity is
+read from the container's own parameter list, and an unknown name is refused
+rather than written as an unresolved reference.
+
+`association` sources are **not** supported by SET. Use REPLACE for those, which
+rebuilds the widget through the CREATE PAGE path and handles every datasource
+type; the error message says so.
+
 ### INSERT - Add Widgets
 
 ```sql

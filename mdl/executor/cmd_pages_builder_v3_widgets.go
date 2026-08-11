@@ -985,13 +985,33 @@ func (pb *pageBuilder) buildSnippetCallParams(sc *pages.SnippetCallWidget, snipp
 		suppliedByName[name] = p.Variable
 	}
 
-	// Validate that every declared parameter has a mapping, then build the list.
+	// Validate that every declared parameter is satisfied, then build the list.
+	//
+	// "Satisfied by the enclosing data context" is NOT a variable in Mendix — it
+	// is the ABSENCE of a mapping. Writing `$currentObject` as one produced
+	// `Forms$PageVariable{PageParameter: "currentObject"}`, a by-name reference
+	// to a page parameter that does not exist, and mxbuild rejected the call with
+	// CE0115 "…do not match the expected parameters and need to be refreshed."
+	// Studio Pro's own output has no mapping here, which is why its "Refresh
+	// snippet parameters" deletes what mxcli wrote (#868).
 	for _, declared := range targetSnippet.Parameters {
 		argument, ok := suppliedByName[declared.Name]
+		if ok && isContextArgument(argument) {
+			// Explicitly context-bound: emit nothing for this parameter.
+			continue
+		}
 		if !ok {
+			// Omitted. Legal exactly when the surrounding data context supplies
+			// the parameter's entity; otherwise nothing can satisfy it and the
+			// author gets the guidance rather than a build error later.
+			if pb.entityContext != "" && declared.EntityName != "" &&
+				strings.EqualFold(pb.entityContext, declared.EntityName) {
+				continue
+			}
 			return mdlerrors.NewValidationf(
-				"snippet %s requires parameter $%s — add Params: {%s: $<variable>} to the SNIPPETCALL",
-				snippetQName, declared.Name, declared.Name,
+				"snippet %s requires parameter $%s — add Params: {%s: $<variable>} to the SNIPPETCALL, "+
+					"or place the call inside a data context of %s so the parameter is satisfied from it",
+				snippetQName, declared.Name, declared.Name, orDefaultStr(declared.EntityName, "the parameter's entity"),
 			)
 		}
 		sc.ParameterMappings = append(sc.ParameterMappings, pages.SnippetParamMapping{
@@ -1001,6 +1021,21 @@ func (pb *pageBuilder) buildSnippetCallParams(sc *pages.SnippetCallWidget, snipp
 	}
 
 	return nil
+}
+
+// isContextArgument reports whether a SNIPPETCALL argument names the enclosing
+// data context rather than a real variable. Mendix has no variable for it, so
+// such a parameter is left unmapped.
+func isContextArgument(argument string) bool {
+	return strings.EqualFold(strings.TrimPrefix(argument, "$"), "currentObject")
+}
+
+// orDefaultStr returns s, or fallback when s is empty.
+func orDefaultStr(s, fallback string) string {
+	if s == "" {
+		return fallback
+	}
+	return s
 }
 
 // buildTemplateV3 creates a Container to hold template content.
