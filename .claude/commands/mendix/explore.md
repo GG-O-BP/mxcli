@@ -1,3 +1,7 @@
+---
+description: Explore and summarise the Mendix project's structure
+---
+
 # Explore Project
 
 Explore and understand the Mendix project structure.

@@ -1,3 +1,8 @@
+---
+description: Generate a prefilled compare URL to open a PR into mendixlabs/mxcli
+argument-hint: [--head <branch>]
+---
+
 # /mxcli-dev:upstream-pr — Link to open a PR into upstream (mendixlabs/mxcli)
 
 Generate a prefilled GitHub **compare** URL that opens a PR merging this fork

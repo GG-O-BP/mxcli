@@ -1,3 +1,7 @@
+---
+description: Validate the project with mxbuild and report the errors
+---
+
 # Validate Project
 
 Run Mendix's `mx check` command to validate the project for errors.
