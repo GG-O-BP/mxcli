@@ -1,3 +1,8 @@
+---
+description: Re-synthesize pages in docs-wiki/ from their canonical sources
+argument-hint: [page]
+---
+
 # /mxcli-dev:wiki-sync — Re-synthesize Wiki Pages
 
 Re-synthesize one or more pages in `docs-wiki/` — the agent-maintained

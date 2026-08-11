@@ -702,6 +702,20 @@ type DownloadFileStmt struct {
 
 func (s *DownloadFileStmt) isMicroflowStatement() {}
 
+// SynchronizeStmt represents: SYNCHRONIZE ALL | UNSYNCHRONIZED | $Var[, $Var...]
+//
+// Nanoflow-only — Mendix rejects the activity in a (server-side) microflow.
+type SynchronizeStmt struct {
+	// SyncType is the platform enum value: All, Unsynchronized or Specific.
+	SyncType string
+	// Variables holds the object/list variable names (no $) for Specific mode.
+	Variables     []string
+	ErrorHandling *ErrorHandlingClause // Optional ON ERROR clause
+	Annotations   *ActivityAnnotations // Optional @position, @caption, @color, @annotation
+}
+
+func (s *SynchronizeStmt) isMicroflowStatement() {}
+
 // ValidationFeedbackStmt represents: VALIDATION FEEDBACK $Var/Attr MESSAGE 'message' OBJECTS [$Var1, $Var2];
 type ValidationFeedbackStmt struct {
 	AttributePath *AttributePathExpr   // The attribute to associate with the feedback

@@ -473,6 +473,18 @@ func flowObjectFromGen(el element.Element) microflows.MicroflowObject {
 			o.Documentation = g.Documentation()
 			if act := g.Action(); act != nil {
 				o.Action = actionFromGen(act)
+				if o.Action == nil {
+					// No mapping for this action type. Keep the stored $Type so
+					// DESCRIBE can name it rather than emitting the anonymous
+					// "-- Empty action", which read identically to an activity
+					// that genuinely has no action (#863). ErrorHandlingType is
+					// carried too: it lives on the action, so dropping the action
+					// used to drop the activity's error handler with it.
+					o.Action = &microflows.UnsupportedAction{
+						StorageType:       act.TypeName(),
+						ErrorHandlingType: microflows.ErrorHandlingType(errorHandlingTypeOf(act)),
+					}
+				}
 			}
 		}
 		return o

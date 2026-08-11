@@ -506,7 +506,13 @@ func (fb *flowBuilder) resolvePathSegments(path []string) []string {
 	}
 
 	var resolved []string
+	skipNext := false
 	for i, segment := range path {
+		if skipNext {
+			// Consumed as the association's target-entity step below.
+			skipNext = false
+			continue
+		}
 		resolved = append(resolved, segment)
 
 		// A qualified name (contains ".") that isn't the last segment might be an association
@@ -528,9 +534,20 @@ func (fb *flowBuilder) resolvePathSegments(path []string) []string {
 			continue
 		}
 		result := fb.lookupAssociation(parts[0], parts[1])
-		if result != nil && result.childEntityQN != "" {
-			resolved = append(resolved, result.childEntityQN)
+		if result == nil || result.childEntityQN == "" {
+			continue
 		}
+		// The author may have written the target entity by its BARE name
+		// (`Mod.Assoc/Tag/Label`). That is not the form Mendix stores, but it is
+		// the same step — qualify it in place. Appending unconditionally produced
+		// `Mod.Assoc/Mod.Tag/Tag/Label`, a four-segment path as invalid as the
+		// three-segment one it was meant to fix (#829).
+		if i+1 < len(path) {
+			if bare := path[i+1]; bare != "" && strings.HasSuffix(result.childEntityQN, "."+bare) {
+				skipNext = true
+			}
+		}
+		resolved = append(resolved, result.childEntityQN)
 	}
 	return resolved
 }

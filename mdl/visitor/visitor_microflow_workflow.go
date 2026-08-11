@@ -16,14 +16,30 @@ func buildCallWorkflowStatement(ctx parser.ICallWorkflowStatementContext) *ast.C
 	c := ctx.(*parser.CallWorkflowStatementContext)
 	stmt := &ast.CallWorkflowStmt{}
 
-	if v := c.VARIABLE(); v != nil {
-		stmt.OutputVariable = strings.TrimPrefix(v.GetText(), "$")
+	// With the positional form there are two VARIABLEs — the output variable
+	// before the `=`, and the context object inside the parentheses — so which
+	// one is which depends on whether an EQUALS is present.
+	vars := c.AllVARIABLE()
+	positional := ""
+	switch {
+	case c.EQUALS() != nil && len(vars) >= 2:
+		stmt.OutputVariable = strings.TrimPrefix(vars[0].GetText(), "$")
+		positional = strings.TrimPrefix(vars[1].GetText(), "$")
+	case c.EQUALS() != nil && len(vars) == 1:
+		stmt.OutputVariable = strings.TrimPrefix(vars[0].GetText(), "$")
+	case len(vars) >= 1:
+		positional = strings.TrimPrefix(vars[0].GetText(), "$")
 	}
 	if qn := c.QualifiedName(); qn != nil {
 		stmt.Workflow = buildQualifiedName(qn)
 	}
 	if argList := c.CallArgumentList(); argList != nil {
 		stmt.Arguments = buildCallArgumentList(argList)
+	} else if positional != "" {
+		// Named form omitted: the single argument IS the workflow context. The
+		// parameter name is not stored in the model, so the builder keys off the
+		// value alone — see addCallWorkflowAction.
+		stmt.ContextVariable = positional
 	}
 	if errClause := c.OnErrorClause(); errClause != nil {
 		stmt.ErrorHandling = buildOnErrorClause(errClause)

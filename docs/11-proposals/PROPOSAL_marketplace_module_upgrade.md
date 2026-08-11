@@ -248,6 +248,81 @@ needs a stabler key for them than the index.
 inferred, not observed: it is the one identity preserved across a full replace,
 which is strong evidence it carries database mapping, but no DDL was examined.
 
+### 5. "Internally consistent" is a hard constraint, and mxcli cannot yet honour it
+
+§4 licenses renumbering with one condition — *"`$ID`s may be renumbered freely as
+long as each unit stays internally consistent, because nothing outside the unit
+points at them."* That clause is doing more work than its length suggests, and it
+has now been tested from the other direction.
+
+An unrelated change ([#125](https://github.com/ako/mxcli/pull/125), reverted)
+attempted to make re-running an MDL script byte-stable by carrying stored element
+`$ID`s onto a rebuilt document — structurally the same operation an upgrade
+performs, at a smaller scale. It rewrote `$ID`s and left the pointers that
+reference them untouched, which makes the project unopenable:
+
+```
+ERROR: System.AggregateException: (The given key '553f4a64-…' was not present in the dictionary.)
+ ---> System.Collections.Generic.KeyNotFoundException
+   at Mendix.Modeler.Storage.Operations.StreamingBsonUnitReader.ResolvePostponedProperties()
+```
+
+Measured in review, on a real MPR v2 app (Mendix 11.13, 413 `.mxunit` files):
+microflows and nanoflows corrupt, pages and navigation survive. Searching the tree
+for the GUID the loader rejects finds it once, as a `SequenceFlow.OriginPointer`
+aimed at an element that no longer exists — 6 of 6 flow pointers resolved before,
+0 after. `mx check` on the parent commit is clean, so the failure isolates to that
+change.
+
+Two things follow for this proposal.
+
+**The document types that survive are not evidence of safety.** A page's widget
+tree is containment; a microflow's is a graph. The §4 snapshots make the risk
+concrete: `DataWidgets` — the module that motivated the field report — contains
+**0** `Microflows$Microflow`, while `Administration` contains **8**. So an
+upgrade could pass a manual smoke test on `DataWidgets` and corrupt
+`Administration`, and the two are routinely updated together.
+
+**mxcli's write layer cannot currently guarantee the condition**, which is the
+part worth knowing before Phase 2 is scheduled. Pointers are not child elements —
+`Microflows$SequenceFlow.OriginPointer` is a *primitive* property holding an
+`element.ID` (see `InitFromRaw` in `modelsdk/gen/microflows/types.go`), so a walk
+over `ChildProperty`/`ChildListProperty` traverses the whole document and never
+sees a single reference. There is no way, today, to enumerate the reference-valued
+properties of an element generically. Any operation that renumbers within a unit
+needs that first, and the gap is invisible until a project fails to load.
+
+An import-and-transplant upgrade may sidestep this entirely — if the new unit is
+written wholesale from the package, its internal pointers are already consistent
+and nothing is renumbered in place. That is the strongest argument yet for
+preferring import-and-transplant over anything element-level, and it is worth
+stating as a design constraint rather than an implementation detail: **an upgrade
+should never rewrite an `$ID` inside a unit it is otherwise preserving.**
+
+### 6. The unnamed-element key problem is shared, and larger than the phantom diffs
+
+§4's closing observation — unnamed widget nodes keyed by list index produce 25
+phantom add/removes when `Properties[7]` shifts to `Properties[6]` — is the same
+obstacle #125 hit, and its size is now known from the other side.
+
+Matching by name where a name exists, and by position only where the two lists are
+the same length, left **980 of 988 element IDs in a single page unmatched**. Only
+the top-level chain (`Page`, `PageParameter`, `ObjectType`, `LayoutCall`,
+`FormCallArgument`) carries a name to match on. What dominates a page is unnamed
+and unmatched: `Texts$Text` ×152, `Forms$Appearance` ×116,
+`Forms$ClientTemplate` ×74, `Texts$Translation` ×68.
+
+So the phantom add/removes are not an edge case to paper over in the differ — they
+are the majority of a page document. A `marketplace diff` that reports honestly on
+a page-heavy module (which `DataWidgets` is) needs a stable key for unnamed
+elements, and no such key exists today. The two candidates are a structural path
+(stable until a list shifts, which is exactly when it matters) and a content
+digest of the subtree (stable under moves, ambiguous between genuinely identical
+siblings).
+
+This is the one piece of work both this proposal and script idempotence need, and
+neither can be finished well without it.
+
 ## Design
 
 ### Compare semantically, not structurally
@@ -353,6 +428,12 @@ rather than an element-level merge engine, and the `$ID`s need no special
 handling. The open design work is almost entirely about the *modified* cases —
 what to show the user, and whether re-applying a local edit onto a replaced
 element is something mxcli should attempt at all or merely describe.
+
+§5 adds a constraint on *how* the replace is implemented: import the unit
+wholesale, never renumber an `$ID` inside a unit being preserved. Re-applying a
+local edit onto a replaced element is the case that would tempt an in-place
+rewrite, and mxcli cannot currently keep intra-unit pointers consistent when it
+does that.
 
 ## Version Compatibility
 

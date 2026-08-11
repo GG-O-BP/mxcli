@@ -134,6 +134,8 @@ var mdlGeneratedKeywords = []protocol.CompletionItem{
 	{Label: "LOG", Kind: protocol.CompletionItemKindKeyword, Detail: "Microflow keyword"},
 	{Label: "CALL", Kind: protocol.CompletionItemKindKeyword, Detail: "Microflow keyword"},
 	{Label: "DOWNLOAD", Kind: protocol.CompletionItemKindKeyword, Detail: "Microflow keyword"},
+	{Label: "SYNCHRONIZE", Kind: protocol.CompletionItemKindKeyword, Detail: "Microflow keyword"},
+	{Label: "UNSYNCHRONIZED", Kind: protocol.CompletionItemKindKeyword, Detail: "Microflow keyword"},
 	{Label: "BROWSER", Kind: protocol.CompletionItemKindKeyword, Detail: "Microflow keyword"},
 	{Label: "WEB", Kind: protocol.CompletionItemKindKeyword, Detail: "Microflow keyword"},
 	{Label: "RAW", Kind: protocol.CompletionItemKindKeyword, Detail: "Microflow keyword"},

@@ -870,6 +870,44 @@ func (fb *flowBuilder) addDownloadFileAction(s *ast.DownloadFileStmt) model.ID {
 	return activity.ID
 }
 
+// addSynchronizeAction creates a SYNCHRONIZE activity (nanoflow-only).
+func (fb *flowBuilder) addSynchronizeAction(s *ast.SynchronizeStmt) model.ID {
+	action := &microflows.SynchronizeAction{
+		BaseElement:       model.BaseElement{ID: model.ID(types.GenerateID())},
+		SyncType:          microflows.SynchronizationType(s.SyncType),
+		VariableNames:     s.Variables,
+		ErrorHandlingType: microflows.ErrorHandlingTypeRollback,
+	}
+	if action.SyncType == "" {
+		action.SyncType = microflows.SynchronizationTypeAll
+	}
+	if s.ErrorHandling != nil {
+		action.ErrorHandlingType = fb.ehType(s.ErrorHandling)
+	}
+
+	activity := &microflows.ActionActivity{
+		BaseActivity: microflows.BaseActivity{
+			BaseMicroflowObject: microflows.BaseMicroflowObject{
+				BaseElement: model.BaseElement{ID: model.ID(types.GenerateID())},
+				Position:    model.Point{X: fb.posX, Y: fb.posY},
+				Size:        model.Size{Width: ActivityWidth, Height: ActivityHeight},
+			},
+			AutoGenerateCaption: true,
+		},
+		Action: action,
+	}
+
+	activityX := fb.posX
+	fb.objects = append(fb.objects, activity)
+	fb.posX += fb.spacing
+	// Wire the custom error handler's own branch. Without this the activity
+	// stores CustomWithoutRollback with no outgoing error flow and mxbuild fails
+	// CE0011 "If custom error handling is enabled there must be an outgoing
+	// sequence flow set as error handler."
+	fb.finishCustomErrorHandler(activity.ID, activityX, s.ErrorHandling, "")
+	return activity.ID
+}
+
 // addClosePageAction creates a CLOSE PAGE statement.
 func (fb *flowBuilder) addClosePageAction(s *ast.ClosePageStmt) model.ID {
 	numPages := s.NumberOfPages

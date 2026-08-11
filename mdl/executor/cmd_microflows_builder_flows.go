@@ -598,6 +598,10 @@ func errorHandlerStatementVarRefs(stmt ast.MicroflowStatement) []string {
 		refs = append(refs, s.Variable)
 	case *ast.DownloadFileStmt:
 		refs = append(refs, s.FileDocument)
+	case *ast.SynchronizeStmt:
+		// Specific mode names existing object/list variables; All and
+		// Unsynchronized name none.
+		refs = append(refs, s.Variables...)
 	case *ast.ValidationFeedbackStmt:
 		if s.AttributePath != nil {
 			refs = append(refs, s.AttributePath.Variable)

@@ -147,6 +147,7 @@ microflowStatement
     | annotation* showHomePageStatement SEMICOLON
     | annotation* showMessageStatement SEMICOLON
     | annotation* downloadFileStatement SEMICOLON
+    | annotation* synchronizeStatement SEMICOLON
     | annotation* throwStatement SEMICOLON
     | annotation* listOperationStatement SEMICOLON
     | annotation* aggregateListStatement SEMICOLON
@@ -409,7 +410,12 @@ callExternalActionStatement
 
 // $Wf = CALL WORKFLOW Module.WF_Name ($ContextObj);
 callWorkflowStatement
-    : (VARIABLE EQUALS)? CALL WORKFLOW qualifiedName LPAREN callArgumentList? RPAREN onErrorClause?
+    // A workflow has exactly ONE context parameter, so the positional form is
+    // unambiguous — and it is what DESCRIBE emits, since the model stores only
+    // the context VARIABLE and not the parameter's name. Without this
+    // alternative, describing a `call workflow` produced MDL that would not
+    // parse on the way back in.
+    : (VARIABLE EQUALS)? CALL WORKFLOW qualifiedName LPAREN (callArgumentList | VARIABLE)? RPAREN onErrorClause?
     ;
 
 // $Data = GET WORKFLOW DATA $WorkflowVar AS Module.WorkflowName;
@@ -504,6 +510,19 @@ showHomePageStatement
 // SHOW MESSAGE 'Hello {1}' TYPE Information OBJECTS [$Name];
 showMessageStatement
     : SHOW MESSAGE expression (TYPE identifierOrKeyword)? (OBJECTS LBRACKET expressionList RBRACKET)?
+    ;
+
+// SYNCHRONIZE ALL;
+// SYNCHRONIZE UNSYNCHRONIZED;
+// SYNCHRONIZE $Order, $Lines;              -- Specific mode
+// SYNCHRONIZE ALL ON ERROR WITHOUT ROLLBACK { ... };
+//
+// Nanoflow-only: Mendix rejects a synchronize in a microflow, which is
+// server-side. The bare `SYNCHRONIZE;` form is deliberately absent — the mode is
+// always written out, so the statement says what it does without the reader
+// having to know that the platform default is All.
+synchronizeStatement
+    : SYNCHRONIZE (ALL | UNSYNCHRONIZED | VARIABLE (COMMA VARIABLE)*) onErrorClause?
     ;
 
 downloadFileStatement

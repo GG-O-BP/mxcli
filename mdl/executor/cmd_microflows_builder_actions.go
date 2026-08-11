@@ -1803,5 +1803,28 @@ func (fb *flowBuilder) lookupAssociation(moduleName, assocName string) *assocLoo
 			}
 		}
 	}
+	// A domain model keeps associations in TWO lists: an association whose target
+	// lives in another module (or in System) is a DomainModels$CrossAssociation,
+	// where only the local end is BY_ID and the remote end is the BY_NAME
+	// ChildRef. Searching only the first list left every cross-module hop
+	// unresolvable, so an expression navigating one was written without its
+	// target-entity step and mxbuild failed CE0117 (#829) — the same two-list
+	// trap as #854 and issuetracker #19.
+	//
+	// The remote entity is not in this domain model, so its persistability is
+	// unknown here; callers that need it must resolve the entity themselves
+	// rather than read `false` as "non-persistable".
+	for _, ca := range dm.CrossAssociations {
+		if ca.Name == assocName {
+			return &assocLookupResult{
+				Type:              ca.Type,
+				Owner:             ca.Owner,
+				parentEntityQN:    entityNames[ca.ParentID],
+				childEntityQN:     ca.ChildRef,
+				parentPersistable: entityPersistable[ca.ParentID],
+				childPersistable:  true,
+			}
+		}
+	}
 	return nil
 }

@@ -1,0 +1,65 @@
+-- ============================================================================
+-- Upstream #829: cross-module association navigation emitted an expression
+-- without the target entity's module qualifier
+-- ============================================================================
+--
+-- A Mendix expression navigating an association must name the target entity
+-- fully qualified:
+--
+--   $Issue/MA.Issue_Person/MB.Person/FullName
+--
+-- mxcli inserts that step itself, so the author may write the association
+-- alone. Two independent ways it went wrong, both ending in
+-- `[error] [CE0117] "Error(s) in expression."` with nothing said at exec or
+-- check time:
+--
+--   1. CROSS-MODULE — lookupAssociation walked only dm.Associations. An
+--      association whose target is in another module is a
+--      DomainModels$CrossAssociation in a SEPARATE list, so the lookup failed,
+--      nothing was inserted, and the short form was written through unchanged.
+--      Third occurrence of this two-list trap (#854, issuetracker #19).
+--
+--   2. SAME-MODULE, entity named — the skip guard only fired when the next
+--      segment was already QUALIFIED. Writing the bare entity name got the
+--      resolved step inserted IN ADDITION to the author's, producing
+--      `MA.Issue_Tag/MA.Tag/Tag/Label`: four segments, equally invalid.
+--
+-- All four spellings below now converge on the one canonical form. Verified on
+-- Mendix 11.13.0: 0 errors.
+-- ============================================================================
+
+create module MA;
+create module MB;
+create persistent entity MB.Person (FullName: String(100));
+create persistent entity MA.Issue (Subject: String(100));
+create persistent entity MA.Tag (Label: String(50));
+create association MA.Issue_Person from MA.Issue to MB.Person type Reference;
+create association MA.Issue_Tag from MA.Issue to MA.Tag type Reference;
+
+-- cross-module, entity named bare (the form in the report)
+create microflow MA.MF_Short ($Issue: MA.Issue) returns String as $Out
+begin
+  declare $Out String = $Issue/MA.Issue_Person/Person/FullName;
+  return $Out;
+end;
+
+-- cross-module, already fully qualified (the reporter's working form)
+create microflow MA.MF_Full ($Issue: MA.Issue) returns String as $Out
+begin
+  declare $Out String = $Issue/MA.Issue_Person/MB.Person/FullName;
+  return $Out;
+end;
+
+-- cross-module, association only — mxcli supplies the entity step
+create microflow MA.MF_AssocOnly ($Issue: MA.Issue) returns String as $Out
+begin
+  declare $Out String = $Issue/MA.Issue_Person/FullName;
+  return $Out;
+end;
+
+-- same-module, entity named bare — must qualify in place, not duplicate
+create microflow MA.MF_SameModuleBare ($Issue: MA.Issue) returns String as $Out
+begin
+  declare $Out String = $Issue/MA.Issue_Tag/Tag/Label;
+  return $Out;
+end;

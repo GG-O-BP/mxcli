@@ -43,6 +43,12 @@ features:
     basic:
       min_version: "10.0.0"
       mdl: "CREATE MICROFLOW Module.Name (...) BEGIN ... END"
+    synchronize:
+      min_version: "10.0.0"
+      mdl: "SYNCHRONIZE ALL | $Var[, $Var...]  (nanoflow only)"
+    synchronize_unsynchronized:
+      min_version: "10.0.0"
+      mdl: "SYNCHRONIZE UNSYNCHRONIZED  (nanoflow only)"
     show_page_with_params:
       min_version: "11.0.0"
       workaround:

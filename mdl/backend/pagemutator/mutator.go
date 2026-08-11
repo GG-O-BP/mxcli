@@ -118,6 +118,21 @@ func (m *Mutator) SetWidgetDataSource(widgetRef string, ds pages.DataSource) err
 	if result == nil {
 		return fmt.Errorf("widget %q not found", widgetRef)
 	}
+	// A parameter source names only the parameter; the entity it binds to lives
+	// in the container's own Parameters list. Resolve it here rather than in the
+	// executor — the mutator is the only layer holding the document (#855).
+	if dv, ok := ds.(*pages.DataViewSource); ok && dv.ParameterName != "" && dv.EntityName == "" {
+		entity, isSnippetParam, found := m.lookupParameter(dv.ParameterName)
+		if !found {
+			return fmt.Errorf("%s has no parameter %q", m.containerType, dv.ParameterName)
+		}
+		// Copy: the caller's value is not ours to mutate.
+		resolved := *dv
+		resolved.EntityName = entity
+		resolved.IsSnippetParameter = isSnippetParam
+		ds = &resolved
+	}
+
 	serialized := serializeDataSourceBson(ds)
 	if serialized == nil {
 		return fmt.Errorf("unsupported DataSource type %T", ds)
@@ -2585,6 +2600,41 @@ func serializeDataSourceBson(ds pages.DataSource) bson.D {
 			{Key: "ForceFullObjects", Value: false},
 			{Key: "SourceVariable", Value: nil},
 		}
+	case *pages.DataViewSource:
+		// "Data from context": the widget binds to a page/snippet parameter. The
+		// EntityRef names the parameter's entity and the SourceVariable points at
+		// the parameter itself — both BY_NAME, so both must resolve or Mendix
+		// stores null and the project will not open (#854).
+		var entityRef any
+		if d.EntityName != "" {
+			entityRef = bson.D{
+				{Key: "$ID", Value: bsonutil.NewIDBsonBinary()},
+				{Key: "$Type", Value: "DomainModels$DirectEntityRef"},
+				{Key: "Entity", Value: d.EntityName},
+			}
+		}
+		var sourceVariable any
+		if d.ParameterName != "" {
+			// A snippet parameter and a page parameter are the same shape under
+			// different keys; writing the wrong one is a ref that resolves to null.
+			paramKey := "PageParameter"
+			if d.IsSnippetParameter {
+				paramKey = "SnippetParameter"
+			}
+			sourceVariable = bson.D{
+				{Key: "$ID", Value: bsonutil.NewIDBsonBinary()},
+				{Key: "$Type", Value: "Forms$PageVariable"},
+				{Key: paramKey, Value: d.ParameterName},
+			}
+		}
+		return bson.D{
+			{Key: "$ID", Value: bsonutil.NewIDBsonBinary()},
+			{Key: "$Type", Value: "Forms$DataViewSource"},
+			{Key: "EntityRef", Value: entityRef},
+			{Key: "ForceFullObjects", Value: false},
+			{Key: "SourceVariable", Value: sourceVariable},
+		}
+
 	case *pages.MicroflowSource:
 		return bson.D{
 			{Key: "$ID", Value: bsonutil.NewIDBsonBinary()},
@@ -2635,4 +2685,29 @@ func mdlTypeToBsonType(mdlType string) string {
 	default:
 		return "DataTypes$ObjectType"
 	}
+}
+
+// lookupParameter resolves a page/snippet parameter by name to the entity it is
+// typed with, reporting whether it is a snippet parameter.
+//
+// The snippet/page distinction is taken from the STORED parameter's own $Type
+// rather than from the mutator's container kind: it is the same fact, read from
+// the document that has to agree with it.
+func (m *Mutator) lookupParameter(name string) (entity string, isSnippetParam bool, found bool) {
+	for _, item := range bsonnav.DGetArrayElements(bsonnav.DGet(m.rawData, "Parameters")) {
+		// Element 0 of a Mendix array is the version marker, not a parameter.
+		paramDoc, ok := item.(bson.D)
+		if !ok {
+			continue
+		}
+		if bsonnav.DGetString(paramDoc, "Name") != name {
+			continue
+		}
+		isSnippetParam = strings.Contains(bsonnav.DGetString(paramDoc, "$Type"), "Snippet")
+		if pt := bsonnav.DGetDoc(paramDoc, "ParameterType"); pt != nil {
+			entity = bsonnav.DGetString(pt, "Entity")
+		}
+		return entity, isSnippetParam, true
+	}
+	return "", false, false
 }

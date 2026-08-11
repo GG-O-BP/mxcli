@@ -1,3 +1,7 @@
+---
+description: Review the branch's changes against the CLAUDE.md PR checklist
+---
+
 # /mxcli-dev:review — PR Review
 
 Run a structured review of the current branch's changes against the CLAUDE.md
