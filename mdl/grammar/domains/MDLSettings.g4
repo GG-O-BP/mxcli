@@ -170,17 +170,25 @@ debugStatement
 /**
  * SQL statements for external database connectivity.
  */
+/*
+ * Connection aliases, driver names and table names are user-chosen words, so
+ * they take identifierOrKeyword rather than bare IDENTIFIER — `source` lexes as
+ * SOURCE_KW, and it is both the most natural alias and the one used in mxcli's
+ * own documentation. IMPORT FROM (below) already accepts an alias this way; the
+ * SQL statements were the odd ones out, and a bare IDENTIFIER there meant
+ * `SQL DISCONNECT source` did not parse at all.
+ */
 sqlStatement
-    : SQL CONNECT IDENTIFIER STRING_LITERAL AS IDENTIFIER          # sqlConnect
-    | SQL DISCONNECT IDENTIFIER                                     # sqlDisconnect
+    : SQL CONNECT identifierOrKeyword STRING_LITERAL AS identifierOrKeyword  # sqlConnect
+    | SQL DISCONNECT identifierOrKeyword                            # sqlDisconnect
     | SQL CONNECTIONS                                               # sqlConnections
-    | SQL IDENTIFIER SHOW IDENTIFIER                                # sqlShowTables
-    | SQL IDENTIFIER DESCRIBE IDENTIFIER                            # sqlDescribeTable
-    | SQL IDENTIFIER GENERATE CONNECTOR INTO identifierOrKeyword
+    | SQL identifierOrKeyword SHOW identifierOrKeyword              # sqlShowTables
+    | SQL identifierOrKeyword DESCRIBE identifierOrKeyword          # sqlDescribeTable
+    | SQL identifierOrKeyword GENERATE CONNECTOR INTO identifierOrKeyword
       (TABLES LPAREN identifierOrKeyword (COMMA identifierOrKeyword)* RPAREN)?
       (VIEWS LPAREN identifierOrKeyword (COMMA identifierOrKeyword)* RPAREN)?
       EXEC?                                                          # sqlGenerateConnector
-    | SQL IDENTIFIER sqlPassthrough                                  # sqlQuery
+    | SQL identifierOrKeyword sqlPassthrough                         # sqlQuery
     ;
 
 sqlPassthrough
