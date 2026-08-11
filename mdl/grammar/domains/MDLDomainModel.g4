@@ -234,6 +234,15 @@ alterAssociationAction
     | SET OWNER (DEFAULT | BOTH)
     | SET STORAGE (COLUMN | TABLE)
     | SET COMMENT STRING_LITERAL
+    // Line anchors: where the connector attaches to each entity box, as a
+    // PERCENTAGE of the box (0..100). Both ends together — the pair is one
+    // visual decision, and `from`/`to` are the association's own words for its
+    // two ends. Mirrors `alter entity ... set position (x, y)`. (issue #872)
+    | SET ANCHOR FROM anchorPoint TO anchorPoint
+    ;
+
+anchorPoint
+    : LPAREN NUMBER_LITERAL COMMA NUMBER_LITERAL RPAREN
     ;
 
 alterEnumerationAction

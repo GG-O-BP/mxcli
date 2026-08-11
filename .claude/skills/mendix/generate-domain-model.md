@@ -113,18 +113,33 @@ The `@position(x, y)` annotation specifies where the entity appears in the domai
 - Organize related entities in logical groups
 - Example layout: Categories at y=100, Transactions at y=300, Reports at y=500
 
-**Association line anchors are not authorable, but they are preserved.** Where an
-association's connector attaches to each entity box is stored on the association
-and can only be set by dragging it in Studio Pro. mxcli writes a default for a
-new association and then leaves the value alone, so hand-tuned lines survive
-later `alter association` / `create or modify association` runs. `describe
-association` reports a non-default pair as a comment:
+**Association line anchors** — where the connector attaches to each entity box —
+are set with `@anchor`, as a **percentage of the box** (0..100, whole numbers):
 
-```
--- line anchors (not yet authorable in MDL; preserved across writes): parent 0;54, child 100;54
+```sql
+@anchor(from: (0, 54), to: (100, 54))
+create association Sales.Order_Customer
+  from Sales.Order to Sales.Customer;
 ```
 
-Cross-module associations have no anchors at all — Mendix does not store them.
+`from` is the anchor on the FROM entity's box, `to` the anchor on the TO
+entity's. `(0, 50)` is the middle of the left edge, `(100, 50)` the middle of the
+right, `(50, 100)` the bottom centre.
+
+Retune a line without restating the association:
+
+```sql
+alter association Sales.Order_Customer set anchor from (50, 100) to (50, 0);
+```
+
+**Naming an end sets it; not naming one preserves what is stored.** An
+association written without `@anchor` keeps whatever the line was dragged to in
+Studio Pro, so a `create or modify association` about the delete behaviour never
+flattens someone's layout. `describe association` re-emits a non-default pair as
+the same `@anchor(...)` annotation, so describe → edit → exec round-trips.
+
+Cross-module associations have no anchors at all — Mendix stores none, and
+`set anchor` on one is refused.
 
 #### Persistent Entity
 

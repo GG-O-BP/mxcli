@@ -21,15 +21,24 @@
 --   create or modify association …               0;54/100;54   0;50/100;50  (destroyed)
 --   …same, MXCLI_ENGINE=legacy                   0;54/100;54   0;50/100;50  (destroyed)
 --
--- Now: read → write back verbatim (guard-don't-drop, ADR-0005), and DESCRIBE
--- reports a non-default pair as a comment above the statement:
+-- Now: read → write back verbatim (guard-don't-drop, ADR-0005), AUTHORABLE from
+-- MDL, and reported by DESCRIBE as the very syntax that authors them:
 --
---   -- line anchors (not yet authorable in MDL; preserved across writes): parent 0;54, child 100;54
+--   @anchor(from: (0, 54), to: (100, 54))
 --   create association Administration.AccountPasswordData_Account
 --   …
 --
--- A comment, not a clause, because DESCRIBE output must stay re-executable and
--- MDL has no anchor syntax yet.
+-- The syntax reuses the EXISTING `@anchor` annotation and its `from:`/`to:`
+-- parameters — the same annotation the microflow sequence-flow anchor uses,
+-- asking the same question, differing only in the value type. It needed no
+-- grammar rule: `annotation*` is generic across every CREATE statement,
+-- `annotationParamName` already admits FROM and TO, and `(x, y)` is the existing
+-- `annotationParenValue`. ALTER gets a clause mirroring
+-- `alter entity … set position (x, y)`.
+--
+-- Naming an end SETS it; not naming one PRESERVES what is stored. That
+-- asymmetry is the whole point: a `create or modify association` about the
+-- delete behaviour must not flatten a hand-tuned line.
 --
 -- The units are PERCENTAGES of the entity box, 0..100. Measured across 88
 -- coordinate pairs in four Studio-Pro-authored sources — a blank 11.13 app plus
@@ -48,10 +57,11 @@
 -- are computed by the editor from the name and attribute list. A pixel anchor
 -- would have nothing to measure against and would drift as attributes are added.
 --
--- What that does NOT settle is the SYNTAX. The pair is continuous, so the
--- issue's proposed `@anchor(parent: bottom-left, child: top-right)` cannot
--- express the observed values; mxcli's own default 0;50 already differs from
--- Studio Pro's 0;54 by four points.
+-- That is why the syntax takes NUMBERS. The pair is continuous, so the issue's
+-- proposed `@anchor(parent: bottom-left, child: top-right)` could not express
+-- the observed values; mxcli's own default 0;50 already differs from Studio
+-- Pro's 0;54 by four points. A non-integer coordinate is refused at check time,
+-- because Mendix's loader refuses to OPEN a project whose anchor is fractional.
 --
 -- Two more properties of the format, verified by hand-patching a project and
 -- running `mx check` on 11.13.0:
@@ -65,22 +75,31 @@
 -- has no connection properties at all, and writing them there crashes Studio Pro
 -- (issue #50).
 --
--- This script only needs to build clean; the anchors it exercises are the
--- defaults, since MDL cannot yet author others. The preservation itself is
--- pinned by mdl/backend/modelsdk/association_connection_test.go and
--- sdk/mpr/writer_domainmodel_test.go.
+-- Verified on mxbuild 11.13.0: exec'd into a blank app this checks with 0
+-- errors, the stored pair is 11;99 / 9;0, `describe association` re-emits the
+-- annotation, and re-executing that describe output into a fresh project
+-- reproduces the same stored pair.
 -- ============================================================================
 
 @position(100, 100)
 create entity Anchors.Customer ( Name: String );
 @position(500, 300)
 create entity Anchors.Order ( Number: String );
+-- Authored anchors. These are real Studio Pro values (Workflow Commons
+-- Settings_Configuration): neither coordinate sits on an edge, which is exactly
+-- what a named-anchor vocabulary could not have expressed.
+@anchor(from: (11, 99), to: (9, 0))
 create association Anchors.Order_Customer
   from Anchors.Order to Anchors.Customer;
 /
 
--- The write that used to destroy the anchors.
+-- The write that used to destroy the anchors. Says nothing about them, so they
+-- survive.
 alter association Anchors.Order_Customer set comment 'touched';
+/
+
+-- Retuning just the line, without restating the association.
+alter association Anchors.Order_Customer set anchor from (0, 54) to (100, 54);
 /
 
 describe association Anchors.Order_Customer;
