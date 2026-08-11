@@ -1,0 +1,39 @@
+-- ============================================================================
+-- TRANSFORM JSON was dropped at write time on the default engine (CE0008)
+-- ============================================================================
+--
+-- `transform $In with Module.Transformer` is authorable in MDL, has a DESCRIBE
+-- formatter, and the LEGACY writer serialized it — but the modelsdk writer (the
+-- default engine) had no case for TransformJsonAction, so it fell through to
+-- `default: return nil` and the enclosing ActionActivity was written with NO
+-- action at all:
+--
+--   mxcli exec  → "Created microflow: T.MF_Transform"
+--   mx check    → [error] [CE0008] "No action defined." at Action activity
+--
+-- Same shape as #850 (DOWNLOAD FILE): exec reports success, and only the build
+-- notices. The reader was missing too, so even once written it described as a
+-- placeholder.
+--
+-- Fixed on both sides. Storage keys mirror sdk/mpr.serializeTransformJsonAction:
+-- ErrorHandlingType / InputVariableName / OutputVariableName / Transformation.
+--
+-- Note the data transformer must exist: naming a missing one is CE1613 "The
+-- selected data transformer … no longer exists", which is how this fixture first
+-- failed after the write was fixed.
+--
+-- Verified on Mendix 11.13.0: 0 errors, and describe→exec→describe is stable.
+-- ============================================================================
+
+create module T;
+
+create data transformer T.MyTransform
+  source json '{"name": "example"}'
+{
+  jslt '{"label": .name}'
+}
+
+create microflow T.MF_Transform ($In: String)
+begin
+  $Out = transform $In with T.MyTransform;
+end;

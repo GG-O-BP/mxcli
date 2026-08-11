@@ -787,6 +787,20 @@ func microflowActionToGen(action microflows.MicroflowAction) element.Element {
 		// set task outcome, workflow operation pause/continue/abort/…, etc.).
 		// Mirrors sdk/mpr/writer_microflow_workflow.go field-for-field.
 		return workflowMicroflowActionToGen(a)
+	case *microflows.TransformJsonAction:
+		// "transform $In with Module.Transformer". Without this case the action
+		// fell through to `default: return nil` and the enclosing ActionActivity
+		// was written with NO action at all — `mxcli exec` reported success and
+		// mxbuild then failed CE0008 "No action defined." This is the #850 shape,
+		// and it means `transform` was unusable on the default engine while the
+		// legacy writer handled it. Keys mirror sdk/mpr.serializeTransformJsonAction.
+		g := newElem("Microflows$TransformJsonAction", string(a.ID))
+		addStr(g, "ErrorHandlingType", orDefault(string(a.ErrorHandlingType), "Rollback"))
+		addStr(g, "InputVariableName", a.InputVariableName)
+		addStr(g, "OutputVariableName", a.OutputVariableName)
+		addStr(g, "Transformation", a.Transformation)
+		return g
+
 	case *microflows.RestOperationCallAction:
 		// "call rest operation" — Microflows$RestOperationCallAction. Mirrors
 		// serializeRestOperationCallAction.
