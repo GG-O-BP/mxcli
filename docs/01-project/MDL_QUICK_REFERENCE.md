@@ -76,6 +76,8 @@ create persistent entity Module.Photo (
 | Drop enumeration | `drop enumeration Module.Name;` | |
 | Create association | `create [or modify] association Module.Name from Parent to Child type reference\|ReferenceSet [owner default\|both] [delete_behavior ...];` | OR MODIFY updates existing association in-place |
 | Drop association | `drop association Module.Name;` | |
+| Association line anchors | `@anchor(from: (0, 54), to: (100, 54))` above `create association …` | Where the connector attaches to each entity box, as a **percentage** of the box (0..100, whole numbers). `from` = the FROM entity's box, `to` = the TO entity's. Omitting an end preserves what is stored, so a `create or modify` about something else never flattens a hand-tuned line. Cross-module associations have no anchors — Mendix stores none |
+| Retune anchors in place | `alter association Module.Name set anchor from (50, 100) to (50, 0);` | `(0, 50)` left-middle, `(100, 50)` right-middle, `(50, 100)` bottom-centre. `describe association` re-emits a non-default pair as the same `@anchor(...)`, so describe → edit → exec round-trips |
 
 ## ALTER ENTITY
 
@@ -1019,6 +1021,18 @@ create page MyModule.Customer_Edit
 - Display: `dynamictext`, `datagrid`, `gallery`, `listview`, `image`, `staticimage`, `dynamicimage`
 - Actions: `actionbutton`, `linkbutton`, `navigationlist`
 - Structure: `dataview`, `header`, `footer`, `controlbar`, `snippetcall`
+
+**Drop-down filter, association mode** — filter a datagrid by a reference instead of an attribute. Giving the filter a `datasource:` (the OPTION list) selects the mode; all three parts are required:
+```sql
+column colCustomer (attribute: Order_Customer/Name, caption: 'Customer') {
+  dropdownfilter ddfCustomer (
+    Association: Sales.Order_Customer,     -- the reference on the GRID entity
+    datasource: database Sales.Customer,   -- the option list (associated entity)
+    CaptionAttribute: Name                 -- what each option shows
+  )
+}
+```
+A column cannot bind the association itself: `column c (attribute: Order_Customer)` is refused, because Mendix has nowhere to store a reference in an attribute-typed widget property (the build fails CE1613). Traverse it (`attribute: Assoc/Attr`) to show a value; use the mode above to filter by it.
 
 **DynamicText parameter formatting** — append a `format (…)` block to a content parameter (the `format` keyword is required):
 ```sql
