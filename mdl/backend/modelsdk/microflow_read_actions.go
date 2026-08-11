@@ -498,6 +498,18 @@ func actionFromGen(el element.Element) microflows.MicroflowAction {
 		}
 		return out
 
+	case *genMf.WorkflowCallAction,
+		*genMf.GetWorkflowDataAction,
+		*genMf.GetWorkflowsAction,
+		*genMf.GetWorkflowActivityRecordsAction,
+		*genMf.WorkflowOperationAction,
+		*genMf.OpenWorkflowAction,
+		*genMf.LockWorkflowAction,
+		*genMf.UnlockWorkflowAction:
+		// Workflow call actions — the inverse of workflowMicroflowActionToGen,
+		// grouped there and read back together here.
+		return workflowActionFromGen(a)
+
 	case *genMf.SetTaskOutcomeAction:
 		// SET TASK OUTCOME $UserTask 'Outcome'. Without this case the workflow
 		// completion action renders "-- Empty action", so a describe→drop→exec

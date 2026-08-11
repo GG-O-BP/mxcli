@@ -1,0 +1,78 @@
+-- ============================================================================
+-- The eight workflow call actions were write-only on the default engine
+-- ============================================================================
+--
+-- All eight are authorable in MDL and all had DESCRIBE formatters, but the
+-- modelsdk reader had no case for any of them, so each read back with a nil
+-- Action: DESCRIBE showed a placeholder and a describe→edit→exec cycle deleted
+-- the activity.
+--
+-- Verifying end to end surfaced two further defects that were invisible while
+-- nothing rendered at all:
+--
+--   * `call workflow X ($Ctx)` — the model stores only the context VARIABLE,
+--     never the parameter's name, so DESCRIBE can only emit the positional
+--     form, which the grammar did not accept. Describe output would not parse.
+--     A workflow has exactly one context parameter, so the positional form is
+--     unambiguous and is now accepted alongside `(Name = $Ctx)`.
+--
+--   * `workflow operation abort $Wf reason '…'` — the reason is stored in a
+--     StringTemplate's Text, which is LITERAL text. The expression string was
+--     stored instead, quotes included, so Mendix rendered the quotes at runtime
+--     and DESCRIBE re-quoted what it read: 'cancelled' became '''cancelled''',
+--     then seven quotes a side, doubling on every round trip.
+--
+-- NOT covered here: `lock workflow all` / `unlock workflow all`. Those write an
+-- activity mxbuild rejects with CE1825 "The 'Workflow' property is required" —
+-- a lock always needs a specific workflow definition. Writing the selection
+-- anyway does not help, because with `all` there is no workflow to name. That
+-- is a separate, still-open defect; the variable form below is the one that
+-- builds.
+--
+-- Verified on Mendix 11.13.0: 0 errors, and describe→exec→describe is stable.
+-- ============================================================================
+
+create module W;
+create persistent entity W.Order (Code: String(20));
+
+create page W.ReviewPage (
+  params: { $Task: System.WorkflowUserTask },
+  title: 'Review', layout: Atlas_Core.Atlas_Default
+) {
+  layoutgrid g { row r { column c (desktopwidth: 12) {
+    dataview dv (datasource: $Task) { textbox tb (attribute: Name, label: 'Task') }
+  } } }
+}
+
+create workflow W.ApproveOrder
+  parameter $Context: W.Order
+begin
+  user task Review 'Review the order'
+    page W.ReviewPage
+    outcomes
+      'Approve' { }
+      'Reject'  { };
+end workflow;
+
+create microflow W.MF_WorkflowActions (
+  $Order: W.Order,
+  $Wf: System.Workflow,
+  $WfDef: System.WorkflowDefinition
+)
+begin
+  $WfNew   = call workflow W.ApproveOrder (Context = $Order);
+  $Data    = get workflow data $Wf as W.ApproveOrder;
+  $Wfs     = get workflows for $Order;
+  $Records = get workflow activity records $Wf;
+  open workflow $Wf;
+  lock workflow $WfDef;
+  unlock workflow $WfDef;
+  workflow operation pause $Wf;
+  workflow operation abort $Wf reason 'cancelled by user';
+end;
+
+-- The positional form DESCRIBE emits must parse too.
+create microflow W.MF_PositionalCall ($Order: W.Order)
+begin
+  $Wf2 = call workflow W.ApproveOrder ($Order);
+end;
