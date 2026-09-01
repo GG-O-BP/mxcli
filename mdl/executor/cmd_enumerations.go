@@ -49,7 +49,7 @@ func execCreateEnumeration(ctx *ExecContext, s *ast.CreateEnumerationStmt) error
 		values = append(values, model.EnumerationValue{
 			Name: v.Name,
 			Caption: &model.Text{
-				Translations: map[string]string{"en_US": v.Caption},
+				Translations: map[string]string{authoringLanguage(ctx): v.Caption},
 			},
 		})
 	}
@@ -78,11 +78,25 @@ func execCreateEnumeration(ctx *ExecContext, s *ast.CreateEnumerationStmt) error
 		// In-place update: preserve the existing UUID so BSON git-diff sees a
 		// modification rather than a delete+insert pair.
 		enum.ID = existingEnum.ID
+		// Excluded is model state, not script state: MDL cannot express it for
+		// an enumeration, so the stored value is the one that survives (#914).
+		enum.Excluded = existingEnum.Excluded
+		// Placement is model state too when the statement is silent about it.
+		if s.Folder == "" {
+			enum.ContainerID = existingEnum.ContainerID
+		}
 		if err := ctx.Backend.UpdateEnumeration(enum); err != nil {
 			return mdlerrors.NewBackend("update enumeration", err)
 		}
+		target, terr := resolveRequestedFolder(ctx, module.ID, s.Folder)
+		if terr != nil {
+			return terr
+		}
+		if _, err := applyDocumentFolder(ctx, enum.ID, existingEnum.ContainerID, target); err != nil {
+			return err
+		}
 		invalidateHierarchy(ctx)
-		fmt.Fprintf(ctx.Output, "Modified enumeration: %s\n", s.Name)
+		ctx.ReportMutation("Modified", "enumeration: %s", s.Name)
 		return nil
 	}
 
@@ -110,12 +124,15 @@ func findEnumeration(ctx *ExecContext, moduleName, enumName string) *model.Enume
 		return nil
 	}
 
-	for _, enum := range enums {
-		modID := h.FindModuleID(enum.ContainerID)
-		modName := h.GetModuleName(modID)
-		if enum.Name == enumName && modName == moduleName {
-			return enum
-		}
+	// Prefer the live enumeration: a module may hold an excluded twin of this
+	// name (#914), and the app only has the active one.
+	if enum, ok := pickLive(enums,
+		func(e *model.Enumeration) bool {
+			return e.Name == enumName && h.GetModuleName(h.FindModuleID(e.ContainerID)) == moduleName
+		},
+		func(e *model.Enumeration) bool { return e.Excluded },
+	); ok {
+		return enum
 	}
 	return nil
 }
@@ -138,7 +155,7 @@ func execAlterEnumeration(ctx *ExecContext, s *ast.AlterEnumerationStmt) error {
 		}
 		enum.Values = append(enum.Values, model.EnumerationValue{
 			Name:    s.ValueName,
-			Caption: &model.Text{Translations: map[string]string{"en_US": s.Caption}},
+			Caption: &model.Text{Translations: map[string]string{authoringLanguage(ctx): s.Caption}},
 		})
 
 	case ast.AlterEnumDrop:
@@ -184,7 +201,7 @@ func execAlterEnumeration(ctx *ExecContext, s *ast.AlterEnumerationStmt) error {
 		} else if enum.Values[idx].Caption.Translations == nil {
 			enum.Values[idx].Caption.Translations = map[string]string{}
 		}
-		enum.Values[idx].Caption.Translations["en_US"] = s.Caption
+		enum.Values[idx].Caption.Translations[authoringLanguage(ctx)] = s.Caption
 
 	default:
 		return mdlerrors.NewUnsupported("unknown ALTER ENUMERATION operation")
@@ -448,6 +465,7 @@ func ValidateEntity(stmt *ast.CreateEntityStmt) []linter.Violation {
 	var violations []linter.Violation
 	persistent := stmt.Kind == ast.EntityPersistent
 	entityName := stmt.Name.String()
+	violations = append(violations, validateIdempotencyGuard(stmt.CreateOrModify, stmt.IfNotExists, "entity", entityName)...)
 	for _, attr := range stmt.Attributes {
 		violations = append(violations, validateEntityAttribute(attr, persistent, entityName)...)
 		if !persistent {
@@ -594,4 +612,27 @@ func validateEntityAttribute(attr ast.Attribute, persistent bool, entityName str
 		})
 	}
 	return violations
+}
+
+// validateIdempotencyGuard (MDL067) rejects CREATE OR MODIFY … IF NOT EXISTS.
+//
+// Both spellings exist to make a script re-runnable and they mean opposite
+// things about an existing element: OR MODIFY rebuilds it from the statement,
+// IF NOT EXISTS leaves it exactly as it is. Written together, one of them is
+// silently ignored, and which one is not something the author can tell by
+// reading the statement — so the statement is refused rather than resolved.
+// (sudoku findings #10)
+func validateIdempotencyGuard(createOrModify, ifNotExists bool, kind, name string) []linter.Violation {
+	if !createOrModify || !ifNotExists {
+		return nil
+	}
+	return []linter.Violation{{
+		RuleID:   "MDL067",
+		Severity: linter.SeverityError,
+		Message: fmt.Sprintf("'create or modify %s ... if not exists' combines two contradictory guards — "+
+			"'or modify' replaces the stored definition, 'if not exists' leaves it untouched", kind),
+		Suggestion: fmt.Sprintf("Keep one: 'create or modify %s %s' to converge on this definition, "+
+			"or 'create %s if not exists %s' to leave an existing one alone.", kind, name, kind, name),
+		Location: linter.Location{DocumentType: kind, DocumentName: name},
+	}}
 }

@@ -10,7 +10,9 @@ import (
 
 	"github.com/mendixlabs/mxcli/mdl/ast"
 	mdlerrors "github.com/mendixlabs/mxcli/mdl/errors"
+	"github.com/mendixlabs/mxcli/mdl/microflowgraph"
 	"github.com/mendixlabs/mxcli/model"
+	"github.com/mendixlabs/mxcli/sdk/javaactions"
 	"github.com/mendixlabs/mxcli/sdk/microflows"
 )
 
@@ -215,15 +217,14 @@ func describeMicroflow(ctx *ExecContext, name ast.QualifiedName) error {
 		}
 	}
 
-	var targetMf *microflows.Microflow
-	for _, mf := range allMicroflows {
-		modID := h.FindModuleID(mf.ContainerID)
-		modName := h.GetModuleName(modID)
-		if modName == name.Module && mf.Name == name.Name {
-			targetMf = mf
-			break
-		}
-	}
+	// Describe the live microflow: a module may hold an excluded twin of this
+	// name, and describing that one shows a body the app does not run (#914).
+	targetMf, _ := pickLive(allMicroflows,
+		func(mf *microflows.Microflow) bool {
+			return h.GetModuleName(h.FindModuleID(mf.ContainerID)) == name.Module && mf.Name == name.Name
+		},
+		func(mf *microflows.Microflow) bool { return mf.Excluded },
+	)
 
 	if targetMf == nil {
 		return mdlerrors.NewNotFound("microflow", name.String())
@@ -283,6 +284,8 @@ func describeMicroflow(ctx *ExecContext, name ast.QualifiedName) error {
 	if folderPath := h.BuildFolderPath(targetMf.ContainerID); folderPath != "" {
 		lines = append(lines, fmt.Sprintf("folder %s", mdlQuote(folderPath)))
 	}
+
+	lines = append(lines, exposeClauseLines(targetMf)...)
 
 	// BEGIN block
 	lines = append(lines, "begin")
@@ -365,15 +368,13 @@ func describeNanoflow(ctx *ExecContext, name ast.QualifiedName) error {
 		microflowNames[nf.ID] = h.GetQualifiedName(nf.ContainerID, nf.Name)
 	}
 
-	var targetNf *microflows.Nanoflow
-	for _, nf := range allNanoflows {
-		modID := h.FindModuleID(nf.ContainerID)
-		modName := h.GetModuleName(modID)
-		if modName == name.Module && nf.Name == name.Name {
-			targetNf = nf
-			break
-		}
-	}
+	// Describe the live nanoflow, not an excluded twin of the same name (#914).
+	targetNf, _ := pickLive(allNanoflows,
+		func(nf *microflows.Nanoflow) bool {
+			return h.GetModuleName(h.FindModuleID(nf.ContainerID)) == name.Module && nf.Name == name.Name
+		},
+		func(nf *microflows.Nanoflow) bool { return nf.Excluded },
+	)
 
 	if targetNf == nil {
 		return mdlerrors.NewNotFound("nanoflow", name.String())
@@ -484,15 +485,14 @@ func describeMicroflowToString(ctx *ExecContext, name ast.QualifiedName) (string
 		microflowNames[mf.ID] = h.GetQualifiedName(mf.ContainerID, mf.Name)
 	}
 
-	var targetMf *microflows.Microflow
-	for _, mf := range allMicroflows {
-		modID := h.FindModuleID(mf.ContainerID)
-		modName := h.GetModuleName(modID)
-		if modName == name.Module && mf.Name == name.Name {
-			targetMf = mf
-			break
-		}
-	}
+	// Describe the live microflow: a module may hold an excluded twin of this
+	// name, and describing that one shows a body the app does not run (#914).
+	targetMf, _ := pickLive(allMicroflows,
+		func(mf *microflows.Microflow) bool {
+			return h.GetModuleName(h.FindModuleID(mf.ContainerID)) == name.Module && mf.Name == name.Name
+		},
+		func(mf *microflows.Microflow) bool { return mf.Excluded },
+	)
 
 	if targetMf == nil {
 		return "", nil, mdlerrors.NewNotFound("microflow", name.String())
@@ -540,15 +540,13 @@ func describeNanoflowToString(ctx *ExecContext, name ast.QualifiedName) (string,
 		microflowNames[nf.ID] = h.GetQualifiedName(nf.ContainerID, nf.Name)
 	}
 
-	var targetNf *microflows.Nanoflow
-	for _, nf := range allNanoflows {
-		modID := h.FindModuleID(nf.ContainerID)
-		modName := h.GetModuleName(modID)
-		if modName == name.Module && nf.Name == name.Name {
-			targetNf = nf
-			break
-		}
-	}
+	// Describe the live nanoflow, not an excluded twin of the same name (#914).
+	targetNf, _ := pickLive(allNanoflows,
+		func(nf *microflows.Nanoflow) bool {
+			return h.GetModuleName(h.FindModuleID(nf.ContainerID)) == name.Module && nf.Name == name.Name
+		},
+		func(nf *microflows.Nanoflow) bool { return nf.Excluded },
+	)
 
 	if targetNf == nil {
 		return "", nil, mdlerrors.NewNotFound("nanoflow", name.String())
@@ -634,6 +632,8 @@ func renderMicroflowMDL(
 			lines = append(lines, returnLine)
 		}
 	}
+
+	lines = append(lines, exposeClauseLines(mf)...)
 
 	lines = append(lines, "begin")
 	headerLineCount := len(lines)
@@ -764,6 +764,7 @@ func formatMicroflowActivities(
 
 	var lines []string
 	lines = append(lines, duplicateOutputVariableWarnings(mf.ObjectCollection)...)
+	lines = append(lines, irreducibleGraphWarnings(mf.ObjectCollection)...)
 
 	// Sort flows by OriginConnectionIndex for each origin
 	for originID := range flowsByOrigin {
@@ -786,6 +787,8 @@ func formatMicroflowActivities(
 
 	// Build annotation map for @annotation emission
 	annotationsByTarget := buildAnnotationsByTarget(mf.ObjectCollection)
+
+	lines = append(lines, startAnnotationLines(mf.ObjectCollection)...)
 
 	// flowsByOrigin / flowsByDest are threaded into traverseFlow so @anchor
 	// emission is per-call — no package-level globals, safe under concurrent
@@ -999,6 +1002,7 @@ func formatMicroflowActivitiesWithSourceMap(
 
 	var lines []string
 	lines = append(lines, duplicateOutputVariableWarnings(mf.ObjectCollection)...)
+	lines = append(lines, irreducibleGraphWarnings(mf.ObjectCollection)...)
 
 	for originID := range flowsByOrigin {
 		flows := flowsByOrigin[originID]
@@ -1016,6 +1020,8 @@ func formatMicroflowActivitiesWithSourceMap(
 
 	// Build annotation map for @annotation emission
 	annotationsByTarget := buildAnnotationsByTarget(mf.ObjectCollection)
+
+	lines = append(lines, startAnnotationLines(mf.ObjectCollection)...)
 
 	traverseFlow(ctx, startID, activityMap, flowsByOrigin, flowsByDest, splitMergeMap, visited, entityNames, microflowNames, &lines, 0, sourceMap, headerLineCount, annotationsByTarget)
 
@@ -1313,3 +1319,308 @@ func isSplitJoinCandidate(obj microflows.MicroflowObject) bool {
 }
 
 // --- Executor method wrappers for callers in unmigrated code ---
+
+// irreducibleGraphWarnings flags a microflow whose branch structure this
+// describer cannot render faithfully.
+//
+// MDL's IF/THEN/ELSE is a single-entry/single-exit block; a Mendix microflow is
+// an arbitrary graph. When a branch re-enters a sibling branch's path there is no
+// nesting that means the same thing, and the traversal below emits one anyway —
+// on the graph in mendixlabs/mxcli#923 the description was the exact inverse of
+// the original (it always logged; the description never did).
+//
+// Until the label form lands (see PROPOSAL_structured_microflow_description.md)
+// the honest thing is to say so in the output rather than hand back MDL that
+// silently means something else. It follows the `-- WARNING:` convention
+// duplicateOutputVariableWarnings established, so it survives copy/paste of the
+// description as a comment.
+func irreducibleGraphWarnings(oc *microflows.MicroflowObjectCollection) []string {
+	if oc == nil {
+		return nil
+	}
+	var out []string
+	for _, f := range microflowgraph.Analyze(oc.Objects, oc.Flows) {
+		pos := ""
+		if f.Split != nil {
+			p := f.Split.GetPosition()
+			pos = fmt.Sprintf(" at (%d, %d)", p.X, p.Y)
+		}
+		detail := "the branches rejoin early, so a path that enters the shared part first is not represented"
+		if f.Class == microflowgraph.Interleaved {
+			detail = fmt.Sprintf("the branches cross at %d separate points", len(f.Entries))
+		}
+		out = append(out, fmt.Sprintf(
+			"-- WARNING: the decision%s has %d branches that do not nest - %s. "+
+				"This description is NOT equivalent to the microflow and must not be re-executed over it; "+
+				"edit it in Studio Pro instead (mxcli #923, %s)",
+			pos, f.BranchCount, detail, f.Class))
+	}
+	return out
+}
+
+// listRules renders SHOW / LIST RULES. A rule is its own doctype, so it has its
+// own listing: SHOW MICROFLOWS lists microflows only, as it already does for
+// nanoflows and workflows.
+//
+// The columns mirror the nanoflow listing minus "Excluded"'s neighbours that a
+// rule has no concept of — a rule stores no AllowedModuleRoles, so there is
+// nothing to grant and nothing to show.
+func listRules(ctx *ExecContext, moduleName string) error {
+	h, err := getHierarchy(ctx)
+	if err != nil {
+		return mdlerrors.NewBackend("build hierarchy", err)
+	}
+
+	if moduleName != "" {
+		if _, err := findModule(ctx, moduleName); err != nil {
+			return err
+		}
+	}
+
+	rules, err := ctx.Backend.ListRules()
+	if err != nil {
+		return mdlerrors.NewBackend("list rules", err)
+	}
+
+	type row struct {
+		qualifiedName string
+		module        string
+		name          string
+		excluded      bool
+		folderPath    string
+		params        int
+		activities    int
+		complexity    int
+		returnType    string
+	}
+	var rows []row
+
+	for _, rule := range rules {
+		modID := h.FindModuleID(rule.ContainerID)
+		modName := h.GetModuleName(modID)
+		if moduleName != "" && modName != moduleName {
+			continue
+		}
+		returnType := ""
+		if rule.ReturnType != nil {
+			returnType = rule.ReturnType.GetTypeName()
+		}
+		rows = append(rows, row{
+			qualifiedName: modName + "." + rule.Name,
+			module:        modName,
+			name:          rule.Name,
+			excluded:      rule.Excluded,
+			folderPath:    h.BuildFolderPath(rule.ContainerID),
+			params:        len(rule.Parameters),
+			activities:    countRuleActivities(rule),
+			complexity:    calculateRuleComplexity(rule),
+			returnType:    returnType,
+		})
+	}
+
+	sort.Slice(rows, func(i, j int) bool {
+		return strings.ToLower(rows[i].qualifiedName) < strings.ToLower(rows[j].qualifiedName)
+	})
+
+	result := &TableResult{
+		Columns: []string{"Qualified Name", "Module", "Name", "Excluded", "Folder", "Params", "Actions", "McCabe", "Returns"},
+		Summary: fmt.Sprintf("(%d rules)", len(rows)),
+	}
+	for _, r := range rows {
+		result.Rows = append(result.Rows, []any{r.qualifiedName, r.module, r.name, r.excluded, r.folderPath, r.params, r.activities, r.complexity, r.returnType})
+	}
+	return writeResult(ctx, result)
+}
+
+// countRuleActivities counts meaningful activities in a rule.
+func countRuleActivities(rule *microflows.Rule) int {
+	if rule.ObjectCollection == nil {
+		return 0
+	}
+	count := 0
+	for _, obj := range rule.ObjectCollection.Objects {
+		switch obj.(type) {
+		case *microflows.StartEvent, *microflows.EndEvent, *microflows.ExclusiveMerge:
+			// Structural, not activities.
+		default:
+			count++
+		}
+	}
+	return count
+}
+
+// calculateRuleComplexity calculates McCabe cyclomatic complexity for a rule.
+func calculateRuleComplexity(rule *microflows.Rule) int {
+	if rule.ObjectCollection == nil {
+		return 1
+	}
+	complexity := 1
+	for _, obj := range rule.ObjectCollection.Objects {
+		switch obj.(type) {
+		case *microflows.ExclusiveSplit, *microflows.InheritanceSplit, *microflows.LoopedActivity:
+			complexity++
+		}
+	}
+	return complexity
+}
+
+// describeRule renders DESCRIBE RULE as re-executable MDL. It mirrors
+// describeNanoflow: a rule shares a microflow's body, so the body is rendered by
+// wrapping it in a Microflow and reusing formatMicroflowActivities.
+//
+// Two rule-specific omissions, both because the document has no such property:
+// no `grant execute` line (a rule stores no AllowedModuleRoles) and no
+// concurrency or URL options.
+func describeRule(ctx *ExecContext, name ast.QualifiedName) error {
+	h, err := getHierarchy(ctx)
+	if err != nil {
+		return mdlerrors.NewBackend("build hierarchy", err)
+	}
+
+	entityNames := make(map[model.ID]string)
+	domainModels, err := ctx.Backend.ListDomainModels()
+	if err != nil {
+		return mdlerrors.NewBackend("list domain models", err)
+	}
+	for _, dm := range domainModels {
+		modName := h.GetModuleName(dm.ContainerID)
+		for _, entity := range dm.Entities {
+			entityNames[entity.ID] = modName + "." + entity.Name
+		}
+	}
+
+	// A rule's body can call microflows, so the call-target lookup is the same
+	// one the microflow describer builds.
+	microflowNames := make(map[model.ID]string)
+	allMicroflows, err := ctx.Backend.ListMicroflows()
+	if err != nil {
+		return mdlerrors.NewBackend("list microflows", err)
+	}
+	for _, mf := range allMicroflows {
+		microflowNames[mf.ID] = h.GetQualifiedName(mf.ContainerID, mf.Name)
+	}
+
+	allRules, err := ctx.Backend.ListRules()
+	if err != nil {
+		return mdlerrors.NewBackend("list rules", err)
+	}
+	for _, r := range allRules {
+		microflowNames[r.ID] = h.GetQualifiedName(r.ContainerID, r.Name)
+	}
+
+	// Describe the live rule, not an excluded twin of the same name (#914).
+	target, _ := pickLive(allRules,
+		func(r *microflows.Rule) bool {
+			return h.GetModuleName(h.FindModuleID(r.ContainerID)) == name.Module && r.Name == name.Name
+		},
+		func(r *microflows.Rule) bool { return r.Excluded },
+	)
+	if target == nil {
+		return mdlerrors.NewNotFound("rule", name.String())
+	}
+
+	var lines []string
+
+	if target.Documentation != "" {
+		lines = append(lines, "/**")
+		for docLine := range strings.SplitSeq(target.Documentation, "\n") {
+			lines = append(lines, " * "+docLine)
+		}
+		lines = append(lines, " */")
+	}
+	if target.Excluded {
+		lines = append(lines, "@excluded")
+	}
+
+	qualifiedName := name.Module + "." + name.Name
+	if len(target.Parameters) > 0 {
+		lines = append(lines, fmt.Sprintf("create or modify rule %s (", qualifiedName))
+		for i, param := range target.Parameters {
+			paramType := "Object"
+			if param.Type != nil {
+				paramType = formatMicroflowDataType(ctx, param.Type, entityNames)
+			}
+			comma := ","
+			if i == len(target.Parameters)-1 {
+				comma = ""
+			}
+			lines = append(lines, fmt.Sprintf("  $%s: %s%s", param.Name, paramType, comma))
+		}
+		lines = append(lines, ")")
+	} else {
+		lines = append(lines, fmt.Sprintf("create or modify rule %s ()", qualifiedName))
+	}
+
+	// A rule always returns Boolean or an enumeration, so unlike a microflow the
+	// return type is never legitimately absent — render whatever is stored and
+	// let the validator complain about a rule that has none.
+	if target.ReturnType != nil {
+		returnType := formatMicroflowDataType(ctx, target.ReturnType, entityNames)
+		if returnType != "Void" && returnType != "" {
+			lines = append(lines, fmt.Sprintf("returns %s", returnType))
+		}
+	}
+
+	if folderPath := h.BuildFolderPath(target.ContainerID); folderPath != "" {
+		lines = append(lines, fmt.Sprintf("folder %s", mdlQuote(folderPath)))
+	}
+
+	lines = append(lines, "begin")
+
+	wrapperMf := &microflows.Microflow{
+		ReturnType:       target.ReturnType,
+		ObjectCollection: target.ObjectCollection,
+	}
+	prevDescribingReturnValue := ctx.DescribingMicroflowHasReturnValue
+	ctx.DescribingMicroflowHasReturnValue = microflowHasReturnValue(wrapperMf)
+	defer func() {
+		ctx.DescribingMicroflowHasReturnValue = prevDescribingReturnValue
+	}()
+
+	if target.ObjectCollection != nil && len(target.ObjectCollection.Objects) > 0 {
+		for _, line := range formatMicroflowActivities(ctx, wrapperMf, entityNames, microflowNames) {
+			lines = append(lines, "  "+line)
+		}
+	} else {
+		lines = append(lines, "  -- No activities")
+	}
+
+	lines = append(lines, "end;")
+	lines = append(lines, "/")
+
+	fmt.Fprintln(ctx.Output, strings.Join(lines, "\n"))
+	return nil
+}
+
+// exposeClauseLines renders a microflow's toolbox entries as EXPOSED AS clauses,
+// so a describe → exec round trip keeps it in the toolbox it was dragged from.
+//
+// The icon and image bitmaps are not rendered — MDL cannot express them — and do
+// not need to be: an unwritten clause preserves what is stored rather than
+// clearing it.
+//
+// It is a shared helper because there are two microflow renderers in this file,
+// describeMicroflow and renderMicroflowMDL, and patching only one of them is how
+// this clause was invisible on the path the CLI actually takes.
+func exposeClauseLines(mf *microflows.Microflow) []string {
+	var out []string
+	for _, e := range []struct {
+		kind string
+		info *javaactions.MicroflowActionInfo
+	}{
+		{"microflow", mf.MicroflowActionInfo},
+		{"workflow", mf.WorkflowActionInfo},
+	} {
+		if e.info == nil || e.info.Caption == "" {
+			continue
+		}
+		out = append(out, fmt.Sprintf("exposed as %s action '%s' in '%s'",
+			e.kind, escapeMDLString(e.info.Caption), escapeMDLString(e.info.Category)))
+		for _, note := range strings.Split(describeBitmapComments(e.info), "\n") {
+			if note != "" {
+				out = append(out, note)
+			}
+		}
+	}
+	return out
+}

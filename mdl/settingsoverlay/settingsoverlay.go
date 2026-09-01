@@ -210,6 +210,86 @@ func JavaVersionValue(key, v string) string {
 	return "Java" + major
 }
 
+// ModelSettingsKeys names every Settings$ModelSettings property mxcli parses and
+// writes back, in the order DESCRIBE emits them. Which of these a document
+// actually carries depends on the Mendix version — a blank 9.24 project stores 12
+// of them, a blank 11.13 project stores 17 — so the overlay is presence-gated (see
+// SetModelSettings) and callers must not assume any particular key exists.
+var ModelSettingsKeys = []string{
+	"AfterStartupMicroflow",
+	"BeforeShutdownMicroflow",
+	"HealthCheckMicroflow",
+	"AllowUserMultipleSessions",
+	"HashAlgorithm",
+	"BcryptCost",
+	"JavaVersion", // stored as JavaVersion or JavaMajorVersion; see JavaVersionKey
+	"RoundingMode",
+	"ScheduledEventTimeZoneCode",
+	"DefaultTimeZoneCode",
+	"FirstDayOfWeek",
+	"DecimalScale",
+	"EnableDataStorageOptimisticLocking",
+	"UseDatabaseForeignKeyConstraints",
+	"UseOQLVersion2",
+	"UseSystemContextForBackgroundTasks",
+	"SslCertificateAlgorithm",
+}
+
+// Has reports whether a raw BSON part carries a property at all. An absent
+// optional property is not the same as one holding a zero value: Mendix fills it
+// in from the type's default on load, so "absent" means "this version's default",
+// not "false" or "0".
+func Has(raw map[string]any, key string) bool {
+	_, ok := raw[key]
+	return ok
+}
+
+// setIfPresent writes a property back only if the stored document already carries
+// it. Introducing one it does not carry is the mendixlabs/mxcli#759 failure shape:
+// Studio Pro resolves every stored property against the type's property list and
+// throws "Sequence contains no matching element" on one the type does not define,
+// while mxbuild's deserializer tolerates it — so the build is not a safety net.
+//
+// Measured: before this gate, `alter settings model BcryptCost = 11` against a
+// Mendix 9.24 project introduced DecimalScale = 0 and
+// UseDatabaseForeignKeyConstraints = false, neither of which that version stores.
+// Both were also wrong as values — 11.13 defaults them to 8 and true — so an
+// unrelated one-line statement silently changed two other settings.
+func setIfPresent(raw map[string]any, key string, v any) {
+	if Has(raw, key) {
+		raw[key] = v
+	}
+}
+
+// SetModelSettings overlays parsed model settings onto the Settings$ModelSettings
+// part they were read from. Shared by both write engines so the two cannot drift
+// (the codec engine in mdl/backend/modelsdk and the legacy engine in sdk/mpr).
+//
+// Every property is presence-gated. A stored part always carries the core ones, so
+// the gate is invisible there; it is load-bearing for the version-variable tail.
+// The executor refuses an ALTER naming a property the document does not carry, so
+// the gate never turns a user's request into a silent no-op.
+func SetModelSettings(ms *model.ModelSettings, raw map[string]any) map[string]any {
+	setIfPresent(raw, "AfterStartupMicroflow", ms.AfterStartupMicroflow)
+	setIfPresent(raw, "BeforeShutdownMicroflow", ms.BeforeShutdownMicroflow)
+	setIfPresent(raw, "HealthCheckMicroflow", ms.HealthCheckMicroflow)
+	setIfPresent(raw, "AllowUserMultipleSessions", ms.AllowUserMultipleSessions)
+	setIfPresent(raw, "HashAlgorithm", ms.HashAlgorithm)
+	setIfPresent(raw, "BcryptCost", SafeInt64(ms.BcryptCost))
+	SetJavaVersion(raw, ms.JavaVersion) // already presence-gated, and key-aware
+	setIfPresent(raw, "RoundingMode", ms.RoundingMode)
+	setIfPresent(raw, "ScheduledEventTimeZoneCode", ms.ScheduledEventTimeZoneCode)
+	setIfPresent(raw, "DefaultTimeZoneCode", ms.DefaultTimeZoneCode)
+	setIfPresent(raw, "FirstDayOfWeek", ms.FirstDayOfWeek)
+	setIfPresent(raw, "DecimalScale", SafeInt64(ms.DecimalScale))
+	setIfPresent(raw, "EnableDataStorageOptimisticLocking", ms.EnableDataStorageOptimisticLocking)
+	setIfPresent(raw, "UseDatabaseForeignKeyConstraints", ms.UseDatabaseForeignKeyConstraints)
+	setIfPresent(raw, "UseOQLVersion2", ms.UseOQLVersion2)
+	setIfPresent(raw, "UseSystemContextForBackgroundTasks", ms.UseSystemContextForBackgroundTasks)
+	setIfPresent(raw, "SslCertificateAlgorithm", ms.SslCertificateAlgorithm)
+	return raw
+}
+
 // ConstantValues rebuilds a configuration's ConstantValues list, updating each
 // override in the slot it is already stored in so its value shape survives.
 // Studio Pro and mxbuild only read the nested SharedOrPrivateValue; a flat "Value"
@@ -329,4 +409,88 @@ func elementID(id model.ID) any {
 		return bsonutil.IDToBsonBinary(string(id))
 	}
 	return bsonutil.NewIDBsonBinary()
+}
+
+// Languages writes the ENABLED language list onto the preserved
+// Settings$LanguageSettings document. The list is what App Settings ▸ Languages
+// shows and the only thing a build emits translations for.
+//
+// Pinned against a Studio Pro-authored reference (11.13.0). Every field of the
+// element it writes for a newly added language:
+//
+//	{ $Type: "Texts$Language", CheckCompleteness: false, Code: "ar_SD",
+//	  CustomDateFormat: "", CustomDateTimeFormat: "", CustomTimeFormat: "" }
+//
+// Three things that reference settles, each of which a guess gets wrong:
+//
+//   - The element is **Texts$Language**, not Settings$Language, even though it
+//     lives under Settings$LanguageSettings.
+//   - There is **no Description**. Studio Pro's "Arabic, Sudan" is derived from
+//     the code for display; the code is the whole stored identity.
+//   - a newly added language starts with **CheckCompleteness false**. The flag is
+//     a real setting — it makes Mendix report errors for texts with no
+//     translation in that language — so it is written from the model, not forced.
+//     The subtlety is the DEFAULT language: a stock project stores false for
+//     en_US while the Languages table reads "Yes", because Mendix always checks
+//     the default whatever the flag says.
+//
+// An existing language keeps its stored document, so its $ID and any property
+// this mxcli does not model survive; only the modelled fields are overlaid, and
+// the order is the semantic list's (Studio Pro appends rather than sorting).
+func Languages(ls *model.LanguageSettings, raw map[string]any) map[string]any {
+	rawLangs := ArrayElements(raw["Languages"])
+	byCode := make(map[string]map[string]any, len(rawLangs))
+	for _, rl := range rawLangs {
+		code, _ := rl["Code"].(string)
+		byCode[strings.ToLower(code)] = rl
+	}
+
+	langs := bson.A{ArrayMarker(raw["Languages"], DefaultListMarker)}
+	for _, l := range ls.Languages {
+		langs = append(langs, Language(l, byCode[strings.ToLower(l.Code)], rawLangs))
+	}
+	raw["Languages"] = langs
+	return raw
+}
+
+// Language overlays one enabled language onto its preserved document. When raw is
+// nil the language is newly enabled and a document is derived from a sibling —
+// the same reasoning as newServerConfiguration: a sibling carries the exact field
+// set this project's Mendix version writes, so nothing is invented.
+func Language(l model.Language, raw map[string]any, siblings []map[string]any) map[string]any {
+	if raw == nil {
+		raw = newLanguage(siblings)
+	}
+	raw["$Type"] = "Texts$Language"
+	if raw["$ID"] == nil {
+		raw["$ID"] = elementID("")
+	}
+	raw["Code"] = l.Code
+	raw["CheckCompleteness"] = l.CheckCompleteness
+	raw["CustomDateFormat"] = l.CustomDateFormat
+	raw["CustomTimeFormat"] = l.CustomTimeFormat
+	raw["CustomDateTimeFormat"] = l.CustomDateTimeFormat
+	return raw
+}
+
+// newLanguage builds the raw document for a language with no counterpart on disk.
+// A sibling is the shape template when one exists; the fallback is the five
+// properties the reference carries, which every project has at least one of
+// (a project always enables its default language).
+func newLanguage(siblings []map[string]any) map[string]any {
+	if len(siblings) > 0 {
+		tmpl := make(map[string]any, len(siblings[0]))
+		for k, v := range siblings[0] {
+			tmpl[k] = v
+		}
+		delete(tmpl, "$ID")
+		return tmpl
+	}
+	return map[string]any{
+		"CheckCompleteness":    false,
+		"Code":                 "",
+		"CustomDateFormat":     "",
+		"CustomTimeFormat":     "",
+		"CustomDateTimeFormat": "",
+	}
 }

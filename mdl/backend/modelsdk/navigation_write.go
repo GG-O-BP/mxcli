@@ -216,7 +216,9 @@ func navFormSettingsBson(formName string) bson.D {
 		{Key: "$Type", Value: "Forms$FormSettings"},
 		{Key: "Form", Value: formName},
 		{Key: "ParameterMappings", Value: bson.A{int32(1)}},
-		{Key: "TitleOverride", Value: navEmptyTextTemplate()},
+		// No override is an explicit null. An empty template overrides the page
+		// title with "" and produces CW0263 for every authored menu item (#812).
+		{Key: "TitleOverride", Value: nil},
 	}
 }
 
@@ -260,7 +262,7 @@ func navCaptionBson(text string) bson.D {
 			bson.D{
 				{Key: "$ID", Value: navID()},
 				{Key: "$Type", Value: "Texts$Translation"},
-				{Key: "LanguageCode", Value: "en_US"},
+				{Key: "LanguageCode", Value: model.AuthoringLanguage()},
 				{Key: "Text", Value: text},
 			},
 		}},
@@ -293,18 +295,5 @@ func navMenuAction(mi types.NavMenuItemSpec) bson.D {
 	return bson.D{
 		{Key: "$ID", Value: navID()},
 		{Key: "$Type", Value: "Forms$NoAction"},
-	}
-}
-
-func navEmptyTextTemplate() bson.D {
-	return bson.D{
-		{Key: "$ID", Value: navID()},
-		{Key: "$Type", Value: "Microflows$TextTemplate"},
-		{Key: "Parameters", Value: bson.A{int32(2)}},
-		{Key: "Text", Value: bson.D{
-			{Key: "$ID", Value: navID()},
-			{Key: "$Type", Value: "Texts$Text"},
-			{Key: "Items", Value: bson.A{int32(2)}},
-		}},
 	}
 }

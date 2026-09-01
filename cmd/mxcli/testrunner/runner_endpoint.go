@@ -25,23 +25,10 @@ func bootForTests(opts RunOptions, token string, timeout time.Duration, w io.Wri
 	logPath := filepath.Join(filepath.Dir(opts.ProjectPath), ".mxcli", "test-runtime.log")
 
 	fmt.Fprintln(w, "Starting local runtime (no Docker)...")
-	app, err := docker.StartLocalApp(docker.LocalAppOptions{
-		ProjectPath: opts.ProjectPath,
-		AppPort:     localTestAppPort,
-		AdminPort:   localTestAdminPort,
-		ServePort:   localTestServePort,
-		DB: docker.DBConfig{
-			Name: docker.DeriveDBName(opts.ProjectPath) + localTestDBSuffix,
-		},
-		EnsureDB:  true,
-		SkipBuild: opts.SkipBuild,
-		// The token reaches the runtime through its environment and is never
-		// written to the project. See endpointTokenEnv.
-		Env:            []string{endpointTokenEnv + "=" + token},
-		RuntimeLogPath: logPath,
-		Stdout:         w,
-		Stderr:         w,
-	})
+	// The token reaches the runtime through its environment and is never written
+	// to the project. See endpointTokenEnv.
+	app, err := docker.StartLocalApp(
+		localAppOptions(opts, logPath, []string{endpointTokenEnv + "=" + token}, w))
 	if err != nil {
 		// Unlike the after-startup path, a boot failure here is never a test
 		// result — no test has run yet. It is always a real error.
@@ -69,6 +56,11 @@ func (s *testAppSession) stop() {
 type testTarget interface {
 	// endpoint is the client for the app's test endpoint.
 	endpoint() *endpointClient
+	// adminOptions reaches the app's M2EE admin API, which is where @verify's
+	// OQL runs. It is a different plane and a different secret from the test
+	// endpoint: the endpoint token invokes microflows, the admin password
+	// queries the database.
+	adminOptions() docker.M2EEOptions
 	// applyModelChange rebuilds the project and applies it, returning a label for
 	// what it took ("reload"/"restart"). It returns only once the endpoint is
 	// reachable again, so the caller can invoke a test straight after.
@@ -76,6 +68,10 @@ type testTarget interface {
 }
 
 func (s *testAppSession) endpoint() *endpointClient { return s.client }
+
+func (s *testAppSession) adminOptions() docker.M2EEOptions {
+	return s.app.Runtime.AdminOptions()
+}
 
 // applyModelChange rebuilds through the serve server this session owns.
 //
@@ -106,14 +102,14 @@ func runViaEndpoint(opts RunOptions, suite *TestSuite, token string, timeout tim
 		return nil, err
 	}
 	defer sess.stop()
-	return runSuite(sess.client, suite, opts, w)
+	return runSuite(sess.client, sess.adminOptions(), suite, opts, w)
 }
 
 // runSuite invokes every test in the suite against a booted app and collects the
 // verdicts. It never returns an error for a test-level problem — a missing
 // microflow or a failed request is that test's result, so one bad test cannot
 // hide every other.
-func runSuite(client *endpointClient, suite *TestSuite, opts RunOptions, w io.Writer) (*SuiteResult, error) {
+func runSuite(client *endpointClient, admin docker.M2EEOptions, suite *TestSuite, opts RunOptions, w io.Writer) (*SuiteResult, error) {
 	// Ask the app which test microflows it actually has. A test whose microflow
 	// is missing is reported as an error against that test rather than failing
 	// the run.
@@ -133,14 +129,17 @@ func runSuite(client *endpointClient, suite *TestSuite, opts RunOptions, w io.Wr
 	leaked := 0
 
 	for _, tc := range suite.Tests {
+		if res, bad := preRunResult(tc, opts.RequireAssertions); bad {
+			result.Tests = append(result.Tests, res)
+			continue
+		}
+
 		flow := testFlowName(tc)
 		if !present[flow] {
-			result.Tests = append(result.Tests, TestResult{
-				ID:      tc.ID,
-				Name:    tc.Name,
-				Status:  StatusError,
-				Message: fmt.Sprintf("microflow %s was not created — the test body may not have compiled", flow),
-			})
+			res := newResult(tc)
+			res.Status = StatusError
+			res.Message = fmt.Sprintf("microflow %s was not created — the test body may not have compiled", flow)
+			result.Tests = append(result.Tests, res)
 			continue
 		}
 
@@ -149,12 +148,10 @@ func runSuite(client *endpointClient, suite *TestSuite, opts RunOptions, w io.Wr
 		if err != nil {
 			// A transport failure is not a verdict. Report it against this test
 			// and keep going; if the runtime died the rest will say so too.
-			result.Tests = append(result.Tests, TestResult{
-				ID:      tc.ID,
-				Name:    tc.Name,
-				Status:  StatusError,
-				Message: fmt.Sprintf("calling the test endpoint: %v", err),
-			})
+			res := newResult(tc)
+			res.Status = StatusError
+			res.Message = fmt.Sprintf("calling the test endpoint: %v", err)
+			result.Tests = append(result.Tests, res)
 			continue
 		}
 
@@ -167,6 +164,12 @@ func runSuite(client *endpointClient, suite *TestSuite, opts RunOptions, w io.Wr
 		}
 
 		res := toResult(tc, rr)
+		// @verify runs only once the microflow has been and gone: it asserts on
+		// what the app wrote, not on what it returned. A test that already
+		// failed keeps its verdict — the first failure is the informative one.
+		if res.Status == StatusPass {
+			runVerifies(&res, tc, admin, opts.ProjectPath)
+		}
 		result.Tests = append(result.Tests, res)
 		if opts.Verbose {
 			fmt.Fprintf(w, "  %s %s (%s)%s\n", res.Status, res.Name,

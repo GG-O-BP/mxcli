@@ -50,10 +50,41 @@ type CreateMicroflowStmt struct {
 	ReturnType     *MicroflowReturnType
 	Body           []MicroflowStatement
 	Documentation  string
-	Comment        string
 	Folder         string // Folder path within module (e.g., "Resources/Images")
 	CreateOrModify bool
 	Excluded       bool // @excluded — document excluded from project
+	// Expose holds the EXPOSED AS … ACTION clauses. A microflow has two toolbox
+	// entries — one for the microflow editor, one for the workflow editor — so
+	// there can be one of each.
+	Expose []ExposeActionClause
+}
+
+// ExposeActionClause is one EXPOSED AS <kind> ACTION clause, or its NOT form.
+//
+// An absent clause is neither: it preserves what is stored, including the icon
+// and image bitmaps MDL cannot express. Removal is explicit.
+type ExposeActionClause struct {
+	// Workflow selects WorkflowActionInfo over MicroflowActionInfo.
+	Workflow bool
+	Caption  string
+	Category string
+	Remove   bool // NOT EXPOSED AS … ACTION
+	Bitmaps  []ExposeBitmap
+}
+
+// ExposeBitmap is one ICON/IMAGE clause on an exposed clause.
+//
+// An omitted bitmap is preserved rather than cleared, so Clear (DROP ICON) is
+// how a script asks for one to go away — the same shape as the clause itself.
+type ExposeBitmap struct {
+	// Image selects the 256x192 toolbox image over the 64x64 icon.
+	Image bool
+	// Dark selects the dark-mode variant.
+	Dark bool
+	// Path is the PNG file to read, resolved against the working directory.
+	// Empty when Clear is set.
+	Path  string
+	Clear bool
 }
 
 func (s *CreateMicroflowStmt) isStatement() {}
@@ -72,13 +103,43 @@ type CreateNanoflowStmt struct {
 	ReturnType     *MicroflowReturnType
 	Body           []MicroflowStatement
 	Documentation  string
-	Comment        string
 	Folder         string // Folder path within module
 	CreateOrModify bool
 	Excluded       bool // @excluded — document excluded from project
+	// Expose is parsed but refused: only Microflows$Microflow carries the toolbox
+	// properties. Accepting it in the grammar and explaining the refusal beats a
+	// parse error that says only "no viable alternative".
+	Expose []ExposeActionClause
 }
 
 func (s *CreateNanoflowStmt) isStatement() {}
+
+// CreateRuleStmt represents: CREATE RULE Module.Name (params) RETURNS type BEGIN body END
+//
+// Mirrors CreateNanoflowStmt: a rule shares a microflow's body, so the fields
+// are the same minus the ones a rule document has no property for (a rule stores
+// no AllowedModuleRoles, so there is nothing to grant).
+type CreateRuleStmt struct {
+	Name           QualifiedName
+	Parameters     []MicroflowParam
+	ReturnType     *MicroflowReturnType
+	Body           []MicroflowStatement
+	Documentation  string
+	Folder         string // Folder path within module
+	CreateOrModify bool
+	Excluded       bool // @excluded — document excluded from project
+	// Expose is parsed but refused — see CreateNanoflowStmt.Expose.
+	Expose []ExposeActionClause
+}
+
+func (s *CreateRuleStmt) isStatement() {}
+
+// DropRuleStmt represents: DROP RULE Module.Name
+type DropRuleStmt struct {
+	Name QualifiedName
+}
+
+func (s *DropRuleStmt) isStatement() {}
 
 // DropNanoflowStmt represents: DROP NANOFLOW Module.Name
 type DropNanoflowStmt struct {
@@ -123,11 +184,23 @@ type InheritanceSplitCase struct {
 }
 
 // InheritanceSplitStmt represents: SPLIT TYPE $Var ... END SPLIT
+//
+// ElseBody is Mendix's `(empty)` outgoing flow — the branch taken when the
+// object is NULL. It is NOT a default for unmatched types: mxbuild demands a
+// flow for every subtype and for the base entity regardless (CE0090), and
+// omitting this one is CE0089. It is spelled `when (empty) then`; `else` is
+// the legacy spelling that reads as a default and is not one (mxcli #913).
 type InheritanceSplitStmt struct {
 	Variable    string // Variable name without $ prefix
 	Cases       []InheritanceSplitCase
 	ElseBody    []MicroflowStatement
 	Annotations *ActivityAnnotations // Optional @position, @caption, @color, @annotation
+
+	// Which spelling the source used, for the MDL065 deprecation warning only.
+	// Both build the identical flow, so nothing downstream of the validator
+	// may branch on these.
+	LegacyCaseKeyword bool // at least one branch used `case X` instead of `when X then`
+	LegacyElseKeyword bool // the empty branch used `else` instead of `when (empty) then`
 }
 
 func (s *EnumSplitStmt) isMicroflowStatement()        {}
@@ -211,6 +284,63 @@ type ActivityAnnotations struct {
 	// populated on LoopStmt/WhileStmt.
 	IteratorAnchor *FlowAnchors
 	BodyTailAnchor *FlowAnchors
+
+	// Curve is the bezier geometry of the flow LEAVING this statement:
+	// @curve(from: (40, -90), to: (-40, 90)).
+	//
+	// Mendix stores no waypoints. A sequence flow's shape is two control
+	// vectors on its Microflows$BezierCurve line — the tangent handles at each
+	// end — so a hand-curved edge is a pair of (x, y) offsets, not a polyline.
+	// Both writers already emit them; before #884 nothing could set them, so
+	// they defaulted to "0;0" and any rewrite flattened a curve drawn in Studio
+	// Pro. (upstream #884)
+	Curve *FlowCurve
+
+	// Merge positions the implicit merge node that closes a split — the end-if
+	// join, or an enum/inheritance split's rejoin: @merge(x, y).
+	//
+	// The statement's own @position belongs to the SPLIT, so the merge needs its
+	// own annotation. Before #884 it was placed by the layout pass alone and was
+	// unaddressable, and it routinely landed on top of a neighbouring activity.
+	Merge *Position
+
+	// Start positions the StartEvent — the implicit node every flow begins at:
+	// @start(x, y), written on the FIRST statement, the one the start flows into.
+	//
+	// Same shape and same reason as Merge: the node has no statement of its own,
+	// so it is annotated on the statement it belongs to. Without it the start's
+	// placement was inferred rather than stated, and the two things an inference
+	// has to serve pull apart — a start a person dragged somewhere must survive a
+	// rebuild (#884), while one mxcli derived must follow the activities when
+	// they move (#951). An explicit position settles both by not guessing.
+	//
+	// DESCRIBE emits it only for a start that is not where the layout would have
+	// put it, so a described flow round-trips exactly without every description
+	// growing a line that just restates the arithmetic. (upstream #951)
+	Start *Position
+
+	// InvalidCurves holds the raw text of any @curve parameter whose coordinates
+	// were not a whole-number (x, y) pair, so validation can refuse it rather
+	// than silently straightening the edge.
+	InvalidCurves []string
+
+	// UnknownNames holds annotation names the visitor did not recognise, in
+	// source order, so validation can refuse them.
+	//
+	// The visitor's switch has no default: an unrecognised name used to be
+	// dropped in silence, which is benign for an annotation mxcli does not
+	// implement (@size) and NOT benign for a typo of one it does — `@postion(10,
+	// 20)` passed `check` and silently discarded the layout the author asked
+	// for. Layout is the whole point of these annotations, so a name that does
+	// nothing has to say so. (upstream #884)
+	UnknownNames []string
+}
+
+// FlowCurve is the pair of bezier control vectors on a sequence flow. Either end
+// may be nil, which leaves that end straight.
+type FlowCurve struct {
+	From *Position // control vector at the origin end
+	To   *Position // control vector at the destination end
 }
 
 // ChangeItem represents a single assignment in CREATE/CHANGE: Attr = expr
@@ -230,14 +360,15 @@ const (
 	CommitYesWithoutEvents                   // COMMIT WITHOUT EVENTS
 )
 
-// CreateObjectStmt represents: $Var = CREATE Entity (assignments) [COMMIT [WITHOUT EVENTS]] [ON ERROR ...]
+// CreateObjectStmt represents: $Var = CREATE Entity (assignments) [COMMIT [WITHOUT EVENTS]] [REFRESH] [ON ERROR ...]
 type CreateObjectStmt struct {
-	Variable      string               // Variable name (without $ prefix)
-	EntityType    QualifiedName        // Entity type
-	Changes       []ChangeItem         // SET assignments
-	Commit        CommitFlag           // Commit setting (default CommitNo)
-	ErrorHandling *ErrorHandlingClause // Optional ON ERROR clause
-	Annotations   *ActivityAnnotations // Optional @position, @caption, @color, @annotation
+	Variable        string               // Variable name (without $ prefix)
+	EntityType      QualifiedName        // Entity type
+	Changes         []ChangeItem         // SET assignments
+	Commit          CommitFlag           // Commit setting (default CommitNo)
+	RefreshInClient bool                 // Whether to refresh in client
+	ErrorHandling   *ErrorHandlingClause // Optional ON ERROR clause
+	Annotations     *ActivityAnnotations // Optional @position, @caption, @color, @annotation
 }
 
 func (s *CreateObjectStmt) isMicroflowStatement() {}
@@ -253,22 +384,35 @@ type ChangeObjectStmt struct {
 
 func (s *ChangeObjectStmt) isMicroflowStatement() {}
 
-// MfCommitStmt represents: COMMIT $Var [WITH EVENTS] [REFRESH] [ON ERROR ...]
+// MfCommitStmt represents: COMMIT $Var [WITHOUT EVENTS] [REFRESH] [ON ERROR ...]
+//
+// The flag is WithoutEvents, not WithEvents, so that the zero value is what a
+// bare `commit $Var;` means — Mendix's default, which is events ON (#895). Every
+// other modifier on every other activity holds to that same invariant (absent
+// modifier = zero value = Mendix default), and inverting this one field is what
+// keeps it true here: a WithEvents bool would default to the one value Studio
+// Pro never writes for a fresh Commit activity.
 type MfCommitStmt struct {
-	Variable        string               // Variable to commit
-	WithEvents      bool                 // Whether to trigger events
-	RefreshInClient bool                 // Whether to refresh in client
-	ErrorHandling   *ErrorHandlingClause // Optional ON ERROR clause
-	Annotations     *ActivityAnnotations // Optional @position, @caption, @color, @annotation
+	Variable      string // Variable to commit
+	WithoutEvents bool   // WITHOUT EVENTS was written (absent = events on)
+	// ExplicitWithEvents records that the redundant `WITH EVENTS` was written.
+	// It changes nothing about the stored activity — both spellings mean events
+	// on — and exists only so MDL067 can tell "the author said what they wanted"
+	// from "the author said nothing", which is the whole question that note asks.
+	ExplicitWithEvents bool
+	RefreshInClient    bool                 // Whether to refresh in client
+	ErrorHandling      *ErrorHandlingClause // Optional ON ERROR clause
+	Annotations        *ActivityAnnotations // Optional @position, @caption, @color, @annotation
 }
 
 func (s *MfCommitStmt) isMicroflowStatement() {}
 
-// DeleteObjectStmt represents: DELETE $Var [ON ERROR ...]
+// DeleteObjectStmt represents: DELETE $Var [REFRESH] [ON ERROR ...]
 type DeleteObjectStmt struct {
-	Variable      string               // Variable to delete
-	ErrorHandling *ErrorHandlingClause // Optional ON ERROR clause
-	Annotations   *ActivityAnnotations // Optional @position, @caption, @color, @annotation
+	Variable        string               // Variable to delete
+	RefreshInClient bool                 // Whether to refresh in client
+	ErrorHandling   *ErrorHandlingClause // Optional ON ERROR clause
+	Annotations     *ActivityAnnotations // Optional @position, @caption, @color, @annotation
 }
 
 func (s *DeleteObjectStmt) isMicroflowStatement() {}
@@ -396,6 +540,7 @@ type CallMicroflowStmt struct {
 	OutputVariable string               // Optional output variable
 	MicroflowName  QualifiedName        // Microflow to call
 	Arguments      []CallArgument       // Arguments
+	Queue          *QualifiedName       // Optional IN QUEUE clause (task queue to run the call on)
 	ErrorHandling  *ErrorHandlingClause // Optional ON ERROR clause
 	Annotations    *ActivityAnnotations // Optional @position, @caption, @color, @annotation
 }
@@ -418,6 +563,7 @@ type CallJavaActionStmt struct {
 	OutputVariable string               // Optional output variable
 	ActionName     QualifiedName        // Java action name
 	Arguments      []CallArgument       // Arguments
+	Queue          *QualifiedName       // Optional IN QUEUE clause (task queue to run the call on)
 	ErrorHandling  *ErrorHandlingClause // Optional ON ERROR clause
 	Annotations    *ActivityAnnotations // Optional @position, @caption, @color, @annotation
 }
@@ -760,11 +906,15 @@ const (
 	RestBodyNone    RestBodyType = iota // No body
 	RestBodyCustom                      // Custom body template
 	RestBodyMapping                     // Export mapping
+	RestBodyBinary                      // Binary body: the raw bytes of an expression
 )
 
 // RestBody represents the request body configuration.
 type RestBody struct {
-	Type           RestBodyType    // Body type
+	Type RestBodyType // Body type
+	// Template is the body template for Custom, and for Binary the expression
+	// yielding the bytes to send — Studio Pro stores a FileDocument's Contents
+	// member there, e.g. `$Doc/Contents`.
 	Template       Expression      // Body template (for Custom type)
 	TemplateParams []TemplateParam // Template parameters for placeholders
 	MappingName    QualifiedName   // Export mapping name (for Mapping type)
@@ -779,13 +929,17 @@ const (
 	RestResultResponse                       // Return HttpResponse object
 	RestResultMapping                        // Use import mapping
 	RestResultNone                           // Ignore response
+	// RestResultFileDocument stores the response in a file document. Mendix
+	// requires a SPECIALIZATION here: `System.FileDocument` itself is rejected
+	// as a return type with CE0362, so ResultEntity always names a subclass.
+	RestResultFileDocument
 )
 
 // RestResult represents the response handling configuration.
 type RestResult struct {
 	Type         RestResultType // Result type
 	MappingName  QualifiedName  // Import mapping name (for Mapping type)
-	ResultEntity QualifiedName  // Result entity type (for Mapping type)
+	ResultEntity QualifiedName  // Result entity type (for Mapping and FileDocument types)
 	// IsList distinguishes `as Module.Entity` (single object) from
 	// `as list of Module.Entity` (list). Studio Pro stores this on the
 	// microflow's ImportMappingCall (Range.SingleObject /
@@ -838,6 +992,21 @@ type ImportFromMappingStmt struct {
 	SourceVariable string               // Input string variable (without $)
 	ErrorHandling  *ErrorHandlingClause // Optional ON ERROR clause
 	Annotations    *ActivityAnnotations // Optional @position, @caption, @color, @annotation
+
+	// Range — how much of the mapping's result to bind. Mendix stores this on
+	// the ImportMappingCall as ConstantRange{SingleObject} or
+	// CustomRange{LimitExpression, OffsetExpression}; before #881 MDL could say
+	// none of it, so all three settings described identically and a
+	// describe→edit→exec cycle silently changed the activity's meaning.
+	//
+	// All fields unset = the range was not authored, and the builder keeps
+	// inferring cardinality from the mapping's own root shape, as it always has.
+	// DESCRIBE always emits one of All/First/Limit so a round trip cannot fall
+	// back on that inference and change the activity's meaning.
+	All        bool       // ALL   — bind the whole list, explicitly
+	First      bool       // FIRST — bind ONE object rather than a list
+	LimitExpr  Expression // LIMIT <expr>  — Custom range
+	OffsetExpr Expression // OFFSET <expr> — Custom range
 }
 
 func (s *ImportFromMappingStmt) isMicroflowStatement() {}

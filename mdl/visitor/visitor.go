@@ -18,12 +18,16 @@ type errorListener struct {
 	*antlr.DefaultErrorListener
 	errors []error
 	source []string // input split into lines, for source-aware hints
+	// hinted records the (line, hint) pairs already reported, so one mistake
+	// that cascades into several ANTLR errors carries its explanation once.
+	hinted map[string]bool
 }
 
 func newErrorListener() *errorListener {
 	return &errorListener{
 		DefaultErrorListener: antlr.NewDefaultErrorListener(),
 		errors:               make([]error, 0),
+		hinted:               make(map[string]bool),
 	}
 }
 
@@ -33,8 +37,33 @@ func (l *errorListener) SyntaxError(_ antlr.Recognizer, _ any, line, column int,
 	if line >= 1 && line <= len(l.source) {
 		offending = l.source[line-1]
 	}
-	enhancedMsg := enhanceErrorMessage(msg, offending)
+	enhancedMsg := l.deduplicateHint(enhanceErrorMessage(msg, offending), line)
 	l.errors = append(l.errors, fmt.Errorf("line %d:%d %s", line, column, enhancedMsg))
+}
+
+// deduplicateHint strips the explanatory block from an enhanced message when the
+// same block was already attached to an error on the same line.
+//
+// One mistake commonly produces a cascade — an INDEX inside the attribute
+// parentheses yields four ANTLR errors on one line — and repeating a six-line
+// worked example under each of them buries the errors it is meant to explain.
+// Suppression is per line, so the same mistake made twice in a file is still
+// explained at each site.
+//
+// A hint is everything from the first blank line on; that is the shape every
+// branch of enhanceErrorMessage builds ("%s\n\n  …"), and a raw ANTLR message
+// is a single line, so the separator cannot occur in one.
+func (l *errorListener) deduplicateHint(msg string, line int) string {
+	i := strings.Index(msg, "\n\n")
+	if i < 0 {
+		return msg
+	}
+	key := fmt.Sprintf("%d\x00%s", line, msg[i:])
+	if l.hinted[key] {
+		return msg[:i]
+	}
+	l.hinted[key] = true
+	return msg
 }
 
 // simplifyExpecting collapses ANTLR's raw `expecting {A, B, …}` token-set dumps,
@@ -105,6 +134,21 @@ func enhanceErrorMessage(msg, offendingLine string) string {
 	// `Value = 'Caption'`, but MDL enumeration values are `Value 'Caption'`
 	// (optionally `Value CAPTION 'Caption'`) — no equals sign. The value name may
 	// itself be quoted; the `=` is the actual problem, not the quotes.
+	// A `comment 'text'` option on a CREATE that no longer accepts one. It used
+	// to parse and do nothing — the visitor stored it and the executor never read
+	// it — so scripts written against the old grammar reported success and set no
+	// documentation. Removing it turns that silence into an error, and this turns
+	// the error into the fix.
+	if looksLikeRemovedCreateComment(offendingLine) {
+		return fmt.Sprintf("%s\n\n  A `comment '…'` option on CREATE set no documentation — it was parsed and\n"+
+			"  discarded — so it has been removed. Use the doc comment, which does work\n"+
+			"  and carries more:\n"+
+			"    /** What this does. */\n"+
+			"    create microflow Mod.MF () begin … end;        (correct)\n"+
+			"    create microflow Mod.MF () comment 'What this does' begin … end;  (removed)\n"+
+			"  On an existing entity, ALTER ENTITY Mod.E SET COMMENT '…' also works.", msg)
+	}
+
 	if looksLikeEnumEquals(msg) {
 		return fmt.Sprintf("%s\n\n  Enumeration values do not use '='. Write the value name (quoted or not)\n"+
 			"  followed by an optional quoted caption:\n"+
@@ -121,6 +165,21 @@ func enhanceErrorMessage(msg, offendingLine string) string {
 			"    $Next = $Game/MoveSeq + 1;\n"+
 			"    retrieve $M from Mod.Move where [Seq = $Next] limit 1;   (correct)\n"+
 			"    retrieve $M from Mod.Move where [Seq = $Game/MoveSeq + 1] limit 1;  (wrong — XPath can't compute)", msg)
+	}
+
+	// An INDEX written INSIDE the attribute parentheses. The index syntax exists
+	// — it just belongs after the closing paren — but ANTLR reports the index
+	// name as an attribute missing its type ("missing ':' at '\"IdxRowCol\"'"),
+	// which reads as "indexes are not supported here" and sends the author off to
+	// find a different spelling. Keyed off the source line, because the token
+	// error lands on the name rather than on `index`. (sudoku findings #4)
+	if misplacedIndexRe.MatchString(offendingLine) {
+		return fmt.Sprintf("%s\n\n  An INDEX belongs AFTER the attribute parentheses, not inside them:\n"+
+			"    create entity Mod.Cell (Row: Integer, Col: Integer)\n"+
+			"      index \"IdxRowCol\" on (Row, Col);                     (correct)\n"+
+			"    create entity Mod.Cell (Row: Integer, Col: Integer,\n"+
+			"      index \"IdxRowCol\" on (Row, Col));                    (wrong — causes parse error)\n"+
+			"  On an existing entity: alter entity Mod.Cell add index \"IdxRowCol\" on (Row, Col);", msg)
 	}
 
 	// Check for a misplaced EXTENDS / GENERALIZATION clause. It must precede the
@@ -226,6 +285,31 @@ var addMissingAttributeRe = regexp.MustCompile(`(?i)\badd\s+([A-Za-z_]\w*)\s*:`)
 // stay false-positive-free (it won't fire on `not(...)`, `is not null`, etc.).
 var bareNotRe = regexp.MustCompile(`(?i)\bnot\s+\$`)
 
+// removedCreateCommentRe matches a `comment '…'` option on one of the CREATE
+// statements that no longer takes one. Anchored on the statement keyword so it
+// does not fire on the many places COMMENT is still valid — constants, JSON
+// structures, image collections, database connections, workflow activities and
+// ALTER … SET COMMENT.
+// Two shapes, because a CREATE is usually written across several lines and the
+// offending line is then the option on its own:
+//
+//	create microflow M.MF () comment 'x' begin …    -> the whole statement
+//	  comment 'x'                                   -> just the option
+//
+// The second alternative is safe on the statements where COMMENT is still valid
+// — a valid option does not produce a parse error for the hint to attach to.
+var removedCreateCommentRe = regexp.MustCompile(
+	`(?i)(\bcreate\b.*\b(entity|enumeration|module|microflow|nanoflow|rule)\b.*\bcomment\s*'` +
+		`|^\s*comment\s*'[^']*'\s*$)`)
+
+// misplacedIndexRe matches an INDEX definition written as if it were an entry in
+// the attribute list: `index "Name" on (A, B)`, `index "Name" (A)` or the
+// anonymous `index (A)`. The discriminator against the standalone `create index`
+// statement — which is valid and has the same leading token — is that the
+// parenthesis follows the optional ON directly, where the standalone form names
+// the entity in between (`index Idx on Mod.Cell (Row)`).
+var misplacedIndexRe = regexp.MustCompile(`(?i)^\s*index\s+("[^"]*"|[A-Za-z_]\w*)?\s*(on\s*)?\(`)
+
 // xpathArithmeticRe matches an arithmetic operator that ANTLR rejected inside a
 // bracketed XPath constraint. `expecting ']'` only occurs inside `[…]`, so a
 // stray arithmetic operator there is a compute-in-constraint attempt. The op set
@@ -251,6 +335,17 @@ func looksLikeMisplacedExtends(msg string) bool {
 // list. ANTLR reports the `=` as `mismatched input '=' expecting ')'`; an
 // attribute default with `=` produces a different ("no viable alternative")
 // message, so this pattern is specific to the enum-value case.
+// looksLikeRemovedCreateComment detects a `comment '…'` option on a CREATE
+// statement that no longer accepts one (entity, enumeration, module, microflow,
+// nanoflow, rule).
+//
+// It keys off the source line rather than the ANTLR message because the error
+// lands wherever the parser gave up — on the quoted string, on the following
+// token, or on `begin` — and none of those name the real problem.
+func looksLikeRemovedCreateComment(offendingLine string) bool {
+	return removedCreateCommentRe.MatchString(offendingLine)
+}
+
 func looksLikeEnumEquals(msg string) bool {
 	return strings.Contains(msg, "mismatched input '=' expecting ')'")
 }

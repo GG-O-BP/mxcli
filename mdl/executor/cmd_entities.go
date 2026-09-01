@@ -116,9 +116,17 @@ func execCreateEntity(ctx *ExecContext, s *ast.CreateEntityStmt) error {
 	// when the intent is to replace the whole definition — that path rebuilds the
 	// entity from the statement and DROPS any attribute the statement omits, so it
 	// is destructive if used for a partial update. (findings #24)
+	if existingEntity != nil && s.IfNotExists {
+		// IF NOT EXISTS is the safe half of re-runnability: it leaves the stored
+		// definition alone entirely, where CREATE OR MODIFY rebuilds it from the
+		// statement. (sudoku findings #10)
+		fmt.Fprintf(ctx.Output, "Entity %s.%s already exists — skipped\n", s.Name.Module, s.Name.Name)
+		return nil
+	}
 	if existingEntity != nil && !s.CreateOrModify {
 		return mdlerrors.NewAlreadyExistsMsg("entity", s.Name.Module+"."+s.Name.Name,
 			fmt.Sprintf("entity already exists: %s.%s — to add or change a member use 'alter entity %s.%s add attribute ...' (leaves the rest intact); "+
+				"to make the script re-runnable use 'create entity if not exists' (leaves an existing entity untouched); "+
 				"use 'create or modify entity' only to replace the whole definition (it drops any attribute this statement omits)",
 				s.Name.Module, s.Name.Name, s.Name.Module, s.Name.Name))
 	}
@@ -155,25 +163,10 @@ func execCreateEntity(ctx *ExecContext, s *ast.CreateEntityStmt) error {
 	}
 
 	// Validate TypeEnumeration attribute refs before writing anything.
-	// The visitor uses TypeEnumeration for both enum and entity type references
-	// (TypeEnumeration vs TypeEntity ambiguity). Accept the ref when it resolves
-	// to either a known enumeration or a known entity; reject unknown names fast
-	// so typos don't silently produce corrupt models.
 	for _, a := range s.Attributes {
-		if a.Type.Kind != ast.TypeEnumeration || a.Type.EnumRef == nil {
-			continue
+		if err := validateAttributeTypeRef(ctx, a.Name, a.Type); err != nil {
+			return err
 		}
-		refModule := a.Type.EnumRef.Module
-		refName := a.Type.EnumRef.Name
-		if findEnumeration(ctx, refModule, refName) != nil {
-			continue
-		}
-		if _, err := findEntity(ctx, refModule, refName); err == nil {
-			continue
-		}
-		return mdlerrors.NewValidationf(
-			"attribute '%s': unknown type '%s' — not a primitive, enumeration, or entity",
-			a.Name, a.Type.EnumRef.String())
 	}
 
 	// Create attributes and build name-to-ID map for validation rules and indexes
@@ -242,16 +235,9 @@ func execCreateEntity(ctx *ExecContext, s *ast.CreateEntityStmt) error {
 
 		// Value type: CALCULATED or DEFAULT
 		if a.Calculated {
-			attrValue := &domainmodel.AttributeValue{
-				Type: "CalculatedValue",
-			}
-			if a.CalculatedMicroflow != nil {
-				mfID, err := resolveMicroflowByName(ctx, a.CalculatedMicroflow.String())
-				if err != nil {
-					return mdlerrors.NewBackend(fmt.Sprintf("attribute '%s'", a.Name), err)
-				}
-				attrValue.MicroflowID = mfID
-				attrValue.MicroflowName = a.CalculatedMicroflow.String()
+			attrValue, err := resolveCalculatedValue(ctx, a.CalculatedMicroflow, s.Name.String(), a.Name, a.Type)
+			if err != nil {
+				return err
 			}
 			attr.Value = attrValue
 		} else if a.HasDefault {
@@ -287,7 +273,7 @@ func execCreateEntity(ctx *ExecContext, s *ast.CreateEntityStmt) error {
 			vr.ID = model.ID(types.GenerateID())
 			if a.NotNullError != "" {
 				vr.ErrorMessage = &model.Text{
-					Translations: map[string]string{"en_US": a.NotNullError},
+					Translations: map[string]string{authoringLanguage(ctx): a.NotNullError},
 				}
 				vr.ErrorMessage.ID = model.ID(types.GenerateID())
 			}
@@ -303,7 +289,7 @@ func execCreateEntity(ctx *ExecContext, s *ast.CreateEntityStmt) error {
 			vr.ID = model.ID(types.GenerateID())
 			if a.UniqueError != "" {
 				vr.ErrorMessage = &model.Text{
-					Translations: map[string]string{"en_US": a.UniqueError},
+					Translations: map[string]string{authoringLanguage(ctx): a.UniqueError},
 				}
 				vr.ErrorMessage.ID = model.ID(types.GenerateID())
 			}
@@ -403,7 +389,7 @@ func execCreateEntity(ctx *ExecContext, s *ast.CreateEntityStmt) error {
 		// Invalidate caches so updated entity is visible
 		invalidateHierarchy(ctx)
 		invalidateDomainModelsCache(ctx)
-		fmt.Fprintf(ctx.Output, "Modified entity: %s\n", s.Name)
+		ctx.ReportMutation("Modified", "entity: %s", s.Name)
 	} else {
 		// Create new entity
 		if err := ctx.Backend.CreateEntity(dm.ID, entity); err != nil {
@@ -664,7 +650,7 @@ func execCreateViewEntity(ctx *ExecContext, s *ast.CreateViewEntityStmt) error {
 		// Invalidate caches so updated entity is visible
 		invalidateHierarchy(ctx)
 		invalidateDomainModelsCache(ctx)
-		fmt.Fprintf(ctx.Output, "Modified view entity: %s\n", s.Name)
+		ctx.ReportMutation("Modified", "view entity: %s", s.Name)
 	} else {
 		// Create new entity
 		if err := ctx.Backend.CreateEntity(dm.ID, entity); err != nil {
@@ -760,16 +746,9 @@ func execAlterEntity(ctx *ExecContext, s *ast.AlterEntityStmt) error {
 		}
 		attr.ID = attrID
 		if a.Calculated {
-			attrValue := &domainmodel.AttributeValue{
-				Type: "CalculatedValue",
-			}
-			if a.CalculatedMicroflow != nil {
-				mfID, err := resolveMicroflowByName(ctx, a.CalculatedMicroflow.String())
-				if err != nil {
-					return mdlerrors.NewBackend(fmt.Sprintf("attribute '%s'", a.Name), err)
-				}
-				attrValue.MicroflowID = mfID
-				attrValue.MicroflowName = a.CalculatedMicroflow.String()
+			attrValue, err := resolveCalculatedValue(ctx, a.CalculatedMicroflow, s.Name.String(), a.Name, a.Type)
+			if err != nil {
+				return err
 			}
 			attr.Value = attrValue
 		} else if a.HasDefault {
@@ -795,7 +774,7 @@ func execAlterEntity(ctx *ExecContext, s *ast.AlterEntityStmt) error {
 			vr.ID = model.ID(types.GenerateID())
 			if a.NotNullError != "" {
 				vr.ErrorMessage = &model.Text{
-					Translations: map[string]string{"en_US": a.NotNullError},
+					Translations: map[string]string{authoringLanguage(ctx): a.NotNullError},
 				}
 				vr.ErrorMessage.ID = model.ID(types.GenerateID())
 			}
@@ -809,7 +788,7 @@ func execAlterEntity(ctx *ExecContext, s *ast.AlterEntityStmt) error {
 			vr.ID = model.ID(types.GenerateID())
 			if a.UniqueError != "" {
 				vr.ErrorMessage = &model.Text{
-					Translations: map[string]string{"en_US": a.UniqueError},
+					Translations: map[string]string{authoringLanguage(ctx): a.UniqueError},
 				}
 				vr.ErrorMessage.ID = model.ID(types.GenerateID())
 			}
@@ -824,44 +803,128 @@ func execAlterEntity(ctx *ExecContext, s *ast.AlterEntityStmt) error {
 		fmt.Fprintf(ctx.Output, "Added attribute '%s' to entity %s\n", a.Name, s.Name)
 
 	case ast.AlterEntityRenameAttribute:
-		found := false
+		var target *domainmodel.Attribute
 		for _, attr := range entity.Attributes {
-			if attr.Name == s.AttributeName {
-				attr.Name = s.NewName
-				found = true
-				break
+			switch attr.Name {
+			case s.AttributeName:
+				target = attr
+			case s.NewName:
+				return mdlerrors.NewValidationf("attribute '%s' already exists on entity %s", s.NewName, s.Name)
 			}
 		}
-		if !found {
+		if target == nil {
 			return mdlerrors.NewNotFoundMsg("attribute", s.AttributeName, fmt.Sprintf("attribute '%s' not found on entity %s", s.AttributeName, s.Name))
 		}
+		target.Name = s.NewName
+		// The entity's own access and validation rules hold the attribute's
+		// qualified name as a string, so they have to move with it *in the model*
+		// — not merely in the BSON the reference scan rewrites afterwards.
+		// Leaving them to the scan produced a duplicate member: UpdateEntity saw
+		// an attribute with no matching MemberAccess and added one, and the scan
+		// then renamed the stale entry into a second copy of it. mxbuild caught
+		// that as CE0066 "Entity access is out of date".
+		renameAttributeInEntityRules(entity, s.Name.String(), s.AttributeName, s.NewName)
 		if err := ctx.Backend.UpdateEntity(dm.ID, entity); err != nil {
 			return mdlerrors.NewBackend("rename attribute", err)
 		}
+
+		// Everything that points at an attribute — a create/change activity's
+		// member, a page's attribute widget, the entity's own validation and
+		// access rules — stores the fully qualified name as a string. Renaming
+		// only the domain model leaves every one of them dangling, which mxbuild
+		// reports as CE1613 "The selected attribute 'Mod.Entity.Old' no longer
+		// exists." (#910). The scan runs *after* UpdateEntity on purpose: it is a
+		// raw-BSON pass over every unit including the domain model, and writing
+		// the model afterwards would re-serialize it from the parsed entity and
+		// undo the scan's edits there.
+		hits, err := ctx.Backend.RenameReferences(
+			s.Name.String()+"."+s.AttributeName,
+			s.Name.String()+"."+s.NewName,
+			false,
+		)
+		if err != nil {
+			return mdlerrors.NewBackend("update attribute references", err)
+		}
+
+		// XPath constraints name the attribute as a bare step, so the scan above
+		// cannot see them. They are resolvable without any type inference — a
+		// constraint's target entity is known structurally and every further hop
+		// is named in the path — so they are rewritten here rather than left for
+		// the user. See mdl/xpathrefs for why the edit is textual and what it
+		// refuses to touch.
+		xres, err := renameAttributeInXPath(ctx, s.Name.String(), string(dm.ID), s.Name.Name, s.AttributeName, s.NewName)
+		if err != nil {
+			return mdlerrors.NewBackend("update attribute references in XPath constraints", err)
+		}
+
 		invalidateHierarchy(ctx)
 		invalidateDomainModelsCache(ctx)
 		fmt.Fprintf(ctx.Output, "Renamed attribute '%s' to '%s' on entity %s\n", s.AttributeName, s.NewName, s.Name)
+		if n := totalRefCount(hits); n > 0 {
+			fmt.Fprintf(ctx.Output, "Updated %d reference(s) in %d document(s)\n", n, len(hits))
+		}
+		reportXPathRename(ctx, xres)
+		// Microflow expressions ($obj/Attr) are the one place left. A bare name
+		// there is only resolvable from the type of what precedes it, which needs
+		// the resolver in PROPOSAL_expression_type_checking; mxbuild reports the
+		// leftovers as CE0117, so say so rather than let a half-done rename look
+		// finished.
+		fmt.Fprintf(ctx.Output,
+			"Note: uses in microflow expressions ($obj/%s) are stored as text and were "+
+				"not rewritten — run 'mxcli docker check' to find them.\n",
+			s.AttributeName)
+
+	case ast.AlterEntityDropDefault:
+		// Clearing a default is its own operation because MODIFY ATTRIBUTE cannot
+		// express it: that form always takes a type, and its type slot accepts a
+		// bare qualified name, so `MODIFY ATTRIBUTE X SET DEFAULT NULL` read SET
+		// as the type and wrote an unloadable project (#910).
+		found := false
+		for _, attr := range entity.Attributes {
+			if attr.Name != s.AttributeName {
+				continue
+			}
+			// Only the stored default goes. A CalculatedValue is not a default —
+			// dropping it would silently turn a calculated attribute into a plain
+			// one, which is a different operation the user did not ask for.
+			if attr.Value != nil && attr.Value.Type == "CalculatedValue" {
+				return mdlerrors.NewValidationf(
+					"attribute '%s' is calculated, not defaulted — DROP DEFAULT does not apply "+
+						"(use MODIFY ATTRIBUTE to change how it is computed)", s.AttributeName)
+			}
+			attr.Value = nil
+			found = true
+			break
+		}
+		if !found {
+			return mdlerrors.NewNotFoundMsg("attribute", s.AttributeName,
+				fmt.Sprintf("attribute '%s' not found on entity %s", s.AttributeName, s.Name))
+		}
+		if err := ctx.Backend.UpdateEntity(dm.ID, entity); err != nil {
+			return mdlerrors.NewBackend("drop default", err)
+		}
+		invalidateHierarchy(ctx)
+		invalidateDomainModelsCache(ctx)
+		fmt.Fprintf(ctx.Output, "Dropped default value on attribute '%s' of entity %s\n", s.AttributeName, s.Name)
 
 	case ast.AlterEntityModifyAttribute:
 		// CALCULATED attributes are only supported on persistent entities
 		if s.Calculated && !entity.Persistable {
 			return mdlerrors.NewValidationf("attribute '%s': calculated attributes are only supported on persistent entities", s.AttributeName)
 		}
+		// Reject a type that resolves to nothing BEFORE touching the attribute.
+		// Writing one produces a .mpr Mendix cannot load at all (#910).
+		if err := validateModifyAttributeTypeRef(ctx, s.AttributeName, s.DataType); err != nil {
+			return err
+		}
 		found := false
 		for _, attr := range entity.Attributes {
 			if attr.Name == s.AttributeName {
 				attr.Type = convertDataType(s.DataType)
 				if s.Calculated {
-					attrValue := &domainmodel.AttributeValue{
-						Type: "CalculatedValue",
-					}
-					if s.CalculatedMicroflow != nil {
-						mfID, err := resolveMicroflowByName(ctx, s.CalculatedMicroflow.String())
-						if err != nil {
-							return mdlerrors.NewBackend(fmt.Sprintf("attribute '%s'", s.AttributeName), err)
-						}
-						attrValue.MicroflowID = mfID
-						attrValue.MicroflowName = s.CalculatedMicroflow.String()
+					attrValue, err := resolveCalculatedValue(ctx, s.CalculatedMicroflow, s.Name.String(), s.AttributeName, s.DataType)
+					if err != nil {
+						return err
 					}
 					attr.Value = attrValue
 				}
@@ -871,10 +934,10 @@ func execAlterEntity(ctx *ExecContext, s *ast.AlterEntityStmt) error {
 				// "Required" rule and NOT NULL (re)adds it.
 				attrQN := s.Name.String() + "." + attr.Name
 				if s.ModifyNotNull != nil {
-					setAttributeValidationRule(entity, attr, attrQN, "Required", *s.ModifyNotNull, s.ModifyNotNullError)
+					setAttributeValidationRule(entity, attr, attrQN, "Required", *s.ModifyNotNull, s.ModifyNotNullError, authoringLanguage(ctx))
 				}
 				if s.ModifyUnique != nil {
-					setAttributeValidationRule(entity, attr, attrQN, "Unique", *s.ModifyUnique, s.ModifyUniqueError)
+					setAttributeValidationRule(entity, attr, attrQN, "Unique", *s.ModifyUnique, s.ModifyUniqueError, authoringLanguage(ctx))
 				}
 				if s.ModifyHasDefault {
 					defaultStr := fmt.Sprintf("%v", s.ModifyDefaultValue)
@@ -895,7 +958,7 @@ func execAlterEntity(ctx *ExecContext, s *ast.AlterEntityStmt) error {
 		}
 		invalidateHierarchy(ctx)
 		invalidateDomainModelsCache(ctx)
-		fmt.Fprintf(ctx.Output, "Modified attribute '%s' on entity %s\n", s.AttributeName, s.Name)
+		ctx.ReportMutation("Modified", "attribute '%s' on entity %s", s.AttributeName, s.Name)
 
 	case ast.AlterEntityDropAttribute:
 		// System attribute pseudo-names: drop by clearing entity flags
@@ -939,8 +1002,30 @@ func execAlterEntity(ctx *ExecContext, s *ast.AlterEntityStmt) error {
 			}
 			return mdlerrors.NewNotFoundMsg("attribute", s.AttributeName, fmt.Sprintf("attribute '%s' not found on entity %s", s.AttributeName, s.Name))
 		}
-		// Clean up entity-level references to the dropped attribute
+		// Clean up entity-level references to the dropped attribute.
+		//
+		// Two reference forms have to be matched, not one. Mendix stores an
+		// index's column as an element ID (AttributePointer) but a validation
+		// rule's Attribute and an access rule's MemberAccess as a BY_NAME
+		// qualified name string. Both come back in the same model.ID field, so
+		// comparing against the element ID alone matched nothing and left the
+		// rules behind — CE1613 "The selected attribute ... no longer exists."
+		// serializeValidationRule documents the same duality on the way out.
 		droppedID := entity.Attributes[idx].ID
+		droppedQName := fmt.Sprintf("%s.%s.%s", module.Name, entity.Name, entity.Attributes[idx].Name)
+		// Which FIELD carries the reference also varies by engine: the legacy
+		// backend fills a MemberAccess's AttributeID and AttributeName both, while
+		// the modelsdk one leaves AttributeID empty and fills only AttributeName
+		// (domainmodel.go: memberAccessFromGen). Both spell it qualified, so check
+		// every field that could hold it rather than picking one.
+		refersToDropped := func(refs ...string) bool {
+			for _, r := range refs {
+				if r != "" && (r == string(droppedID) || r == droppedQName) {
+					return true
+				}
+			}
+			return false
+		}
 
 		// Track what gets cleaned up for reporting
 		origValidationCount := len(entity.ValidationRules)
@@ -949,7 +1034,7 @@ func execAlterEntity(ctx *ExecContext, s *ast.AlterEntityStmt) error {
 		// Remove validation rules that reference this attribute
 		var keepRules []*domainmodel.ValidationRule
 		for _, vr := range entity.ValidationRules {
-			if vr.AttributeID != droppedID {
+			if !refersToDropped(string(vr.AttributeID)) {
 				keepRules = append(keepRules, vr)
 			}
 		}
@@ -960,7 +1045,7 @@ func execAlterEntity(ctx *ExecContext, s *ast.AlterEntityStmt) error {
 		for _, rule := range entity.AccessRules {
 			var keepMembers []*domainmodel.MemberAccess
 			for _, ma := range rule.MemberAccesses {
-				if ma.AttributeID != droppedID {
+				if !refersToDropped(string(ma.AttributeID), ma.AttributeName) {
 					keepMembers = append(keepMembers, ma)
 				} else {
 					removedMemberAccess++
@@ -974,7 +1059,7 @@ func execAlterEntity(ctx *ExecContext, s *ast.AlterEntityStmt) error {
 		for _, idx := range entity.Indexes {
 			var keepAttrs []*domainmodel.IndexAttribute
 			for _, ia := range idx.Attributes {
-				if ia.AttributeID != droppedID {
+				if !refersToDropped(string(ia.AttributeID)) {
 					keepAttrs = append(keepAttrs, ia)
 				}
 			}
@@ -982,7 +1067,7 @@ func execAlterEntity(ctx *ExecContext, s *ast.AlterEntityStmt) error {
 
 			var keepIDs []model.ID
 			for _, id := range idx.AttributeIDs {
-				if id != droppedID {
+				if !refersToDropped(string(id)) {
 					keepIDs = append(keepIDs, id)
 				}
 			}
@@ -1056,6 +1141,23 @@ func execAlterEntity(ctx *ExecContext, s *ast.AlterEntityStmt) error {
 		for _, attr := range entity.Attributes {
 			attrNameToID[attr.Name] = attr.ID
 		}
+		// An index already covering these columns, in this order, with these
+		// sort directions IS this index — a Mendix index has no name to tell two
+		// apart. Adding it again used to append a silent duplicate that mxbuild
+		// rejects with CE0072 "Duplicate indexes", so a domain script run twice
+		// produced a model that no longer builds, with nothing in mxcli's output
+		// to say so. Now the bare form errors like ADD ATTRIBUTE does, and
+		// IF NOT EXISTS skips. (sudoku findings #10)
+		if existing := findIndexByColumns(entity, s.Index.Columns); existing != nil {
+			if s.IfNotExists {
+				fmt.Fprintf(ctx.Output, "Index %s already exists on entity %s — skipped\n", indexColumnLabel(s.Index.Columns), s.Name)
+				return nil
+			}
+			return mdlerrors.NewAlreadyExistsMsg("index", indexColumnLabel(s.Index.Columns),
+				fmt.Sprintf("index %s already exists on entity %s — re-running this statement would create a duplicate, which fails the build with CE0072; use 'add index if not exists' to make the script re-runnable",
+					indexColumnLabel(s.Index.Columns), s.Name))
+		}
+
 		idxID := model.ID(types.GenerateID())
 		var indexAttrs []*domainmodel.IndexAttribute
 		for _, col := range s.Index.Columns {
@@ -1079,31 +1181,58 @@ func execAlterEntity(ctx *ExecContext, s *ast.AlterEntityStmt) error {
 			return mdlerrors.NewBackend("add index", err)
 		}
 		invalidateDomainModelsCache(ctx)
-		fmt.Fprintf(ctx.Output, "Added index to entity %s\n", s.Name)
+		fmt.Fprintf(ctx.Output, "Added index %s to entity %s\n", indexColumnLabel(s.Index.Columns), s.Name)
 
 	case ast.AlterEntityDropIndex:
-		// Find and remove the index by position (Mendix indexes don't have user-visible names)
-		if len(entity.Indexes) == 0 {
-			return mdlerrors.NewValidationf("no indexes on entity %s", s.Name)
+		// Two selectors. The column list is the index's real identity — it is
+		// what `describe entity` prints, and a Mendix index stores no name — so
+		// it is the only form that round-trips. The ordinal name ("idx1") is
+		// kept for compatibility, but it names a POSITION that shifts as soon as
+		// an earlier index is dropped, which makes a multi-drop script depend on
+		// its own statement order.
+		label := s.IndexName
+		if s.Index != nil {
+			label = indexColumnLabel(s.Index.Columns)
 		}
-		// For now, drop by ordinal name ("idx1", "idx2", etc.) or drop all
 		idx := -1
-		for i := range entity.Indexes {
-			indexName := fmt.Sprintf("idx%d", i+1)
-			if indexName == s.IndexName {
-				idx = i
-				break
+		switch {
+		case s.Index != nil:
+			for i := range entity.Indexes {
+				if indexMatchesColumns(entity, entity.Indexes[i], s.Index.Columns) {
+					idx = i
+					break
+				}
 			}
+		case s.IndexName != "":
+			for i := range entity.Indexes {
+				if fmt.Sprintf("idx%d", i+1) == s.IndexName {
+					idx = i
+					break
+				}
+			}
+		default:
+			return mdlerrors.NewValidation("no index specified")
 		}
 		if idx < 0 {
-			return mdlerrors.NewNotFoundMsg("index", s.IndexName, fmt.Sprintf("index '%s' not found on entity %s", s.IndexName, s.Name))
+			// IF EXISTS makes a drop re-runnable: the second run finds nothing
+			// and says so instead of halting the script. (sudoku findings #10)
+			if s.IfExists {
+				fmt.Fprintf(ctx.Output, "Index %s not found on entity %s — skipped\n", label, s.Name)
+				return nil
+			}
+			hint := ""
+			if s.Index == nil {
+				hint = " — a Mendix index stores no name, so 'idx1' is a position, not an identity; select it by its columns instead, e.g. drop index (Row, Col)"
+			}
+			return mdlerrors.NewNotFoundMsg("index", label,
+				fmt.Sprintf("index %s not found on entity %s%s", label, s.Name, hint))
 		}
 		entity.Indexes = append(entity.Indexes[:idx], entity.Indexes[idx+1:]...)
 		if err := ctx.Backend.UpdateEntity(dm.ID, entity); err != nil {
 			return mdlerrors.NewBackend("drop index", err)
 		}
 		invalidateDomainModelsCache(ctx)
-		fmt.Fprintf(ctx.Output, "Dropped index '%s' from entity %s\n", s.IndexName, s.Name)
+		fmt.Fprintf(ctx.Output, "Dropped index %s from entity %s\n", label, s.Name)
 
 	case ast.AlterEntityAddEventHandler:
 		if s.EventHandler == nil {
@@ -1196,7 +1325,7 @@ func execAlterEntity(ctx *ExecContext, s *ast.AlterEntityStmt) error {
 // fully-qualified attribute name (Module.Entity.Attr), while a freshly-created
 // rule may carry the bare UUID — ruleTargetsAttribute handles both. A rule we
 // add is stored as the qualified name, which validationRuleToGen writes verbatim.
-func setAttributeValidationRule(entity *domainmodel.Entity, attr *domainmodel.Attribute, attrQualifiedName, ruleType string, want bool, errMsg string) {
+func setAttributeValidationRule(entity *domainmodel.Entity, attr *domainmodel.Attribute, attrQualifiedName, ruleType string, want bool, errMsg, lang string) {
 	kept := entity.ValidationRules[:0]
 	for _, vr := range entity.ValidationRules {
 		if vr != nil && vr.Type == ruleType && ruleTargetsAttribute(string(vr.AttributeID), attr) {
@@ -1211,7 +1340,7 @@ func setAttributeValidationRule(entity *domainmodel.Entity, attr *domainmodel.At
 	vr := &domainmodel.ValidationRule{AttributeID: model.ID(attrQualifiedName), Type: ruleType}
 	vr.ID = model.ID(types.GenerateID())
 	if errMsg != "" {
-		vr.ErrorMessage = &model.Text{Translations: map[string]string{"en_US": errMsg}}
+		vr.ErrorMessage = &model.Text{Translations: map[string]string{lang: errMsg}}
 		vr.ErrorMessage.ID = model.ID(types.GenerateID())
 	}
 	entity.ValidationRules = append(entity.ValidationRules, vr)
@@ -1298,3 +1427,52 @@ func warnEntityReferences(ctx *ExecContext, entityName string) {
 }
 
 // --- Executor method wrappers for callers not yet migrated ---
+
+// indexColumnLabel renders an index's columns the way `describe entity` does,
+// so an error names the index in the spelling the author can act on.
+func indexColumnLabel(cols []ast.IndexColumn) string {
+	parts := make([]string, len(cols))
+	for i, c := range cols {
+		parts[i] = c.Name
+		if c.Descending {
+			parts[i] += " desc"
+		}
+	}
+	return "(" + strings.Join(parts, ", ") + ")"
+}
+
+// indexMatchesColumns reports whether a stored index covers exactly these
+// columns, in this order, with these sort directions.
+//
+// Order and direction are part of the identity, not decoration: Mendix builds a
+// composite database index, and (Row, Col) serves different queries from
+// (Col, Row). Treating them as the same index would make ADD refuse a distinct
+// index and DROP remove the wrong one.
+func indexMatchesColumns(entity *domainmodel.Entity, index *domainmodel.Index, cols []ast.IndexColumn) bool {
+	if len(index.Attributes) != len(cols) {
+		return false
+	}
+	nameByID := make(map[model.ID]string, len(entity.Attributes))
+	for _, attr := range entity.Attributes {
+		nameByID[attr.ID] = attr.Name
+	}
+	for i, ia := range index.Attributes {
+		if !strings.EqualFold(nameByID[ia.AttributeID], cols[i].Name) {
+			return false
+		}
+		if ia.Ascending == cols[i].Descending {
+			return false
+		}
+	}
+	return true
+}
+
+// findIndexByColumns returns the stored index with exactly these columns, or nil.
+func findIndexByColumns(entity *domainmodel.Entity, cols []ast.IndexColumn) *domainmodel.Index {
+	for _, index := range entity.Indexes {
+		if indexMatchesColumns(entity, index, cols) {
+			return index
+		}
+	}
+	return nil
+}

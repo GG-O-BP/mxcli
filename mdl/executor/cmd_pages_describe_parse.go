@@ -40,6 +40,35 @@ func extractConditionalSettings(widget *rawWidget, w map[string]any) {
 	}
 }
 
+// scrollContainerRegions is the fixed slot order of a Forms$ScrollContainer.
+// The BSON key and the name MDL uses for the slot differ for the centre one,
+// which Mendix stores as "CenterRegion" while its four siblings are bare
+// positions.
+var scrollContainerRegions = []struct{ key, name string }{
+	{"Top", "top"},
+	{"Right", "right"},
+	{"Bottom", "bottom"},
+	{"Left", "left"},
+	{"CenterRegion", "center"},
+}
+
+// bsonInt coerces a BSON numeric to int. Mendix stores a region's Size as
+// int32, but the decoders in this package hand back whichever width the driver
+// chose, so all three are accepted.
+func bsonInt(v any) int {
+	switch n := v.(type) {
+	case int32:
+		return int(n)
+	case int64:
+		return int(n)
+	case int:
+		return n
+	case float64:
+		return int(n)
+	}
+	return 0
+}
+
 func parseRawWidget(ctx *ExecContext, w map[string]any, parentEntityContext ...string) []rawWidget {
 	inheritedCtx := ""
 	if len(parentEntityContext) > 0 {
@@ -69,18 +98,45 @@ func parseRawWidget(ctx *ExecContext, w map[string]any, parentEntityContext ...s
 			widget.DesignProperties = extractDesignProperties(appearance)
 		}
 		extractConditionalSettings(&widget, w)
-		// Primary location: CenterRegion.Widgets (Mendix 9+)
-		var children []any
-		if centerRegion, ok := w["CenterRegion"].(map[string]any); ok {
-			children = getBsonArrayElements(centerRegion["Widgets"])
+		// Regions are five named slots, not a list: Top, Right, Bottom, Left
+		// and CenterRegion (the last spelled differently from its siblings).
+		// Each occupied one becomes a synthetic intermediate widget, the same
+		// way TabControl preserves its tab pages below — so the output says
+		// which region a widget is in.
+		//
+		// Reading CenterRegion alone was survivable for pages, where the other
+		// slots are usually empty, and wrong for layouts: a layout's topbar
+		// lives in Top and its navigation in Left, so the two things anyone
+		// describes a layout to see were the two the walk skipped.
+		for _, slot := range scrollContainerRegions {
+			region, ok := w[slot.key].(map[string]any)
+			if !ok {
+				continue
+			}
+			child := rawWidget{Type: "Forms$ScrollContainerRegion", Name: slot.name}
+			if appearance, ok := region["Appearance"].(map[string]any); ok {
+				if class, ok := appearance["Class"].(string); ok && class != "" {
+					child.Class = class
+				}
+			}
+			if sm, ok := region["SizeMode"].(string); ok {
+				child.RegionSizeMode = sm
+			}
+			child.RegionSize = bsonInt(region["Size"])
+			for _, c := range getBsonArrayElements(region["Widgets"]) {
+				if cMap, ok := c.(map[string]any); ok {
+					child.Children = append(child.Children, parseRawWidget(ctx, cMap, inheritedCtx)...)
+				}
+			}
+			widget.Children = append(widget.Children, child)
 		}
-		// Fallback for older BSON layouts that stored children directly.
-		if len(children) == 0 {
-			children = getBsonArrayElements(w["Widgets"])
-		}
-		for _, c := range children {
-			if cMap, ok := c.(map[string]any); ok {
-				widget.Children = append(widget.Children, parseRawWidget(ctx, cMap, inheritedCtx)...)
+		// Fallback for older BSON that stored children directly on the
+		// container rather than in a region.
+		if len(widget.Children) == 0 {
+			for _, c := range getBsonArrayElements(w["Widgets"]) {
+				if cMap, ok := c.(map[string]any); ok {
+					widget.Children = append(widget.Children, parseRawWidget(ctx, cMap, inheritedCtx)...)
+				}
 			}
 		}
 		return []rawWidget{widget}
@@ -214,6 +270,17 @@ func parseRawWidget(ctx *ExecContext, w map[string]any, parentEntityContext ...s
 		widget.Rows = parseLayoutGridRows(ctx, w, inheritedCtx)
 		return []rawWidget{widget}
 
+	case "Forms$NavigationTree", "Pages$NavigationTree",
+		"Forms$MenuBar", "Pages$MenuBar":
+		// The profile is a qualified name one level down, in a
+		// Forms$NavigationSource, not a property of the tree.
+		if src, ok := w["MenuSource"].(map[string]any); ok {
+			if p, ok := src["NavigationProfile"].(string); ok {
+				widget.NavigationProfile = p
+			}
+		}
+		return []rawWidget{widget}
+
 	case "Forms$DynamicText", "Pages$DynamicText":
 		widget.Content = extractTextContent(ctx, w, "Content")
 		widget.Parameters = extractClientTemplateParameters(ctx, w, "Content")
@@ -268,17 +335,20 @@ func parseRawWidget(ctx *ExecContext, w map[string]any, parentEntityContext ...s
 	case "Forms$TextArea", "Pages$TextArea":
 		widget.Caption = extractLabelText(ctx, w)
 		widget.Content = extractAttributeRef(ctx, w)
+		widget.OnChange = extractOnChangeAction(ctx, w)
 		return []rawWidget{widget}
 
 	case "Forms$DatePicker", "Pages$DatePicker":
 		widget.Caption = extractLabelText(ctx, w)
 		widget.Content = extractAttributeRef(ctx, w)
+		widget.OnChange = extractOnChangeAction(ctx, w)
 		return []rawWidget{widget}
 
 	case "Forms$RadioButtons", "Pages$RadioButtons", "Forms$RadioButtonGroup", "Pages$RadioButtonGroup":
 		widget.Type = "Forms$RadioButtons" // Normalize type
 		widget.Caption = extractLabelText(ctx, w)
 		widget.Content = extractAttributeRef(ctx, w)
+		widget.OnChange = extractOnChangeAction(ctx, w)
 		return []rawWidget{widget}
 
 	case "Forms$CheckBox", "Pages$CheckBox":
@@ -287,6 +357,7 @@ func parseRawWidget(ctx *ExecContext, w map[string]any, parentEntityContext ...s
 		widget.Editable = extractEditable(ctx, w)
 		widget.ReadOnlyStyle = extractReadOnlyStyle(ctx, w)
 		widget.ShowLabel = extractShowLabel(ctx, w)
+		widget.OnChange = extractOnChangeAction(ctx, w)
 		return []rawWidget{widget}
 
 	case "CustomWidgets$CustomWidget":
@@ -303,6 +374,16 @@ func parseRawWidget(ctx *ExecContext, w map[string]any, parentEntityContext ...s
 				widget.Content = extractCustomWidgetPropertyAssociation(ctx, w, "attributeAssociation")
 				widget.CaptionAttribute = extractCustomWidgetPropertyAttributeRef(ctx, w, "optionsSourceAssociationCaptionAttribute")
 			}
+			// The on-change action, in BOTH modes — the def maps `onChangeEvent`
+			// in each, and modes are exclusive. Read outside the DataSource
+			// branch so an enumeration-mode ComboBox keeps its action too.
+			//
+			// Without this the write path stored the action correctly and
+			// describe simply never emitted it, so a describe→edit→exec cycle
+			// deleted it: measured 1 Forms$MicroflowAction → 0, while the
+			// datepicker beside it survived. Same shape as the DataGrid2
+			// `onClick` round trip below (ledger #67).
+			widget.OnChange = renderClientActionMDL(ctx, customWidgetPropertyActionMap(ctx, w, "onChangeEvent"))
 		}
 		// The drop-down filter's association mode is the same shape as the
 		// ComboBox's, on differently-named properties: `baseType` selects it and
@@ -333,7 +414,13 @@ func parseRawWidget(ctx *ExecContext, w map[string]any, parentEntityContext ...s
 			widget.ControlBar = extractDataGrid2ControlBar(ctx, w)
 			// onClick action (ledger #67): read the client action back with full
 			// parameter mappings so a describe round-trip re-emits the onClick.
-			widget.OnClick = renderClientActionMDL(ctx, customWidgetPropertyActionMap(ctx, w, "onClick"))
+			// By SOURCE, not by the literal key — the widget may store it as
+			// `onClickEvent`/`onClickAction`, which the writer accepts and the
+			// literal lookup could not see (#956).
+			widget.OnClick = renderClientActionMDL(ctx, customWidgetActionForSource(ctx, w, "OnClick"))
+			// Slots MDL addresses by the widget's own key — DataGrid2 stores
+			// onSelectionChange and onConfigurationChange (#956).
+			widget.NamedActions = namedActionSlotsOf(ctx, w)
 		}
 		// For Gallery, extract datasource, content widgets, filter widgets, and selection mode
 		if widget.RenderMode == "gallery" {
@@ -367,7 +454,39 @@ func parseRawWidget(ctx *ExecContext, w map[string]any, parentEntityContext ...s
 			// onClick action (ledger #67 — reported on CustomChart): read the client
 			// action back with full parameter mappings so a describe round-trip
 			// re-emits it (the finding's original widget goes through this path).
-			widget.OnClick = renderClientActionMDL(ctx, customWidgetPropertyActionMap(ctx, w, "onClick"))
+			// By SOURCE, not by the literal key — BadgeButton stores the same slot
+			// as `onClickEvent` and HeatMap as `onClickAction`, both of which the
+			// writer accepts and the literal lookup could not see (#956).
+			widget.OnClick = renderClientActionMDL(ctx, customWidgetActionForSource(ctx, w, "OnClick"))
+			// The change slot too. This path had no OnChange read at all, so a
+			// Slider/RangeSlider/StarRating stored its action correctly and
+			// described back without it — the same one-way write as the click
+			// slot, on the widgets that reach describe generically (#956).
+			widget.OnChange = renderClientActionMDL(ctx, customWidgetActionForSource(ctx, w, "OnChange"))
+			// Every remaining action slot, addressed by the widget's own key
+			// (#956) — a File Uploader's createFileAction / onUploadSuccessFile,
+			// a Switch's `action`, and so on.
+			widget.NamedActions = namedActionSlotsOf(ctx, w)
+		}
+		// Generic datasource fallback for a pluggable widget with no per-widget
+		// extractor above. Without it a widget whose datasource lives on a
+		// property MDL reaches through the `DataSource:` keyword described back
+		// with no datasource at all, and a rewrite dropped it — measured on a
+		// Studio Pro-authored File Uploader 2.5.0: a page at 0 errors came back
+		// as CE0642 "Property 'Associated files' is required" plus two CE1571
+		// (the action's parameter has no default once its datasource is gone),
+		// while the DESCRIBE text was byte-identical before and after (#956).
+		//
+		// anyCustomWidgetDataSource, not firstObjectPropertyDataSource: the latter
+		// stops at the first property whose DataSource parses at all, and a File
+		// Uploader has one carrying no reference ahead of its real one.
+		if widget.DataSource == nil {
+			if ds := anyCustomWidgetDataSource(w); ds != nil {
+				widget.DataSource = ds
+				if widget.EntityContext == "" {
+					widget.EntityContext = dataSourceEntityContext(ctx, ds)
+				}
+			}
 		}
 		return []rawWidget{widget}
 
@@ -586,50 +705,9 @@ func extractDataViewDataSource(ctx *ExecContext, w map[string]any) *rawDataSourc
 	if !ok {
 		return nil
 	}
-
-	dsType, _ := ds["$Type"].(string)
-
-	switch dsType {
-	case "Forms$MicroflowSource":
-		if mf := microflowSourceRef(ds); mf != "" {
-			return &rawDataSource{Type: "microflow", Reference: mf}
-		}
-	case "Forms$NanoflowSource":
-		if nf := nanoflowSourceRef(ds); nf != "" {
-			return &rawDataSource{Type: "nanoflow", Reference: nf}
-		}
-	case "Forms$DataViewSource":
-		// "Data from context over an association" — the DataViewSource carries an
-		// IndirectEntityRef navigating the association. Reconstruct $ctx/Assoc.
-		if path, ctx := associationSourcePath(ds); path != "" {
-			return &rawDataSource{Type: "association", Reference: path, ContextVariable: ctx}
-		}
-		// Plain context source — extract the page parameter from SourceVariable.
-		if srcVar, ok := ds["SourceVariable"].(map[string]any); ok {
-			if paramName, ok := srcVar["PageParameter"].(string); ok && paramName != "" {
-				return &rawDataSource{Type: "parameter", Reference: paramName}
-			}
-		}
-	case "Forms$DatabaseSource":
-		// Database/XPath source - for now just note it's a database source
-		return &rawDataSource{Type: "database", Reference: ""}
-	case "Forms$ListenTargetSource":
-		// Master-detail binding: DataView listens to a selection-aware container
-		// (Gallery/ListView/DataGrid) by widget name.
-		if target, ok := ds["ListenTarget"].(string); ok && target != "" {
-			return &rawDataSource{Type: "selection", Reference: target}
-		}
-	case "Forms$AssociationSource":
-		if path, ctx := associationSourcePath(ds); path != "" {
-			return &rawDataSource{Type: "association", Reference: path, ContextVariable: ctx}
-		}
-	}
-
-	return nil
+	return parseDataSource(ds)
 }
 
-// extractDataViewLabelWidth reads the DataView LabelWidth as an int. Returns
-// -1 when absent so callers can omit the property from output.
 func extractDataViewLabelWidth(w map[string]any) int {
 	v, ok := w["LabelWidth"]
 	if !ok {
@@ -759,17 +837,50 @@ func parseListViewContent(ctx *ExecContext, w map[string]any, entityContext ...s
 	if len(entityContext) > 0 {
 		entCtx = entityContext[0]
 	}
-	widgets := getBsonArrayElements(w["Widgets"])
-	if widgets == nil {
-		return nil
-	}
 	var result []rawWidget
-	for _, wgt := range widgets {
+	for _, wgt := range getBsonArrayElements(w["Widgets"]) {
 		wgtMap, ok := wgt.(map[string]any)
 		if !ok {
 			continue
 		}
 		result = append(result, parseRawWidget(ctx, wgtMap, entCtx)...)
+	}
+	result = append(result, parseListViewTemplates(ctx, w)...)
+	return result
+}
+
+// parseListViewTemplates reads a List View's specialization templates — the
+// per-specialization bodies Studio Pro stores in a Templates array, alongside
+// (not inside) the list view's own Widgets.
+//
+// Nothing read this array before, so a template's entire contents were absent
+// from DESCRIBE with no warning, and SEARCH inherited the blind spot because the
+// catalog's source table is built from DESCRIBE output. Order is preserved: it is
+// authored, not derived. Issue #940.
+func parseListViewTemplates(ctx *ExecContext, w map[string]any) []rawWidget {
+	var result []rawWidget
+	for _, tpl := range getBsonArrayElements(w["Templates"]) {
+		tplMap, ok := tpl.(map[string]any)
+		if !ok {
+			continue
+		}
+		// Inside a template the context object is the specialization, so an
+		// attribute it adds resolves even though the list view's own entity
+		// does not have it.
+		spec := extractString(tplMap["Entity"])
+		wrapper := rawWidget{
+			Type:           "Forms$ListViewTemplate",
+			Specialization: spec,
+			EntityContext:  spec,
+		}
+		for _, wgt := range getBsonArrayElements(tplMap["Widgets"]) {
+			wgtMap, ok := wgt.(map[string]any)
+			if !ok {
+				continue
+			}
+			wrapper.Children = append(wrapper.Children, parseRawWidget(ctx, wgtMap, spec)...)
+		}
+		result = append(result, wrapper)
 	}
 	return result
 }
@@ -780,58 +891,9 @@ func extractListViewDataSource(ctx *ExecContext, w map[string]any) *rawDataSourc
 	if !ok || ds == nil {
 		return nil
 	}
-
-	dsType := extractString(ds["$Type"])
-	switch dsType {
-	case "Forms$ListViewXPathSource":
-		result := &rawDataSource{Type: "database"}
-		entityRef, ok := ds["EntityRef"].(map[string]any)
-		if ok && entityRef != nil {
-			result.Reference = extractString(entityRef["Entity"])
-		}
-		result.XPathConstraint = extractString(ds["XPathConstraint"])
-		// Extract sorting from Sort field
-		if sortObj, ok := ds["Sort"].(map[string]any); ok {
-			sortPaths := getBsonArrayElements(sortObj["Paths"])
-			for _, item := range sortPaths {
-				sortItem, ok := item.(map[string]any)
-				if !ok {
-					continue
-				}
-				col := rawSortColumn{Order: "asc"}
-				if attrRef, ok := sortItem["AttributeRef"].(map[string]any); ok {
-					col.Attribute = shortAttributeName(extractString(attrRef["Attribute"]))
-				}
-				sortOrder := gridSortDirection(sortItem)
-				if sortOrder == "Descending" {
-					col.Order = "desc"
-				}
-				if col.Attribute != "" {
-					result.SortColumns = append(result.SortColumns, col)
-				}
-			}
-		}
-		if result.Reference != "" {
-			return result
-		}
-	case "Forms$MicroflowSource":
-		if mf := microflowSourceRef(ds); mf != "" {
-			return &rawDataSource{Type: "microflow", Reference: mf}
-		}
-	case "Forms$NanoflowSource":
-		nanoflow := nanoflowSourceRef(ds)
-		if nanoflow != "" {
-			return &rawDataSource{Type: "nanoflow", Reference: nanoflow}
-		}
-	case "Forms$AssociationSource":
-		if path, ctx := associationSourcePath(ds); path != "" {
-			return &rawDataSource{Type: "association", Reference: path, ContextVariable: ctx}
-		}
-	}
-	return nil
+	return parseDataSource(ds)
 }
 
-// extractSnippetRef extracts the snippet reference from a SnippetCallWidget.
 func extractSnippetRef(ctx *ExecContext, w map[string]any) string {
 	// First try the FormCall.Form path (used for BY_NAME_REFERENCE)
 	if formCall, ok := w["FormCall"].(map[string]any); ok {

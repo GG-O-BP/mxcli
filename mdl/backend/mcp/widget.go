@@ -297,6 +297,45 @@ var templateAttrPlaceholderRe = regexp.MustCompile(`\{([A-Za-z][A-Za-z0-9_]*)\}`
 // (widgetobj.createClientTemplateBSONWithParams). The parameterised
 // Pages$ClientTemplate shape was verified live on 11.12 (attributeRef
 // persisted, ped_check_errors clean).
+// SetTextTemplateWithClientParams stores a text template whose `{1}`-style
+// placeholders are backed by author-supplied parameters (MDL `contentparams:`).
+// Same stored shape as SetTextTemplateWithParams; only the source of the
+// parameters differs — there they are derived from `{AttrName}` placeholders,
+// here they are given. (#928)
+func (w *mcpWidgetBuilder) SetTextTemplateWithClientParams(propertyKey, text string, params []*pages.ClientTemplateParameter) {
+	if text == "" {
+		return
+	}
+	if len(params) == 0 {
+		w.object["ct:"+propertyKey] = text
+		return
+	}
+	out := make([]any, 0, len(params))
+	for _, p := range params {
+		if p == nil {
+			continue
+		}
+		out = append(out, map[string]any{
+			"$Type":        "Pages$ClientTemplateParameter",
+			"attributeRef": map[string]any{"$Type": "DomainModels$AttributeRef", "attribute": p.AttributeRef},
+			"formattingInfo": map[string]any{
+				"$Type":            "Pages$FormattingInfo",
+				"decimalPrecision": 2,
+				"groupDigits":      false,
+				"enumFormat":       "Text",
+				"dateFormat":       "Date",
+				"customDateFormat": "",
+			},
+		})
+	}
+	w.object["ct:"+propertyKey] = map[string]any{
+		"$Type":      "Pages$ClientTemplate",
+		"t:template": text,
+		"parameters": out,
+		"t:fallback": "",
+	}
+}
+
 func (w *mcpWidgetBuilder) SetTextTemplateWithParams(propertyKey, text, entityContext string) {
 	if text == "" {
 		return
@@ -448,6 +487,21 @@ func (w *mcpWidgetBuilder) SetObjectList(propertyKey string, items []backend.Obj
 				if src := customWidgetXPathSource(p.DataSource); src != nil {
 					obj[p.PropertyKey] = src
 				}
+			case "action":
+				// An action on an object-list item (chart series
+				// staticOnClickAction, popupmenu item action, …) — #956. The
+				// same mapper the top-level slots use, so the shapes PED
+				// refuses (parameter mappings, nanoflow) are refused here too,
+				// recorded rather than silently dropped.
+				if p.Action == nil {
+					continue
+				}
+				mapped, err := customWidgetClientAction(p.Action)
+				if err != nil {
+					w.note(fmt.Sprintf("%s[].%s: %v", propertyKey, p.PropertyKey, err))
+					continue
+				}
+				obj[p.PropertyKey] = mapped
 			default:
 				w.note(fmt.Sprintf("%s[].%s (%s)", propertyKey, p.PropertyKey, p.Operation))
 			}

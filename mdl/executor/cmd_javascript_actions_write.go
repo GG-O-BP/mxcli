@@ -48,15 +48,31 @@ func execCreateJavaScriptAction(ctx *ExecContext, s *ast.CreateJavaScriptActionS
 		return mdlerrors.NewBackend("list javascript actions", err)
 	}
 	var existingID model.ID
-	for _, ex := range existing {
-		exModName := h.GetModuleName(h.FindModuleID(ex.ContainerID))
-		if exModName == s.Name.Module && ex.Name == s.Name.Name {
-			if !s.CreateOrModify {
-				return mdlerrors.NewAlreadyExists("javascript action", s.Name.Module+"."+s.Name.Name)
-			}
-			existingID = ex.ID
-			break
+	var existingContainer model.ID
+	// Target the live action and carry its exclusion forward (#914).
+	existingExcluded := false
+	var existingActionInfo *types.MicroflowActionInfo
+	if ex, ok := pickLive(existing,
+		func(a *types.JavaScriptAction) bool {
+			return h.GetModuleName(h.FindModuleID(a.ContainerID)) == s.Name.Module && a.Name == s.Name.Name
+		},
+		func(a *types.JavaScriptAction) bool { return a.Excluded },
+	); ok {
+		if !s.CreateOrModify {
+			return mdlerrors.NewAlreadyExists("javascript action", s.Name.Module+"."+s.Name.Name)
 		}
+		existingID = ex.ID
+		existingExcluded = ex.Excluded
+		existingContainer = ex.ContainerID
+		// The toolbox entry's four PNG bitmaps are not expressible in MDL, so
+		// they have to be carried rather than rebuilt.
+		existingActionInfo = ex.MicroflowActionInfo
+	}
+
+	moduleID := containerID
+	containerID, err = containerForDocument(ctx, moduleID, s.Folder, existingContainer)
+	if err != nil {
+		return err
 	}
 
 	newID := model.ID(types.GenerateID())
@@ -69,6 +85,7 @@ func execCreateJavaScriptAction(ctx *ExecContext, s *ast.CreateJavaScriptActionS
 		ContainerID:             containerID,
 		Name:                    s.Name.Name,
 		Documentation:           s.Documentation,
+		Excluded:                existingExcluded,
 		ExportLevel:             "Public",
 		ActionDefaultReturnName: "ReturnValueName",
 		Platform:                platformOrDefault(s.Platform),
@@ -128,17 +145,18 @@ func execCreateJavaScriptAction(ctx *ExecContext, s *ast.CreateJavaScriptActionS
 		jsa.ReturnType = astDataTypeToJavaActionReturnType(s.ReturnType)
 	}
 
-	if s.ExposedCaption != "" {
-		jsa.MicroflowActionInfo = &types.MicroflowActionInfo{
-			BaseElement: model.BaseElement{ID: model.ID(types.GenerateID())},
-			Caption:     s.ExposedCaption,
-			Category:    s.ExposedCategory,
-		}
+	if jsa.MicroflowActionInfo, err = mergeMicroflowActionInfo(ctx,
+		existingActionInfo, s.ExposedCaption, s.ExposedCategory, s.NotExposed,
+		s.ExposedBitmaps, exposeWarner(ctx)); err != nil {
+		return err
 	}
 
 	if existingID != "" {
 		if err := ctx.Backend.UpdateJavaScriptAction(jsa); err != nil {
 			return mdlerrors.NewBackend("update javascript action", err)
+		}
+		if _, err := applyDocumentFolder(ctx, jsa.ID, existingContainer, containerID); err != nil {
+			return err
 		}
 	} else {
 		if err := ctx.Backend.CreateJavaScriptAction(jsa); err != nil {
@@ -152,7 +170,7 @@ func execCreateJavaScriptAction(ctx *ExecContext, s *ast.CreateJavaScriptActionS
 
 	ctx.InvalidateCache()
 	if existingID != "" {
-		fmt.Fprintf(ctx.Output, "Modified javascript action: %s.%s\n", s.Name.Module, s.Name.Name)
+		ctx.ReportMutation("Modified", "javascript action: %s.%s", s.Name.Module, s.Name.Name)
 	} else {
 		fmt.Fprintf(ctx.Output, "Created javascript action: %s.%s\n", s.Name.Module, s.Name.Name)
 	}

@@ -27,6 +27,8 @@ func execShow(ctx *ExecContext, s *ast.ShowStmt) error {
 		return listEntities(ctx, s.InModule)
 	case ast.ShowEntity:
 		return listEntity(ctx, s.Name)
+	case ast.ShowAnnotations:
+		return listAnnotations(ctx, s.InModule)
 	case ast.ShowAssociations:
 		return listAssociations(ctx, s.InModule)
 	case ast.ShowAssociation:
@@ -35,6 +37,8 @@ func execShow(ctx *ExecContext, s *ast.ShowStmt) error {
 		return listMicroflows(ctx, s.InModule)
 	case ast.ShowNanoflows:
 		return listNanoflows(ctx, s.InModule)
+	case ast.ShowRules:
+		return listRules(ctx, s.InModule)
 	case ast.ShowPages:
 		return listPages(ctx, s.InModule)
 	case ast.ShowSnippets:
@@ -121,6 +125,8 @@ func execShow(ctx *ExecContext, s *ast.ShowStmt) error {
 		return listFragments(ctx)
 	case ast.ShowDatabaseConnections:
 		return listDatabaseConnections(ctx, s.InModule)
+	case ast.ShowConnections:
+		return listOpenSQLConnections(ctx)
 	case ast.ShowImageCollections:
 		return listImageCollections(ctx, s.InModule)
 	case ast.ShowIconCollections:
@@ -191,6 +197,8 @@ func execDescribe(ctx *ExecContext, s *ast.DescribeStmt) error {
 			return describeMicroflow(ctx, s.Name)
 		case ast.DescribeNanoflow:
 			return describeNanoflow(ctx, s.Name)
+		case ast.DescribeRule:
+			return describeRule(ctx, s.Name)
 		case ast.DescribeModule:
 			return describeModule(ctx, s.Name.Module, s.WithAll)
 		case ast.DescribePage:
@@ -199,6 +207,18 @@ func execDescribe(ctx *ExecContext, s *ast.DescribeStmt) error {
 			return describeSnippet(ctx, s.Name)
 		case ast.DescribeBuildingBlock:
 			return describeBuildingBlock(ctx, s.Name)
+		case ast.DescribeQueue:
+			// Queues and scheduled events carry their own statement types rather
+			// than a DescribeStmt kind, so bare `DESCRIBE Module.Name` reaches them
+			// by synthesizing one. Without this they are indexed in the catalog's
+			// objects view but unreachable without naming the type — the state
+			// BUILDING_BLOCK and ICON_COLLECTION were in when 43 of 251 documents
+			// in a marketplace project could not be described (see describe_auto.go).
+			return execDescribeQueue(ctx, &ast.DescribeQueueStmt{Name: s.Name})
+		case ast.DescribeScheduledEvent:
+			return execDescribeScheduledEvent(ctx, &ast.DescribeScheduledEventStmt{Name: s.Name})
+		case ast.DescribeRegularExpression:
+			return execDescribeRegularExpression(ctx, &ast.DescribeRegularExpressionStmt{Name: s.Name})
 		case ast.DescribeLayout:
 			return describeLayout(ctx, s.Name)
 		case ast.DescribeConstant:
@@ -261,6 +281,8 @@ func execDescribe(ctx *ExecContext, s *ast.DescribeStmt) error {
 			return describeImportMapping(ctx, s.Name)
 		case ast.DescribeExportMapping:
 			return describeExportMapping(ctx, s.Name)
+		case ast.DescribeMenu:
+			return describeMenu(ctx, s.Name)
 		case ast.DescribeJarDependency:
 			return execDescribeJarDependency(ctx, s.Name.String(), s.Qualifier)
 		default:
@@ -282,6 +304,8 @@ func describeObjectTypeLabel(t ast.DescribeObjectType) string {
 		return "microflow"
 	case ast.DescribeNanoflow:
 		return "nanoflow"
+	case ast.DescribeRule:
+		return "rule"
 	case ast.DescribeModule:
 		return "module"
 	case ast.DescribePage:
@@ -352,6 +376,14 @@ func describeObjectTypeLabel(t ast.DescribeObjectType) string {
 		return "importmapping"
 	case ast.DescribeExportMapping:
 		return "exportmapping"
+	case ast.DescribeMenu:
+		return "menu"
+	case ast.DescribeQueue:
+		return "queue"
+	case ast.DescribeScheduledEvent:
+		return "scheduled event"
+	case ast.DescribeRegularExpression:
+		return "regular expression"
 	default:
 		return "unknown"
 	}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/mendixlabs/mxcli/mdl/ast"
 	mdlerrors "github.com/mendixlabs/mxcli/mdl/errors"
+	"github.com/mendixlabs/mxcli/model"
 	"github.com/mendixlabs/mxcli/sdk/agenteditor"
 )
 
@@ -21,6 +22,16 @@ func execCreateConsumedMCPService(ctx *ExecContext, s *ast.CreateConsumedMCPServ
 		return mdlerrors.NewNotConnected()
 	}
 
+	// Agent Editor documents need Studio Pro 11.9+ and the AgentEditorCommons
+	// module. Nothing downstream catches an older project: the documents are
+	// custom blobs, so mxbuild does not validate them and the build stays green
+	// while Studio Pro cannot open the result.
+	if err := checkFeature(ctx, "agent_documents", "agent_consumed_mcp_service",
+		"create consumed mcp service",
+		"upgrade your project to Mendix 11.9+ and install the AgentEditorCommons module"); err != nil {
+		return err
+	}
+
 	existing := findAgentEditorConsumedMCPService(ctx, s.Name.Module, s.Name.Name)
 	if existing != nil && !s.CreateOrModify {
 		return mdlerrors.NewAlreadyExists("consumed mcp service", s.Name.String())
@@ -31,8 +42,17 @@ func execCreateConsumedMCPService(ctx *ExecContext, s *ast.CreateConsumedMCPServ
 		return err
 	}
 
+	var existingContainerC model.ID
+	if existing != nil {
+		existingContainerC = existing.ContainerID
+	}
+	containerIDC, err := containerForDocument(ctx, module.ID, s.Folder, existingContainerC)
+	if err != nil {
+		return err
+	}
+
 	c := &agenteditor.ConsumedMCPService{
-		ContainerID:              module.ID,
+		ContainerID:              containerIDC,
 		Name:                     s.Name.Name,
 		Documentation:            s.OuterDocumentation,
 		ProtocolVersion:          s.ProtocolVersion,
@@ -43,11 +63,16 @@ func execCreateConsumedMCPService(ctx *ExecContext, s *ast.CreateConsumedMCPServ
 
 	if existing != nil {
 		c.ID = existing.ID
+		// Excluded is model state, not script state (#914).
+		c.Excluded = existing.Excluded
 		if err := ctx.Backend.UpdateAgentEditorConsumedMCPService(c); err != nil {
 			return mdlerrors.NewBackend("update consumed mcp service", err)
 		}
 		invalidateHierarchy(ctx)
-		fmt.Fprintf(ctx.Output, "Modified consumed mcp service: %s\n", s.Name)
+		if _, err := applyDocumentFolder(ctx, c.ID, existingContainerC, containerIDC); err != nil {
+			return err
+		}
+		ctx.ReportMutation("Modified", "consumed mcp service: %s", s.Name)
 		return nil
 	}
 
@@ -83,6 +108,16 @@ func execCreateKnowledgeBase(ctx *ExecContext, s *ast.CreateKnowledgeBaseStmt) e
 		return mdlerrors.NewNotConnected()
 	}
 
+	// Agent Editor documents need Studio Pro 11.9+ and the AgentEditorCommons
+	// module. Nothing downstream catches an older project: the documents are
+	// custom blobs, so mxbuild does not validate them and the build stays green
+	// while Studio Pro cannot open the result.
+	if err := checkFeature(ctx, "agent_documents", "agent_knowledge_base",
+		"create knowledge base",
+		"upgrade your project to Mendix 11.9+ and install the AgentEditorCommons module"); err != nil {
+		return err
+	}
+
 	existing := findAgentEditorKnowledgeBase(ctx, s.Name.Module, s.Name.Name)
 	if existing != nil && !s.CreateOrModify {
 		return mdlerrors.NewAlreadyExists("knowledge base", s.Name.String())
@@ -106,8 +141,17 @@ func execCreateKnowledgeBase(ctx *ExecContext, s *ast.CreateKnowledgeBaseStmt) e
 		provider = "MxCloudGenAI"
 	}
 
+	var existingContainerK model.ID
+	if existing != nil {
+		existingContainerK = existing.ContainerID
+	}
+	containerIDK, err := containerForDocument(ctx, module.ID, s.Folder, existingContainerK)
+	if err != nil {
+		return err
+	}
+
 	k := &agenteditor.KnowledgeBase{
-		ContainerID:      module.ID,
+		ContainerID:      containerIDK,
 		Name:             s.Name.Name,
 		Documentation:    s.Documentation,
 		Provider:         provider,
@@ -122,11 +166,16 @@ func execCreateKnowledgeBase(ctx *ExecContext, s *ast.CreateKnowledgeBaseStmt) e
 
 	if existing != nil {
 		k.ID = existing.ID
+		// Excluded is model state, not script state (#914).
+		k.Excluded = existing.Excluded
 		if err := ctx.Backend.UpdateAgentEditorKnowledgeBase(k); err != nil {
 			return mdlerrors.NewBackend("update knowledge base", err)
 		}
 		invalidateHierarchy(ctx)
-		fmt.Fprintf(ctx.Output, "Modified knowledge base: %s\n", s.Name)
+		if _, err := applyDocumentFolder(ctx, k.ID, existingContainerK, containerIDK); err != nil {
+			return err
+		}
+		ctx.ReportMutation("Modified", "knowledge base: %s", s.Name)
 		return nil
 	}
 
@@ -162,6 +211,16 @@ func execCreateAgent(ctx *ExecContext, s *ast.CreateAgentStmt) error {
 		return mdlerrors.NewNotConnected()
 	}
 
+	// Agent Editor documents need Studio Pro 11.9+ and the AgentEditorCommons
+	// module. Nothing downstream catches an older project: the documents are
+	// custom blobs, so mxbuild does not validate them and the build stays green
+	// while Studio Pro cannot open the result.
+	if err := checkFeature(ctx, "agent_documents", "agent",
+		"create agent",
+		"upgrade your project to Mendix 11.9+ and install the AgentEditorCommons module"); err != nil {
+		return err
+	}
+
 	existingAgent := findAgentEditorAgent(ctx, s.Name.Module, s.Name.Name)
 	if existingAgent != nil && !s.CreateOrModify {
 		return mdlerrors.NewAlreadyExists("agent", s.Name.String())
@@ -172,8 +231,17 @@ func execCreateAgent(ctx *ExecContext, s *ast.CreateAgentStmt) error {
 		return err
 	}
 
+	var existingContainerA model.ID
+	if existingAgent != nil {
+		existingContainerA = existingAgent.ContainerID
+	}
+	containerIDA, err := containerForDocument(ctx, module.ID, s.Folder, existingContainerA)
+	if err != nil {
+		return err
+	}
+
 	a := &agenteditor.Agent{
-		ContainerID:   module.ID,
+		ContainerID:   containerIDA,
 		Name:          s.Name.Name,
 		Documentation: s.Documentation,
 		Description:   s.Description,
@@ -261,11 +329,16 @@ func execCreateAgent(ctx *ExecContext, s *ast.CreateAgentStmt) error {
 
 	if existingAgent != nil {
 		a.ID = existingAgent.ID
+		// Excluded is model state, not script state (#914).
+		a.Excluded = existingAgent.Excluded
 		if err := ctx.Backend.UpdateAgentEditorAgent(a); err != nil {
 			return mdlerrors.NewBackend("update agent", err)
 		}
 		invalidateHierarchy(ctx)
-		fmt.Fprintf(ctx.Output, "Modified agent: %s\n", s.Name)
+		if _, err := applyDocumentFolder(ctx, a.ID, existingContainerA, containerIDA); err != nil {
+			return err
+		}
+		ctx.ReportMutation("Modified", "agent: %s", s.Name)
 		return nil
 	}
 

@@ -7,6 +7,13 @@ package catalog
 //
 // History:
 //
+//	10 — the three lookups expression type checking needs and the catalog could
+//	    not answer: attributes_data.EnumerationQualifiedName (DataType says only
+//	    "Enumeration", losing which one), enumeration_values_data (the table
+//	    stored ValueCount but not the values), and microflow_parameters_data
+//	    (likewise ParameterCount but not the parameters). Without the bump a
+//	    cached catalog answers "unknown" for every one, which the checker reads
+//	    as "cannot tell" and silently skips — a green run that checked nothing.
 //	9 — java_action_parameters_data + view: a Java action's parameters, each
 //	    with its own Description. Without the bump a cached catalog silently
 //	    reports zero parameters, so QUAL002 would under-report rather than
@@ -16,7 +23,7 @@ package catalog
 //	    SnapshotSource / SourceId / SourceBranch / SourceRevision columns
 //	    from every row (issue #576).
 //	1 — initial flat schema with denormalized snapshot columns on every row.
-const CatalogSchemaVersion = "9"
+const CatalogSchemaVersion = "10"
 
 // MetaSchemaVersion is the catalog_meta key that records the schema version
 // the cache was built against.
@@ -137,6 +144,11 @@ func (c *Catalog) createTables() error {
 			EntityQualifiedName TEXT,
 			ModuleName TEXT,
 			DataType TEXT,
+			-- DataType is the bare kind ("Enumeration"), so the enum's identity
+			-- needs its own column. Kept separate rather than folded into
+			-- DataType as "Enumeration:QN" because existing queries and lint
+			-- rules match DataType by equality.
+			EnumerationQualifiedName TEXT,
 			Length INTEGER,
 			IsUnique INTEGER DEFAULT 0,
 			IsRequired INTEGER DEFAULT 0,
@@ -170,6 +182,33 @@ func (c *Catalog) createTables() error {
 		// nanoflows view (filtered subset of microflows view)
 		`CREATE VIEW IF NOT EXISTS nanoflows AS
 			SELECT * FROM microflows WHERE MicroflowType = 'NANOFLOW'`,
+
+		// rules view (filtered subset of microflows view). A rule shares the
+		// storage because it shares the shape — signature, body, complexity —
+		// but it is a distinct doctype, so `microflows` is itself filtered to
+		// MicroflowType = 'MICROFLOW' wherever it is presented as microflows.
+		`CREATE VIEW IF NOT EXISTS rules AS
+			SELECT * FROM microflows WHERE MicroflowType = 'RULE'`,
+
+		// microflow_parameters: one row per parameter, for microflows and
+		// nanoflows alike. microflows_data carries only ParameterCount, so a
+		// caller could see that a flow takes three arguments but not what they
+		// are — which is what typing a CALL's arguments requires. ParameterType
+		// uses the same encoding as microflows_data.ReturnType ("String",
+		// "Object:Mod.Entity", "Enumeration:Mod.Enum", …).
+		`CREATE TABLE IF NOT EXISTS microflow_parameters_data (
+			Id TEXT PRIMARY KEY,
+			MicroflowId TEXT,
+			MicroflowQualifiedName TEXT,
+			ModuleName TEXT,
+			Name TEXT,
+			ParameterType TEXT,
+			Description TEXT,
+			Ordinal INTEGER DEFAULT 0,
+			ProjectId TEXT,
+			SnapshotId TEXT
+		)`,
+		viewWithFullSnapshot("microflow_parameters"),
 
 		// pages
 		`CREATE TABLE IF NOT EXISTS pages_data (
@@ -250,6 +289,23 @@ func (c *Catalog) createTables() error {
 		)`,
 		viewWithFullSnapshot("enumerations"),
 
+		// enumeration_values: one row per value. enumerations_data carries only
+		// ValueCount, which cannot answer "is 'Open' a case of this enum" —
+		// the check behind the most common expression bug (comparing an enum
+		// attribute to a string literal).
+		`CREATE TABLE IF NOT EXISTS enumeration_values_data (
+			Id TEXT PRIMARY KEY,
+			EnumerationId TEXT,
+			EnumerationQualifiedName TEXT,
+			ModuleName TEXT,
+			Name TEXT,
+			Caption TEXT,
+			Ordinal INTEGER DEFAULT 0,
+			ProjectId TEXT,
+			SnapshotId TEXT
+		)`,
+		viewWithFullSnapshot("enumeration_values"),
+
 		// java_actions
 		`CREATE TABLE IF NOT EXISTS java_actions_data (
 			Id TEXT PRIMARY KEY,
@@ -311,6 +367,103 @@ func (c *Catalog) createTables() error {
 			SnapshotId TEXT
 		)`,
 		viewWithFullSnapshot("image_collections"),
+
+		// icon_collections (custom icon sets; read-only, referenced by widgets)
+		`CREATE TABLE IF NOT EXISTS icon_collections_data (
+			Id TEXT PRIMARY KEY,
+			Name TEXT,
+			QualifiedName TEXT,
+			ModuleName TEXT,
+			Folder TEXT,
+			Description TEXT,
+			ProjectId TEXT,
+			SnapshotId TEXT
+		)`,
+		viewWithFullSnapshot("icon_collections"),
+
+		// page_templates (Forms$PageTemplate; the starting points Studio Pro's
+		// "new page" dialog offers). A separate table from pages: templates are a
+		// different document type whose content hangs off LayoutCall, and folding
+		// them into pages made every module that ships templates report pages it
+		// does not have.
+		`CREATE TABLE IF NOT EXISTS page_templates_data (
+			Id TEXT PRIMARY KEY,
+			Name TEXT,
+			QualifiedName TEXT,
+			ModuleName TEXT,
+			Folder TEXT,
+			Description TEXT,
+			ProjectId TEXT,
+			SnapshotId TEXT
+		)`,
+		viewWithFullSnapshot("page_templates"),
+
+		// menus (standalone Menus$MenuDocument; read-only reusable menus)
+		`CREATE TABLE IF NOT EXISTS menus_data (
+			Id TEXT PRIMARY KEY,
+			Name TEXT,
+			QualifiedName TEXT,
+			ModuleName TEXT,
+			Folder TEXT,
+			Description TEXT,
+			ProjectId TEXT,
+			SnapshotId TEXT
+		)`,
+		viewWithFullSnapshot("menus"),
+
+		// scheduled_events — Mendix's cron. Repeat/RepeatDescription come from the
+		// Schedule child; IntervalSeconds is derived from it, NOT from the legacy
+		// Interval/IntervalType pair (Studio Pro does not keep those in sync).
+		`CREATE TABLE IF NOT EXISTS scheduled_events_data (
+			Id TEXT PRIMARY KEY,
+			Name TEXT,
+			QualifiedName TEXT,
+			ModuleName TEXT,
+			Folder TEXT,
+			Description TEXT,
+			Microflow TEXT,
+			Repeat TEXT,
+			RepeatDescription TEXT,
+			IntervalSeconds INTEGER,
+			Enabled INTEGER,
+			TimeZone TEXT,
+			OnOverlap TEXT,
+			ProjectId TEXT,
+			SnapshotId TEXT
+		)`,
+		viewWithFullSnapshot("scheduled_events"),
+
+		// regular_expressions — named patterns referenced by attribute
+		// validation rules (DomainModels$RegExRuleInfo.RegExIdentifier).
+		`CREATE TABLE IF NOT EXISTS regular_expressions_data (
+			Id TEXT PRIMARY KEY,
+			Name TEXT,
+			QualifiedName TEXT,
+			ModuleName TEXT,
+			Folder TEXT,
+			Description TEXT,
+			Expression TEXT,
+			ExportLevel TEXT,
+			ProjectId TEXT,
+			SnapshotId TEXT
+		)`,
+		viewWithFullSnapshot("regular_expressions"),
+
+		// queues — task queues (Queues$Queue). Parallelism is an expression
+		// string, not a number.
+		`CREATE TABLE IF NOT EXISTS queues_data (
+			Id TEXT PRIMARY KEY,
+			Name TEXT,
+			QualifiedName TEXT,
+			ModuleName TEXT,
+			Folder TEXT,
+			Description TEXT,
+			Parallelism TEXT,
+			ClusterWide INTEGER,
+			ProjectId TEXT,
+			SnapshotId TEXT
+		)`,
+		viewWithFullSnapshot("queues"),
 
 		// data_transformers
 		`CREATE TABLE IF NOT EXISTS data_transformers_data (
@@ -416,6 +569,11 @@ func (c *Catalog) createTables() error {
 			AttributeRef TEXT,
 			MicroflowRef TEXT,
 			NanoflowRef TEXT,
+			-- The page a widget's action opens (show_page, and the page half of
+			-- "create object … then open page"). Without it a page reachable only
+			-- from a button had no inbound reference at all and read as dead code
+			-- (issue #773).
+			PageRef TEXT,
 			Description TEXT,
 			ProjectId TEXT,
 			SnapshotId TEXT
@@ -888,6 +1046,10 @@ func (c *Catalog) createTables() error {
 				ProjectId, ProjectName, SnapshotId, SnapshotDate, SnapshotSource
 			FROM microflows WHERE MicroflowType = 'NANOFLOW'
 			UNION ALL
+			SELECT Id, 'RULE' as ObjectType, Name, QualifiedName, ModuleName, Folder, Description,
+				ProjectId, ProjectName, SnapshotId, SnapshotDate, SnapshotSource
+			FROM microflows WHERE MicroflowType = 'RULE'
+			UNION ALL
 			SELECT Id, 'PAGE' as ObjectType, Name, QualifiedName, ModuleName, Folder, Description,
 				ProjectId, ProjectName, SnapshotId, SnapshotDate, SnapshotSource
 			FROM pages
@@ -895,6 +1057,10 @@ func (c *Catalog) createTables() error {
 			SELECT Id, 'SNIPPET' as ObjectType, Name, QualifiedName, ModuleName, Folder, Description,
 				ProjectId, ProjectName, SnapshotId, SnapshotDate, SnapshotSource
 			FROM snippets
+			UNION ALL
+			SELECT Id, 'BUILDING_BLOCK' as ObjectType, Name, QualifiedName, ModuleName, Folder, Description,
+				ProjectId, ProjectName, SnapshotId, SnapshotDate, SnapshotSource
+			FROM building_blocks
 			UNION ALL
 			SELECT Id, 'LAYOUT' as ObjectType, Name, QualifiedName, ModuleName, Folder, Description,
 				ProjectId, ProjectName, SnapshotId, SnapshotDate, SnapshotSource
@@ -919,6 +1085,30 @@ func (c *Catalog) createTables() error {
 			SELECT Id, 'IMAGE_COLLECTION' as ObjectType, Name, QualifiedName, ModuleName, Folder, Description,
 				ProjectId, ProjectName, SnapshotId, SnapshotDate, SnapshotSource
 			FROM image_collections
+			UNION ALL
+			SELECT Id, 'ICON_COLLECTION' as ObjectType, Name, QualifiedName, ModuleName, Folder, Description,
+				ProjectId, ProjectName, SnapshotId, SnapshotDate, SnapshotSource
+			FROM icon_collections
+			UNION ALL
+			SELECT Id, 'MENU' as ObjectType, Name, QualifiedName, ModuleName, Folder, Description,
+				ProjectId, ProjectName, SnapshotId, SnapshotDate, SnapshotSource
+			FROM menus
+			UNION ALL
+			SELECT Id, 'PAGE_TEMPLATE' as ObjectType, Name, QualifiedName, ModuleName, Folder, Description,
+				ProjectId, ProjectName, SnapshotId, SnapshotDate, SnapshotSource
+			FROM page_templates
+			UNION ALL
+			SELECT Id, 'SCHEDULED_EVENT' as ObjectType, Name, QualifiedName, ModuleName, Folder, Description,
+				ProjectId, ProjectName, SnapshotId, SnapshotDate, SnapshotSource
+			FROM scheduled_events
+			UNION ALL
+			SELECT Id, 'QUEUE' as ObjectType, Name, QualifiedName, ModuleName, Folder, Description,
+				ProjectId, ProjectName, SnapshotId, SnapshotDate, SnapshotSource
+			FROM queues
+			UNION ALL
+			SELECT Id, 'REGULAR_EXPRESSION' as ObjectType, Name, QualifiedName, ModuleName, Folder, Description,
+				ProjectId, ProjectName, SnapshotId, SnapshotDate, SnapshotSource
+			FROM regular_expressions
 			UNION ALL
 			SELECT Id, 'DATA_TRANSFORMER' as ObjectType, Name, QualifiedName, ModuleName, Folder, Description,
 				ProjectId, ProjectName, SnapshotId, SnapshotDate, SnapshotSource
@@ -1050,6 +1240,8 @@ func (c *Catalog) createTables() error {
 		`CREATE INDEX IF NOT EXISTS idx_refs_kind ON refs(RefKind)`,
 		`CREATE INDEX IF NOT EXISTS idx_attributes_entity ON attributes_data(EntityId)`,
 		`CREATE INDEX IF NOT EXISTS idx_attributes_entity_qname ON attributes_data(EntityQualifiedName)`,
+		`CREATE INDEX IF NOT EXISTS idx_enum_values_enum ON enumeration_values_data(EnumerationQualifiedName)`,
+		`CREATE INDEX IF NOT EXISTS idx_microflow_params_flow ON microflow_parameters_data(MicroflowQualifiedName)`,
 		`CREATE INDEX IF NOT EXISTS idx_java_actions_name ON java_actions_data(Name)`,
 		`CREATE INDEX IF NOT EXISTS idx_java_actions_module ON java_actions_data(ModuleName)`,
 		`CREATE INDEX IF NOT EXISTS idx_odata_clients_name ON odata_clients_data(Name)`,

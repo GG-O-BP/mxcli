@@ -3,6 +3,7 @@
 package visitor
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -19,8 +20,9 @@ func (b *Builder) ExitCreateEntityStatement(ctx *parser.CreateEntityStatementCon
 	}
 
 	stmt := &ast.CreateEntityStmt{
-		Name: buildQualifiedName(ctx.QualifiedName()),
-		Kind: ast.EntityPersistent, // Default
+		Name:        buildQualifiedName(ctx.QualifiedName()),
+		Kind:        ast.EntityPersistent, // Default
+		IfNotExists: ctx.IfNotExists() != nil,
 	}
 
 	// Entity type
@@ -73,14 +75,11 @@ func (b *Builder) ExitCreateEntityStatement(ctx *parser.CreateEntityStatementCon
 			stmt.Attributes = buildAttributes(attrList, b)
 		}
 
-		// Options (comment, extends, indexes, system attributes, etc.)
+		// Options (extends, indexes, system attributes, etc.)
 		if opts := bodyCtx.EntityOptions(); opts != nil {
 			optsCtx := opts.(*parser.EntityOptionsContext)
 			for _, opt := range optsCtx.AllEntityOption() {
 				optCtx := opt.(*parser.EntityOptionContext)
-				if optCtx.COMMENT() != nil && optCtx.STRING_LITERAL() != nil {
-					stmt.Comment = unquoteString(optCtx.STRING_LITERAL().GetText())
-				}
 				// Handle INDEX option
 				if optCtx.INDEX() != nil && optCtx.IndexDefinition() != nil {
 					stmt.Indexes = append(stmt.Indexes, buildIndex(optCtx.IndexDefinition()))
@@ -614,6 +613,17 @@ func (b *Builder) ExitAlterEntityAction(ctx *parser.AlterEntityActionContext) {
 				return
 			}
 
+			// DROP DEFAULT ON ATTRIBUTE — checked before DROP ATTRIBUTE, which
+			// also matches DROP + ATTRIBUTE and would otherwise swallow it.
+			if ctx.DROP() != nil && ctx.DEFAULT() != nil && ctx.ATTRIBUTE() != nil && len(attrNames) >= 1 {
+				b.statements = append(b.statements, &ast.AlterEntityStmt{
+					Name:          name,
+					Operation:     ast.AlterEntityDropDefault,
+					AttributeName: attributeNameText(attrNames[0]),
+				})
+				return
+			}
+
 			// DROP ATTRIBUTE / DROP COLUMN
 			if ctx.DROP() != nil && (ctx.ATTRIBUTE() != nil || ctx.COLUMN() != nil) && len(attrNames) >= 1 {
 				b.statements = append(b.statements, &ast.AlterEntityStmt{
@@ -665,21 +675,34 @@ func (b *Builder) ExitAlterEntityAction(ctx *parser.AlterEntityActionContext) {
 				if idxDef := ctx.IndexDefinition(); idxDef != nil {
 					idx := buildIndex(idxDef)
 					b.statements = append(b.statements, &ast.AlterEntityStmt{
-						Name:      name,
-						Operation: ast.AlterEntityAddIndex,
-						Index:     &idx,
+						Name:        name,
+						Operation:   ast.AlterEntityAddIndex,
+						Index:       &idx,
+						IfNotExists: ctx.IfNotExists() != nil,
 					})
 				}
 				return
 			}
 
-			// DROP INDEX
-			if ctx.DROP() != nil && ctx.INDEX() != nil && ctx.IDENTIFIER() != nil {
-				b.statements = append(b.statements, &ast.AlterEntityStmt{
+			// DROP INDEX. The column-list form is preferred and is the only one
+			// `describe entity` can round-trip — a Mendix index has no stored
+			// name, so the ordinal form ("idx1") names a position that shifts
+			// when an earlier index is dropped.
+			if ctx.DROP() != nil && ctx.INDEX() != nil {
+				stmt := &ast.AlterEntityStmt{
 					Name:      name,
 					Operation: ast.AlterEntityDropIndex,
-					IndexName: ctx.IDENTIFIER().GetText(),
-				})
+					IfExists:  ctx.IfExists() != nil,
+				}
+				if idxDef := ctx.IndexDefinition(); idxDef != nil {
+					idx := buildIndex(idxDef)
+					stmt.Index = &idx
+				} else if ctx.IDENTIFIER() != nil {
+					stmt.IndexName = ctx.IDENTIFIER().GetText()
+				} else {
+					return
+				}
+				b.statements = append(b.statements, stmt)
 				return
 			}
 
@@ -758,6 +781,28 @@ func (b *Builder) ExitDropStatement(ctx *parser.DropStatementContext) {
 		return
 	}
 
+	// DROP ANNOTATION addresses a note by caption or position, not by a
+	// qualified name — an annotation has no name — so it must be handled before
+	// the guard below, which returns silently when there is no qualifiedName.
+	// Placed after it, the statement parsed, executed nothing, and exited 0.
+	if ctx.ANNOTATION() != nil {
+		stmt := &ast.DropAnnotationStmt{}
+		if id := ctx.IdentifierOrKeyword(); id != nil {
+			stmt.Module = unquoteIdentifier(id.GetText())
+		}
+		if nums := ctx.AllNUMBER_LITERAL(); ctx.AT_KW() != nil && len(nums) >= 2 {
+			x, errX := strconv.Atoi(nums[0].GetText())
+			y, errY := strconv.Atoi(nums[1].GetText())
+			if errX == nil && errY == nil {
+				stmt.Position = &ast.Position{X: x, Y: y}
+			}
+		} else if lit := ctx.STRING_LITERAL(); lit != nil {
+			stmt.Title = unquoteString(lit.GetText())
+		}
+		b.statements = append(b.statements, stmt)
+		return
+	}
+
 	// Get the first qualified name (most DROP statements have at least one)
 	names := ctx.AllQualifiedName()
 	if len(names) == 0 {
@@ -793,12 +838,20 @@ func (b *Builder) ExitDropStatement(ctx *parser.DropStatementContext) {
 		b.statements = append(b.statements, &ast.DropNanoflowStmt{
 			Name: buildQualifiedName(names[0]),
 		})
+	} else if ctx.RULE() != nil {
+		b.statements = append(b.statements, &ast.DropRuleStmt{
+			Name: buildQualifiedName(names[0]),
+		})
 	} else if ctx.PAGE() != nil {
 		b.statements = append(b.statements, &ast.DropPageStmt{
 			Name: buildQualifiedName(names[0]),
 		})
 	} else if ctx.SNIPPET() != nil {
 		b.statements = append(b.statements, &ast.DropSnippetStmt{
+			Name: buildQualifiedName(names[0]),
+		})
+	} else if ctx.MENU_KW() != nil {
+		b.statements = append(b.statements, &ast.DropMenuStmt{
 			Name: buildQualifiedName(names[0]),
 		})
 	} else if ctx.JAVASCRIPT() != nil && ctx.ACTION() != nil {
@@ -827,6 +880,18 @@ func (b *Builder) ExitDropStatement(ctx *parser.DropStatementContext) {
 		})
 	} else if ctx.IMAGE() != nil && ctx.COLLECTION() != nil {
 		b.statements = append(b.statements, &ast.DropImageCollectionStmt{
+			Name: buildQualifiedName(names[0]),
+		})
+	} else if ctx.QUEUE() != nil {
+		b.statements = append(b.statements, &ast.DropQueueStmt{
+			Name: buildQualifiedName(names[0]),
+		})
+	} else if ctx.SCHEDULED() != nil && ctx.EVENT() != nil {
+		b.statements = append(b.statements, &ast.DropScheduledEventStmt{
+			Name: buildQualifiedName(names[0]),
+		})
+	} else if ctx.REGULAR() != nil && ctx.EXPRESSION() != nil {
+		b.statements = append(b.statements, &ast.DropRegularExpressionStmt{
 			Name: buildQualifiedName(names[0]),
 		})
 	} else if ctx.MODEL() != nil {
@@ -935,13 +1000,15 @@ func (b *Builder) ExitMoveStatement(ctx *parser.MoveStatementContext) {
 		return
 	}
 
-	// Handle MOVE FOLDER separately — different AST type
-	// MOVE FOLDER is identified by having FOLDER as the first token after MOVE (no document type keyword)
-	if len(ctx.AllFOLDER()) > 0 && ctx.PAGE() == nil && ctx.MICROFLOW() == nil &&
-		ctx.SNIPPET() == nil && ctx.NANOFLOW() == nil && ctx.ENTITY() == nil &&
-		ctx.ENUMERATION() == nil && ctx.CONSTANT() == nil && ctx.DATABASE() == nil &&
-		ctx.JAVA() == nil && ctx.ODATA() == nil {
-		b.exitMoveFolderStatement(ctx, names)
+	// MOVE FOLDER is a different AST type, and is told apart by the ABSENCE of a
+	// doctype. That is one check because moveDocumentType is a grammar rule: the
+	// discriminator used to be a hand-written negation of every doctype keyword,
+	// so every doctype added to MOVE had to be added here too or a folder move
+	// silently started parsing as a document move (mxcli-formula1 #32).
+	if ctx.MoveDocumentType() == nil && ctx.ENTITY() == nil {
+		if len(ctx.AllFOLDER()) > 0 {
+			b.exitMoveFolderStatement(ctx, names)
+		}
 		return
 	}
 
@@ -949,27 +1016,18 @@ func (b *Builder) ExitMoveStatement(ctx *parser.MoveStatementContext) {
 		Name: buildQualifiedName(names[0]),
 	}
 
-	// Determine document type
-	if ctx.PAGE() != nil {
-		stmt.DocumentType = ast.DocumentTypePage
-	} else if ctx.MICROFLOW() != nil {
-		stmt.DocumentType = ast.DocumentTypeMicroflow
-	} else if ctx.SNIPPET() != nil {
-		stmt.DocumentType = ast.DocumentTypeSnippet
-	} else if ctx.NANOFLOW() != nil {
-		stmt.DocumentType = ast.DocumentTypeNanoflow
-	} else if ctx.ENTITY() != nil {
+	if ctx.ENTITY() != nil {
 		stmt.DocumentType = ast.DocumentTypeEntity
-	} else if ctx.ENUMERATION() != nil {
-		stmt.DocumentType = ast.DocumentTypeEnumeration
-	} else if ctx.CONSTANT() != nil {
-		stmt.DocumentType = ast.DocumentTypeConstant
-	} else if ctx.DATABASE() != nil {
-		stmt.DocumentType = ast.DocumentTypeDatabaseConnection
-	} else if ctx.JAVA() != nil {
-		stmt.DocumentType = ast.DocumentTypeJavaAction
-	} else if ctx.ODATA() != nil {
-		stmt.DocumentType = ast.DocumentTypeODataService
+	} else {
+		docType, ok := moveDocumentTypeFor(ctx.MoveDocumentType().GetText())
+		if !ok {
+			// A doctype in the grammar with no AST constant would otherwise move
+			// whatever the name resolved to under an empty type. Refuse loudly:
+			// the grammar and this table are meant to be added to together.
+			b.addError(fmt.Errorf("MOVE does not support document type %q", ctx.MoveDocumentType().GetText()))
+			return
+		}
+		stmt.DocumentType = docType
 	}
 
 	// Parse folder path if specified
@@ -1022,3 +1080,40 @@ func (b *Builder) exitMoveFolderStatement(ctx *parser.MoveStatementContext, name
 // ----------------------------------------------------------------------------
 
 // ExitCreateAssociationStatement is called when exiting the createAssociationStatement production.
+
+// moveDocumentTypeFor maps a moveDocumentType rule's text to its AST constant.
+//
+// The table lives in the ast package because the executor reads it too: it has
+// to decide whether the document it found is the kind the statement named, and
+// a second copy of the doctype list is exactly how the MOVE FOLDER
+// discriminator drifted out of step with the grammar before.
+func moveDocumentTypeFor(ruleText string) (ast.DocumentType, bool) {
+	docType, ok := ast.MoveDocumentTypeByKeyword[strings.ToUpper(ruleText)]
+	return docType, ok
+}
+
+// ExitCreateIndexStatement handles the standalone SQL spelling,
+// `create index IdxRowCol on Mod.Cell (Row, Col DESC)`.
+//
+// The rule has been in the grammar since indexes were added, with no listener
+// behind it — so the statement parsed, produced no AST node, and `exec` reported
+// nothing and did nothing, even when the entity did not exist. That is worse
+// than a parse error: the author reads "Syntax OK" and believes the index was
+// created. Found while fixing sudoku finding #4, which is the same question
+// asked from the other side ("where does an index go?").
+//
+// It carries exactly the meaning of `alter entity Mod.Cell add index (…)`, so it
+// lowers to that statement rather than growing a second code path. The index
+// name is accepted and discarded, as it is in every other spelling: a Mendix
+// index is anonymous, identified by its column list.
+func (b *Builder) ExitCreateIndexStatement(ctx *parser.CreateIndexStatementContext) {
+	qn := ctx.QualifiedName()
+	if qn == nil {
+		return
+	}
+	b.statements = append(b.statements, &ast.AlterEntityStmt{
+		Name:      buildQualifiedName(qn),
+		Operation: ast.AlterEntityAddIndex,
+		Index:     &ast.Index{Columns: buildIndexColumns(ctx.IndexAttributeList())},
+	})
+}

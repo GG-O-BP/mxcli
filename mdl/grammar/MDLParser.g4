@@ -97,10 +97,10 @@ createStatement
       | createJavaActionStatement
       | createJavaScriptActionStatement
       | createPageStatement
+      | createLayoutStatement
       | createSnippetStatement
       | createEnumerationStatement
       | createValidationRuleStatement
-      | createNotebookStatement
       | createDatabaseConnectionStatement
       | createConstantStatement
       | createRestClientStatement
@@ -115,6 +115,10 @@ createStatement
       | createUserRoleStatement
       | createDemoUserStatement
       | createImageCollectionStatement
+      | createAnnotationStatement
+      | createQueueStatement
+      | createScheduledEventStatement
+      | createRegularExpressionStatement
       | createJsonStructureStatement
       | createImportMappingStatement
       | createExportMappingStatement
@@ -126,6 +130,9 @@ createStatement
       | createKnowledgeBaseStatement
       | createAgentStatement
       | createNanoflowStatement
+      | createRuleStatement
+      | createMenuStatement
+      | createTranslationsStatement
       )
     ;
 
@@ -133,12 +140,18 @@ alterStatement
     : ALTER ENTITY qualifiedName alterEntityAction (COMMA? alterEntityAction)*
     | ALTER ASSOCIATION qualifiedName alterAssociationAction+
     | ALTER ENUMERATION qualifiedName alterEnumerationAction+
-    | ALTER NOTEBOOK qualifiedName alterNotebookAction+
     | ALTER ODATA CLIENT qualifiedName SET odataAlterAssignment (COMMA odataAlterAssignment)*
     | ALTER ODATA SERVICE qualifiedName SET odataAlterAssignment (COMMA odataAlterAssignment)*
     | ALTER STYLING ON (PAGE | SNIPPET) qualifiedName WIDGET IDENTIFIER alterStylingAction+
     | ALTER SETTINGS alterSettingsClause
     | ALTER PAGE qualifiedName LBRACE alterPageOperation+ RBRACE
+    | alterPagesLayoutStatement
+    // ALTER LAYOUT reuses alterPageOperation wholesale: a layout's widget tree is
+    // a page's widget tree with four extra element types, so SET/INSERT/DROP/
+    // REPLACE mean exactly the same thing. A scroll-container region is addressed
+    // through the dotted widgetRef the grammar already has — `layoutContainer.top`
+    // — because a region has no Name of its own.
+    | ALTER LAYOUT qualifiedName LBRACE alterPageOperation+ RBRACE
     | ALTER SNIPPET qualifiedName LBRACE alterPageOperation+ RBRACE
     | ALTER WORKFLOW qualifiedName alterWorkflowAction+ SEMICOLON?
     | ALTER PUBLISHED REST SERVICE qualifiedName alterPublishedRestServiceAction (COMMA? alterPublishedRestServiceAction)*
@@ -228,13 +241,14 @@ alterPageOperation
     : alterPageSet SEMICOLON?
     | alterPageInsert SEMICOLON?
     | alterPageDrop SEMICOLON?
+    | alterPageDropTemplate SEMICOLON?
     | alterPageReplace SEMICOLON?
     | alterPageAddVariable SEMICOLON?
     | alterPageDropVariable SEMICOLON?
     ;
 
 alterPageSet
-    : SET LAYOUT EQUALS qualifiedName (MAP LPAREN alterLayoutMapping (COMMA alterLayoutMapping)* RPAREN)?  // SET Layout = Atlas_Core.TopBar MAP (Main -> Main)
+    : SET LAYOUT EQUALS qualifiedName (MAP LPAREN alterLayoutMapping (COMMA alterLayoutMapping)* RPAREN)?  // SET Layout = Atlas_Core.TopBar MAP (Main AS Content)
     | SET alterPageAssignment ON widgetRef                             // SET Caption = 'Save' ON btnSave  |  ON dgProducts.Name
     | SET LPAREN alterPageAssignment (COMMA alterPageAssignment)* RPAREN ON widgetRef  // SET (Caption = 'Save', ButtonStyle = Success) ON btnSave
     | SET alterPageAssignment                                                    // SET Title = 'Edit' (page-level)
@@ -242,6 +256,19 @@ alterPageSet
 
 alterLayoutMapping
     : identifierOrKeyword AS identifierOrKeyword                                // OldPlaceholder AS NewPlaceholder
+    ;
+
+// ALTER PAGES [IN <module>] SET LAYOUT = Module.Layout [MAP (...)] [WHERE LAYOUT = Module.Old]
+//
+// The bulk form is the real one: an app has one layout and many pages, so
+// moving off Atlas_Default is a single statement rather than forty. WHERE is
+// what makes it safe to run project-wide — "every page currently on X" is the
+// migration anyone actually wants — so it is a filter on the current layout and
+// nothing else.
+alterPagesLayoutStatement
+    : ALTER PAGES (IN identifierOrKeyword)? SET LAYOUT EQUALS qualifiedName
+      (MAP LPAREN alterLayoutMapping (COMMA alterLayoutMapping)* RPAREN)?
+      (WHERE LAYOUT EQUALS qualifiedName)?
     ;
 
 alterPageAssignment
@@ -261,6 +288,20 @@ alterPageInsert
 
 alterPageDrop
     : DROP WIDGET widgetRef (COMMA widgetRef)*
+    ;
+
+// DROP TEMPLATE FOR Module.Specialization IN listViewName
+//
+// A List View specialization template has no name — the entity it renders is
+// what identifies it — so it cannot be reached through widgetRef like every
+// other DROP target. Naming the list view is required, not optional: one page
+// can hold two list views with a template for the same entity.
+//
+// There is no matching INSERT TEMPLATE. Adding one is
+// `INSERT INTO <listview> { template for Module.Entity { ... } }`, which reuses
+// the same block as CREATE PAGE, so a template has one spelling everywhere.
+alterPageDropTemplate
+    : DROP TEMPLATE FOR qualifiedName IN widgetRef
     ;
 
 alterPageReplace
@@ -298,6 +339,14 @@ navMenuItemDef
     | MENU_KW STRING_LITERAL (ICON qualifiedName)? LPAREN navMenuItemDef* RPAREN SEMICOLON?
     ;
 
+// A standalone menu document (Menus$MenuDocument) — the reusable menu a menu
+// widget points at, as opposed to the menu inside a navigation profile. Both are
+// built from the same items, so this reuses navMenuItemDef rather than defining a
+// second item syntax.
+createMenuStatement
+    : MENU_KW qualifiedName (FOLDER STRING_LITERAL)? LPAREN navMenuItemDef* RPAREN
+    ;
+
 dropStatement
     : DROP ENTITY qualifiedName
     | DROP ASSOCIATION qualifiedName
@@ -305,10 +354,14 @@ dropStatement
     | DROP CONSTANT qualifiedName
     | DROP MICROFLOW qualifiedName
     | DROP NANOFLOW qualifiedName
+    | DROP RULE qualifiedName
     | DROP PAGE qualifiedName
     | DROP SNIPPET qualifiedName
+    | DROP MENU_KW qualifiedName
     | DROP MODULE qualifiedName
-    | DROP NOTEBOOK qualifiedName
+    | DROP QUEUE qualifiedName
+    | DROP SCHEDULED EVENT qualifiedName
+    | DROP REGULAR EXPRESSION qualifiedName
     | DROP JAVA ACTION qualifiedName
     | DROP JAVASCRIPT ACTION qualifiedName
     | DROP INDEX qualifiedName ON qualifiedName
@@ -317,6 +370,8 @@ dropStatement
     | DROP BUSINESS EVENT SERVICE qualifiedName
     | DROP WORKFLOW qualifiedName
     | DROP IMAGE COLLECTION qualifiedName
+    | DROP ANNOTATION STRING_LITERAL IN identifierOrKeyword
+    | DROP ANNOTATION AT_KW LPAREN NUMBER_LITERAL COMMA NUMBER_LITERAL RPAREN IN identifierOrKeyword
     | DROP JSON STRUCTURE qualifiedName
     | DROP IMPORT MAPPING qualifiedName
     | DROP EXPORT MAPPING qualifiedName
@@ -367,13 +422,69 @@ renameTarget
  * ```mdl
  * MOVE ENUMERATION MyModule.OrderStatus TO OtherModule;
  * ```
+ *
+ * @example Move an import mapping or JSON structure
+ * ```mdl
+ * MOVE IMPORT MAPPING MyModule.IMM_Order TO FOLDER 'Private/Import mappings';
+ * MOVE JSON STRUCTURE MyModule.JSON_Order TO FOLDER 'Private/JSON structures';
+ * ```
  */
 moveStatement
-    : MOVE (PAGE | MICROFLOW | SNIPPET | NANOFLOW | ENUMERATION | CONSTANT | DATABASE CONNECTION | JAVA ACTION | ODATA SERVICE) qualifiedName TO FOLDER STRING_LITERAL (IN (qualifiedName | IDENTIFIER))?
-    | MOVE (PAGE | MICROFLOW | SNIPPET | NANOFLOW | ENUMERATION | CONSTANT | DATABASE CONNECTION | JAVA ACTION | ODATA SERVICE) qualifiedName TO (qualifiedName | IDENTIFIER)
+    : MOVE moveDocumentType qualifiedName TO FOLDER STRING_LITERAL (IN (qualifiedName | IDENTIFIER))?
+    | MOVE moveDocumentType qualifiedName TO (qualifiedName | IDENTIFIER)
     | MOVE ENTITY qualifiedName TO (qualifiedName | IDENTIFIER)
     | MOVE FOLDER qualifiedName TO FOLDER STRING_LITERAL (IN (qualifiedName | IDENTIFIER))?
     | MOVE FOLDER qualifiedName TO (qualifiedName | IDENTIFIER)
+    ;
+
+/**
+ * The document types MOVE accepts — every top-level document, spelled as
+ * DESCRIBE spells it.
+ *
+ * This is a rule rather than an inline alternation so that MOVE FOLDER can be
+ * told from a document move by ONE check (`moveDocumentType` present or not)
+ * instead of by a hand-maintained negation of every doctype keyword. That
+ * negation is the trap mxcli-formula1 #32 flagged: each keyword added to the
+ * move rule had to be added to the folder discriminator too, and forgetting one
+ * silently turns `MOVE FOLDER …` into a document move.
+ *
+ * ENTITY is deliberately absent: an entity is not a unit, it lives inside a
+ * domain model, and its move converts associations rather than reparenting a
+ * row — so it keeps its own alternative and its own handler.
+ */
+moveDocumentType
+    : PAGE
+    | MICROFLOW
+    | NANOFLOW
+    | RULE
+    | SNIPPET
+    | BUILDING BLOCK
+    | LAYOUT
+    | MENU_KW
+    | ENUMERATION
+    | CONSTANT
+    | WORKFLOW
+    | QUEUE
+    | SCHEDULED EVENT
+    | REGULAR EXPRESSION
+    | JSON STRUCTURE
+    | IMPORT MAPPING
+    | EXPORT MAPPING
+    | JAVA ACTION
+    | JAVASCRIPT ACTION
+    | DATABASE CONNECTION
+    | DATA TRANSFORMER
+    | IMAGE COLLECTION
+    | ICON COLLECTION
+    | REST CLIENT
+    | PUBLISHED REST SERVICE
+    | ODATA CLIENT
+    | ODATA SERVICE
+    | BUSINESS EVENT SERVICE
+    | MODEL
+    | AGENT
+    | KNOWLEDGE BASE
+    | CONSUMED MCP SERVICE
     ;
 
 // =============================================================================

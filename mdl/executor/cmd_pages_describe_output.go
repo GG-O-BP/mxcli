@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/mendixlabs/mxcli/model"
@@ -24,6 +25,76 @@ func mdlQuote(s string) string {
 		"'", "''",
 	).Replace(s)
 	return "'" + escaped + "'"
+}
+
+// explicitPropValue renders a pluggable widget's property value as MDL.
+//
+// Every value used to be emitted raw, so a string lost its quotes and a JSON
+// spec broke the re-parse at its first '{' — which took any page carrying a
+// pluggable widget out of the DESCRIBE-edit-CREATE OR REPLACE workflow that
+// mxcli itself documents (ledger #104).
+//
+// The DECLARED type decides, not the value's shape: a String property holding
+// "30" or "true" must still come back quoted, or re-executing it writes a
+// number where the author wrote text. Where no type is declared — the widget's
+// schema is not in the document — the shape is the only signal left, and the
+// fallback quotes anything that is not plainly a number or boolean, because an
+// unquoted arbitrary string may not parse at all while a quoted literal still
+// round-trips as text.
+func explicitPropValue(p rawExplicitProp) string {
+	if p.IsRef {
+		return p.Value // an attribute name is an identifier, never a literal
+	}
+	switch p.ValueType {
+	case "Boolean", "Integer", "Decimal":
+		return p.Value
+	case "":
+		if isBareLiteral(p.Value) {
+			return p.Value
+		}
+		return mdlQuote(p.Value)
+	default:
+		return mdlQuote(p.Value)
+	}
+}
+
+// isBareLiteral reports whether a value can be emitted without quotes when the
+// property's declared type is unknown: a boolean, or a plain decimal number.
+func isBareLiteral(s string) bool {
+	if s == "true" || s == "false" {
+		return true
+	}
+	if _, err := strconv.ParseFloat(s, 64); err == nil {
+		// ParseFloat also accepts "NaN", "Inf" and hex/exponent forms, none of
+		// which is a number an MDL author would have written; require the text
+		// to be made only of digits, one sign and one point.
+		return looksNumeric(s)
+	}
+	return false
+}
+
+func looksNumeric(s string) bool {
+	if s == "" {
+		return false
+	}
+	body := strings.TrimPrefix(strings.TrimPrefix(s, "-"), "+")
+	if body == "" {
+		return false
+	}
+	dots := 0
+	for _, r := range body {
+		switch {
+		case r >= '0' && r <= '9':
+		case r == '.':
+			dots++
+			if dots > 1 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return body != "."
 }
 
 // appendDataGridPagingProps appends non-default paging properties for DataGrid2.
@@ -160,6 +231,48 @@ func outputWidgetMDLV3(ctx *ExecContext, w rawWidget, indent int) {
 		} else {
 			formatWidgetProps(ctx.Output, prefix, header, props, "\n")
 		}
+
+	case "Forms$ScrollContainerRegion":
+		// A synthetic wrapper: the slot is in Name, and `region top` is how MDL
+		// spells it. 200/Auto is Studio Pro's untouched default, so emitting it
+		// would put noise in every describe — and re-executing without it lands
+		// back on the same value.
+		header := fmt.Sprintf("region %s", w.Name)
+		var props []string
+		if w.RegionSize != 0 && w.RegionSize != 200 {
+			props = append(props, fmt.Sprintf("Size: %d", w.RegionSize))
+		}
+		if w.RegionSizeMode != "" && w.RegionSizeMode != "Auto" {
+			props = append(props, fmt.Sprintf("SizeMode: %s", mdlQuote(w.RegionSizeMode)))
+		}
+		props = appendAppearanceProps(props, w)
+		if len(w.Children) > 0 {
+			formatWidgetProps(ctx.Output, prefix, header, props, " {\n")
+			for _, child := range w.Children {
+				outputWidgetMDLV3(ctx, child, indent+1)
+			}
+			fmt.Fprintf(ctx.Output, "%s}\n", prefix)
+		} else {
+			formatWidgetProps(ctx.Output, prefix, header, props, "\n")
+		}
+
+	case "Forms$Placeholder", "Pages$Placeholder":
+		// No properties and no body: the name is the whole thing, and it is API
+		// — a page binds to it as Module.Layout.<Name>.
+		fmt.Fprintf(ctx.Output, "%splaceholder %s\n", prefix, mdlIdent(w.Name))
+
+	case "Forms$NavigationTree", "Pages$NavigationTree", "Forms$MenuBar", "Pages$MenuBar":
+		keyword := "navigationtree"
+		if strings.HasSuffix(w.Type, "$MenuBar") {
+			keyword = "menubar"
+		}
+		header := fmt.Sprintf("%s %s", keyword, mdlIdent(w.Name))
+		var props []string
+		if w.NavigationProfile != "" {
+			props = append(props, fmt.Sprintf("Profile: %s", mdlQuote(w.NavigationProfile)))
+		}
+		props = appendAppearanceProps(props, w)
+		formatWidgetProps(ctx.Output, prefix, header, props, "\n")
 
 	case "Forms$TabControl", "Pages$TabControl":
 		header := fmt.Sprintf("tabcontainer %s", mdlIdent(w.Name))
@@ -329,20 +442,7 @@ func outputWidgetMDLV3(ctx *ExecContext, w rawWidget, indent int) {
 	case "Forms$DataView", "Pages$DataView":
 		header := fmt.Sprintf("dataview %s", mdlIdent(w.Name))
 		props := []string{}
-		if w.DataSource != nil {
-			switch w.DataSource.Type {
-			case "microflow":
-				props = append(props, fmt.Sprintf("DataSource: microflow %s", w.DataSource.Reference))
-			case "nanoflow":
-				props = append(props, fmt.Sprintf("DataSource: nanoflow %s", w.DataSource.Reference))
-			case "parameter":
-				props = append(props, fmt.Sprintf("DataSource: $%s", w.DataSource.Reference))
-			case "selection":
-				props = append(props, fmt.Sprintf("DataSource: selection %s", mdlIdent(w.DataSource.Reference)))
-			case "association":
-				props = append(props, fmt.Sprintf("DataSource: %s", associationDataSourceExpr(w.DataSource)))
-			}
-		}
+		props = appendDataSourceProp(props, w.DataSource)
 		switch {
 		case w.LabelWidth == 0:
 			props = append(props, "FormOrientation: Vertical")
@@ -390,6 +490,9 @@ func outputWidgetMDLV3(ctx *ExecContext, w rawWidget, indent int) {
 		if w.Content != "" {
 			props = append(props, fmt.Sprintf("Attribute: %s", w.Content))
 		}
+		if w.OnChange != "" {
+			props = append(props, fmt.Sprintf("OnChange: %s", w.OnChange))
+		}
 		props = appendAppearanceProps(props, w)
 		formatWidgetProps(ctx.Output, prefix, header, props, "\n")
 
@@ -402,6 +505,9 @@ func outputWidgetMDLV3(ctx *ExecContext, w rawWidget, indent int) {
 		if w.Content != "" {
 			props = append(props, fmt.Sprintf("Attribute: %s", w.Content))
 		}
+		if w.OnChange != "" {
+			props = append(props, fmt.Sprintf("OnChange: %s", w.OnChange))
+		}
 		props = appendAppearanceProps(props, w)
 		formatWidgetProps(ctx.Output, prefix, header, props, "\n")
 
@@ -413,6 +519,9 @@ func outputWidgetMDLV3(ctx *ExecContext, w rawWidget, indent int) {
 		}
 		if w.Content != "" {
 			props = append(props, fmt.Sprintf("Attribute: %s", w.Content))
+		}
+		if w.OnChange != "" {
+			props = append(props, fmt.Sprintf("OnChange: %s", w.OnChange))
 		}
 		props = appendAppearanceProps(props, w)
 		formatWidgetProps(ctx.Output, prefix, header, props, "\n")
@@ -438,6 +547,9 @@ func outputWidgetMDLV3(ctx *ExecContext, w rawWidget, indent int) {
 		if !w.ShowLabel {
 			props = append(props, "ShowLabel: No")
 		}
+		if w.OnChange != "" {
+			props = append(props, fmt.Sprintf("OnChange: %s", w.OnChange))
+		}
 		props = appendAppearanceProps(props, w)
 		formatWidgetProps(ctx.Output, prefix, header, props, "\n")
 
@@ -450,33 +562,7 @@ func outputWidgetMDLV3(ctx *ExecContext, w rawWidget, indent int) {
 		if widgetType == "datagrid2" && (w.DataSource != nil || len(w.DataGridColumns) > 0) {
 			header := fmt.Sprintf("datagrid %s", mdlIdent(w.Name))
 			props := []string{}
-			if w.DataSource != nil {
-				switch w.DataSource.Type {
-				case "database":
-					dsVal := fmt.Sprintf("database from %s", w.DataSource.Reference)
-					if w.DataSource.XPathConstraint != "" {
-						xpath := w.DataSource.XPathConstraint
-						if len(xpath) >= 2 && xpath[0] == '[' && xpath[len(xpath)-1] == ']' {
-							xpath = xpath[1 : len(xpath)-1]
-						}
-						dsVal += fmt.Sprintf(" where %s", xpath)
-					}
-					if len(w.DataSource.SortColumns) > 0 {
-						var sortParts []string
-						for _, col := range w.DataSource.SortColumns {
-							sortParts = append(sortParts, col.Attribute+" "+col.Order)
-						}
-						dsVal += fmt.Sprintf(" sort by %s", strings.Join(sortParts, ", "))
-					}
-					props = append(props, fmt.Sprintf("DataSource: %s", dsVal))
-				case "microflow":
-					props = append(props, fmt.Sprintf("DataSource: microflow %s", w.DataSource.Reference))
-				case "nanoflow":
-					props = append(props, fmt.Sprintf("DataSource: nanoflow %s", w.DataSource.Reference))
-				case "parameter":
-					props = append(props, fmt.Sprintf("DataSource: %s", w.DataSource.Reference))
-				}
-			}
+			props = appendDataSourceProp(props, w.DataSource)
 			// Add selection mode if specified
 			if w.Selection != "" {
 				props = append(props, fmt.Sprintf("Selection: %s", w.Selection))
@@ -485,6 +571,7 @@ func outputWidgetMDLV3(ctx *ExecContext, w rawWidget, indent int) {
 			if w.OnClick != "" {
 				props = append(props, fmt.Sprintf("onClick: %s", w.OnClick))
 			}
+			props = appendNamedActionProps(props, w)
 			// Add paging properties if non-default
 			props = appendDataGridPagingProps(props, w)
 			props = appendAppearanceProps(props, w)
@@ -514,32 +601,7 @@ func outputWidgetMDLV3(ctx *ExecContext, w rawWidget, indent int) {
 			// Handle Gallery specially with datasource, selection, filter and content widgets
 			header := fmt.Sprintf("gallery %s", mdlIdent(w.Name))
 			props := []string{}
-			if w.DataSource != nil {
-				switch w.DataSource.Type {
-				case "database":
-					dsVal := fmt.Sprintf("database from %s", w.DataSource.Reference)
-					if w.DataSource.XPathConstraint != "" {
-						xpath := w.DataSource.XPathConstraint
-						if len(xpath) >= 2 && xpath[0] == '[' && xpath[len(xpath)-1] == ']' {
-							xpath = xpath[1 : len(xpath)-1]
-						}
-						dsVal += fmt.Sprintf(" where %s", xpath)
-					}
-					// Add SORT BY if present
-					if len(w.DataSource.SortColumns) > 0 {
-						var sortParts []string
-						for _, col := range w.DataSource.SortColumns {
-							sortParts = append(sortParts, col.Attribute+" "+col.Order)
-						}
-						dsVal += fmt.Sprintf(" sort by %s", strings.Join(sortParts, ", "))
-					}
-					props = append(props, fmt.Sprintf("DataSource: %s", dsVal))
-				case "microflow":
-					props = append(props, fmt.Sprintf("DataSource: microflow %s", w.DataSource.Reference))
-				case "nanoflow":
-					props = append(props, fmt.Sprintf("DataSource: nanoflow %s", w.DataSource.Reference))
-				}
-			}
+			props = appendDataSourceProp(props, w.DataSource)
 			// Add column counts if non-default
 			if w.DesktopColumns != "" && w.DesktopColumns != "1" {
 				props = append(props, fmt.Sprintf("DesktopColumns: %s", w.DesktopColumns))
@@ -619,7 +681,8 @@ func outputWidgetMDLV3(ctx *ExecContext, w rawWidget, indent int) {
 			props = appendConditionalProps(props, w)
 			props = appendAppearanceProps(props, w)
 			formatWidgetProps(ctx.Output, prefix, header, props, "\n")
-		} else if (len(w.ExplicitProperties) > 0 || len(w.ObjectLists) > 0 || w.OnClick != "") && w.WidgetID != "" {
+		} else if (len(w.ExplicitProperties) > 0 || len(w.ObjectLists) > 0 || w.OnClick != "" ||
+			w.OnChange != "" || len(w.NamedActions) > 0) && w.WidgetID != "" {
 			// Generic pluggable widget with explicit properties, object-list child
 			// blocks (chart series/lines/scaleColors), and/or an onClick action.
 			header := fmt.Sprintf("pluggablewidget '%s' %s", w.WidgetID, mdlIdent(w.Name))
@@ -627,13 +690,28 @@ func outputWidgetMDLV3(ctx *ExecContext, w rawWidget, indent int) {
 			if w.Caption != "" {
 				props = append(props, fmt.Sprintf("Label: %s", mdlQuote(w.Caption)))
 			}
+			// A pluggable widget's own datasource. Without this the branch
+			// emitted every property EXCEPT the datasource, so a rewrite dropped
+			// it — measured on a Studio Pro-authored File Uploader 2.5.0, whose
+			// `associatedFiles` is a Forms$AssociationSource: a page at 0 errors
+			// came back as CE0642 "Property 'Associated files' is required" plus
+			// two CE1571, because the action's parameter loses its default once
+			// the datasource is gone. The DESCRIBE text was byte-identical before
+			// and after, so only mx check separated them (#956).
+			props = appendDataSourceProp(props, w.DataSource)
 			for _, ep := range w.ExplicitProperties {
-				props = append(props, fmt.Sprintf("%s: %s", ep.Key, ep.Value))
+				props = append(props, fmt.Sprintf("%s: %s", ep.Key, explicitPropValue(ep)))
 			}
 			// onClick action (ledger #67 — reported on CustomChart)
 			if w.OnClick != "" {
 				props = append(props, fmt.Sprintf("onClick: %s", w.OnClick))
 			}
+			// OnChange too — a Slider/RangeSlider/StarRating reaches describe
+			// through this branch, and its action slot is the only one it has.
+			if w.OnChange != "" {
+				props = append(props, fmt.Sprintf("OnChange: %s", w.OnChange))
+			}
+			props = appendNamedActionProps(props, w)
 			props = appendAppearanceProps(props, w)
 			if len(w.ObjectLists) == 0 {
 				formatWidgetProps(ctx.Output, prefix, header, props, "\n")
@@ -645,19 +723,28 @@ func outputWidgetMDLV3(ctx *ExecContext, w rawWidget, indent int) {
 					for i, item := range ol.Items {
 						itemHeader := fmt.Sprintf("%s %s", ol.Keyword, mdlIdent(fmt.Sprintf("%s%d", ol.Keyword, i+1)))
 						itemProps := []string{}
-						if item.DataSource != nil && item.DataSource.Reference != "" {
-							dsExpr := fmt.Sprintf("DataSource: database from %s", item.DataSource.Reference)
-							if item.DataSource.XPathConstraint != "" {
-								dsExpr += fmt.Sprintf(" where %s", item.DataSource.XPathConstraint)
-							}
-							itemProps = append(itemProps, dsExpr)
-						}
+						// An object-list item's datasource goes through the same
+						// renderer as a widget's. This site used to have no type
+						// switch at all, so a chart series bound to a microflow
+						// described as `database from Module.TheMicroflow` (#941).
+						itemProps = appendDataSourceProp(itemProps, item.DataSource)
 						for _, p := range item.Props {
 							if p.IsRef {
 								itemProps = append(itemProps, fmt.Sprintf("%s: %s", p.Key, p.Value))
 							} else {
 								itemProps = append(itemProps, fmt.Sprintf("%s: %s", p.Key, mdlQuote(p.Value)))
 							}
+						}
+						// An item holding child widgets (an Accordion group's `content`
+						// slot) needs a body, or the children have nowhere to go and the
+						// description silently drops them on re-exec (#891).
+						if len(item.Children) > 0 {
+							formatWidgetProps(ctx.Output, childPrefix, itemHeader, itemProps, " {\n")
+							for _, child := range item.Children {
+								outputWidgetMDLV3(ctx, child, indent+2)
+							}
+							fmt.Fprintf(ctx.Output, "%s}\n", childPrefix)
+							continue
 						}
 						formatWidgetProps(ctx.Output, childPrefix, itemHeader, itemProps, "\n")
 					}
@@ -679,15 +766,16 @@ func outputWidgetMDLV3(ctx *ExecContext, w rawWidget, indent int) {
 			// through the same branch — without it the filter described back as a
 			// bare `dropdownfilter name` and the mode was lost on re-exec (#830).
 			if w.DataSource != nil && (widgetType == "combobox" || widgetType == "dropdownfilter") {
-				switch w.DataSource.Type {
-				case "database":
-					props = append(props, fmt.Sprintf("DataSource: database from %s", w.DataSource.Reference))
-				case "microflow":
-					props = append(props, fmt.Sprintf("DataSource: microflow %s", w.DataSource.Reference))
-				}
+				props = appendDataSourceProp(props, w.DataSource)
 				if w.CaptionAttribute != "" {
 					props = append(props, fmt.Sprintf("CaptionAttribute: %s", w.CaptionAttribute))
 				}
+			}
+			// A pluggable widget's on-change action (ComboBox `onChangeEvent`).
+			// Emitted for the same reason as the built-in inputs above: without
+			// it a describe→edit→exec cycle silently drops the action.
+			if w.OnChange != "" {
+				props = append(props, fmt.Sprintf("OnChange: %s", w.OnChange))
 			}
 			// Show filter attributes for filter widgets
 			if len(w.FilterAttributes) > 0 {
@@ -726,31 +814,7 @@ func outputWidgetMDLV3(ctx *ExecContext, w rawWidget, indent int) {
 	case "Forms$Gallery", "Pages$Gallery":
 		header := fmt.Sprintf("gallery %s", mdlIdent(w.Name))
 		props := []string{}
-		if w.DataSource != nil {
-			switch w.DataSource.Type {
-			case "database":
-				dsVal := fmt.Sprintf("database from %s", w.DataSource.Reference)
-				if w.DataSource.XPathConstraint != "" {
-					xpath := w.DataSource.XPathConstraint
-					if len(xpath) >= 2 && xpath[0] == '[' && xpath[len(xpath)-1] == ']' {
-						xpath = xpath[1 : len(xpath)-1]
-					}
-					dsVal += fmt.Sprintf(" where %s", xpath)
-				}
-				if len(w.DataSource.SortColumns) > 0 {
-					var sortParts []string
-					for _, col := range w.DataSource.SortColumns {
-						sortParts = append(sortParts, col.Attribute+" "+col.Order)
-					}
-					dsVal += fmt.Sprintf(" sort by %s", strings.Join(sortParts, ", "))
-				}
-				props = append(props, fmt.Sprintf("DataSource: %s", dsVal))
-			case "microflow":
-				props = append(props, fmt.Sprintf("DataSource: microflow %s", w.DataSource.Reference))
-			case "parameter":
-				props = append(props, fmt.Sprintf("DataSource: %s", w.DataSource.Reference))
-			}
-		}
+		props = appendDataSourceProp(props, w.DataSource)
 		props = appendAppearanceProps(props, w)
 		if len(w.Children) > 0 {
 			formatWidgetProps(ctx.Output, prefix, header, props, " {\n")
@@ -772,6 +836,16 @@ func outputWidgetMDLV3(ctx *ExecContext, w rawWidget, indent int) {
 		props = appendAppearanceProps(props, w)
 		formatWidgetProps(ctx.Output, prefix, header, props, "\n")
 
+	case "Forms$ListViewTemplate":
+		// A List View specialization template. It has no name — the entity it
+		// renders is what identifies it — so the header is `template for <Entity>`
+		// rather than the `template <name>` a Gallery content slot uses.
+		fmt.Fprintf(ctx.Output, "%stemplate for %s {\n", prefix, w.Specialization)
+		for _, child := range w.Children {
+			outputWidgetMDLV3(ctx, child, indent+1)
+		}
+		fmt.Fprintf(ctx.Output, "%s}\n", prefix)
+
 	case "Footer":
 		fmt.Fprintf(ctx.Output, "%sfooter %s {\n", prefix, mdlIdent(w.Name))
 		for _, child := range w.Children {
@@ -783,28 +857,7 @@ func outputWidgetMDLV3(ctx *ExecContext, w rawWidget, indent int) {
 		// ListView (also used for Gallery serialization)
 		header := fmt.Sprintf("listview %s", mdlIdent(w.Name))
 		props := []string{}
-		if w.DataSource != nil {
-			switch w.DataSource.Type {
-			case "database":
-				dsVal := fmt.Sprintf("database from %s", w.DataSource.Reference)
-				if w.DataSource.XPathConstraint != "" {
-					xpath := w.DataSource.XPathConstraint
-					if len(xpath) >= 2 && xpath[0] == '[' && xpath[len(xpath)-1] == ']' {
-						xpath = xpath[1 : len(xpath)-1]
-					}
-					dsVal += fmt.Sprintf(" where %s", xpath)
-				}
-				props = append(props, fmt.Sprintf("DataSource: %s", dsVal))
-			case "microflow":
-				props = append(props, fmt.Sprintf("DataSource: microflow %s", w.DataSource.Reference))
-			case "nanoflow":
-				props = append(props, fmt.Sprintf("DataSource: nanoflow %s", w.DataSource.Reference))
-			case "parameter":
-				props = append(props, fmt.Sprintf("DataSource: %s", w.DataSource.Reference))
-			case "association":
-				props = append(props, fmt.Sprintf("DataSource: %s", associationDataSourceExpr(w.DataSource)))
-			}
-		}
+		props = appendDataSourceProp(props, w.DataSource)
 		// Emit a non-default PageSize so it round-trips (Studio Pro's default is 20).
 		if w.PageSize != "" && w.PageSize != "20" {
 			props = append(props, fmt.Sprintf("PageSize: %s", w.PageSize))
@@ -822,12 +875,17 @@ func outputWidgetMDLV3(ctx *ExecContext, w rawWidget, indent int) {
 		}
 
 	default:
-		// Output unknown widget type as comment
+		// A widget MDL cannot spell. Emitted as a comment naming it, and
+		// labelled with what that costs: describe output is re-executable, so a
+		// commented widget is one the round trip drops. Measured on
+		// Atlas_Core.Atlas_SideBar, whose two Forms$SidebarToggleButton widgets
+		// do not survive describe -> exec — silent without this note, because a
+		// bare `-- Forms$X (name)` line reads as informational.
 		fmt.Fprintf(ctx.Output, "%s-- %s", prefix, w.Type)
 		if w.Name != "" {
 			fmt.Fprintf(ctx.Output, " (%s)", w.Name)
 		}
-		fmt.Fprint(ctx.Output, "\n")
+		fmt.Fprint(ctx.Output, "  -- NOT re-executable: mxcli cannot author this widget, so re-running this script would drop it\n")
 	}
 }
 
@@ -1624,4 +1682,15 @@ func dataViewHasFooterBlock(w rawWidget) bool {
 		}
 	}
 	return false
+}
+
+// appendNamedActionProps emits the widget's action slots that MDL addresses by
+// the widget's own property key: `createFileAction: microflow Module.Flow`. The
+// click and change slots are not among them — they have MDL names and are
+// emitted as `onClick:` / `OnChange:` (#956).
+func appendNamedActionProps(props []string, w rawWidget) []string {
+	for _, na := range w.NamedActions {
+		props = append(props, fmt.Sprintf("%s: %s", na.Key, na.MDL))
+	}
+	return props
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/mendixlabs/mxcli/cmd/mxcli/docker"
 	"github.com/mendixlabs/mxcli/cmd/mxcli/hubauth"
@@ -36,9 +37,15 @@ Requirements:
     name. Override with --db-host/--db-name/--db-user/--db-password.
 
 With --hub, the running app is exposed in a browser at a public URL through an
-mxcli tunnel-hub, without leaving this machine: a chisel client reverse-tunnels
+mxcli tunnel-hub, without leaving this machine: a tunnel client reverse-tunnels
 the local app out over 443, and the runtime boots with ApplicationRootUrl set to
 the hub URL so the app works under that origin. --hub implies --local.
+
+--hub is available in the Linux build only. The tunnel exists to get a preview
+out of a Linux container, so shipping it in the Windows and macOS binaries would
+only get them flagged by endpoint security for a capability they never use. On
+those platforms --hub fails with an explanatory message; run mxcli inside the
+project's devcontainer to use it.
 
 The Mendix runtime log — server-side stack traces and your microflow LOG
 output — is written to <projectDir>/.mxcli/runtime.log so a server-side error
@@ -102,6 +109,13 @@ Examples:
 		// only serving mode wired today; a future PAD path will accept --hub too).
 		hubKey := ""
 		if hub != "" {
+			// Fail here rather than after booting the app: on a build without the
+			// tunnel (everything but Linux — ADR-0009) --hub can never succeed, and
+			// the user should learn that before waiting out a runtime start.
+			if !docker.TunnelSupported() {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", docker.ErrTunnelUnsupported)
+				os.Exit(1)
+			}
 			local = true
 			// Present a per-user hub API key to an authenticated hub (MXCLI_HUB_KEY
 			// env → ~/.mxcli/auth.json). Empty for open hubs; the shared --hub-secret
@@ -152,8 +166,27 @@ Examples:
 			trace = true // --trace-otlp implies --trace
 		}
 
+		// Constant values set per configuration are not in the deployment's
+		// config.json (mxbuild writes each constant's default there), so without
+		// this the app runs with defaults while the model says otherwise —
+		// silently. See runconstants.go.
+		configuration, _ := cmd.Flags().GetString("configuration")
+		constantArgs, _ := cmd.Flags().GetStringArray("constant")
+		constantFlags, err := parseConstantFlags(constantArgs)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		overrides, err := constantChainFor(projectPath, configuration, constantFlags)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		reportConstantChain(os.Stdout, overrides)
+
 		opts := docker.LocalRunOptions{
 			ProjectPath:        projectPath,
+			ConstantOverrides:  overrides.Values,
 			Hub:                hub,
 			HubSecret:          hubSecret,
 			HubKey:             hubKey,
@@ -222,16 +255,44 @@ Examples:
 			}
 		}
 
+		// Publish the dev-loop handshake so another mxcli process can reach this
+		// app — `mxcli constant set --apply` needs the admin port and the payload
+		// the runtime was booted with. Chained rather than assigned, because
+		// --test-endpoint may already have installed an OnReady of its own.
+		previousOnReady := opts.OnReady
+		opts.OnReady = func(info docker.LocalAppInfo) {
+			if previousOnReady != nil {
+				previousOnReady(info)
+			}
+			if err := writeDevLoopHandshake(projectPath, devLoopHandshake{
+				Project:    projectPath,
+				PID:        os.Getpid(),
+				AppPort:    info.AppPort,
+				AdminPort:  info.AdminPort,
+				AdminPass:  info.AdminPass,
+				BootConfig: info.BootConfig,
+				Started:    time.Now(),
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: could not publish the dev-loop handshake: %v\n", err)
+			}
+		}
+		defer removeDevLoopHandshake(projectPath)
+
 		if err := docker.RunLocal(opts); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			// os.Exit skips deferred calls, so remove explicitly here.
 			hosted.Remove()
+			removeDevLoopHandshake(projectPath)
 			os.Exit(1)
 		}
 	},
 }
 
 func init() {
+	runCmd.Flags().String("configuration", "",
+		"Which project configuration's constant values to run with (default: the only one, or \"Default\")")
+	runCmd.Flags().StringArray("constant", nil,
+		"Set a constant for THIS RUN only: Module.Name=value (repeatable). Wins over the configuration and is never written to the project. The value is visible in shell history and in `ps` — see docs/11-proposals/PROPOSAL_constant_values.md")
 	runCmd.Flags().Bool("local", false, "Run locally without Docker (warm serve + standalone runtime)")
 	runCmd.Flags().String("hub", "", "Expose the running app in a browser via your own mxcli tunnel-hub URL (e.g. https://hub.example.com). Implies --local; the app stays local and is reverse-tunnelled out")
 	runCmd.Flags().String("hub-secret", "", "Shared auth secret for --hub (\"user:pass\"), matching the hub's --secret")
@@ -248,7 +309,7 @@ func init() {
 	runCmd.Flags().Int("app-port", 0, "HTTP port for the app (default 8080)")
 	runCmd.Flags().Int("admin-port", 0, "M2EE admin API port (default 8090)")
 	runCmd.Flags().Int("serve-port", 0, "mxbuild --serve port (default 6543)")
-	runCmd.Flags().String("db-host", "", "Database host:port (default 127.0.0.1:5432)")
+	runCmd.Flags().String("db-host", "", "Database host:port (IPv6: [::1]:5432; default 127.0.0.1:5432)")
 	runCmd.Flags().String("db-name", "", "Database name (default derived from the project name)")
 	runCmd.Flags().String("db-user", "", "Database user (default mendix)")
 	runCmd.Flags().String("db-password", "", "Database password (default mendix)")

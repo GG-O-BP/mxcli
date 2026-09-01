@@ -29,6 +29,12 @@ func GenerateTestRunner(suite *TestSuite) string {
 	b.WriteString("\n")
 
 	for i, tc := range suite.Tests {
+		// A test whose @expect did not compile gets no block. The runner reports
+		// it as an ERROR from the parse message; running it would report a pass
+		// for an assertion that was never made.
+		if len(tc.AssertionErrors) > 0 {
+			continue
+		}
 		writeTestBlock(&b, tc, i)
 		b.WriteString("\n")
 	}
@@ -49,6 +55,7 @@ func writeTestBlock(b *strings.Builder, tc TestCase, index int) {
 	b.WriteString(fmt.Sprintf("  LOG INFO NODE 'MXTEST' 'MXTEST:RUN:%s:%s';\n",
 		escapeMDLString(tc.ID), escapeMDLString(tc.Name)))
 	b.WriteString("  SET $TestFailed = false;\n")
+	writeSetupBlock(b, tc)
 
 	if tc.Throws != "" {
 		writeThrowsTestBlock(b, tc, suffix)
@@ -71,15 +78,38 @@ func writeTestBlock(b *strings.Builder, tc TestCase, index int) {
 	// Generate assertion checks for @expect (with renamed variables)
 	// Use flat IF blocks (no nesting) to avoid Mendix end-event issues
 	if len(tc.Expects) > 0 {
-		for _, exp := range tc.Expects {
-			renamedExp := renameExpect(exp, varNames, suffix)
-			writeExpectAssertion(b, tc.ID, renamedExp)
+		renamed := make([]Expect, len(tc.Expects))
+		for i, exp := range tc.Expects {
+			renamed[i] = renameExpect(exp, varNames, suffix)
+		}
+		writeExpectAggregates(b, "  ", renamed)
+		for _, exp := range renamed {
+			writeExpectAssertion(b, tc.ID, exp)
 		}
 	} else if tc.Throws == "" {
 		// No expectations — just check it didn't throw
 		b.WriteString("  IF $TestFailed = false THEN\n")
 		b.WriteString(fmt.Sprintf("    LOG INFO NODE 'MXTEST' 'MXTEST:PASS:%s';\n", escapeMDLString(tc.ID)))
 		b.WriteString("  END IF;\n")
+	}
+}
+
+// writeSetupBlock writes a test's @setup calls into the monolithic runner.
+//
+// The counterpart of writeSetupCalls, differing only in how it reports: this
+// runner has no returned verdict to carry an outcome, so a failed setup goes out
+// as an ERROR line on the log protocol. It ends the runner flow the same way a
+// throwing test body does — that is this runner's existing behaviour, and one of
+// the reasons the endpoint runner exists.
+func writeSetupBlock(b *strings.Builder, tc TestCase) {
+	for _, flow := range tc.Setups {
+		fmt.Fprintf(b, "  CALL MICROFLOW %s() ON ERROR {\n", flow)
+		fmt.Fprintf(b, "    LOG ERROR NODE 'MXTEST' 'MXTEST:ERROR:%s:Setup failed: %s';\n",
+			escapeMDLString(tc.ID), escapeMDLString(flow))
+		b.WriteString("    SET $TestFailed = true;\n")
+		b.WriteString("    SET $AllPassed = false;\n")
+		b.WriteString("    RETURN $AllPassed;\n")
+		b.WriteString("  };\n")
 	}
 }
 
@@ -111,42 +141,31 @@ func writeThrowsTestBlock(b *strings.Builder, tc TestCase, suffix string) {
 }
 
 // writeExpectAssertion generates an IF/ELSE check for a single @expect assertion.
-// Uses compound condition with AND to guard against checking after exception.
-// Only uses = operator (not <>) since <> causes Mendix expression errors.
+//
+// The condition is the author's own expression, guarded by $TestFailed so an
+// assertion is not evaluated after the body already threw. `<>` never reaches
+// the model: ParseExpect rewrites it to `!=`, which is the spelling Mendix
+// accepts — the branch-swapping this function used to do was a workaround for
+// emitting `<>` verbatim.
+//
+// Unlike the endpoint generator this path reports failures through the log
+// protocol, whose message is a single log line, so the observed value is
+// concatenated into that line rather than into a returned verdict.
 func writeExpectAssertion(b *strings.Builder, testID string, exp Expect) {
-	varRef := exp.Variable
-	value := exp.Value
+	passCondition := fmt.Sprintf("$TestFailed = false and (%s)", exp.Condition)
+	failMsg := "MXTEST:FAIL:" + testID + ":Expected " + exp.Raw
 
-	var passCondition string
-	if exp.Operator == "=" {
-		passCondition = fmt.Sprintf("$TestFailed = false and %s = %s", varRef, value)
+	b.WriteString(fmt.Sprintf("  IF %s THEN\n", passCondition))
+	b.WriteString(fmt.Sprintf("    LOG INFO NODE 'MXTEST' 'MXTEST:PASS:%s';\n", escapeMDLString(testID)))
+	b.WriteString("  ELSE\n")
+	if exp.Actual == "" {
+		b.WriteString(fmt.Sprintf("    LOG ERROR NODE 'MXTEST' '%s';\n", escapeMDLString(failMsg)))
 	} else {
-		// For != assertions, invert: pass when values differ
-		passCondition = fmt.Sprintf("$TestFailed = false and %s = %s", varRef, value)
-		// Actually this needs to FAIL when equal — swap PASS/FAIL below
+		b.WriteString(fmt.Sprintf("    LOG ERROR NODE 'MXTEST' '%s' + %s;\n",
+			escapeMDLString(failMsg+", actual: "), exp.Actual))
 	}
-
-	if exp.Operator == "=" {
-		b.WriteString(fmt.Sprintf("  IF %s THEN\n", passCondition))
-		b.WriteString(fmt.Sprintf("    LOG INFO NODE 'MXTEST' 'MXTEST:PASS:%s';\n", escapeMDLString(testID)))
-		b.WriteString("  ELSE\n")
-		failMsg := fmt.Sprintf("Expected %s %s %s", varRef, exp.Operator, value)
-		b.WriteString(fmt.Sprintf("    LOG ERROR NODE 'MXTEST' 'MXTEST:FAIL:%s:%s';\n",
-			escapeMDLString(testID), escapeMDLString(failMsg)))
-		b.WriteString("    SET $AllPassed = false;\n")
-		b.WriteString("  END IF;\n")
-	} else {
-		// != operator: pass when NOT equal, fail when equal
-		condition := fmt.Sprintf("$TestFailed = false and %s = %s", varRef, value)
-		b.WriteString(fmt.Sprintf("  IF %s THEN\n", condition))
-		failMsg := fmt.Sprintf("Expected %s %s %s", varRef, exp.Operator, value)
-		b.WriteString(fmt.Sprintf("    LOG ERROR NODE 'MXTEST' 'MXTEST:FAIL:%s:%s';\n",
-			escapeMDLString(testID), escapeMDLString(failMsg)))
-		b.WriteString("    SET $AllPassed = false;\n")
-		b.WriteString("  ELSE\n")
-		b.WriteString(fmt.Sprintf("    LOG INFO NODE 'MXTEST' 'MXTEST:PASS:%s';\n", escapeMDLString(testID)))
-		b.WriteString("  END IF;\n")
-	}
+	b.WriteString("    SET $AllPassed = false;\n")
+	b.WriteString("  END IF;\n")
 }
 
 // varPattern matches $VariableName in MDL ($ followed by word characters).
@@ -187,18 +206,47 @@ func renameVariables(mdl string, names map[string]bool, suffix string) string {
 }
 
 // renameExpect applies variable renaming to an Expect assertion.
+//
+// The monolithic runner compiles every test into one microflow, so `$result` in
+// test 1 and `$result` in test 2 have to be told apart. Renaming runs over the
+// rendered condition and the actual-value expression, which is why both are kept
+// as text rather than as a tree.
 func renameExpect(exp Expect, names map[string]bool, suffix string) Expect {
-	renamed := exp
-
-	// Rename the variable reference (e.g., "$result" -> "$result_1" or "$product/Name" -> "$product_1/Name")
-	renamed.Variable = varPattern.ReplaceAllStringFunc(exp.Variable, func(match string) string {
-		name := match[1:]
-		if names[name] {
-			return "$" + name + suffix
+	// An aggregate's own variable is generated, so it is not in the body's name
+	// set — but it is declared inside this one shared microflow, so two tests
+	// counting a list of the same name would declare it twice. It is renamed
+	// with everything else.
+	all := names
+	if len(exp.Aggregates) > 0 {
+		all = make(map[string]bool, len(names)+len(exp.Aggregates))
+		for n := range names {
+			all[n] = true
 		}
-		return match
-	})
-
+		for _, agg := range exp.Aggregates {
+			all[strings.TrimPrefix(agg.Var, "$")] = true
+		}
+	}
+	rename := func(src string) string {
+		return varPattern.ReplaceAllStringFunc(src, func(match string) string {
+			if all[match[1:]] {
+				return match + suffix
+			}
+			return match
+		})
+	}
+	renamed := exp
+	renamed.Condition = rename(exp.Condition)
+	renamed.Actual = rename(exp.Actual)
+	if len(exp.Aggregates) > 0 {
+		renamed.Aggregates = make([]ExpectAggregate, len(exp.Aggregates))
+		for i, agg := range exp.Aggregates {
+			renamed.Aggregates[i] = ExpectAggregate{
+				Var:  rename(agg.Var),
+				Op:   agg.Op,
+				List: rename(agg.List),
+			}
+		}
+	}
 	return renamed
 }
 

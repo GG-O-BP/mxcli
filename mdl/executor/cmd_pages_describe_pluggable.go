@@ -41,6 +41,45 @@ func buildPropertyTypeKeyMap(w map[string]any, withFallback bool) map[string]str
 	return propTypeKeyMap
 }
 
+// buildPropertyValueTypeMap maps a PropertyType's $ID to its DECLARED value
+// type ("String", "Boolean", "Integer", "Enumeration", ...).
+//
+// It walks the same PropertyTypes array as buildPropertyTypeKeyMap, which reads
+// only the key and throws the type away. The type is what tells DESCRIBE
+// whether to quote a value; the value's own shape cannot, because a String
+// property holding "30" is indistinguishable from an Integer holding 30 once it
+// is a string in BSON (ledger #104).
+//
+// An absent entry is not an error — a document whose widget schema is missing
+// still describes, with the emitter falling back to the value's shape.
+func buildPropertyValueTypeMap(w map[string]any) map[string]string {
+	out := make(map[string]string)
+	widgetType, ok := w["Type"].(map[string]any)
+	if !ok {
+		return out
+	}
+	objType, ok := widgetType["ObjectType"].(map[string]any)
+	if !ok {
+		return out
+	}
+	for _, pt := range getBsonArrayElements(objType["PropertyTypes"]) {
+		ptMap, ok := pt.(map[string]any)
+		if !ok {
+			continue
+		}
+		id := extractBinaryID(ptMap["$ID"])
+		if id == "" {
+			continue
+		}
+		if vt, ok := ptMap["ValueType"].(map[string]any); ok {
+			if t := extractString(vt["Type"]); t != "" {
+				out[id] = t
+			}
+		}
+	}
+	return out
+}
+
 // extractCustomWidgetAttribute extracts the attribute from a CustomWidget (e.g., ComboBox).
 // Specifically looks for attributeAssociation or attributeEnumeration properties by key,
 // avoiding false matches from other properties that also have AttributeRef (e.g., CaptionAttribute).
@@ -155,95 +194,12 @@ func gridSortDirection(sortItem map[string]any) string {
 	return extractString(sortItem["SortOrder"])
 }
 
-// extractDataGrid2DataSource extracts the datasource from a DataGrid2 CustomWidget.
+// extractDataGrid2DataSource extracts the datasource from a DataGrid2
+// CustomWidget: it lives on one of the widget object's properties.
 func extractDataGrid2DataSource(ctx *ExecContext, w map[string]any) *rawDataSource {
-	obj, ok := w["Object"].(map[string]any)
-	if !ok {
-		return nil
-	}
-
-	// Search through properties for datasource
-	props := getBsonArrayElements(obj["Properties"])
-	for _, prop := range props {
-		propMap, ok := prop.(map[string]any)
-		if !ok {
-			continue
-		}
-		value, ok := propMap["Value"].(map[string]any)
-		if !ok {
-			continue
-		}
-		// Check for DataSource
-		ds, ok := value["DataSource"].(map[string]any)
-		if !ok || ds == nil {
-			continue
-		}
-
-		dsType := extractString(ds["$Type"])
-		switch dsType {
-		case "Forms$DatabaseSource":
-			entityRef, ok := ds["EntityRef"].(map[string]any)
-			if ok && entityRef != nil {
-				entity := extractString(entityRef["Entity"])
-				if entity != "" {
-					return &rawDataSource{Type: "database", Reference: entity}
-				}
-			}
-		case "CustomWidgets$CustomWidgetXPathSource":
-			// CustomWidget datasource format - EntityRef contains Entity as qualified name
-			result := &rawDataSource{Type: "database"}
-			entityRef, ok := ds["EntityRef"].(map[string]any)
-			if ok && entityRef != nil {
-				result.Reference = extractString(entityRef["Entity"])
-			}
-			// Extract XPathConstraint
-			result.XPathConstraint = extractString(ds["XPathConstraint"])
-			// Extract sorting from SortBar - support multiple sort columns
-			if sortBar, ok := ds["SortBar"].(map[string]any); ok {
-				sortItems := getBsonArrayElements(sortBar["SortItems"])
-				for _, item := range sortItems {
-					sortItem, ok := item.(map[string]any)
-					if !ok {
-						continue
-					}
-					col := rawSortColumn{Order: "asc"}
-					// Extract attribute from AttributeRef
-					if attrRef, ok := sortItem["AttributeRef"].(map[string]any); ok {
-						col.Attribute = shortAttributeName(extractString(attrRef["Attribute"]))
-					}
-					// Extract sort order
-					sortOrder := gridSortDirection(sortItem)
-					if sortOrder == "Descending" {
-						col.Order = "desc"
-					}
-					if col.Attribute != "" {
-						result.SortColumns = append(result.SortColumns, col)
-					}
-				}
-			}
-			if result.Reference != "" {
-				return result
-			}
-		case "Forms$MicroflowSource":
-			if mf := microflowSourceRef(ds); mf != "" {
-				return &rawDataSource{Type: "microflow", Reference: mf}
-			}
-		case "Forms$NanoflowSource":
-			if nf := nanoflowSourceRef(ds); nf != "" {
-				return &rawDataSource{Type: "nanoflow", Reference: nf}
-			}
-		case "Forms$EntityPathSource", "Forms$DataViewSource":
-			entityPath := extractString(ds["EntityPath"])
-			if entityPath != "" {
-				return &rawDataSource{Type: "parameter", Reference: entityPath}
-			}
-		}
-	}
-	return nil
+	return firstObjectPropertyDataSource(w)
 }
 
-// extractDataGrid2Columns extracts the columns from a DataGrid2 CustomWidget.
-// entityContext is the resolved entity context from the DataGrid2's datasource.
 func extractDataGrid2Columns(ctx *ExecContext, w map[string]any, entityContext ...string) []rawDataGridColumn {
 	obj, ok := w["Object"].(map[string]any)
 	if !ok {
@@ -671,98 +627,53 @@ func extractTextTemplateParameters(ctx *ExecContext, textTemplate map[string]any
 	return result
 }
 
-// extractGalleryDataSource extracts the datasource from a Gallery widget.
-// Handles both Forms$Gallery and CustomWidgets$CustomWidget Gallery formats.
+// extractGalleryDataSource extracts the datasource from a Gallery widget,
+// which may be stored either as a pluggable widget (datasource on one of the
+// object's properties) or as the older Forms$Gallery (datasource at the top
+// level).
 func extractGalleryDataSource(ctx *ExecContext, w map[string]any) *rawDataSource {
-	// First check for CustomWidget Gallery format (datasource in Object.Properties)
-	if obj, ok := w["Object"].(map[string]any); ok {
-		props := getBsonArrayElements(obj["Properties"])
-		for _, prop := range props {
-			propMap, ok := prop.(map[string]any)
-			if !ok {
-				continue
-			}
-			value, ok := propMap["Value"].(map[string]any)
-			if !ok {
-				continue
-			}
-			// Check for DataSource field in Value - only process if not nil
-			dsVal, hasDS := value["DataSource"]
-			if !hasDS {
-				continue
-			}
-			if ds, ok := dsVal.(map[string]any); ok && ds != nil {
-				result := parseCustomWidgetDataSource(ctx, ds)
-				if result != nil {
-					return result
-				}
-			}
-		}
+	if ds := firstObjectPropertyDataSource(w); ds != nil {
+		return ds
 	}
-
-	// Fall back to Forms$Gallery format (DataSource at top level)
-	ds, ok := w["DataSource"].(map[string]any)
-	if !ok || ds == nil {
+	top, ok := w["DataSource"].(map[string]any)
+	if !ok || top == nil {
 		return nil
 	}
+	return parseDataSource(top)
+}
 
-	dsType := extractString(ds["$Type"])
-	switch dsType {
-	case "Forms$DatabaseSource":
-		result := &rawDataSource{Type: "database"}
-		entityRef, ok := ds["EntityRef"].(map[string]any)
-		if ok && entityRef != nil {
-			result.Reference = extractString(entityRef["Entity"])
+// firstObjectPropertyDataSource returns the datasource of the first property of
+// a pluggable widget's object that carries one.
+//
+// Shared by every pluggable container rather than copied per widget: where the
+// datasource sits is a property of the storage format, not of the widget, and
+// the per-widget copies of this walk were what let their datasource switches
+// drift apart (#941).
+func firstObjectPropertyDataSource(w map[string]any) *rawDataSource {
+	obj, ok := w["Object"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	for _, prop := range getBsonArrayElements(obj["Properties"]) {
+		propMap, ok := prop.(map[string]any)
+		if !ok {
+			continue
 		}
-		result.XPathConstraint = extractString(ds["XPathConstraint"])
-		// Extract sorting
-		if sortBar, ok := ds["SortBar"].(map[string]any); ok {
-			sortItems := getBsonArrayElements(sortBar["SortItems"])
-			for _, item := range sortItems {
-				sortItem, ok := item.(map[string]any)
-				if !ok {
-					continue
-				}
-				col := rawSortColumn{Order: "asc"}
-				if attrRef, ok := sortItem["AttributeRef"].(map[string]any); ok {
-					col.Attribute = shortAttributeName(extractString(attrRef["Attribute"]))
-				}
-				sortOrder := gridSortDirection(sortItem)
-				if sortOrder == "Descending" {
-					col.Order = "desc"
-				}
-				if col.Attribute != "" {
-					result.SortColumns = append(result.SortColumns, col)
-				}
-			}
+		value, ok := propMap["Value"].(map[string]any)
+		if !ok {
+			continue
 		}
-		if result.Reference != "" {
+		ds, ok := value["DataSource"].(map[string]any)
+		if !ok || ds == nil {
+			continue
+		}
+		if result := parseDataSource(ds); result != nil {
 			return result
-		}
-	case "Forms$MicroflowSource":
-		if mf := microflowSourceRef(ds); mf != "" {
-			return &rawDataSource{Type: "microflow", Reference: mf}
-		}
-	case "Forms$NanoflowSource":
-		if nf := nanoflowSourceRef(ds); nf != "" {
-			return &rawDataSource{Type: "nanoflow", Reference: nf}
-		}
-	case "Forms$EntityPathSource", "Forms$DataViewSource":
-		entityPath := extractString(ds["EntityPath"])
-		if entityPath != "" {
-			return &rawDataSource{Type: "parameter", Reference: entityPath}
 		}
 	}
 	return nil
 }
 
-// microflowSourceRef returns the microflow a Forms$MicroflowSource points at.
-//
-// Studio Pro and the codec engine store the name in the nested Forms$MicroflowSettings;
-// a top-level "Microflow" key is the legacy shape, still honoured so older files
-// round-trip. Reading only the top-level key made DESCRIBE PAGE drop a datagrid's
-// microflow datasource entirely (mendixlabs/mxcli#795), so every reader goes through
-// this helper rather than keeping its own copy of the lookup.
 func microflowSourceRef(ds map[string]any) string {
 	if mf := extractString(ds["Microflow"]); mf != "" {
 		return mf
@@ -784,58 +695,13 @@ func nanoflowSourceRef(ds map[string]any) string {
 	return ""
 }
 
-// parseCustomWidgetDataSource parses datasource from CustomWidget property format.
+// parseCustomWidgetDataSource reads a pluggable widget property's datasource.
+// Kept as a named seam over the shared reader because callers read better for
+// it; the switch itself lives in one place (see cmd_pages_describe_datasource.go).
 func parseCustomWidgetDataSource(ctx *ExecContext, ds map[string]any) *rawDataSource {
-	dsType := extractString(ds["$Type"])
-	switch dsType {
-	case "CustomWidgets$CustomWidgetXPathSource":
-		result := &rawDataSource{Type: "database"}
-		entityRef, ok := ds["EntityRef"].(map[string]any)
-		if ok && entityRef != nil {
-			result.Reference = extractString(entityRef["Entity"])
-		}
-		result.XPathConstraint = extractString(ds["XPathConstraint"])
-		// Extract sorting if present
-		if sortBar, ok := ds["SortBar"].(map[string]any); ok {
-			sortItems := getBsonArrayElements(sortBar["SortItems"])
-			for _, item := range sortItems {
-				sortItem, ok := item.(map[string]any)
-				if !ok {
-					continue
-				}
-				col := rawSortColumn{Order: "asc"}
-				if attrRef, ok := sortItem["AttributeRef"].(map[string]any); ok {
-					col.Attribute = shortAttributeName(extractString(attrRef["Attribute"]))
-				}
-				sortOrder := gridSortDirection(sortItem)
-				if sortOrder == "Descending" {
-					col.Order = "desc"
-				}
-				if col.Attribute != "" {
-					result.SortColumns = append(result.SortColumns, col)
-				}
-			}
-		}
-		return result
-	case "Forms$MicroflowSource":
-		if mf := microflowSourceRef(ds); mf != "" {
-			return &rawDataSource{Type: "microflow", Reference: mf}
-		}
-	case "Forms$NanoflowSource":
-		if nf := nanoflowSourceRef(ds); nf != "" {
-			return &rawDataSource{Type: "nanoflow", Reference: nf}
-		}
-	case "CustomWidgets$CustomWidgetNanoflowSource":
-		nanoflow := extractString(ds["Nanoflow"])
-		if nanoflow != "" {
-			return &rawDataSource{Type: "nanoflow", Reference: nanoflow}
-		}
-	}
-	return nil
+	return parseDataSource(ds)
 }
 
-// extractGalleryContent extracts the content widgets from a CustomWidget Gallery.
-// entityContext is the resolved entity context from the Gallery's datasource.
 func extractGalleryContent(ctx *ExecContext, w map[string]any, entityContext ...string) []rawWidget {
 	entCtx := ""
 	if len(entityContext) > 0 {
@@ -1191,6 +1057,7 @@ func extractExplicitProperties(ctx *ExecContext, w map[string]any) []rawExplicit
 	if len(propTypeKeyMap) == 0 {
 		return nil
 	}
+	valueTypes := buildPropertyValueTypeMap(w)
 
 	var result []rawExplicitProp
 	props := getBsonArrayElements(obj["Properties"])
@@ -1221,15 +1088,17 @@ func extractExplicitProperties(ctx *ExecContext, w map[string]any) []rawExplicit
 			}
 		}
 
-		// Check for non-default PrimitiveValue
+		// Check for a PrimitiveValue.
+		//
+		// Booleans used to be dropped here as "common defaults". They are not:
+		// a widget's default may be either, the document only stores what the
+		// author set, and discarding one made DESCRIBE emit a page whose
+		// re-execution silently turned the property off (ledger #104).
 		if pv := extractString(value["PrimitiveValue"]); pv != "" {
-			// Skip common defaults
-			if pv == "true" || pv == "false" {
-				continue
-			}
 			result = append(result, rawExplicitProp{
-				Key:   propKey,
-				Value: pv,
+				Key:       propKey,
+				Value:     pv,
+				ValueType: valueTypes[typePointerID],
 			})
 		}
 	}
@@ -1333,6 +1202,47 @@ func customWidgetPropertyActionMap(ctx *ExecContext, w map[string]any, propertyK
 	return nil
 }
 
+// customWidgetActionForSource returns the raw Forms$*ClientAction map stored on
+// whichever of a widget's action slots MDL addresses as `source` ("OnClick" or
+// "OnChange"), or nil when that slot is unset or holds a NoAction.
+//
+// It exists because the stored key is NOT the MDL name. Mendix's own widgets
+// suffix their action slots — a BadgeButton's click slot is `onClickEvent`, a
+// HeatMap's is `onClickAction`, a Combobox's change slot is `onChangeEvent` —
+// and the writer already accounts for that: actionSourceForKey strips one
+// Event/Action suffix before matching, which is the only reason `onClick:` and
+// `OnChange:` reach those widgets. Looking the property up by the literal string
+// "onClick" found it only on widgets spelled exactly that way, so on the rest
+// mxcli wrote an action it could not read back and a describe→exec round-trip
+// dropped the wiring (#956).
+//
+// Resolved through actionSourceForKey rather than a second copy of the rule, so
+// the reader cannot drift from the writer again — a key the writer accepts is by
+// construction a key this finds.
+func customWidgetActionForSource(ctx *ExecContext, w map[string]any, source string) map[string]any {
+	obj, ok := w["Object"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	// DataGrid2/Gallery keep PropertyTypes at the ObjectType level, so use the
+	// fallback form (same as the widget-slot readers).
+	propTypeKeyMap := buildPropertyTypeKeyMap(w, true)
+	for _, prop := range getBsonArrayElements(obj["Properties"]) {
+		propMap, ok := prop.(map[string]any)
+		if !ok {
+			continue
+		}
+		key := propTypeKeyMap[extractBinaryID(propMap["TypePointer"])]
+		if key == "" || actionSourceForKey(key) != source {
+			continue
+		}
+		if action := customWidgetPropertyActionMap(ctx, w, key); action != nil {
+			return action
+		}
+	}
+	return nil
+}
+
 // extractCustomWidgetPropertyAction extracts an action description from a CustomWidget property.
 // Returns a formatted string like "CALL_MICROFLOW Module.Flow" or "SHOW_PAGE Module.Page".
 func extractCustomWidgetPropertyAction(ctx *ExecContext, w map[string]any, propertyKey string) string {
@@ -1391,4 +1301,39 @@ func extractCustomWidgetPropertyAction(ctx *ExecContext, w map[string]any, prope
 
 func (e *Executor) extractCustomWidgetPropertyAssociation(w map[string]any, propertyKey string) string {
 	return extractCustomWidgetPropertyAssociation(e.newExecContext(context.Background()), w, propertyKey)
+}
+
+// anyCustomWidgetDataSource returns the first datasource a pluggable widget's
+// properties hold that names something — skipping any that parse to an empty
+// reference.
+//
+// firstObjectPropertyDataSource is NOT a substitute, and the difference is the
+// whole point: it returns as soon as a property's DataSource parses to a
+// non-nil value, even one carrying no reference. A File Uploader has such a
+// property ahead of its real one, so the caller received an empty datasource,
+// discarded it, and described the widget as having none — which is exactly the
+// silent drop this exists to prevent (#956).
+func anyCustomWidgetDataSource(w map[string]any) *rawDataSource {
+	obj, ok := w["Object"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	for _, prop := range getBsonArrayElements(obj["Properties"]) {
+		propMap, ok := prop.(map[string]any)
+		if !ok {
+			continue
+		}
+		value, ok := propMap["Value"].(map[string]any)
+		if !ok {
+			continue
+		}
+		ds, ok := value["DataSource"].(map[string]any)
+		if !ok || ds == nil {
+			continue
+		}
+		if result := parseDataSource(ds); result != nil && result.Reference != "" {
+			return result
+		}
+	}
+	return nil
 }

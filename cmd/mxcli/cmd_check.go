@@ -7,7 +7,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/mendixlabs/mxcli/mdl/ast"
 	"github.com/mendixlabs/mxcli/mdl/executor"
 	"github.com/mendixlabs/mxcli/mdl/linter"
 	"github.com/mendixlabs/mxcli/mdl/visitor"
@@ -19,15 +18,34 @@ var checkCmd = &cobra.Command{
 	Short: "Check an MDL script for errors without executing it",
 	Long: `Check an MDL script file for syntax errors and optionally validate references.
 
-By default, only checks syntax (parsing). Use --references to also validate
-that all referenced modules, entities, etc. exist in the project.
+Without a project it checks syntax and the semantic rules that need no model.
+Pass -p and it also resolves every reference — modules, entities, pages,
+microflows and icons — against that project; --references is implied by -p and
+is kept only for compatibility.
 
 Reference validation is smart: it automatically skips references to objects
 that are created within the script itself. For example, if your script creates
 a module "MyModule" and then creates entities in it, no error will be reported
 for the module reference.
 
-Output includes structured rule IDs (MDL prefix) for each validation issue.
+Creation ORDER is checked separately, and without a project. The executor
+resolves most references when it writes the referring document, so naming
+something a later statement creates fails partway through "mxcli exec" — with
+earlier statements already written, since exec is not transactional. Those are
+reported as MDL-ORDER01 (and MDL-PAGE01 for a widget's page reference).
+
+Given a project it also type-checks the expressions in the script's microflows
+and nanoflows: comparing an enumeration attribute to a string literal (in a
+create/change member, or in a condition such as: if $obj/Status = 'Open'),
+operand and argument type mismatches, and the like. Attribute paths resolve
+through associations too, so $Order/Sales.Order_Customer/Name is typed.
+These need the project to answer what an attribute's type is and which values an
+enumeration has, which is why they need -p. They report under exprcheck's own
+E0xx codes, and — like every other check here — only an error severity fails the
+run.
+
+Output includes structured rule IDs (MDL prefix for reference and script rules,
+E0xx for expression type rules) for each validation issue.
 
 Use --post-migration to scan an existing project (independent of the script)
 for legacy native widgets that have pluggable replacements — Studio Pro does
@@ -37,8 +55,8 @@ Examples:
   # Check syntax only (no project needed)
   mxcli check script.mdl
 
-  # Check syntax and validate references against a project
-  mxcli check script.mdl -p app.mpr --references
+  # Check syntax, resolve references, and type-check expressions
+  mxcli check script.mdl -p app.mpr
 
   # Scan the project for legacy native widgets after a Mendix upgrade
   mxcli check script.mdl -p app.mpr --post-migration
@@ -54,7 +72,14 @@ Examples:
 	Run: func(cmd *cobra.Command, args []string) {
 		filePath := args[0]
 		projectPath, _ := cmd.Flags().GetString("project")
+		// A project makes reference resolution possible, so it runs. It used to
+		// need --references as well, which meant `mxcli check script.mdl -p
+		// app.mpr` printed an unqualified "Check passed!" having resolved
+		// nothing — icons, entity and page references all silently unchecked.
+		// Someone who hands the command a project has said what they want; the
+		// flag stays accepted so existing invocations and scripts keep working.
 		checkRefs, _ := cmd.Flags().GetBool("references")
+		checkRefs = checkRefs || projectPath != ""
 		postMigration, _ := cmd.Flags().GetBool("post-migration")
 		format := resolveFormat(cmd, "text")
 		isStructured := format != "" && format != "text"
@@ -105,116 +130,10 @@ Examples:
 			fmt.Printf("✓ Syntax OK (%d statements)\n", len(prog.Statements))
 		}
 
-		// Validate statements (doesn't require project connection)
-		var violations []linter.Violation
-		for _, stmt := range prog.Statements {
-			// Check enumeration values for reserved words
-			if enumStmt, ok := stmt.(*ast.CreateEnumerationStmt); ok {
-				violations = append(violations, executor.ValidateEnumeration(enumStmt)...)
-			}
-			// Check entity attributes for reserved system names
-			if entityStmt, ok := stmt.(*ast.CreateEntityStmt); ok {
-				violations = append(violations, executor.ValidateEntity(entityStmt)...)
-			}
-			// Apply the same per-attribute checks to ALTER ENTITY ADD ATTRIBUTE
-			if alterStmt, ok := stmt.(*ast.AlterEntityStmt); ok {
-				violations = append(violations, executor.ValidateAlterEntity(alterStmt)...)
-			}
-			// Check microflow body for common issues
-			if mfStmt, ok := stmt.(*ast.CreateMicroflowStmt); ok {
-				violations = append(violations, executor.ValidateMicroflow(mfStmt)...)
-			}
-			// Check workflow for constructs MxBuild rejects (missing page,
-			// single-outcome-with-activities, invalid decision outcome names)
-			if wfStmt, ok := stmt.(*ast.CreateWorkflowStmt); ok {
-				violations = append(violations, executor.ValidateWorkflow(wfStmt)...)
-			}
-			// Check GRANT for member rights Mendix cannot store
-			if grantStmt, ok := stmt.(*ast.GrantEntityAccessStmt); ok {
-				violations = append(violations, executor.ValidateGrantEntityAccess(grantStmt)...)
-			}
-			// Check typed ALTER SETTINGS / CREATE CONFIGURATION property values
-			if setStmt, ok := stmt.(*ast.AlterSettingsStmt); ok {
-				violations = append(violations, executor.ValidateSettings(setStmt)...)
-			}
-			if cfgStmt, ok := stmt.(*ast.CreateConfigurationStmt); ok {
-				violations = append(violations, executor.ValidateCreateConfiguration(cfgStmt)...)
-			}
-			// Check database connection credentials: a literal where Mendix
-			// stores a constant reference writes an UNOPENABLE project.
-			if dbStmt, ok := stmt.(*ast.CreateDatabaseConnectionStmt); ok {
-				violations = append(violations, executor.ValidateDatabaseConnection(dbStmt)...)
-			}
-			// Check view entity OQL
-			if viewStmt, ok := stmt.(*ast.CreateViewEntityStmt); ok {
-				if viewStmt.Query.RawQuery != "" {
-					violations = append(violations, executor.ValidateOQLSyntax(viewStmt.Query.RawQuery)...)
-					violations = append(violations, executor.ValidateOQLTypes(viewStmt.Query.RawQuery, viewStmt.Attributes)...)
-				}
-			}
-		}
-
-		// Check for intra-script duplicate definitions (CREATE X … CREATE X without DROP)
-		violations = append(violations, executor.CheckScriptDuplicates(prog)...)
-
-		// Validate design properties against the project's theme registry
-		// (themesource design-properties.json) — flags unknown keys and invalid
-		// option values, listing the allowed values. Only runs with --project.
-		violations = append(violations, executor.ValidateDesignProperties(prog, projectPath)...)
-
-		// Validate pluggable widget properties against widget definitions —
-		// catches typos in property keys before MxBuild does. Uses built-in
-		// definitions alone when no project is given; with --project, also
-		// loads project-installed .def.json files for full coverage.
-		violations = append(violations, executor.ValidateWidgetProperties(prog, projectPath)...)
-
-		// Warn (MPR010) when an edit/new form (a parameter-bound DataView) is not
-		// wrapped in a layout grid — its label/input widths only render correctly
-		// inside a layoutgrid. Same rule as the MPR010 lint rule, surfaced at
-		// authoring time on the AST.
-		violations = append(violations, executor.ValidatePageLayoutGrid(prog)...)
-
-		// Flag control-bar buttons that pass $currentObject — a control bar is
-		// not row-scoped, so the argument is unbound (CE1571) at build time.
-		violations = append(violations, executor.ValidatePageButtonContext(prog)...)
-
-		// Flag a database-connection TYPE Studio Pro does not offer. mxcli writes
-		// the string through and mxbuild does not check it, so a wrong value
-		// builds green and simply does not connect.
-		violations = append(violations, executor.ValidateDatabaseConnectionType(prog)...)
-
-		// Flag OData property names nothing below will act on. The grammar takes
-		// any `name: value` pair, so a typo used to be discarded in silence and
-		// the model quietly lacked what the author asked for.
-		violations = append(violations, executor.ValidateODataProperties(prog)...)
-
-		// Flag a microflow-backed OData resource whose read microflow cannot keep
-		// the promises the service makes for it. A read microflow has no
-		// System.HttpResponse parameter, so it cannot answer 400 — its contract
-		// has to be declared correctly up front, and nothing else checks that.
-		violations = append(violations, executor.ValidateODataReadContract(prog)...)
-
-		// Flag `authentication microflow` with no microflow named. The grammar
-		// makes the name optional, so this parses and executes into a service
-		// Mendix refuses to build (CE0333).
-		violations = append(violations, executor.ValidateODataAuth(prog)...)
-
-		// Flag a page whose widgets point at a page created further down the same
-		// script. `exec` resolves page references in statement order and is not
-		// transactional, so this fails after earlier statements are already
-		// written. --references catches it too, but the ordering needs no project
-		// when the target is created by a plain CREATE (#9).
-		violations = append(violations, executor.ValidateScriptPageOrder(prog)...)
-
-		// Flag a document-access GRANT naming a role from another module — Mendix
-		// rejects it with CE0148. Needs no project, so it runs here rather than
-		// under --references, where it would only fire with -p (#836).
-		violations = append(violations, executor.ValidateGrantRoles(prog)...)
-
-		// Flag a REST client operation whose Body/Response mapping clause has no
-		// `{ ... }` body — Mendix cannot reference a mapping document from an
-		// operation, so the mapping would be dropped in silence (#843).
-		violations = append(violations, executor.ValidateRestClientMappings(prog)...)
+		// Every semantic check lives in executor.ValidateProgram, so `mxcli exec`
+		// refuses exactly what `mxcli check` reports. Adding a check there gives
+		// both commands it at once.
+		violations := executor.ValidateProgram(prog, projectPath)
 
 		if isStructured {
 			// Always emit structured output (even when clean)
@@ -284,6 +203,34 @@ Examples:
 			if !isStructured {
 				fmt.Printf("✓ All references valid\n")
 			}
+
+			// Expression type checking is the catalog-backed tier: the rules that
+			// need an attribute's type, an enumeration's cases or a microflow's
+			// return type. It runs here rather than in the unconditional pass
+			// because those answers only exist once a project is connected, and
+			// after the reference check because a script naming things that do
+			// not exist has a more basic problem than a mistyped operand — and
+			// because building the catalog for a run that already failed is
+			// wasted work.
+			//
+			// Like every other violation this command emits, only an error
+			// severity fails the run. Warnings and hints are advice, and a
+			// checker whose first outing turns advice into a broken build is a
+			// checker people turn off.
+			typeViolations := exec.TypeCheckProgram(prog)
+			if len(typeViolations) > 0 {
+				if isStructured {
+					formatter.Format(typeViolations, os.Stderr)
+				} else {
+					fmt.Fprintln(os.Stderr)
+					formatter.Format(typeViolations, os.Stderr)
+				}
+				if linter.Summarize(typeViolations).Errors > 0 {
+					os.Exit(1)
+				}
+			} else if !isStructured {
+				fmt.Printf("✓ Expression types OK\n")
+			}
 		}
 
 		// Post-migration scan: walk the project for native widgets that
@@ -321,6 +268,15 @@ Examples:
 
 		if !isStructured {
 			fmt.Println("\nCheck passed!")
+			// Qualify the verdict when nothing was resolved against a model. A
+			// bare "Check passed!" reads as more than it is: without a project
+			// no icon, entity, page or microflow name in the script has been
+			// looked up, and those are exactly what this command gets reached
+			// for. Saying so beats leaving the reader to infer it.
+			if !checkRefs {
+				fmt.Println("  (no project given — icon, entity, page and microflow references were")
+				fmt.Println("   not resolved; re-run with -p <project.mpr> for full coverage)")
+			}
 		}
 	},
 }

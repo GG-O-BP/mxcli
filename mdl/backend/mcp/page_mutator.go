@@ -350,6 +350,15 @@ func (m *mcpPageMutator) SetLayout(newLayout string, _ map[string]string) error 
 	return nil
 }
 
+// BoundPlaceholders returns nothing over MCP: the PED representation names the
+// layout but not the placeholder each widget group binds to, so there is no set
+// to report. Returning nil means the caller's repoint check has nothing to
+// verify and lets the statement through — the honest answer, since a wrong
+// non-empty list would refuse valid repoints.
+func (m *mcpPageMutator) BoundPlaceholders() []string {
+	return nil
+}
+
 func (m *mcpPageMutator) Save() error {
 	return m.backend.pgWritePage(m.moduleName, m.pageName, m.content)
 }
@@ -480,6 +489,15 @@ func (m *mcpPageMutator) SetColumnProperty(gridRef, columnRef, prop string, _ an
 
 func (m *mcpPageMutator) InsertColumns(gridRef, afterColumnRef string, _ backend.InsertPosition, _ []*backend.DataGridColumnSpec) error {
 	return fmt.Errorf("inserting columns into %s is not yet supported by the MCP backend", gridRef)
+}
+
+func (m *mcpPageMutator) InsertListViewTemplates(listViewRef string, _ []*pages.ListViewTemplate) error {
+	return fmt.Errorf("adding specialization templates to %s is not yet supported by the MCP backend", listViewRef)
+}
+
+func (m *mcpPageMutator) DropListViewTemplate(listViewRef, specialization string) error {
+	return fmt.Errorf("dropping the %s template from %s is not yet supported by the MCP backend",
+		specialization, listViewRef)
 }
 
 func (m *mcpPageMutator) ReplaceColumn(gridRef, columnRef string, _ []*backend.DataGridColumnSpec) error {

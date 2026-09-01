@@ -10,6 +10,7 @@ import (
 	"github.com/mendixlabs/mxcli/modelsdk/element"
 	genDm "github.com/mendixlabs/mxcli/modelsdk/gen/domainmodels"
 	"github.com/mendixlabs/mxcli/modelsdk/meta"
+	mmpr "github.com/mendixlabs/mxcli/modelsdk/mpr"
 	"github.com/mendixlabs/mxcli/sdk/domainmodel"
 )
 
@@ -98,6 +99,18 @@ func (b *Backend) DeleteAttribute(domainModelID, entityID, attrID model.ID) erro
 // original raw bytes. Mirrors legacy UpdateEntity (full re-serialize of the
 // replaced entity, siblings untouched).
 func (b *Backend) UpdateEntity(domainModelID model.ID, entity *domainmodel.Entity) error {
+	// Refuse rather than downgrade: a validation rule type this writer cannot
+	// reproduce (RegEx, Range) used to come back as Required, silently dropping
+	// the pattern reference — and mxbuild reports nothing, because a Required
+	// rule is perfectly valid (guard-don't-drop, ADR-0005).
+	if ruleType, ok := validationRulesAreReproducible(entity); !ok {
+		return fmt.Errorf(
+			"entity %s has a %s validation rule, which mxcli cannot rewrite without losing it — "+
+				"change this entity in Studio Pro, or remove the rule first.\n"+
+				"  (Rewriting would silently turn it into a Required rule: the constraint would be gone "+
+				"and the build would still pass.)",
+			entity.Name, ruleType)
+	}
 	if entity == nil {
 		return fmt.Errorf("UpdateEntity: nil entity")
 	}
@@ -132,17 +145,51 @@ func (b *Backend) UpdateEntity(domainModelID model.ID, entity *domainmodel.Entit
 		ge.SetRaw(raw)
 	}
 
-	// When the update removes ALL indexes but the stored entity had some, the fresh
-	// (empty) Indexes list on ge is "clean" (untouched), so the codec passes the
-	// raw indexes through unchanged — a dropped indexed attribute would then leave
-	// an orphaned index pointing at a GUID that no longer exists, which crashes
-	// `mx check` with an unhandled AggregateException (ledger #39). Touch the list
-	// (append + remove) to mark it dirty so the codec re-emits it as empty,
-	// clearing the raw. A non-empty new index list is already dirty (entityToGen
-	// appended to it), so this is only needed for the all-removed case.
-	if len(entity.Indexes) == 0 && len(orig.IndexesItems()) > 0 {
-		ge.AddIndexes(genDm.NewIndex())
-		ge.RemoveIndexes(0)
+	// When an update empties a child list, the fresh (empty) list on ge is "clean"
+	// — entityToGen appended nothing to it — so the codec passes the STORED raw
+	// bytes through unchanged and the removal silently does not happen. Touching
+	// the list (append + remove) marks it dirty, so the codec re-emits it as empty
+	// and clears the raw. A list that still has members is already dirty from
+	// entityToGen's appends, which is why this is only needed for the last one out.
+	//
+	// That "last one out" is the whole trap: any test that removes one of two
+	// members passes against the broken code. Measured on 11.13.0, one member each:
+	//
+	//   Indexes          orphaned index → `mx check` dies with an unhandled
+	//                    AggregateException (ledger #39)
+	//   ValidationRules  rule outlives the attribute it constrains → CE1613
+	//   Attributes       DROP ATTRIBUTE reports success and writes nothing at all
+	//
+	// AccessRules and EventHandlers share the mechanism; they are covered here
+	// rather than left to be rediscovered one error code at a time.
+	for _, l := range []struct {
+		newLen, storedLen int
+		touch             func()
+	}{
+		{len(entity.Attributes), len(orig.AttributesItems()), func() {
+			ge.AddAttributes(genDm.NewAttribute())
+			ge.RemoveAttributes(0)
+		}},
+		{len(entity.ValidationRules), len(orig.ValidationRulesItems()), func() {
+			ge.AddValidationRules(genDm.NewValidationRule())
+			ge.RemoveValidationRules(0)
+		}},
+		{len(entity.Indexes), len(orig.IndexesItems()), func() {
+			ge.AddIndexes(genDm.NewIndex())
+			ge.RemoveIndexes(0)
+		}},
+		{len(entity.AccessRules), len(orig.AccessRulesItems()), func() {
+			ge.AddAccessRules(genDm.NewAccessRule())
+			ge.RemoveAccessRules(0)
+		}},
+		{len(entity.EventHandlers), len(orig.EventHandlersItems()), func() {
+			ge.AddEventHandlers(genDm.NewEventHandler())
+			ge.RemoveEventHandlers(0)
+		}},
+	} {
+		if l.newLen == 0 && l.storedLen > 0 {
+			l.touch()
+		}
 	}
 
 	// Rebuild the list in place: drop all, re-add in original order swapping the
@@ -298,4 +345,57 @@ func (b *Backend) DeleteEntity(domainModelID, entityID model.ID) error {
 		}
 	}
 	return nil
+}
+
+// SetDomainModelAnnotations replaces the canvas notes on a domain model.
+//
+// Annotations are mutated in place on the gen document rather than rebuilt from
+// the semantic type: domainmodel.Annotation carries Caption, Location and Width,
+// while the stored element also has ExportLevel — and anything else a future
+// Mendix adds. Matching each note to the one already there and setting only the
+// three fields MDL owns means a property nobody has modelled yet rides along
+// untouched, which is the whole reason UpdateDomainModel leaves this collection
+// as passthrough (ADR-0005).
+//
+// A note with no stored counterpart is appended with the defaults Studio Pro
+// writes; a stored one with no counterpart in the new list is removed, which is
+// what makes DROP ANNOTATION work.
+func (b *Backend) SetDomainModelAnnotations(domainModelID model.ID, annotations []*domainmodel.Annotation) error {
+	if b.writer == nil {
+		return fmt.Errorf("SetDomainModelAnnotations: not connected for writing")
+	}
+	gdm, err := b.loadDomainModelGen(domainModelID)
+	if err != nil {
+		return err
+	}
+
+	// Index what is stored by element ID so an edit keeps its identity: minting a
+	// fresh one would make an otherwise-unchanged domain model differ (ADR-0008).
+	stored := map[model.ID]*genDm.Annotation{}
+	for _, el := range gdm.AnnotationsItems() {
+		if ga, ok := el.(*genDm.Annotation); ok {
+			stored[model.ID(ga.ID())] = ga
+		}
+	}
+
+	for i := len(gdm.AnnotationsItems()) - 1; i >= 0; i-- {
+		gdm.RemoveAnnotations(i)
+	}
+	for _, a := range annotations {
+		ga, ok := stored[a.ID]
+		if !ok {
+			ga = genDm.NewAnnotation()
+			if a.ID != "" {
+				ga.SetID(element.ID(a.ID))
+			} else {
+				ga.SetID(element.ID(mmpr.GenerateID()))
+			}
+			ga.SetExportLevel("Hidden")
+		}
+		ga.SetCaption(a.Caption)
+		ga.SetLocation(fmt.Sprintf("%d;%d", a.Location.X, a.Location.Y))
+		ga.SetWidth(int32(a.Width))
+		gdm.AddAnnotations(ga)
+	}
+	return b.persistDM(domainModelID, gdm)
 }

@@ -123,6 +123,21 @@ type PageMutator interface {
 	// Columns are serialized as CustomWidgets$WidgetObject, not as form widgets.
 	InsertColumns(gridRef string, afterColumnRef string, position InsertPosition, columns []*DataGridColumnSpec) error
 
+	// InsertListViewTemplates appends specialization templates to a List View.
+	//
+	// Templates live in the list view's Templates array, NOT in its Widgets array
+	// (which holds the default body), and a Forms$ListViewTemplate is not a
+	// widget — the same reason DataGrid2 columns get their own method above.
+	// Routing them through InsertWidget would append a non-widget to the widget
+	// list, which Studio Pro cannot open.
+	InsertListViewTemplates(listViewRef string, templates []*pages.ListViewTemplate) error
+
+	// DropListViewTemplate removes the template rendering the given
+	// specialization from a List View. A template has no name, so it is addressed
+	// by entity. Returns an error naming the templates that ARE present when the
+	// entity does not match one — silently dropping nothing would read as success.
+	DropListViewTemplate(listViewRef string, specialization string) error
+
 	// ReplaceColumn replaces a single DataGrid2 column with new columns.
 	// Columns are serialized as CustomWidgets$WidgetObject, not as form widgets.
 	ReplaceColumn(gridRef string, columnRef string, columns []*DataGridColumnSpec) error
@@ -142,6 +157,15 @@ type PageMutator interface {
 
 	// SetLayout changes the layout reference and remaps placeholder parameters.
 	SetLayout(newLayout string, paramMappings map[string]string) error
+
+	// BoundPlaceholders returns the layout placeholder names this page binds
+	// content to, unqualified (e.g. "Main", "HeaderLeft").
+	//
+	// The caller needs these to check a repoint before it happens: a page bound
+	// to a placeholder the new layout does not declare gets a Parameter pointing
+	// at nothing, which mxbuild reports as CE1613 at the far end of the run
+	// rather than at the statement that caused it.
+	BoundPlaceholders() []string
 
 	// --- Pluggable widget operations ---
 
@@ -317,6 +341,13 @@ type WidgetObjectBuilder interface {
 	SetChildWidgets(propertyKey string, children []pages.Widget)
 	SetTextTemplate(propertyKey string, text string)
 	SetTextTemplateWithParams(propertyKey string, text string, entityContext string)
+	// SetTextTemplateWithClientParams sets a text template whose `{1}`-style
+	// placeholders are backed by parameters the AUTHOR supplied (MDL
+	// `contentparams:`), rather than derived from `{AttrName}` placeholders
+	// against the entity context. Both spellings reach the same stored shape;
+	// without this one a pluggable widget's `{1}` template was written with an
+	// empty parameter list, which mxbuild rejects with CE0720 (#928).
+	SetTextTemplateWithClientParams(propertyKey string, text string, params []*pages.ClientTemplateParameter)
 	SetAction(propertyKey string, action pages.ClientAction)
 	SetAttributeObjects(propertyKey string, attributePaths []string)
 

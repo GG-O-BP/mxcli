@@ -33,10 +33,27 @@ createNanoflowStatement
     ;
 
 /**
+ * Rule creation — Mendix calls a rule "a special kind of microflow" that returns
+ * a Boolean or an enumeration and may only be used from a decision. It shares the
+ * microflow body, so this mirrors createNanoflowStatement; what a rule may not do
+ * is enforced by the validator, not by the grammar, because restricting the body
+ * rule here would duplicate it and turn every violation into a parse error with
+ * no explanation.
+ */
+createRuleStatement
+    : RULE qualifiedName
+      LPAREN microflowParameterList? RPAREN
+      microflowReturnType?
+      microflowOptions?
+      BEGIN microflowBody END SEMICOLON? SLASH?
+    ;
+
+/**
  * Java Action creation with inline Java source code.
  */
 createJavaActionStatement
     : JAVA ACTION qualifiedName
+      (FOLDER STRING_LITERAL)?
       LPAREN javaActionParameterList? RPAREN
       javaActionReturnType?
       javaActionExposedClause?
@@ -55,8 +72,34 @@ javaActionReturnType
     : RETURNS dataType
     ;
 
+// EXPOSED AS 'Caption' IN 'Category'  — appear in Studio Pro's toolbox
+// NOT EXPOSED                         — remove the toolbox entry
+//
+// An ABSENT clause is neither: it preserves whatever is stored. The entry also
+// carries four PNG bitmaps (icon and image, each with a dark variant) that MDL
+// cannot name, so a rewrite that rebuilt it from the caption and category alone
+// destroyed them — and one that treated silence as removal destroyed the entry.
+// Removing is therefore something a script has to say out loud.
 javaActionExposedClause
-    : EXPOSED AS STRING_LITERAL IN STRING_LITERAL
+    : EXPOSED AS STRING_LITERAL IN STRING_LITERAL exposeBitmapClause*
+    | NOT EXPOSED
+    ;
+
+// ICON 'i.png' / ICON DARK 'i-dark.png' / IMAGE 'm.png' / IMAGE DARK 'm-dark.png'
+//
+// The toolbox entry's four bitmaps. Studio Pro wants a 64x64 PNG for the icon
+// and a 256x192 PNG for the image; the dark variants are what its "Customize for
+// Dark mode" toggle fills in. Paths are read from disk at exec time and resolve
+// against the directory of the .mdl file being executed, so a script and its
+// artwork travel together.
+//
+// An omitted bitmap is preserved, not cleared — the same rule as the clause
+// itself. Clearing one is DROP ICON / DROP IMAGE.
+exposeBitmapClause
+    : ICON DARK? STRING_LITERAL
+    | IMAGE DARK? STRING_LITERAL
+    | DROP ICON DARK?
+    | DROP IMAGE DARK?
     ;
 
 /**
@@ -66,6 +109,7 @@ javaActionExposedClause
  */
 createJavaScriptActionStatement
     : JAVASCRIPT ACTION qualifiedName
+      (FOLDER STRING_LITERAL)?
       LPAREN javaActionParameterList? RPAREN
       javaActionReturnType?
       javaActionExposedClause?
@@ -100,9 +144,31 @@ microflowOptions
     : microflowOption+
     ;
 
+// COMMENT is deliberately absent. It was parsed and dropped — the visitor stored
+// it on a field the executor never read — so `comment 'text'` reported success
+// and set no documentation at all. The `/** … */` doc comment before the
+// statement does work, and is richer (@param, @returns), so there is one
+// spelling rather than one that works and one that lies.
 microflowOption
     : FOLDER STRING_LITERAL
-    | COMMENT STRING_LITERAL
+    | microflowExposedClause
+    ;
+
+// EXPOSED AS MICROFLOW ACTION 'Caption' IN 'Category'
+// EXPOSED AS WORKFLOW  ACTION 'Caption' IN 'Category'
+// NOT EXPOSED AS MICROFLOW ACTION
+//
+// A microflow can be exposed twice, because Studio Pro has two toolboxes: one
+// for the microflow editor and one for the workflow editor. Mendix stores the
+// two under different keys (MicroflowActionInfo / WorkflowActionInfo) with the
+// same element type, so which one is meant has to be named — unlike a Java or
+// JavaScript action, which has only one.
+//
+// As with those, an ABSENT clause preserves what is stored; NOT EXPOSED is how a
+// script asks for the entry to go away.
+microflowExposedClause
+    : EXPOSED AS (MICROFLOW | WORKFLOW) ACTION STRING_LITERAL IN STRING_LITERAL exposeBitmapClause*
+    | NOT EXPOSED AS (MICROFLOW | WORKFLOW) ACTION
     ;
 
 microflowBody
@@ -200,13 +266,28 @@ enumSplitCaseValue
     | LPAREN EMPTY RPAREN
     ;
 
+// Branch keyword is `when ... then`, matching caseStatement above and the
+// caseExpression in MDLSettings.g4 — `case` used to introduce a BRANCH here
+// while introducing the SUBJECT in those two, so the word meant two things
+// (mxcli #913). The `case`/`else` spelling still parses: scripts in the wild
+// use it, and both spellings build the identical flow. MDL065 warns.
 inheritanceSplitStatement
     : SPLIT TYPE VARIABLE
-      (inheritanceSplitCase+ (ELSE microflowBody)? END SPLIT)?
+      (inheritanceSplitCase+ inheritanceSplitElse? END SPLIT)?
     ;
 
 inheritanceSplitCase
-    : CASE qualifiedName microflowBody
+    : CASE qualifiedName microflowBody       // legacy spelling, warns MDL065
+    | WHEN qualifiedName THEN microflowBody
+    ;
+
+// The last branch is Mendix's `(empty)` outgoing flow — taken when the object
+// is NULL, not when no case matched. `else` is the legacy spelling and reads
+// as a default, which it is not: mxbuild still demands a flow for every
+// subtype and for the base entity (CE0090) when an `else` is present.
+inheritanceSplitElse
+    : ELSE microflowBody                          // legacy spelling, warns MDL065
+    | WHEN LPAREN EMPTY RPAREN THEN microflowBody
     ;
 
 castObjectStatement
@@ -225,8 +306,9 @@ setStatement
 
 // $NewProduct = CREATE MfTest.Product (Name = $Name, Code = $Code);
 // $NewProduct = CREATE MfTest.Product (Name = $Name) COMMIT;
+// $NewProduct = CREATE MfTest.Product (Name = $Name) REFRESH;
 createObjectStatement
-    : (VARIABLE EQUALS)? CREATE nonListDataType (LPAREN memberAssignmentList? RPAREN)? commitClause? onErrorClause?
+    : (VARIABLE EQUALS)? CREATE nonListDataType (LPAREN memberAssignmentList? RPAREN)? commitClause? REFRESH? onErrorClause?
     ;
 
 // CHANGE $Product (Name = $NewName, ModifiedDate = [%CurrentDateTime%]);
@@ -252,13 +334,21 @@ attributePath
     : VARIABLE ((SLASH | DOT) qualifiedName)+
     ;
 
-// COMMIT $Product; or COMMIT $Product WITH EVENTS; or COMMIT $Product REFRESH;
+// COMMIT $Product; or COMMIT $Product WITHOUT EVENTS; or COMMIT $Product REFRESH;
+//
+// Absent = WITH EVENTS, which is Mendix's default for the Commit activity and
+// what Studio Pro stores (measured: CommitActivity.DefaultCommit in ako/TestApp
+// stores WithEvents=true). WITH EVENTS therefore parses and means exactly the
+// same as writing nothing — it is kept because it is what every script written
+// before #895 says, and because spelling the default out is not an error.
+// WITHOUT EVENTS is the only form that changes the stored value.
 commitStatement
-    : COMMIT VARIABLE (WITH EVENTS)? REFRESH? onErrorClause?
+    : COMMIT VARIABLE ((WITH | WITHOUT) EVENTS)? REFRESH? onErrorClause?
     ;
 
+// DELETE $Product; or DELETE $Product REFRESH;
 deleteObjectStatement
-    : DELETE VARIABLE onErrorClause?
+    : DELETE VARIABLE REFRESH? onErrorClause?
     ;
 
 // ROLLBACK $Product; or ROLLBACK $Product REFRESH;
@@ -356,7 +446,14 @@ logTemplateParam: templateParam;
 
 // $Result = CALL MICROFLOW MfTest.M001_HelloWorld(); or CALL MICROFLOW MfTest.M001_HelloWorld();
 callMicroflowStatement
-    : (VARIABLE EQUALS)? CALL MICROFLOW qualifiedName LPAREN callArgumentList? RPAREN onErrorClause?
+    : (VARIABLE EQUALS)? CALL MICROFLOW qualifiedName LPAREN callArgumentList? RPAREN queueClause? onErrorClause?
+    ;
+
+// IN QUEUE Module.QueueName — runs the call on a task queue (Queues$QueueSettings
+// on the call activity). Valid on CALL MICROFLOW and CALL JAVA ACTION only;
+// Mendix has no queued nanoflow or JavaScript action.
+queueClause
+    : IN QUEUE qualifiedName
     ;
 
 callNanoflowStatement
@@ -365,7 +462,7 @@ callNanoflowStatement
 
 // $Result = CALL JAVA ACTION CustomActivities.ExecuteOQL(OqlStatement = '...');
 callJavaActionStatement
-    : (VARIABLE EQUALS)? CALL JAVA ACTION qualifiedName LPAREN callArgumentList? RPAREN onErrorClause?
+    : (VARIABLE EQUALS)? CALL JAVA ACTION qualifiedName LPAREN callArgumentList? RPAREN queueClause? onErrorClause?
     ;
 
 // $Result = CALL JAVASCRIPT ACTION Module.JSAction(Param = 'value');
@@ -586,7 +683,8 @@ restCallAuthClause
 
 // BODY 'template' [WITH params] or BODY MAPPING Name FROM $var
 restCallBodyClause
-    : BODY STRING_LITERAL templateParams?                    // Custom body template
+    : BODY BINARY_TYPE expression                            // Binary body (a FileDocument's Contents)
+    | BODY STRING_LITERAL templateParams?                    // Custom body template
     | BODY expression templateParams?                        // Expression body
     | BODY MAPPING qualifiedName FROM VARIABLE               // Export mapping
     ;
@@ -604,6 +702,7 @@ restCallReturnsClause
     | RETURNS MAPPING qualifiedName AS qualifiedName            // Import mapping → single object
     | RETURNS NONE                                              // Ignore response
     | RETURNS NOTHING                                           // Ignore response (alias)
+    | RETURNS qualifiedName                                     // Store in file document (a System.FileDocument specialization)
     ;
 
 /**
@@ -633,7 +732,34 @@ sendRestRequestBodyClause
  */
 importFromMappingStatement
     : (VARIABLE EQUALS)? IMPORT FROM MAPPING qualifiedName LPAREN VARIABLE RPAREN
+      importMappingRange?
       onErrorClause?
+    ;
+
+/**
+ * How much of the mapping's result to bind — Mendix's "Range" on the import
+ * activity, stored as Microflows$ConstantRange{SingleObject} or
+ * Microflows$CustomRange{LimitExpression, OffsetExpression}.
+ *
+ *   (omitted)          infer from the mapping's own root shape, as mxcli
+ *                      always has — hand-written MDL keeps working unchanged
+ *   ALL                All — bind the whole list, explicitly
+ *   FIRST              First — bind ONE object, not a list
+ *   LIMIT e [OFFSET e] Custom — a bounded list
+ *
+ * DESCRIBE always emits one of the three, never nothing: an object-rooted
+ * mapping set to All is a real state (Studio Pro's own default — the blank
+ * app ships one), and the inference would turn it into First on re-exec.
+ *
+ * LIMIT/OFFSET mirror the RETRIEVE clause rather than inventing a second
+ * spelling for the same idea. FIRST is a separate word on purpose: `limit 1`
+ * is a LIST of one, while First binds a single OBJECT — different result
+ * variable types, so they cannot share syntax. (issue #881)
+ */
+importMappingRange
+    : ALL
+    | FIRST
+    | LIMIT limitExpr=expression (OFFSET offsetExpr=expression)?
     ;
 
 /**

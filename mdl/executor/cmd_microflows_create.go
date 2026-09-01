@@ -72,25 +72,53 @@ func execCreateMicroflow(ctx *ExecContext, s *ast.CreateMicroflowStmt) error {
 	var existingContainerID model.ID
 	var existingAllowedRoles []model.ID
 	preserveAllowedRoles := false
+	// Excluded is model state, not script state: an absent @excluded must not
+	// clear a stored exclusion (#914).
+	existingExcluded := false
+	var existingActionInfo, existingWorkflowInfo *types.MicroflowActionInfo
 	existingMicroflows, err := ctx.Backend.ListMicroflows()
 	if err != nil {
 		return mdlerrors.NewBackend("check existing microflows", err)
 	}
-	for _, existing := range existingMicroflows {
-		if existing.Name == s.Name.Name && getModuleID(ctx, existing.ContainerID) == module.ID {
-			if !s.CreateOrModify {
-				return mdlerrors.NewAlreadyExistsMsg("microflow", s.Name.Module+"."+s.Name.Name, "microflow '"+s.Name.Module+"."+s.Name.Name+"' already exists (use create or modify to overwrite)")
-			}
-			existingID = existing.ID
-			existingContainerID = existing.ContainerID
-			existingAllowedRoles = cloneRoleIDs(existing.AllowedModuleRoles)
-			preserveAllowedRoles = true
-			break
+	// A module may hold several microflows with this name as long as all but one
+	// are excluded, so target the live one rather than whichever comes first
+	// (#914).
+	if existing, ok := pickLive(existingMicroflows,
+		func(m *microflows.Microflow) bool {
+			return m.Name == s.Name.Name && getModuleID(ctx, m.ContainerID) == module.ID
+		},
+		func(m *microflows.Microflow) bool { return m.Excluded },
+	); ok {
+		if !s.CreateOrModify {
+			return mdlerrors.NewAlreadyExistsMsg("microflow", s.Name.Module+"."+s.Name.Name, "microflow '"+s.Name.Module+"."+s.Name.Name+"' already exists (use create or modify to overwrite)")
 		}
+		existingID = existing.ID
+		existingContainerID = existing.ContainerID
+		existingAllowedRoles = cloneRoleIDs(existing.AllowedModuleRoles)
+		preserveAllowedRoles = true
+		existingExcluded = existing.Excluded
+		// The toolbox entries hold four PNG bitmaps MDL cannot name, so a
+		// rewrite carries them rather than rebuilding from the clause.
+		existingActionInfo = existing.MicroflowActionInfo
+		existingWorkflowInfo = existing.WorkflowActionInfo
 	}
 
 	// For CREATE OR REPLACE/MODIFY, reuse the existing ID to preserve references
 	qualifiedName := s.Name.Module + "." + s.Name.Name
+
+	// Refuse before writing if the stored microflow has a call bound to a task
+	// queue: the rebuild would null it out and nothing downstream would notice.
+	if existingID != "" {
+		if err := checkNoQueuedCalls(ctx, existingID, qualifiedName, s); err != nil {
+			return err
+		}
+		// Same reasoning for a REST body the writer cannot express: the rebuild
+		// would drop it, DESCRIBE would not show it missing, and the app would
+		// still build.
+		if err := checkNoUnwritableRestBody(ctx, existingID, qualifiedName); err != nil {
+			return err
+		}
+	}
 	microflowID := model.ID(types.GenerateID())
 	if existingID != "" {
 		microflowID = existingID
@@ -124,12 +152,16 @@ func execCreateMicroflow(ctx *ExecContext, s *ast.CreateMicroflowStmt) error {
 		Documentation:            s.Documentation,
 		AllowConcurrentExecution: true, // Default: allow concurrent execution
 		MarkAsUsed:               false,
-		Excluded:                 s.Excluded,
+		Excluded:                 s.Excluded || existingExcluded,
 	}
 	if preserveAllowedRoles {
 		mf.AllowedModuleRoles = existingAllowedRoles
 	} else {
 		mf.AllowedModuleRoles = defaultDocumentAccessRoles(ctx, module)
+	}
+	if mf.MicroflowActionInfo, mf.WorkflowActionInfo, err = applyExposeClauses(ctx,
+		s.Expose, existingActionInfo, existingWorkflowInfo, exposeWarner(ctx)); err != nil {
+		return err
 	}
 
 	// Build entity resolver function for parameter/return types
@@ -250,16 +282,26 @@ func execCreateMicroflow(ctx *ExecContext, s *ast.CreateMicroflowStmt) error {
 	restServices, _ := loadRestServices(ctx)
 
 	builder := &flowBuilder{
-		posX:         200,
-		posY:         200,
-		baseY:        200, // Base Y for happy path
-		spacing:      HorizontalSpacing,
-		varTypes:     varTypes,
-		declaredVars: declaredVars,
-		measurer:     &layoutMeasurer{varTypes: varTypes},
-		backend:      ctx.Backend,
-		hierarchy:    hierarchy,
-		restServices: restServices,
+		textLang: authoringLanguage(ctx),
+		// Carry over a HAND-PLACED StartEvent position from the microflow being
+		// replaced, the way the folder and allowed roles already are: a Studio
+		// Pro flow's 145;200 became 100;200 on a describe→exec round-trip, the
+		// only coordinate in it that did not survive (#884). A start sitting
+		// where mxcli's own layout would have put it is not carried over — that
+		// pinned the start of every rewritten flow, stranding it across the
+		// canvas from activities the same script had just moved (#951). An
+		// explicit @start(x, y) on the first statement overrides both.
+		startPosition: storedStartPosition(ctx, existingID),
+		posX:          200,
+		posY:          200,
+		baseY:         200, // Base Y for happy path
+		spacing:       HorizontalSpacing,
+		varTypes:      varTypes,
+		declaredVars:  declaredVars,
+		measurer:      &layoutMeasurer{varTypes: varTypes},
+		backend:       ctx.Backend,
+		hierarchy:     hierarchy,
+		restServices:  restServices,
 	}
 
 	mf.ObjectCollection = builder.buildFlowGraph(s.Body, s.ReturnType)
@@ -280,7 +322,10 @@ func execCreateMicroflow(ctx *ExecContext, s *ast.CreateMicroflowStmt) error {
 		if err := ctx.Backend.UpdateMicroflow(mf); err != nil {
 			return mdlerrors.NewBackend("update microflow", err)
 		}
-		fmt.Fprintf(ctx.Output, "Replaced microflow: %s.%s\n", s.Name.Module, s.Name.Name)
+		if _, err := applyDocumentFolder(ctx, mf.ID, existingContainerID, containerID); err != nil {
+			return err
+		}
+		ctx.ReportMutation("Replaced", "microflow: %s.%s", s.Name.Module, s.Name.Name)
 	} else {
 		if err := ctx.Backend.CreateMicroflow(mf); err != nil {
 			return mdlerrors.NewBackend("create microflow", err)
@@ -295,4 +340,24 @@ func execCreateMicroflow(ctx *ExecContext, s *ast.CreateMicroflowStmt) error {
 	// Invalidate hierarchy cache so the new microflow's container is visible
 	invalidateHierarchy(ctx)
 	return nil
+}
+
+// storedStartPosition reads the StartEvent position off the microflow being
+// replaced, when a person put it there rather than mxcli's own layout — see
+// authoredStartPosition for how the two are told apart, and why carrying the
+// position over unconditionally pinned the start of every rewritten flow (#951).
+//
+// Nil for a fresh CREATE, and nil for a start sitting where the layout would
+// have put it anyway; both derive from the new first activity. Best-effort: a
+// backend that cannot read the flow yields the derived placement rather than
+// failing the statement.
+func storedStartPosition(ctx *ExecContext, existingID model.ID) *model.Point {
+	if existingID == "" || ctx.Backend == nil {
+		return nil
+	}
+	mf, err := ctx.Backend.GetMicroflow(existingID)
+	if err != nil || mf == nil {
+		return nil
+	}
+	return authoredStartPosition(mf.ObjectCollection)
 }

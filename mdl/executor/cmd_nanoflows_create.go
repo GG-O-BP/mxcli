@@ -25,6 +25,10 @@ func execCreateNanoflow(ctx *ExecContext, s *ast.CreateNanoflowStmt) error {
 		return mdlerrors.NewValidation("nanoflow name must not be empty")
 	}
 
+	if err := refuseExposeOnFlavour(s.Expose, "nanoflow", s.Name.Module+"."+s.Name.Name); err != nil {
+		return err
+	}
+
 	// Find or auto-create module
 	module, err := findOrCreateModule(ctx, s.Name.Module)
 	if err != nil {
@@ -48,21 +52,29 @@ func execCreateNanoflow(ctx *ExecContext, s *ast.CreateNanoflowStmt) error {
 	var existingContainerID model.ID
 	var existingAllowedRoles []model.ID
 	preserveAllowedRoles := false
+	// Excluded is model state, not script state: an absent @excluded must not
+	// clear a stored exclusion (#914).
+	existingExcluded := false
 	existingNanoflows, err := ctx.Backend.ListNanoflows()
 	if err != nil {
 		return mdlerrors.NewBackend("check existing nanoflows", err)
 	}
-	for _, existing := range existingNanoflows {
-		if existing.Name == s.Name.Name && getModuleID(ctx, existing.ContainerID) == module.ID {
-			if !s.CreateOrModify {
-				return mdlerrors.NewAlreadyExistsMsg("nanoflow", s.Name.Module+"."+s.Name.Name, "nanoflow '"+s.Name.Module+"."+s.Name.Name+"' already exists (use create or modify to overwrite)")
-			}
-			existingID = existing.ID
-			existingContainerID = existing.ContainerID
-			existingAllowedRoles = cloneRoleIDs(existing.AllowedModuleRoles)
-			preserveAllowedRoles = true
-			break
+	// A module may hold several nanoflows with this name as long as all but one
+	// are excluded, so target the live one rather than whichever comes first.
+	if existing, ok := pickLive(existingNanoflows,
+		func(n *microflows.Nanoflow) bool {
+			return n.Name == s.Name.Name && getModuleID(ctx, n.ContainerID) == module.ID
+		},
+		func(n *microflows.Nanoflow) bool { return n.Excluded },
+	); ok {
+		if !s.CreateOrModify {
+			return mdlerrors.NewAlreadyExistsMsg("nanoflow", s.Name.Module+"."+s.Name.Name, "nanoflow '"+s.Name.Module+"."+s.Name.Name+"' already exists (use create or modify to overwrite)")
 		}
+		existingID = existing.ID
+		existingContainerID = existing.ContainerID
+		existingAllowedRoles = cloneRoleIDs(existing.AllowedModuleRoles)
+		preserveAllowedRoles = true
+		existingExcluded = existing.Excluded
 	}
 
 	// For CREATE OR REPLACE/MODIFY, reuse the existing ID to preserve references
@@ -93,7 +105,7 @@ func execCreateNanoflow(ctx *ExecContext, s *ast.CreateNanoflowStmt) error {
 		Name:          s.Name.Name,
 		Documentation: s.Documentation,
 		MarkAsUsed:    false,
-		Excluded:      s.Excluded,
+		Excluded:      s.Excluded || existingExcluded,
 	}
 	if preserveAllowedRoles {
 		nf.AllowedModuleRoles = existingAllowedRoles
@@ -224,6 +236,7 @@ func execCreateNanoflow(ctx *ExecContext, s *ast.CreateNanoflowStmt) error {
 	restServices, _ := loadRestServices(ctx) // best-effort: builder works without REST services
 
 	builder := &flowBuilder{
+		textLang:     authoringLanguage(ctx),
 		posX:         200,
 		posY:         200,
 		baseY:        200,
@@ -254,7 +267,10 @@ func execCreateNanoflow(ctx *ExecContext, s *ast.CreateNanoflowStmt) error {
 		if err := ctx.Backend.UpdateNanoflow(nf); err != nil {
 			return mdlerrors.NewBackend("update nanoflow", err)
 		}
-		fmt.Fprintf(ctx.Output, "Replaced nanoflow: %s.%s\n", s.Name.Module, s.Name.Name)
+		if _, err := applyDocumentFolder(ctx, nf.ID, existingContainerID, containerID); err != nil {
+			return err
+		}
+		ctx.ReportMutation("Replaced", "nanoflow: %s.%s", s.Name.Module, s.Name.Name)
 	} else {
 		if err := ctx.Backend.CreateNanoflow(nf); err != nil {
 			return mdlerrors.NewBackend("create nanoflow", err)

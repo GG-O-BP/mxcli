@@ -126,10 +126,11 @@ func (fb *flowBuilder) addIfStatement(s *ast.IfStmt) model.ID {
 
 	var mergeID model.ID
 	if needMerge {
+		mergeX, mergeY := mergePosition(s.Annotations, mergeX, centerY)
 		merge := &microflows.ExclusiveMerge{
 			BaseMicroflowObject: microflows.BaseMicroflowObject{
 				BaseElement: model.BaseElement{ID: model.ID(types.GenerateID())},
-				Position:    model.Point{X: mergeX, Y: centerY},
+				Position:    model.Point{X: mergeX, Y: mergeY},
 				Size:        model.Size{Width: MergeSize, Height: MergeSize},
 			},
 		}
@@ -601,6 +602,7 @@ func (fb *flowBuilder) addLoopStatement(s *ast.LoopStmt) model.ID {
 
 	// Build nested ObjectCollection for loop body
 	loopBuilder := &flowBuilder{
+		textLang:     fb.textLang,
 		posX:         innerStartX,
 		posY:         innerStartY,
 		baseY:        innerStartY,
@@ -653,6 +655,16 @@ func (fb *flowBuilder) addLoopStatement(s *ast.LoopStmt) model.ID {
 		loopBuilder.posX += HorizontalSpacing
 		continueID := loopBuilder.addContinueEvent()
 		loopBuilder.flows = append(loopBuilder.flows, newHorizontalFlowWithCase(lastBodyID, continueID, pendingCase))
+	}
+
+	// Size the box from the children that were actually built, not from the
+	// statement count measured before the body existed (#884 problem 1). Recompute
+	// the centre too: the width just changed under it.
+	loopWidth, loopHeight = fitContainerSize(loopBuilder.objects, innerStartX, MinLoopWidth, MinLoopHeight)
+	loopCenterX = loopLeftX + loopWidth/2
+	if s.Annotations != nil && s.Annotations.Position != nil {
+		loopCenterX = s.Annotations.Position.X
+		loopLeftX = loopCenterX - loopWidth/2
 	}
 
 	// Create LoopedActivity with calculated size
@@ -908,6 +920,7 @@ func (fb *flowBuilder) addWhileStatement(s *ast.WhileStmt) model.ID {
 	}
 
 	loopBuilder := &flowBuilder{
+		textLang:     fb.textLang,
 		posX:         innerStartX,
 		posY:         innerStartY,
 		baseY:        innerStartY,
@@ -921,24 +934,55 @@ func (fb *flowBuilder) addWhileStatement(s *ast.WhileStmt) model.ID {
 		isNanoflow:   fb.isNanoflow,
 	}
 
+	// Body bookkeeping is addLoopStatement's, verbatim: a WHILE body is a loop
+	// body, so the same merge-less split needs the same handling. pendingCase
+	// carries the deferred case a split with no merge leaves for the NEXT flow —
+	// the FALSE branch of `if X then break`. Dropping it shipped the decision with
+	// only its true flow, which is CE0079 (#893 case 3); the LOOP builder had this
+	// since ledger #52 and this one did not, so the two disagreed on the same body.
 	var lastBodyID model.ID
+	pendingCase := ""
 	for _, stmt := range s.Body {
 		actID := loopBuilder.addStatement(stmt)
 		if actID != "" {
 			loopBuilder.applyPendingAnnotations(actID)
 			if lastBodyID != "" {
-				loopBuilder.flows = append(loopBuilder.flows, newHorizontalFlow(lastBodyID, actID))
+				if pendingCase != "" {
+					loopBuilder.flows = append(loopBuilder.flows, newHorizontalFlowWithCase(lastBodyID, actID, pendingCase))
+				} else {
+					loopBuilder.flows = append(loopBuilder.flows, newHorizontalFlow(lastBodyID, actID))
+				}
 			}
+			pendingCase = ""
 			if loopBuilder.nextConnectionPoint != "" {
 				lastBodyID = loopBuilder.nextConnectionPoint
 				loopBuilder.nextConnectionPoint = ""
+				pendingCase = loopBuilder.nextFlowCase
+				loopBuilder.nextFlowCase = ""
 			} else {
 				lastBodyID = actID
 			}
 		}
 	}
+	// A merge-less split as the last body element leaves its deferred FALSE branch
+	// with nowhere to go. Wire it to a Continue event — "didn't break, so go to the
+	// next iteration" — which is the valid Mendix representation and the missing
+	// false flow itself (ledger #52, applied here for #893).
+	if pendingCase != "" && lastBodyID != "" {
+		loopBuilder.posX += HorizontalSpacing
+		continueID := loopBuilder.addContinueEvent()
+		loopBuilder.flows = append(loopBuilder.flows, newHorizontalFlowWithCase(lastBodyID, continueID, pendingCase))
+	}
 
 	whileExpr := fb.exprToString(s.Condition)
+
+	// Size from the built children, as addLoopStatement does (#884 problem 1).
+	loopWidth, loopHeight = fitContainerSize(loopBuilder.objects, innerStartX, MinLoopWidth, MinLoopHeight)
+	loopCenterX = loopLeftX + loopWidth/2
+	if s.Annotations != nil && s.Annotations.Position != nil {
+		loopCenterX = s.Annotations.Position.X
+		loopLeftX = loopCenterX - loopWidth/2
+	}
 
 	loop := &microflows.LoopedActivity{
 		BaseMicroflowObject: microflows.BaseMicroflowObject{

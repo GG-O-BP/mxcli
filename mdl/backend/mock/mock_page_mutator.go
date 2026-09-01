@@ -29,11 +29,14 @@ type MockPageMutator struct {
 	DropWidgetFunc                 func(refs []backend.WidgetRef) error
 	ReplaceWidgetFunc              func(widgetRef string, columnRef string, widgets []pages.Widget) error
 	InsertColumnsFunc              func(gridRef, afterColumnRef string, position backend.InsertPosition, columns []*backend.DataGridColumnSpec) error
+	InsertListViewTemplatesFunc    func(listViewRef string, templates []*pages.ListViewTemplate) error
+	DropListViewTemplateFunc       func(listViewRef, specialization string) error
 	ReplaceColumnFunc              func(gridRef, columnRef string, columns []*backend.DataGridColumnSpec) error
 	FindWidgetFunc                 func(name string) bool
 	AddVariableFunc                func(name, dataType, defaultValue string) error
 	DropVariableFunc               func(name string) error
 	SetLayoutFunc                  func(newLayout string, paramMappings map[string]string) error
+	BoundPlaceholdersFunc          func() []string
 	SetPluggablePropertyFunc       func(widgetRef string, propKey string, op backend.PluggablePropertyOp, ctx backend.PluggablePropertyContext) error
 	EnclosingEntityFunc            func(widgetRef string) string
 	EnclosingEntityForChildrenFunc func(widgetRef string) string
@@ -127,6 +130,20 @@ func (m *MockPageMutator) InsertColumns(gridRef, afterColumnRef string, position
 	return fmt.Errorf("MockBackend.InsertColumns not configured")
 }
 
+func (m *MockPageMutator) InsertListViewTemplates(listViewRef string, templates []*pages.ListViewTemplate) error {
+	if m.InsertListViewTemplatesFunc != nil {
+		return m.InsertListViewTemplatesFunc(listViewRef, templates)
+	}
+	return fmt.Errorf("MockBackend.InsertListViewTemplates not configured")
+}
+
+func (m *MockPageMutator) DropListViewTemplate(listViewRef, specialization string) error {
+	if m.DropListViewTemplateFunc != nil {
+		return m.DropListViewTemplateFunc(listViewRef, specialization)
+	}
+	return fmt.Errorf("MockBackend.DropListViewTemplate not configured")
+}
+
 func (m *MockPageMutator) ReplaceColumn(gridRef, columnRef string, columns []*backend.DataGridColumnSpec) error {
 	if m.ReplaceColumnFunc != nil {
 		return m.ReplaceColumnFunc(gridRef, columnRef, columns)
@@ -210,6 +227,13 @@ func (m *MockPageMutator) ParamScope() (map[string]model.ID, map[string]string) 
 func (m *MockPageMutator) Save() error {
 	if m.SaveFunc != nil {
 		return m.SaveFunc()
+	}
+	return nil
+}
+
+func (m *MockPageMutator) BoundPlaceholders() []string {
+	if m.BoundPlaceholdersFunc != nil {
+		return m.BoundPlaceholdersFunc()
 	}
 	return nil
 }

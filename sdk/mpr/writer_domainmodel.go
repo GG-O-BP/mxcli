@@ -3,10 +3,12 @@
 package mpr
 
 import (
+	"bytes"
 	"fmt"
 	"sort"
 	"strings"
 
+	"github.com/mendixlabs/mxcli/generated/metamodel"
 	"github.com/mendixlabs/mxcli/model"
 	"github.com/mendixlabs/mxcli/sdk/domainmodel"
 	"github.com/mendixlabs/mxcli/sdk/mpr/version"
@@ -49,6 +51,15 @@ func (w *Writer) CreateEntity(domainModelID model.ID, entity *domainmodel.Entity
 // UpdateEntity updates an existing entity.
 // domainModelID is the ID of the domain model itself (not the module ID).
 func (w *Writer) UpdateEntity(domainModelID model.ID, entity *domainmodel.Entity) error {
+	// Refuse rather than downgrade — see serializeRuleInfo.
+	if ruleType, ok := validationRulesAreReproducible(entity); !ok {
+		return fmt.Errorf(
+			"entity %s has a %s validation rule, which mxcli cannot rewrite without losing it — "+
+				"change this entity in Studio Pro, or remove the rule first.\n"+
+				"  (Rewriting would silently turn it into a Required rule: the constraint would be gone "+
+				"and the build would still pass.)",
+			entity.Name, ruleType)
+	}
 	dm, err := w.reader.GetDomainModelByID(domainModelID)
 	if err != nil {
 		return err
@@ -341,12 +352,25 @@ func (w *Writer) MoveUnitByID(unitID string, newContainerID string) error {
 	return w.moveUnitByID(unitID, newContainerID)
 }
 
+// Counted in WriteStats and elided when the unit already sits in that
+// container, for the reasons on the modelsdk engine's MoveUnit: a move changes
+// placement without changing contents, so it is invisible to both halves of
+// ADR-0008 unless the row update accounts for itself.
 func (w *Writer) moveUnitByID(unitID string, newContainerID string) error {
+	w.writesOffered++
 	unitIDBlob := uuidToBlob(unitID)
 	containerIDBlob := uuidToBlob(newContainerID)
 
+	var stored []byte
+	if err := w.reader.db.QueryRow(`SELECT ContainerID FROM Unit WHERE UnitID = ?`, unitIDBlob).Scan(&stored); err == nil {
+		if bytes.Equal(stored, containerIDBlob) {
+			return nil
+		}
+	}
+
 	_, err := w.reader.db.Exec(`UPDATE Unit SET ContainerID = ? WHERE UnitID = ?`, containerIDBlob, unitIDBlob)
 	if err == nil {
+		w.writesLanded++
 		w.reader.InvalidateCache()
 	}
 	return err
@@ -640,6 +664,18 @@ func (w *Writer) serializeDomainModel(dm *domainmodel.DomainModel) ([]byte, erro
 		associations = append(associations, serializeAssociation(a))
 	}
 
+	// Annotations array with version prefix 3.
+	//
+	// This used to be written as the bare empty array regardless of what the
+	// domain model held, so every rewrite deleted every note on the canvas —
+	// adding one entity to a blank app took its annotation count from 1 to 0.
+	// `mx check` reports 0 errors either way: an annotation is decorative, so
+	// nothing below Studio Pro can see it go.
+	annotations := bson.A{int32(3)}
+	for _, a := range dm.Annotations {
+		annotations = append(annotations, serializeDomainModelAnnotation(a))
+	}
+
 	// CrossAssociations array with version prefix 3
 	crossAssociations := bson.A{int32(3)}
 	for _, ca := range dm.CrossAssociations {
@@ -651,7 +687,7 @@ func (w *Writer) serializeDomainModel(dm *domainmodel.DomainModel) ([]byte, erro
 		{Key: "$ID", Value: idToBsonBinary(string(dm.ID))},
 		{Key: "$Type", Value: "DomainModels$DomainModel"},
 		{Key: "Documentation", Value: ""},
-		{Key: "Annotations", Value: bson.A{int32(3)}},
+		{Key: "Annotations", Value: annotations},
 		{Key: "Entities", Value: entities},
 		{Key: "Associations", Value: associations},
 		{Key: "CrossAssociations", Value: crossAssociations},
@@ -1317,15 +1353,35 @@ func serializeValidationRule(vr *domainmodel.ValidationRule, moduleName string, 
 	}
 
 	// RuleInfo comes last
-	doc = append(doc, bson.E{Key: "RuleInfo", Value: serializeRuleInfo(vr.Type)})
+	doc = append(doc, bson.E{Key: "RuleInfo", Value: serializeRuleInfo(vr)})
 
 	return doc
 }
 
-func serializeRuleInfo(ruleType string) bson.D {
+// serializeRuleInfo returns the RuleInfo child for a rule type, or nil for a
+// type this writer cannot reproduce.
+//
+// A nil return is a REFUSAL, not a default. The previous code fell back to
+// RequiredRuleInfo for anything it did not recognise, which made an entity
+// rewrite a silent downgrade: a RegEx rule came back as Required, the pattern
+// reference gone and the field merely mandatory, with mxbuild none the wiser
+// because both are valid rules. Callers must check reproducibleRuleType first.
+// It takes the whole rule rather than its type, because the type alone does not
+// determine the document: a RegEx rule IS its reference and a Range rule IS its
+// bounds. Writing a bare RuleInfo for either produces a rule Mendix accepts and
+// that constrains nothing — the same silent downgrade wearing the right type
+// name — so a rule whose payload did not survive the read is refused too.
+//
+// Keys are STORAGE names. The regex reference is "RegExIdentifier", not the SDK
+// name "RegularExpression": writing the latter makes mxbuild report CE0135 "No
+// regular expression specified" (measured on 11.13.0).
+func serializeRuleInfo(vr *domainmodel.ValidationRule) bson.D {
+	if vr == nil {
+		return nil
+	}
 	// Use bson.D (ordered document) - Studio Pro uses $ID first, then $Type
-	switch ruleType {
-	case "Required":
+	switch vr.Type {
+	case "Required", "":
 		return bson.D{
 			{Key: "$ID", Value: idToBsonBinary(generateUUID())},
 			{Key: "$Type", Value: "DomainModels$RequiredRuleInfo"},
@@ -1335,13 +1391,87 @@ func serializeRuleInfo(ruleType string) bson.D {
 			{Key: "$ID", Value: idToBsonBinary(generateUUID())},
 			{Key: "$Type", Value: "DomainModels$UniqueRuleInfo"},
 		}
-	default:
-		// Fallback to required
+
+	case "RegEx":
+		info, ok := vr.Rule.(*domainmodel.RegexValidationRuleInfo)
+		if !ok || info.RegularExpressionQualifiedName == "" {
+			return nil
+		}
 		return bson.D{
 			{Key: "$ID", Value: idToBsonBinary(generateUUID())},
-			{Key: "$Type", Value: "DomainModels$RequiredRuleInfo"},
+			{Key: "$Type", Value: "DomainModels$RegExRuleInfo"},
+			{Key: "RegExIdentifier", Value: info.RegularExpressionQualifiedName},
+		}
+
+	case "Range":
+		info, ok := vr.Rule.(*domainmodel.RangeValidationRuleInfo)
+		if !ok {
+			return nil
+		}
+		typeOfRange, ok := rangeKindFor(info)
+		if !ok {
+			return nil
+		}
+		doc := bson.D{
+			{Key: "$ID", Value: idToBsonBinary(generateUUID())},
+			{Key: "$Type", Value: "DomainModels$RangeRuleInfo"},
+			{Key: "TypeOfRange", Value: typeOfRange},
+			{Key: "UseMinValue", Value: info.UseMinValue},
+			{Key: "UseMaxValue", Value: info.UseMaxValue},
+		}
+		if info.MinValue != nil {
+			doc = append(doc, bson.E{Key: "MinValue", Value: *info.MinValue})
+		}
+		if info.MaxValue != nil {
+			doc = append(doc, bson.E{Key: "MaxValue", Value: *info.MaxValue})
+		}
+		// A bound may point at another attribute instead of a literal. MDL
+		// cannot author that, but a stored rule must survive the rewrite.
+		if info.MinAttributeQualifiedName != "" {
+			doc = append(doc, bson.E{Key: "MinAttribute", Value: info.MinAttributeQualifiedName})
+		}
+		if info.MaxAttributeQualifiedName != "" {
+			doc = append(doc, bson.E{Key: "MaxAttribute", Value: info.MaxAttributeQualifiedName})
+		}
+		return doc
+
+	default:
+		// MaxLength, EqualsTo — no model payload type, so a rewrite would lose
+		// them. Refuse instead.
+		return nil
+	}
+}
+
+// rangeKindFor derives the TypeOfRange enum from which bounds are in use.
+// Mendix has exactly three values and no strict inequality, so a range using
+// neither bound has no representation and is refused.
+func rangeKindFor(info *domainmodel.RangeValidationRuleInfo) (string, bool) {
+	switch {
+	case info.UseMinValue && info.UseMaxValue:
+		return string(metamodel.DomainModelsTypeOfRangeBetween), true
+	case info.UseMinValue:
+		return string(metamodel.DomainModelsTypeOfRangeGreaterThanOrEqualTo), true
+	case info.UseMaxValue:
+		return string(metamodel.DomainModelsTypeOfRangeSmallerThanOrEqualTo), true
+	default:
+		return "", false
+	}
+}
+
+// reproducibleRule reports whether this writer can serialize a validation rule.
+func reproducibleRule(vr *domainmodel.ValidationRule) bool {
+	return serializeRuleInfo(vr) != nil
+}
+
+// validationRulesAreReproducible returns the first rule type this writer cannot
+// serialize, so the caller can refuse the write instead of downgrading it.
+func validationRulesAreReproducible(e *domainmodel.Entity) (string, bool) {
+	for _, vr := range e.ValidationRules {
+		if !reproducibleRule(vr) {
+			return vr.Type, false
 		}
 	}
+	return "", true
 }
 
 func serializeText(text *model.Text) bson.D {
@@ -1369,5 +1499,33 @@ func serializeText(text *model.Text) bson.D {
 		{Key: "$ID", Value: idToBsonBinary(string(text.ID))},
 		{Key: "$Type", Value: "Texts$Text"},
 		{Key: "Items", Value: items},
+	}
+}
+
+// serializeDomainModelAnnotation writes one canvas note in the shape Studio Pro
+// stores it — pinned against the annotation a blank 11.13.0 app ships with in
+// MyFirstModule.
+//
+// The position is the string "x;y", NOT a sub-document: that is the same
+// convention an entity's Location follows, and writing a sub-document is what
+// the parser used to (wrongly) expect. ExportLevel is "Hidden" on every Studio
+// Pro-authored annotation.
+//
+// There is no colour property. A domain model holds exactly four child
+// collections — Annotations, Associations, CrossAssociations and Entities — so
+// the "coloured section box" a modeller sees is this element, drawn in Studio
+// Pro's own styling, and nothing about that styling is stored in the model.
+func serializeDomainModelAnnotation(a *domainmodel.Annotation) bson.D {
+	id := string(a.ID)
+	if id == "" {
+		id = GenerateID()
+	}
+	return bson.D{
+		{Key: "$ID", Value: idToBsonBinary(id)},
+		{Key: "$Type", Value: "DomainModels$Annotation"},
+		{Key: "Caption", Value: a.Caption},
+		{Key: "ExportLevel", Value: "Hidden"},
+		{Key: "Location", Value: fmt.Sprintf("%d;%d", a.Location.X, a.Location.Y)},
+		{Key: "Width", Value: int32(a.Width)},
 	}
 }

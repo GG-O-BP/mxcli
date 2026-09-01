@@ -46,6 +46,7 @@ type CatalogReader interface {
 	// Microflows & nanoflows
 	ListMicroflows() ([]*microflows.Microflow, error)
 	ListNanoflows() ([]*microflows.Nanoflow, error)
+	ListRules() ([]*microflows.Rule, error)
 
 	// Pages, layouts & snippets
 	ListPages() ([]*pages.Page, error)
@@ -91,6 +92,15 @@ type Builder struct {
 	resolution      float64   // Leiden resolution for the graph-analysis pass
 	describeFunc    DescribeFunc
 
+	// Scheduled event → microflow edges, collected while cataloguing the events
+	// and emitted by buildReferences (a later pass). Carried on the Builder
+	// rather than re-queried because CatalogTx has no Query.
+	scheduledEventRefs []scheduledEventRef
+
+	// Entity → regular-expression edges from attribute validation rules,
+	// collected while cataloguing regexes and emitted by buildReferences.
+	regexRuleRefs []regexRuleRef
+
 	// Built-in widget definitions supplied by the caller — used to populate
 	// the widget_definitions catalog table alongside project widgets/.
 	builtinWidgetMetas []WidgetDefinitionMeta
@@ -100,6 +110,7 @@ type Builder struct {
 	// By caching results, we parse each document type exactly once.
 	microflowCache          []*microflows.Microflow
 	nanoflowCache           []*microflows.Nanoflow
+	ruleCache               []*microflows.Rule
 	pageCache               []*pages.Page
 	domainModelCache        []*domainmodel.DomainModel
 	enumerationCache        []*model.Enumeration
@@ -254,6 +265,17 @@ func (b *Builder) cachedNanoflows() ([]*microflows.Nanoflow, error) {
 	return b.nanoflowCache, nil
 }
 
+func (b *Builder) cachedRules() ([]*microflows.Rule, error) {
+	if b.ruleCache == nil {
+		var err error
+		b.ruleCache, err = b.reader.ListRules()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return b.ruleCache, nil
+}
+
 func (b *Builder) cachedPages() ([]*pages.Page, error) {
 	if b.pageCache == nil {
 		var err error
@@ -398,8 +420,36 @@ func (b *Builder) Build(progress ProgressFunc) error {
 		return fmt.Errorf("failed to build image collections: %w", err)
 	}
 
+	if err := b.buildSimpleNamedDocs("CustomIcons$CustomIconCollection", "icon_collections", "Icon Collections"); err != nil {
+		return fmt.Errorf("failed to build icon collections: %w", err)
+	}
+
+	if err := b.buildSimpleNamedDocs("Menus$MenuDocument", "menus", "Menus"); err != nil {
+		return fmt.Errorf("failed to build menus: %w", err)
+	}
+
+	// Page templates are indexed in their own right rather than as pages. They
+	// were previously swept into pages_data by a prefix-matched Forms$Page query;
+	// dropping them from the catalog entirely instead would make 46 documents in
+	// a stock Atlas project invisible to anything that enumerates a module.
+	if err := b.buildSimpleNamedDocs("Forms$PageTemplate", "page_templates", "Page Templates"); err != nil {
+		return fmt.Errorf("failed to build page templates: %w", err)
+	}
+
 	if err := b.buildSimpleNamedDocs("DataTransformers$DataTransformer", "data_transformers", "Data Transformers"); err != nil {
 		return fmt.Errorf("failed to build data transformers: %w", err)
+	}
+
+	if err := b.buildScheduledEvents(); err != nil {
+		return fmt.Errorf("failed to build scheduled events: %w", err)
+	}
+
+	if err := b.buildQueues(); err != nil {
+		return fmt.Errorf("failed to build queues: %w", err)
+	}
+
+	if err := b.buildRegularExpressions(); err != nil {
+		return fmt.Errorf("failed to build regular expressions: %w", err)
 	}
 
 	if err := b.buildAgentEditorDocs(); err != nil {

@@ -68,7 +68,7 @@ func execCreateModuleRole(ctx *ExecContext, s *ast.CreateModuleRoleStmt) error {
 				return mdlerrors.NewBackend("modify module role", err)
 			}
 			if !ctx.Quiet {
-				fmt.Fprintf(ctx.Output, "Modified module role: %s.%s\n", s.Name.Module, s.Name.Name)
+				ctx.ReportMutation("Modified", "module role: %s.%s", s.Name.Module, s.Name.Name)
 			}
 			return nil
 		}
@@ -228,7 +228,7 @@ func execCreateUserRole(ctx *ExecContext, s *ast.CreateUserRoleStmt) error {
 			if err := ctx.Backend.AlterUserRoleModuleRoles(ps.ID, s.Name, true, moduleRoleNames); err != nil {
 				return mdlerrors.NewBackend("update user role", err)
 			}
-			fmt.Fprintf(ctx.Output, "Modified user role: %s\n", s.Name)
+			ctx.ReportMutation("Modified", "user role: %s", s.Name)
 			return nil
 		}
 	}
@@ -486,6 +486,28 @@ func execGrantEntityAccess(ctx *ExecContext, s *ast.GrantEntityAccessStmt) error
 	for _, other := range otherModuleBothOwnerAssociations(ctx, module.Name, entityQN) {
 		addAssociationAccess(other.Name, other.Ref)
 	}
+	// Associations declared on an ancestor. Mendix inheritance is multi-table:
+	// a specialization has ALL of its generalization's members, associations
+	// included, and its access rule needs an entry for each — exactly as it does
+	// for inherited attributes (#758).
+	//
+	// Leaving them out was CE0066 "Entity access is out of date" on the
+	// specialization's own module, and it made the rule OpenAIConnector ships
+	// impossible to express in MDL: `OpenAIDeployedModel extends
+	// GenAICommons.DeployedModel`, and `DeployedModel_InputModality` is declared
+	// on the parent, so the grant naming it was refused as "no such member"
+	// (mxcli-chat FINDINGS §26). Reproduced on a two-entity fixture with no
+	// marketplace module in sight: `GRANT … ON Derived (READ *, WRITE *)` gave
+	// CE0066 while the same rule on the base entity checked clean.
+	//
+	// The reference is qualified against the module that DECLARES the
+	// association, not this entity's — the same rule the attribute walk follows.
+	for _, inh := range inheritedAssociations(ctx, entityQN) {
+		if grantedMembers[inh.Name] {
+			continue // an association of this entity's own shadows it
+		}
+		addAssociationAccess(inh.Name, inh.Ref)
+	}
 
 	// A member named in the GRANT that matched nothing used to be dropped in
 	// silence — the command reported success and the access simply was not there,
@@ -537,7 +559,7 @@ func execGrantEntityAccess(ctx *ExecContext, s *ast.GrantEntityAccessStmt) error
 	ctx.trackModifiedDomainModel(module.ID, module.Name)
 	fmt.Fprintf(ctx.Output, "Granted access on %s.%s to %s\n", s.Entity.Module, s.Entity.Name, strings.Join(roleNames, ", "))
 	if !ctx.Quiet {
-		fmt.Fprint(ctx.Output, formatAccessRuleResult(ctx, s.Entity.Module, s.Entity.Name, roleNames))
+		fmt.Fprint(ctx.Output, formatAccessRuleResult(ctx, s.Entity.Module, s.Entity.Name, roleNames, s.XPathConstraint, false))
 	}
 	return nil
 }
@@ -613,7 +635,7 @@ func execRevokeEntityAccess(ctx *ExecContext, s *ast.RevokeEntityAccessStmt) err
 		} else {
 			fmt.Fprintf(ctx.Output, "Revoked partial access on %s.%s from %s\n", s.Entity.Module, s.Entity.Name, strings.Join(roleNames, ", "))
 			if !ctx.Quiet {
-				fmt.Fprint(ctx.Output, formatAccessRuleResult(ctx, s.Entity.Module, s.Entity.Name, roleNames))
+				fmt.Fprint(ctx.Output, formatAccessRuleResult(ctx, s.Entity.Module, s.Entity.Name, roleNames, "", true))
 			}
 		}
 	} else {
@@ -1036,7 +1058,7 @@ func validateModuleRole(ctx *ExecContext, role ast.QualifiedName) error {
 	return mdlerrors.NewNotFound("module role", role.Module+"."+role.Name)
 }
 
-// execAlterProjectSecurity handles ALTER PROJECT SECURITY LEVEL/DEMO USERS.
+// execAlterProjectSecurity handles ALTER PROJECT SECURITY LEVEL/DEMO USERS/GUEST ACCESS.
 func execAlterProjectSecurity(ctx *ExecContext, s *ast.AlterProjectSecurityStmt) error {
 	if !ctx.ConnectedForWrite() {
 		return mdlerrors.NewNotConnectedWrite()
@@ -1078,6 +1100,69 @@ func execAlterProjectSecurity(ctx *ExecContext, s *ast.AlterProjectSecurityStmt)
 		fmt.Fprintf(ctx.Output, "Demo users %s\n", state)
 	}
 
+	if s.GuestAccessEnabled != nil {
+		if err := applyGuestAccess(ctx, ps, s); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// applyGuestAccess handles ALTER PROJECT SECURITY GUEST ACCESS ON|OFF [ROLE r].
+//
+// Two things Mendix does not do for us, and one it does:
+//
+//   - mxbuild raises CE0133 ("No user role for anonymous users selected even
+//     though the feature anonymous users is enabled") when access is on with no
+//     role, so ON is refused here rather than producing a project that will not
+//     build. A stored role satisfies it, which is why ROLE is optional.
+//   - mxbuild does NOT check that the role exists — a nonexistent one builds
+//     with the same error count as a valid one — so a typo would otherwise be a
+//     silently broken anonymous configuration. Validate it here.
+//   - OFF leaves the stored role in place. Guest access off with a role set is
+//     valid, and dropping it would lose the operator's choice on a toggle.
+func applyGuestAccess(ctx *ExecContext, ps *security.ProjectSecurity, s *ast.AlterProjectSecurityStmt) error {
+	enabled := *s.GuestAccessEnabled
+	role := s.GuestUserRole
+
+	if role != "" {
+		known := make([]string, 0, len(ps.UserRoles))
+		var match string
+		for _, ur := range ps.UserRoles {
+			known = append(known, ur.Name)
+			if strings.EqualFold(ur.Name, role) {
+				match = ur.Name
+			}
+		}
+		if match == "" {
+			return mdlerrors.NewNotFoundMsg("user role", role, fmt.Sprintf(
+				"user role not found: %s (project user roles: %s). Mendix does not validate "+
+					"this reference, so an unknown role would build cleanly and leave anonymous "+
+					"visitors with no access",
+				role, strings.Join(known, ", ")))
+		}
+		// Store the role under its declared casing, not the caller's.
+		role = match
+	} else if enabled && ps.GuestUserRole == "" {
+		return mdlerrors.NewValidation(
+			"GUEST ACCESS ON requires a role: no anonymous user role is configured, and Mendix " +
+				"rejects anonymous access without one (CE0133). Use ALTER PROJECT SECURITY " +
+				"GUEST ACCESS ON ROLE <UserRole>")
+	}
+
+	if err := ctx.Backend.SetProjectGuestAccess(ps.ID, enabled, role); err != nil {
+		return mdlerrors.NewBackend("set guest access", err)
+	}
+
+	if !enabled {
+		fmt.Fprintf(ctx.Output, "Guest access disabled\n")
+		return nil
+	}
+	if role == "" {
+		role = ps.GuestUserRole
+	}
+	fmt.Fprintf(ctx.Output, "Guest access enabled for user role %s\n", role)
 	return nil
 }
 
@@ -1124,7 +1209,7 @@ func execCreateDemoUser(ctx *ExecContext, s *ast.CreateDemoUserStmt) error {
 			if err := ctx.Backend.AddDemoUser(ps.ID, s.UserName, s.Password, entity, mergedRoles); err != nil {
 				return mdlerrors.NewBackend("update demo user", err)
 			}
-			fmt.Fprintf(ctx.Output, "Modified demo user: %s\n", s.UserName)
+			ctx.ReportMutation("Modified", "demo user: %s", s.UserName)
 			return nil
 		}
 	}
@@ -1594,3 +1679,98 @@ func execUpdateSecurity(ctx *ExecContext, s *ast.UpdateSecurityStmt) error {
 
 // Executor method wrappers — delegate to free functions for callers that
 // still use the Executor receiver (e.g. executor_query.go).
+
+// inheritedAssociations returns the associations declared on entityQN's
+// ancestors, qualified against the module that declares each.
+//
+// It walks the generalization chain the same way EntityMembersFor does, and
+// stops at the same place: System.User's own members are Mendix's, and a user
+// entity must not carry access entries for them.
+func inheritedAssociations(ctx *ExecContext, entityQN string) []namedAssociation {
+	if ctx == nil || ctx.Backend == nil {
+		return nil
+	}
+	dms, err := ctx.Backend.ListDomainModels()
+	if err != nil {
+		return nil
+	}
+	var out []namedAssociation
+	seen := map[string]bool{}
+	claimed := map[string]bool{}
+
+	current := entityQN
+	for depth := 0; current != ""; depth++ {
+		if seen[current] {
+			break // cycle guard, as in EntityMembersFor
+		}
+		seen[current] = true
+
+		ent, ok := findEntityByQN(ctx.Backend, current)
+		if !ok {
+			break
+		}
+		parent := ent.GeneralizationRef
+		if parent == "" || strings.EqualFold(parent, userEntityBase) {
+			break
+		}
+		ancestor, ok := findEntityByQN(ctx.Backend, parent)
+		if !ok {
+			break
+		}
+		ancestorModule := qualifiedModuleOf(parent)
+		for _, dm := range dms {
+			// Find the domain model that DECLARES the ancestor by looking for the
+			// entity itself, rather than by matching module names: the module-name
+			// lookup goes through the hierarchy cache and returns "" often enough
+			// that filtering on it silently collected nothing (which is how the
+			// first cut of this still produced CE0066).
+			if !domainModelHasEntity(dm, ancestor.ID) {
+				continue
+			}
+			collect := func(name string, parentID, childID model.ID, owner domainmodel.AssociationOwner) {
+				ownedThere := parentID == ancestor.ID ||
+					(owner == domainmodel.AssociationOwnerBoth && childID == ancestor.ID)
+				if !ownedThere || claimed[name] {
+					return
+				}
+				claimed[name] = true
+				out = append(out, namedAssociation{Name: name, Ref: ancestorModule + "." + name})
+			}
+			for _, a := range dm.Associations {
+				collect(a.Name, a.ParentID, a.ChildID, a.Owner)
+			}
+			for _, ca := range dm.CrossAssociations {
+				// A cross-module association names its remote end by qualified name,
+				// so the Both-owner case is matched on ChildRef rather than an ID.
+				childID := model.ID("")
+				if ca.Owner == domainmodel.AssociationOwnerBoth && ca.ChildRef == parent {
+					childID = ancestor.ID
+				}
+				collect(ca.Name, ca.ParentID, childID, ca.Owner)
+			}
+		}
+		current = parent
+	}
+	return out
+}
+
+// qualifiedModuleOf is the module part of "Module.Entity".
+func qualifiedModuleOf(qn string) string {
+	if i := strings.Index(qn, "."); i > 0 {
+		return qn[:i]
+	}
+	return ""
+}
+
+// domainModelHasEntity reports whether a domain model declares the given entity.
+func domainModelHasEntity(dm *domainmodel.DomainModel, id model.ID) bool {
+	if dm == nil {
+		return false
+	}
+	for _, e := range dm.Entities {
+		if e != nil && e.ID == id {
+			return true
+		}
+	}
+	return false
+}

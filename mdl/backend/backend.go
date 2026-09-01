@@ -13,6 +13,7 @@ type FullBackend interface {
 	ModuleBackend
 	ModuleSettingsBackend
 	FolderBackend
+	DocumentPlacementBackend
 	DomainModelBackend
 	MicroflowBackend
 	PageBackend
@@ -26,7 +27,9 @@ type FullBackend interface {
 	WorkflowBackend
 	SettingsBackend
 	ImageBackend
+	QueueBackend
 	ScheduledEventBackend
+	RegularExpressionBackend
 	RenameBackend
 	RawUnitBackend
 	MetadataBackend

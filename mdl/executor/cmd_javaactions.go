@@ -92,6 +92,7 @@ func describeJavaAction(ctx *ExecContext, name ast.QualifiedName) error {
 	// Build CREATE JAVA ACTION statement
 	sb.WriteString("create java action ")
 	sb.WriteString(qualifiedName)
+	sb.WriteString(describeFolderClause(ctx, ja.ContainerID))
 	sb.WriteString("(")
 
 	// Parameters — one per line when descriptions are present
@@ -153,9 +154,7 @@ func describeJavaAction(ctx *ExecContext, name ast.QualifiedName) error {
 		sb.WriteString("' in '")
 		sb.WriteString(ja.MicroflowActionInfo.Category)
 		sb.WriteString("'")
-		if n := len(ja.MicroflowActionInfo.IconData); n > 0 {
-			fmt.Fprintf(&sb, "\n-- icon: %d bytes", n)
-		}
+		sb.WriteString(describeBitmapComments(ja.MicroflowActionInfo))
 	}
 
 	// The grammar requires an `as $$ ... $$` body for CREATE JAVA ACTION, so always
@@ -319,16 +318,33 @@ func execCreateJavaAction(ctx *ExecContext, s *ast.CreateJavaActionStmt) error {
 		return mdlerrors.NewBackend("list java actions", err)
 	}
 	var existingJAID model.ID
-	for _, existing := range jas {
-		existingModID := h.FindModuleID(existing.ContainerID)
-		existingModName := h.GetModuleName(existingModID)
-		if existingModName == s.Name.Module && existing.Name == s.Name.Name {
-			if !s.CreateOrModify {
-				return mdlerrors.NewAlreadyExists("java action", s.Name.Module+"."+s.Name.Name)
-			}
-			existingJAID = existing.ID
-			break
+	var existingContainer model.ID
+	// Target the live action and carry its exclusion forward (#914).
+	existingExcluded := false
+	var existingActionInfo *javaactions.MicroflowActionInfo
+	if existing, ok := pickLive(jas,
+		func(ja *types.JavaAction) bool {
+			return h.GetModuleName(h.FindModuleID(ja.ContainerID)) == s.Name.Module && ja.Name == s.Name.Name
+		},
+		func(ja *types.JavaAction) bool { return ja.Excluded },
+	); ok {
+		if !s.CreateOrModify {
+			return mdlerrors.NewAlreadyExists("java action", s.Name.Module+"."+s.Name.Name)
 		}
+		existingJAID = existing.ID
+		existingExcluded = existing.Excluded
+		existingContainer = existing.ContainerID
+		// The toolbox entry holds four PNG bitmaps MDL cannot name, so the
+		// stored one has to be read before the rewrite can carry them.
+		if full, err := ctx.Backend.ReadJavaActionByName(s.Name.Module + "." + s.Name.Name); err == nil && full != nil {
+			existingActionInfo = full.MicroflowActionInfo
+		}
+	}
+
+	moduleID := containerID
+	containerID, err = containerForDocument(ctx, moduleID, s.Folder, existingContainer)
+	if err != nil {
+		return err
 	}
 
 	newID := model.ID(types.GenerateID())
@@ -342,6 +358,7 @@ func execCreateJavaAction(ctx *ExecContext, s *ast.CreateJavaActionStmt) error {
 			ID:       newID,
 			TypeName: "JavaActions$JavaAction",
 		},
+		Excluded:      existingExcluded,
 		ContainerID:   containerID,
 		Name:          s.Name.Name,
 		Documentation: s.Documentation,
@@ -414,19 +431,21 @@ func execCreateJavaAction(ctx *ExecContext, s *ast.CreateJavaActionStmt) error {
 		ja.ReturnType = astDataTypeToJavaActionReturnType(s.ReturnType)
 	}
 
-	// Build MicroflowActionInfo if EXPOSED AS clause is present
-	if s.ExposedCaption != "" {
-		ja.MicroflowActionInfo = &javaactions.MicroflowActionInfo{
-			BaseElement: model.BaseElement{ID: model.ID(types.GenerateID())},
-			Caption:     s.ExposedCaption,
-			Category:    s.ExposedCategory,
-		}
+	// Fold the EXPOSED AS clause onto the stored toolbox entry rather than
+	// rebuilding it: the four bitmaps are not expressible in MDL.
+	if ja.MicroflowActionInfo, err = mergeMicroflowActionInfo(ctx,
+		existingActionInfo, s.ExposedCaption, s.ExposedCategory, s.NotExposed,
+		s.ExposedBitmaps, exposeWarner(ctx)); err != nil {
+		return err
 	}
 
 	// Create or update in MPR
 	if existingJAID != "" {
 		if err := ctx.Backend.UpdateJavaAction(ja); err != nil {
 			return mdlerrors.NewBackend("update java action", err)
+		}
+		if _, err := applyDocumentFolder(ctx, ja.ID, existingContainer, containerID); err != nil {
+			return err
 		}
 	} else {
 		if err := ctx.Backend.CreateJavaAction(ja); err != nil {
@@ -445,7 +464,7 @@ func execCreateJavaAction(ctx *ExecContext, s *ast.CreateJavaActionStmt) error {
 	ctx.InvalidateCache()
 
 	if existingJAID != "" {
-		fmt.Fprintf(ctx.Output, "Modified java action: %s.%s\n", s.Name.Module, s.Name.Name)
+		ctx.ReportMutation("Modified", "java action: %s.%s", s.Name.Module, s.Name.Name)
 	} else {
 		fmt.Fprintf(ctx.Output, "Created java action: %s.%s\n", s.Name.Module, s.Name.Name)
 	}
@@ -512,6 +531,19 @@ func astDataTypeToJavaActionParamType(dt ast.DataType) javaactions.CodeActionPar
 				Enumeration: dt.EnumRef.Module + "." + dt.EnumRef.Name,
 			}
 		}
+		// `Microflow` / `Nanoflow` are what DESCRIBE prints for a callback
+		// parameter (MCPServer.AddTool's ExecutingMicroflow, and every other
+		// "register a handler" action). The parser cannot tell a bare name from
+		// an entity, so without this the DESCRIBE output round-tripped into an
+		// entity type with an empty module — `.Microflow`. Only the unqualified
+		// name is treated this way; a real `Module.Microflow` entity is not.
+		if bare := bareDataTypeName(dt); bare == "Microflow" || bare == "Nanoflow" {
+			id := model.ID(types.GenerateID())
+			if bare == "Nanoflow" {
+				return &javaactions.NanoflowType{BaseElement: model.BaseElement{ID: id}}
+			}
+			return &javaactions.MicroflowType{BaseElement: model.BaseElement{ID: id}}
+		}
 		entityName := ""
 		if dt.EntityRef != nil {
 			entityName = dt.EntityRef.Module + "." + dt.EntityRef.Name
@@ -546,6 +578,18 @@ func astDataTypeToJavaActionParamType(dt ast.DataType) javaactions.CodeActionPar
 			},
 		}
 	}
+}
+
+// bareDataTypeName returns the name of an unqualified entity/enumeration data
+// type (no module part), or "" when the type is qualified or absent.
+func bareDataTypeName(dt ast.DataType) string {
+	switch {
+	case dt.EntityRef != nil && dt.EntityRef.Module == "":
+		return dt.EntityRef.Name
+	case dt.EnumRef != nil && dt.EnumRef.Module == "":
+		return dt.EnumRef.Name
+	}
+	return ""
 }
 
 // astDataTypeToJavaActionReturnType converts an AST DataType to a Java action return type.

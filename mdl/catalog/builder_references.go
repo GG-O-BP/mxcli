@@ -32,6 +32,8 @@ const (
 	RefKindDelete     = "delete"     // Microflow deletes an entity object
 	RefKindCalculate  = "calculate"  // Calculated attribute uses a microflow
 	RefKindReturn     = "return"     // Microflow/nanoflow returns an entity type
+	RefKindSchedule   = "schedule"   // Scheduled event runs a microflow
+	RefKindValidate   = "validate"   // Attribute validation rule uses a regular expression
 )
 
 // collectActionActivities returns all ActionActivity objects from an ObjectCollection,
@@ -52,6 +54,32 @@ func collectActionActivities(oc *microflows.MicroflowObjectCollection) []*microf
 		}
 	}
 	return result
+}
+
+// collectRuleCalls returns the qualified name of every rule a flow calls from a
+// decision, recursing into LoopedActivity bodies like collectActionActivities.
+//
+// A rule is not an activity: Mendix can only call one from an ExclusiveSplit's
+// condition, so the action walk above never sees it and a rule called from a
+// decision looked uncalled — `show callers` reported none, which is how #939's
+// reporter read the corruption as "the reference never resolves" even after the
+// condition was stored correctly.
+func collectRuleCalls(oc *microflows.MicroflowObjectCollection) []string {
+	if oc == nil {
+		return nil
+	}
+	var out []string
+	for _, obj := range oc.Objects {
+		switch o := obj.(type) {
+		case *microflows.ExclusiveSplit:
+			if rc, ok := o.SplitCondition.(*microflows.RuleSplitCondition); ok && rc.RuleQualifiedName != "" {
+				out = append(out, rc.RuleQualifiedName)
+			}
+		case *microflows.LoopedActivity:
+			out = append(out, collectRuleCalls(o.ObjectCollection)...)
+		}
+	}
+	return out
 }
 
 // microflowActionRef returns the cross-reference a microflow action makes to
@@ -227,6 +255,9 @@ func (b *Builder) buildReferences() error {
 		// Intra-flow variable→entity map so change/delete (which operate on a
 		// variable, not a named entity) can resolve their target.
 		varEntity := buildVarEntityMap(params, acts)
+		for _, rule := range collectRuleCalls(oc) {
+			emit("RULE", rule, RefKindCall)
+		}
 		for _, act := range acts {
 			if tt, tn, rk, ok := microflowActionRef(act.Action); ok {
 				emit(tt, tn, rk)
@@ -252,6 +283,18 @@ func (b *Builder) buildReferences() error {
 	if err == nil {
 		for _, nf := range nfs {
 			emitActionRefs("NANOFLOW", string(nf.ID), nf.ContainerID, nf.Name, nf.Parameters, nf.ReturnType, nf.ObjectCollection)
+		}
+	}
+
+	// Extract rule references. A rule's body calls microflows, retrieves and
+	// evaluates like any other flow, and without this walk every document a rule
+	// calls is invisible to the reference graph — reported dead by
+	// `show callers`, GRAPH_DEAD_ASSETS and lint rule QUAL004. Same shape as the
+	// scheduled-event gap, one layer deeper.
+	rules, err := b.cachedRules()
+	if err == nil {
+		for _, rule := range rules {
+			emitActionRefs("RULE", string(rule.ID), rule.ContainerID, rule.Name, rule.Parameters, rule.ReturnType, rule.ObjectCollection)
 		}
 	}
 
@@ -366,6 +409,10 @@ func (b *Builder) buildReferences() error {
 			{"EntityRef", "ENTITY", RefKindDatasource},
 			{"MicroflowRef", "MICROFLOW", RefKindAction},
 			{"NanoflowRef", "NANOFLOW", RefKindAction},
+			// A widget action that opens a page. Without this row, a page reachable
+			// only from a button had no inbound reference and `show callers` /
+			// `show references` reported it as unused (issue #773).
+			{"PageRef", "PAGE", RefKindShowPage},
 		}
 		for _, p := range widgetProjections {
 			res, perr := b.tx.Exec(
@@ -477,8 +524,54 @@ func (b *Builder) buildReferences() error {
 		}
 	}
 
+	// Scheduled events run a microflow. Without this edge the microflow looks
+	// unreferenced: `show callers` reported none, GRAPH_DEAD_ASSETS listed it,
+	// and QUAL004 said "is not called from anywhere" with the suggestion
+	// "Remove if unused" — on a microflow that runs nightly in production.
+	refCount += b.extractScheduledEventRefs(stmt, projectID, snapshotID)
+
+	// Attribute validation rules use a named regular expression, so
+	// `show references to <regex>` can answer which entities depend on a shared
+	// pattern.
+	refCount += b.extractRegexRuleRefs(stmt, projectID, snapshotID)
+
 	b.report("References", refCount)
 	return nil
+}
+
+// extractScheduledEventRefs emits one `schedule` edge per scheduled event, from
+// the event to the microflow it runs.
+//
+// The edges are collected by buildScheduledEvents, which runs earlier in the
+// same transaction.
+// extractRegexRuleRefs emits one `validate` edge per attribute validation rule
+// that uses a regular expression, from the entity to the regex document.
+func (b *Builder) extractRegexRuleRefs(stmt *sql.Stmt, projectID, snapshotID string) int {
+	count := 0
+	for _, r := range b.regexRuleRefs {
+		if _, err := stmt.Exec(
+			"ENTITY", "", r.entityQualifiedName,
+			"REGULAR_EXPRESSION", "", r.regexQualifiedName,
+			RefKindValidate, r.moduleName, projectID, snapshotID,
+		); err == nil {
+			count++
+		}
+	}
+	return count
+}
+
+func (b *Builder) extractScheduledEventRefs(stmt *sql.Stmt, projectID, snapshotID string) int {
+	count := 0
+	for _, r := range b.scheduledEventRefs {
+		if _, err := stmt.Exec(
+			"SCHEDULED_EVENT", "", r.qualifiedName,
+			"MICROFLOW", "", r.microflow,
+			RefKindSchedule, r.moduleName, projectID, snapshotID,
+		); err == nil {
+			count++
+		}
+	}
+	return count
 }
 
 // extractMenuItemRefs extracts page and microflow references from menu items recursively.

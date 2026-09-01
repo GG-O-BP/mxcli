@@ -70,6 +70,22 @@ type UnitInfo struct {
 	Type            string
 }
 
+// DocumentUnit is a top-level document located by name rather than by type:
+// its unit identity, where it sits, and what it turned out to be.
+//
+// Type is the unit's stored $Type (e.g. "JsonStructures$JsonStructure"), which
+// is what makes a type-agnostic lookup reportable — the caller can name the
+// kind of thing it moved without having known it in advance. Kind is that
+// $Type rendered for humans ("json structure"), or the raw $Type when mxcli has
+// no friendlier name for it.
+type DocumentUnit struct {
+	ID          model.ID
+	ContainerID model.ID
+	Name        string
+	Type        string
+	Kind        string
+}
+
 // RenameHit records a single rename reference replacement.
 type RenameHit struct {
 	UnitID   string
@@ -126,6 +142,32 @@ type EntityMemberAccess struct {
 	AttributeRef   string
 	AssociationRef string
 	AccessRights   string
+}
+
+// AccessRightsLevel ranks Mendix member access rights so a GRANT can take the
+// higher of two values. GRANT is documented as additive — it widens access and
+// never removes it — so re-granting one member must not downgrade another
+// (mendixlabs/mxcli#936). Narrowing is REVOKE's job.
+//
+// Anything unrecognised (including the empty string, which is how an unset
+// DefaultMemberAccessRights reads) ranks lowest, so it never wins a merge.
+func AccessRightsLevel(s string) int {
+	switch s {
+	case "ReadWrite":
+		return 2
+	case "ReadOnly":
+		return 1
+	default:
+		return 0
+	}
+}
+
+// HigherAccessRights returns whichever of a and b grants more.
+func HigherAccessRights(a, b string) string {
+	if AccessRightsLevel(a) >= AccessRightsLevel(b) {
+		return a
+	}
+	return b
 }
 
 // EntityAccessRevocation describes which entity access to revoke.

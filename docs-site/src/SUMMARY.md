@@ -104,6 +104,7 @@
   - [Navigation Profiles](language/navigation-profiles.md)
   - [Home Pages and Menus](language/home-pages.md)
   - [Project Settings](language/project-settings.md)
+  - [Translations](language/translations.md)
 - [Workflows](language/workflows.md)
   - [Workflow Structure](language/workflow-structure.md)
   - [Activity Types](language/workflow-activities.md)
@@ -111,6 +112,7 @@
 - [Business Events](language/business-events.md)
   - [Event Services](language/event-services.md)
   - [Publishing and Consuming Events](language/pub-sub-events.md)
+- [Scheduled Events and Task Queues](language/scheduled-events.md)
 - [Image Collections](language/image-collections.md)
 
 ---
@@ -256,6 +258,7 @@
 - [Navigation Statements](reference/navigation/README.md)
   - [ALTER NAVIGATION](reference/navigation/alter-navigation.md)
   - [SHOW NAVIGATION](reference/navigation/show-navigation.md)
+  - [CREATE MENU](reference/navigation/menu.md)
 - [Workflow Statements](reference/workflow/README.md)
   - [CREATE WORKFLOW](reference/workflow/create-workflow.md)
   - [DROP WORKFLOW](reference/workflow/drop-workflow.md)

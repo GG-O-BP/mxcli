@@ -36,6 +36,20 @@ func execCreateWorkflow(ctx *ExecContext, s *ast.CreateWorkflowStmt) error {
 				"remove it, or keep the note as an MDL comment (`-- ...`) [MDL-WF04]")
 	}
 
+	// Refuse a broken reference here as well as at check time. `check
+	// --references` reports these, but exec runs a different pass and wrote the
+	// workflow anyway, so a script that skipped check produced a model the build
+	// rejects with CE1613 (issue #943). Same placement and reasoning as the
+	// microflow handler's validateMicroflowRules call (issue #833).
+	//
+	// Note this runs BEFORE findOrCreateModule, which auto-creates a module on
+	// demand: without it a typo'd module name silently produced a new module
+	// rather than an error.
+	if refErrors := validateWorkflowStatementRefs(ctx, s, nil); len(refErrors) > 0 {
+		return mdlerrors.NewValidationf("workflow '%s' has reference errors:\n  - %s",
+			s.Name.String(), strings.Join(refErrors, "\n  - "))
+	}
+
 	module, err := findOrCreateModule(ctx, s.Name.Module)
 	if err != nil {
 		return err
@@ -53,20 +67,39 @@ func execCreateWorkflow(ctx *ExecContext, s *ast.CreateWorkflowStmt) error {
 	}
 
 	var existingID model.ID
-	for _, existing := range existingWorkflows {
-		modID := h.FindModuleID(existing.ContainerID)
-		modName := h.GetModuleName(modID)
-		if modName == s.Name.Module && existing.Name == s.Name.Name {
-			if !s.CreateOrModify {
-				return mdlerrors.NewAlreadyExistsMsg("workflow", s.Name.Module+"."+s.Name.Name, "workflow '"+s.Name.Module+"."+s.Name.Name+"' already exists (use create or modify to overwrite)")
-			}
-			existingID = existing.ID
-			break
+	var existingContainer model.ID
+	// Excluded is model state, not script state, and a module may hold an
+	// excluded twin of this name — target the live workflow and carry its
+	// exclusion forward (#914).
+	existingExcluded := false
+	if existing, ok := pickLive(existingWorkflows,
+		func(w *workflows.Workflow) bool {
+			return h.GetModuleName(h.FindModuleID(w.ContainerID)) == s.Name.Module && w.Name == s.Name.Name
+		},
+		func(w *workflows.Workflow) bool { return w.Excluded },
+	); ok {
+		if !s.CreateOrModify {
+			return mdlerrors.NewAlreadyExistsMsg("workflow", s.Name.Module+"."+s.Name.Name, "workflow '"+s.Name.Module+"."+s.Name.Name+"' already exists (use create or modify to overwrite)")
+		}
+		existingID = existing.ID
+		existingExcluded = existing.Excluded
+		existingContainer = existing.ContainerID
+
+		// Refuse a rewrite that would delete a stored construct this statement
+		// does not restate (guard-don't-drop, ADR-0005) — issue #948.
+		if err := checkNoDroppedWorkflowConstructs(ctx, existingID, s.Name.String(), s); err != nil {
+			return err
 		}
 	}
 
+	containerID, err := containerForDocument(ctx, module.ID, s.Folder, existingContainer)
+	if err != nil {
+		return err
+	}
+
 	wf := &workflows.Workflow{}
-	wf.ContainerID = module.ID
+	wf.Excluded = existingExcluded
+	wf.ContainerID = containerID
 	wf.Name = s.Name.Name
 	wf.Documentation = s.Documentation
 
@@ -131,6 +164,9 @@ func execCreateWorkflow(ctx *ExecContext, s *ast.CreateWorkflowStmt) error {
 		wf.ID = existingID
 		if err := ctx.Backend.UpdateWorkflow(wf); err != nil {
 			return mdlerrors.NewBackend("update workflow", err)
+		}
+		if _, err := applyDocumentFolder(ctx, wf.ID, existingContainer, containerID); err != nil {
+			return err
 		}
 	} else {
 		if err := ctx.Backend.CreateWorkflow(wf); err != nil {

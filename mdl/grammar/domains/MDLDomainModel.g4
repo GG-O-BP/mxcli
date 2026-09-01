@@ -14,12 +14,16 @@ options { tokenVocab = MDLLexer; }
 /**
  * Creates a new entity in the domain model.
  */
+// IF NOT EXISTS makes the head of a domain script re-runnable without the reach
+// of CREATE OR MODIFY, which replaces the whole definition and drops any
+// attribute the statement omits. The guarded form never touches an entity that
+// is already there. (sudoku findings #10, #24)
 createEntityStatement
-    : PERSISTENT ENTITY qualifiedName generalizationClause? entityBody?
-    | NON_PERSISTENT ENTITY qualifiedName generalizationClause? entityBody?
-    | VIEW ENTITY qualifiedName entityBody? AS LPAREN? oqlQuery RPAREN?  // Parentheses optional
-    | EXTERNAL ENTITY qualifiedName entityBody?
-    | ENTITY qualifiedName generalizationClause? entityBody?  // Default to persistent
+    : PERSISTENT ENTITY ifNotExists? qualifiedName generalizationClause? entityBody?
+    | NON_PERSISTENT ENTITY ifNotExists? qualifiedName generalizationClause? entityBody?
+    | VIEW ENTITY ifNotExists? qualifiedName entityBody? AS LPAREN? oqlQuery RPAREN?  // Parentheses optional
+    | EXTERNAL ENTITY ifNotExists? qualifiedName entityBody?
+    | ENTITY ifNotExists? qualifiedName generalizationClause? entityBody?  // Default to persistent
     ;
 
 generalizationClause
@@ -36,9 +40,10 @@ entityOptions
     : entityOption (COMMA? entityOption)*  // Allow optional commas between options
     ;
 
+// COMMENT is deliberately absent — it was parsed and dropped. Use the `/** … */`
+// doc comment before the statement, or ALTER ENTITY … SET COMMENT.
 entityOption
-    : COMMENT STRING_LITERAL
-    | INDEX indexDefinition
+    : INDEX indexDefinition
     | eventHandlerDefinition
     ;
 
@@ -162,11 +167,11 @@ indexColumnName
     ;
 
 createAssociationStatement
-    : ASSOCIATION qualifiedName
+    : ASSOCIATION ifNotExists? qualifiedName
       FROM qualifiedName
       TO qualifiedName
       associationOptions?
-    | ASSOCIATION qualifiedName LPAREN
+    | ASSOCIATION ifNotExists? qualifiedName LPAREN
       FROM qualifiedName TO qualifiedName
       (COMMA associationOption)*
       RPAREN
@@ -193,7 +198,7 @@ deleteBehavior
     ;
 
 // =============================================================================
-// ALTER ENTITY / ASSOCIATION / ENUMERATION / NOTEBOOK ACTIONS
+// ALTER ENTITY / ASSOCIATION / ENUMERATION ACTIONS
 // =============================================================================
 
 alterEntityAction
@@ -205,12 +210,14 @@ alterEntityAction
     | MODIFY COLUMN attributeName COLON? dataType attributeConstraint*
     | DROP ATTRIBUTE ifExists? attributeName
     | DROP COLUMN ifExists? attributeName
+    | DROP DEFAULT ON ATTRIBUTE attributeName   // clear an attribute's default value
     | SET DOCUMENTATION STRING_LITERAL
     | SET COMMENT STRING_LITERAL
     | SET POSITION LPAREN NUMBER_LITERAL COMMA NUMBER_LITERAL RPAREN
     | SET ALLOW_CREATE_CHANGE_LOCALLY EQUALS (TRUE | FALSE)
-    | ADD INDEX indexDefinition
-    | DROP INDEX IDENTIFIER
+    | ADD INDEX ifNotExists? indexDefinition
+    | DROP INDEX ifExists? indexDefinition
+    | DROP INDEX ifExists? IDENTIFIER
     | ADD EVENT HANDLER ifNotExists? eventHandlerDefinition
     | DROP EVENT HANDLER ifExists? ON eventMoment eventType
     ;
@@ -218,9 +225,14 @@ alterEntityAction
 // Idempotency guards for a re-runnable domain script: ADD ... IF NOT EXISTS
 // skips (with a notice) when the member is already present, and DROP ... IF
 // EXISTS skips when it is already gone — instead of erroring and halting the
-// run. Accepted on ATTRIBUTE and on EVENT HANDLER, which has no other way to be
-// re-run: a defensive drop-then-add fails on the drop when the handler is
-// absent, and on the add when it is present. (mxcli-todo findings #18)
+// run. Accepted on ATTRIBUTE, EVENT HANDLER and INDEX, and on CREATE ENTITY /
+// CREATE ASSOCIATION.
+//
+// EVENT HANDLER and INDEX have no other way to be re-run: a defensive
+// drop-then-add fails on the drop when the member is absent, and on the add
+// when it is present. INDEX is the sharper case — an unguarded re-run used to
+// append a second identical index silently, which mxbuild rejects with CE0072
+// "Duplicate indexes". (mxcli-todo findings #18, sudoku findings #10)
 ifNotExists
     : IF NOT EXISTS
     ;
@@ -250,12 +262,6 @@ alterEnumerationAction
     | RENAME VALUE IDENTIFIER TO IDENTIFIER
     | MODIFY VALUE IDENTIFIER CAPTION STRING_LITERAL
     | DROP VALUE IDENTIFIER
-    | SET COMMENT STRING_LITERAL
-    ;
-
-alterNotebookAction
-    : ADD PAGE qualifiedName (POSITION NUMBER_LITERAL)?
-    | DROP PAGE qualifiedName
     | SET COMMENT STRING_LITERAL
     ;
 
@@ -292,9 +298,11 @@ moduleOptions
     : moduleOption+
     ;
 
+// COMMENT is deliberately absent, and unlike the others it could never have
+// worked: Projects$Module has no Documentation property, so there is nowhere in
+// the model for a module comment to go.
 moduleOption
-    : COMMENT STRING_LITERAL
-    | FOLDER STRING_LITERAL
+    : FOLDER STRING_LITERAL
     ;
 
 // =============================================================================
@@ -326,9 +334,75 @@ enumerationOptions
     : enumerationOption+
     ;
 
+// COMMENT is deliberately absent — it was parsed and dropped. Use the `/** … */`
+// doc comment before the statement.
 enumerationOption
-    : COMMENT STRING_LITERAL
-    | FOLDER STRING_LITERAL                 // place the enumeration in a module folder (Bug 12b)
+    : FOLDER STRING_LITERAL                 // place the enumeration in a module folder (Bug 12b)
+    ;
+
+// =============================================================================
+// TASK QUEUE CREATION
+// =============================================================================
+
+/**
+ * CREATE [OR REPLACE|MODIFY] QUEUE Module.Name ( Parallelism: 3, ClusterWide: true );
+ *
+ * Parallelism is stored by Mendix as an EXPRESSION string
+ * (Queues$BasicQueueConfig.ParallelismExpression), so it accepts a number or a
+ * quoted expression.
+ */
+createQueueStatement
+    : QUEUE qualifiedName (FOLDER STRING_LITERAL)? queueBody?
+    ;
+
+queueBody
+    : LPAREN (queueProperty (COMMA queueProperty)* COMMA?)? RPAREN
+    ;
+
+queueProperty
+    : identifierOrKeyword COLON (NUMBER_LITERAL | STRING_LITERAL | booleanLiteral | identifierOrKeyword)
+    ;
+
+// =============================================================================
+// REGULAR EXPRESSION CREATION
+// =============================================================================
+//
+// A named regex document. Attribute validation rules reference it by qualified
+// name (DomainModels$RegExRuleInfo.RegExIdentifier), which is why it is a
+// document rather than a string on the rule.
+
+createRegularExpressionStatement
+    : REGULAR EXPRESSION qualifiedName (FOLDER STRING_LITERAL)? regularExpressionBody?
+    ;
+
+regularExpressionBody
+    : LPAREN (regularExpressionProperty (COMMA regularExpressionProperty)* COMMA?)? RPAREN
+    ;
+
+regularExpressionProperty
+    : identifierOrKeyword COLON (STRING_LITERAL | booleanLiteral | identifierOrKeyword)
+    ;
+
+// =============================================================================
+// SCHEDULED EVENT CREATION
+// =============================================================================
+//
+// The repeat rule is a property (Repeat: Daily) plus the fields that rule uses,
+// rather than an English clause, because the eight ScheduledEvents$*Schedule
+// variants differ in WHICH fields they carry — a labelled property list keeps
+// the storage's own vocabulary and lets the executor reject a field that does
+// not belong to the chosen repeat.
+
+createScheduledEventStatement
+    : SCHEDULED EVENT qualifiedName (FOLDER STRING_LITERAL)? scheduledEventBody?
+    ;
+
+scheduledEventBody
+    : LPAREN (scheduledEventProperty (COMMA scheduledEventProperty)* COMMA?)? RPAREN
+    ;
+
+scheduledEventProperty
+    : identifierOrKeyword COLON (qualifiedName | NUMBER_LITERAL | STRING_LITERAL | booleanLiteral | identifierOrKeyword)
     ;
 
 // =============================================================================
@@ -336,7 +410,29 @@ enumerationOption
 // =============================================================================
 
 createImageCollectionStatement
-    : IMAGE COLLECTION qualifiedName imageCollectionOptions? imageCollectionBody?
+    : IMAGE COLLECTION qualifiedName (FOLDER STRING_LITERAL)? imageCollectionOptions? imageCollectionBody?
+    ;
+
+// CREATE [OR MODIFY] ANNOTATION IN Module ( Caption: '…', Position: (x, y), Width: n )
+//
+// A domain-model annotation is the note box Studio Pro draws on the canvas. It
+// has no name — Mendix stores only Caption, ExportLevel, Location and Width — so
+// it is addressed by the first line of its caption, the way an unnamed DataGrid2
+// column is addressed by its caption.
+//
+// There is no colour. A "coloured section box" is this element in Studio Pro's
+// own styling; nothing about that styling is in the model.
+//
+// The caption may be a dollar-quoted block, because a note is usually several
+// lines and an MDL string literal is single-quoted and single-line.
+createAnnotationStatement
+    : ANNOTATION IN identifierOrKeyword LPAREN annotationProperty (COMMA annotationProperty)* RPAREN
+    ;
+
+annotationProperty
+    : CAPTION COLON (STRING_LITERAL | DOLLAR_STRING)
+    | POSITION COLON LPAREN NUMBER_LITERAL COMMA NUMBER_LITERAL RPAREN
+    | WIDTH COLON NUMBER_LITERAL
     ;
 
 imageCollectionOptions
@@ -381,6 +477,7 @@ customNameMapping
 
 /**
  * CREATE IMPORT MAPPING Module.Name
+ *   FOLDER 'Private/Import mappings'
  *   WITH JSON STRUCTURE Module.JsonStructure
  * {
  *   CREATE Module.Entity {
@@ -391,26 +488,110 @@ customNameMapping
  */
 createImportMappingStatement
     : IMPORT MAPPING qualifiedName
+      (FOLDER STRING_LITERAL)?
       importMappingWithClause?
+      importMappingParameterClause?
       LBRACE importMappingRootElement RBRACE
     ;
 
+/**
+ * The mapping's INPUT object (#265). An import mapping may take an object as a
+ * parameter, which its custom handlers then bind via `Param: parameter`:
+ *
+ *   create import mapping M.IM_Response
+ *     with json structure M.JSON_Response
+ *     parameter GenAICommons.ChunkCollection
+ *   { ... }
+ *
+ * Stored as ParameterType, a DataTypes$ObjectType naming the entity; an
+ * unparameterised mapping stores the DataTypes$UnknownType marker instead.
+ *
+ * Import only: an export mapping's parameter IS its root object, and Studio Pro
+ * writes no ParameterType at all on one (0 of 127 measured).
+ */
+importMappingParameterClause
+    : PARAMETER qualifiedName
+    ;
+
 importMappingWithClause
-    : WITH JSON STRUCTURE qualifiedName
+    // ROOT selects the schema element the mapping STARTS at, when that is not
+    // the structure's own root — the shape Studio Pro produces when you pick a
+    // node deeper in the payload (#267). The path is written in member names and
+    // steps through arrays implicitly: `root choices/message` reaches
+    // "(Object)|choices|(Object)|message".
+    : WITH JSON STRUCTURE qualifiedName (ROOT jsonMemberPath)?
     | WITH XML SCHEMA qualifiedName
+    // Module.Collection.Definition — the definitions live inside a collection
+    // document, so the reference is three parts. qualifiedName already accepts
+    // any number of them.
+    | WITH MESSAGE DEFINITION qualifiedName
     ;
 
 importMappingRootElement
-    : importMappingObjectHandling qualifiedName
+    : importMappingObjectHandling qualifiedName mappingCustomHandler? mappingHandlingBackup?
       LBRACE importMappingChild (COMMA importMappingChild)* RBRACE
     ;
 
+/**
+ * What happens when the object is NOT found (or, for `create`, when one already
+ * exists). Mendix stores this as ObjectHandlingBackup, whose values are
+ * {Create, Error, Ignore} — `find` on its own does not name one, and mxcli
+ * refuses it rather than choosing (#261).
+ *
+ *   find Module.Entity or create { ... }     -- the old `find or create`
+ *   find Module.Entity or ignore { ... }
+ *   find Module.Entity or error  { ... }
+ *   create Module.Entity or error { ... }
+ *
+ * OVERRIDABLE sets ObjectHandlingBackupAllowOverride, which lets the caller
+ * choose at runtime.
+ */
+mappingHandlingBackup
+    : OR (CREATE | ERROR | IGNORE) OVERRIDABLE?
+    ;
+
+/**
+ * `by Module.Microflow ( Param: source, ... )` — a microflow resolves the object
+ * instead of Create/Find. Stored as ObjectHandling "Custom" with the call on
+ * CustomHandlerCall; "find X by MF(...)" is read as "find the object by calling
+ * this microflow".
+ *
+ * A parameter's source is one of:
+ *   parent          the enclosing mapped object
+ *   parameter       the mapping's own input object (see PARAMETER on the mapping)
+ *   parent(2)       an ancestor N levels up (export mappings)
+ *   a/b/c           a value from the payload, addressed like any other member
+ */
+mappingCustomHandler
+    : BY qualifiedName LPAREN (mappingCallParameter (COMMA mappingCallParameter)*)? RPAREN
+    ;
+
+mappingCallParameter
+    : identifierOrKeyword COLON PARAMETER
+    | identifierOrKeyword COLON identifierOrKeyword LPAREN NUMBER_LITERAL RPAREN
+    | identifierOrKeyword COLON jsonMemberPath
+    ;
+
 importMappingChild
-    : importMappingObjectHandling qualifiedName SLASH qualifiedName EQUALS identifierOrKeyword
+    : importMappingObjectHandling qualifiedName SLASH qualifiedName mappingCustomHandler? mappingHandlingBackup? EQUALS identifierOrKeyword
       LBRACE importMappingChild (COMMA importMappingChild)* RBRACE       // nested object with children
-    | importMappingObjectHandling qualifiedName SLASH qualifiedName EQUALS identifierOrKeyword  // leaf object
-    | identifierOrKeyword EQUALS qualifiedName LPAREN identifierOrKeyword RPAREN  // value transform: Attr = Module.MF(jsonField)
-    | identifierOrKeyword EQUALS identifierOrKeyword KEY?                         // value: Attr = jsonField [KEY]
+    | importMappingObjectHandling qualifiedName SLASH qualifiedName mappingCustomHandler? mappingHandlingBackup? EQUALS identifierOrKeyword  // leaf object
+    | identifierOrKeyword EQUALS qualifiedName LPAREN jsonMemberPath RPAREN  // value transform: Attr = Module.MF(jsonField)
+    | identifierOrKeyword EQUALS jsonMemberPath KEY?                         // value: Attr = a/b/c [KEY]
+    ;
+
+/**
+ * A JSON member, addressed from the enclosing object element. A single name is
+ * a direct child; `a/b/c` reaches a leaf several levels down WITHOUT an entity
+ * for the levels in between — the shape Studio Pro produces when you tick a
+ * nested leaf without ticking its parents.
+ *
+ * Stored as Mendix's own pipe-separated JsonPath ("(Object)|a|b|c"); `/` is the
+ * MDL spelling because `|` reads badly here and `/` on this side of `=` cannot
+ * collide with the association form on the other side.
+ */
+jsonMemberPath
+    : identifierOrKeyword (SLASH identifierOrKeyword)*
     ;
 
 importMappingObjectHandling
@@ -421,6 +602,7 @@ importMappingObjectHandling
 
 /**
  * CREATE EXPORT MAPPING Module.Name
+ *   FOLDER 'Private/Export mappings'
  *   WITH JSON STRUCTURE Module.JsonStructure
  * {
  *   Module.Entity {
@@ -430,14 +612,16 @@ importMappingObjectHandling
  */
 createExportMappingStatement
     : EXPORT MAPPING qualifiedName
+      (FOLDER STRING_LITERAL)?
       exportMappingWithClause?
       exportMappingNullValuesClause?
       LBRACE exportMappingRootElement RBRACE
     ;
 
 exportMappingWithClause
-    : WITH JSON STRUCTURE qualifiedName
+    : WITH JSON STRUCTURE qualifiedName (ROOT jsonMemberPath)?
     | WITH XML SCHEMA qualifiedName
+    | WITH MESSAGE DEFINITION qualifiedName
     ;
 
 exportMappingNullValuesClause
@@ -445,56 +629,69 @@ exportMappingNullValuesClause
     ;
 
 exportMappingRootElement
-    : qualifiedName
+    : qualifiedName mappingCustomHandler?
       LBRACE exportMappingChild (COMMA exportMappingChild)* RBRACE
     ;
 
 exportMappingChild
-    : qualifiedName SLASH qualifiedName AS identifierOrKeyword
+    : qualifiedName SLASH qualifiedName mappingCustomHandler? AS identifierOrKeyword
       LBRACE exportMappingChild (COMMA exportMappingChild)* RBRACE       // nested object with children
-    | qualifiedName SLASH qualifiedName AS identifierOrKeyword            // leaf object
-    | identifierOrKeyword EQUALS identifierOrKeyword                      // value: jsonField = Attr
+    | qualifiedName SLASH qualifiedName mappingCustomHandler? AS identifierOrKeyword  // leaf object
+    // A JSON grouping node with no Mendix object behind it — Studio Pro's
+    // entity-less object element (#262). It may contain OBJECT elements only:
+    // a value needs an entity to bind its attribute to, and Mendix rejects one
+    // here with CE0061 "No entity selected."
+    | GROUP AS identifierOrKeyword
+      LBRACE exportMappingChild (COMMA exportMappingChild)* RBRACE
+    | jsonMemberPath EQUALS qualifiedName LPAREN identifierOrKeyword RPAREN // value transform: a/b/c = Module.MF(Attr)
+    | jsonMemberPath EQUALS identifierOrKeyword                           // value: a/b/c = Attr
     ;
 
 // =============================================================================
 // VALIDATION RULE CREATION
 // =============================================================================
 
+// A validation rule constrains ONE attribute, and Mendix stores it anonymously
+// on the entity — there is no rule name to give, so the statement names its
+// target instead:
+//
+//   create validation rule for Shop.Product.Email
+//       regex Shop.EmailPattern
+//       feedback 'Enter a valid email address';
+//
+//   create validation rule for Shop.Booking.Guests
+//       range from 1 to 100
+//       feedback 'Between 1 and 100 guests are allowed';
+//
+// Only the two constraints nothing else can express are here. Required and
+// Unique are already authorable as attribute constraints (`not null error '…'`
+// / `unique error '…'` on CREATE ENTITY and ALTER ENTITY), and a second path to
+// the same rule would drift from the first; the executor points at that syntax
+// rather than accepting a duplicate spelling.
+//
+// This rule previously existed with an unimplementable shape (an EXPRESSION
+// form Mendix has no rule type for, an inline regex literal where Mendix stores
+// a reference to a RegularExpression document, and strict < / > bounds Mendix
+// cannot represent). It had no visitor and no handler, so every form parsed and
+// silently did nothing — nothing can depend on the old spelling.
 createValidationRuleStatement
-    : VALIDATION RULE qualifiedName
-      FOR qualifiedName
-      validationRuleBody
+    : VALIDATION RULE FOR qualifiedName
+      validationRuleConstraint
+      FEEDBACK STRING_LITERAL
     ;
 
-validationRuleBody
-    : EXPRESSION expression FEEDBACK STRING_LITERAL
-    | REQUIRED attributeReference FEEDBACK STRING_LITERAL
-    | UNIQUE attributeReferenceList FEEDBACK STRING_LITERAL
-    | RANGE attributeReference rangeConstraint FEEDBACK STRING_LITERAL
-    | REGEX attributeReference STRING_LITERAL FEEDBACK STRING_LITERAL
+validationRuleConstraint
+    : REGEX qualifiedName
+    | RANGE validationRuleRange
     ;
 
-rangeConstraint
-    : BETWEEN literal AND literal
-    | LESS_THAN literal
-    | LESS_THAN_OR_EQUAL literal
-    | GREATER_THAN literal
-    | GREATER_THAN_OR_EQUAL literal
-    ;
-
-attributeReference
-    : attributeRefSegment (SLASH attributeRefSegment)*
-    ;
-
-// One segment of an attribute reference. Accepts a quoted identifier so a
-// segment that is a reserved word can be escaped, e.g. "Order"/Status.
-attributeRefSegment
-    : IDENTIFIER
-    | QUOTED_IDENTIFIER
-    ;
-
-attributeReferenceList
-    : attributeReference (COMMA attributeReference)*
+// Mendix has exactly three range kinds and no strict inequality, so the bounds
+// are spelled inclusively and map one-to-one:
+//   from X to Y -> Between, from X -> GreaterThanOrEqualTo, to Y -> SmallerThanOrEqualTo
+validationRuleRange
+    : FROM literal TO literal
+    | FROM literal
+    | TO literal
     ;
 
 // =============================================================================
@@ -539,7 +736,8 @@ createIndexStatement
  */
 createDataTransformerStatement
     : DATA TRANSFORMER qualifiedName
-      SOURCE_KW (JSON | XML) STRING_LITERAL
+      (FOLDER folder=STRING_LITERAL)?
+      SOURCE_KW (JSON | XML) source=STRING_LITERAL
       LBRACE dataTransformerStep* RBRACE
     ;
 

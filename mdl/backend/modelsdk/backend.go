@@ -28,6 +28,7 @@ import (
 // Compile-time guarantee that the backend satisfies the whole interface (via the
 // embedded `unimplemented` for every method it doesn't override).
 var _ backend.FullBackend = (*Backend)(nil)
+var _ backend.WriteStatsReporter = (*Backend)(nil)
 
 // Backend reads and writes a Mendix project through the modelsdk codec engine.
 // It embeds `unimplemented` (generated, see gen_unimplemented.go) so any
@@ -39,6 +40,12 @@ type Backend struct {
 	reader *mmpr.Reader
 	writer *mmpr.Writer
 	path   string
+
+	// fileWrites counts writes that do not go through unit storage — the
+	// generated .java/.js source of a code action, whose body lives in
+	// javasource/ or javascriptsource/ rather than in its unit. They are folded
+	// into WriteStats so a body-only edit is not reported as "Unchanged".
+	fileWrites backend.WriteStats
 }
 
 // New constructs a modelsdk backend.
@@ -51,6 +58,29 @@ func New() *Backend {
 // the embedded mock used to give — see ADR-0005 "guard, don't silently drop".
 func errUnimplemented(method string) error {
 	return fmt.Errorf("modelsdk engine: %s not implemented yet — rerun with MXCLI_ENGINE=legacy", method)
+}
+
+// WriteStats reports how many unit writes reached storage versus how many were
+// elided as no-ops (ADR-0008). Zero before Connect, and after Disconnect the
+// writer is gone with its counters — a caller sampling across a statement holds
+// the connection open for both reads.
+func (b *Backend) WriteStats() backend.WriteStats {
+	if b.writer == nil {
+		return b.fileWrites
+	}
+	offered, written := b.writer.WriteStats()
+	return backend.WriteStats{
+		Offered: offered + b.fileWrites.Offered,
+		Written: written + b.fileWrites.Written,
+	}
+}
+
+// noteFileWrite records a non-unit write and whether it changed anything.
+func (b *Backend) noteFileWrite(changed bool) {
+	b.fileWrites.Offered++
+	if changed {
+		b.fileWrites.Written++
+	}
 }
 
 // --- ConnectionBackend ---
@@ -127,24 +157,42 @@ func (b *Backend) ListModules() ([]*model.Module, error) {
 	if err != nil {
 		return nil, err
 	}
-	dec := codec.NewDecoder(codec.DefaultRegistry)
 	out := make([]*model.Module, 0, len(infos))
 	for _, mi := range infos {
 		m := moduleFromInfo(mi)
-		// Enrich with Marketplace metadata by decoding the module unit.
-		// reader.ListModules returns only ID+Name; FromAppStore/AppStoreVersion
-		// (the SHOW MODULES "Source" column) live on the gen Module.
-		if raw, rerr := b.reader.GetRawUnitBytes(mi.ID); rerr == nil && len(raw) > 0 {
-			if el, derr := dec.Decode(raw); derr == nil {
-				if gm, ok := el.(*genPr.Module); ok {
-					m.FromAppStore = gm.FromAppStore()
-					m.AppStoreVersion = gm.AppStoreVersion()
-				}
-			}
-		}
+		b.enrichModule(m)
 		out = append(out, m)
 	}
 	return out, nil
+}
+
+// enrichModule fills in the Marketplace metadata by decoding the module unit.
+// The reader returns only ID+Name; FromAppStore/AppStoreVersion (the SHOW
+// MODULES "Source" column) and AppStoreGuid live on the gen Module.
+//
+// Called from every module lookup, not just the listing: a caller that reaches
+// a module by name and then branches on FromAppStore — the marketplace guard in
+// CREATE LAYOUT does — would otherwise read false for every module and never
+// fire.
+func (b *Backend) enrichModule(m *model.Module) {
+	if m == nil || m.ID == "" {
+		return
+	}
+	raw, err := b.reader.GetRawUnitBytes(string(m.ID))
+	if err != nil || len(raw) == 0 {
+		return
+	}
+	el, err := codec.NewDecoder(codec.DefaultRegistry).Decode(raw)
+	if err != nil {
+		return
+	}
+	gm, ok := el.(*genPr.Module)
+	if !ok {
+		return
+	}
+	m.FromAppStore = gm.FromAppStore()
+	m.AppStoreVersion = gm.AppStoreVersion()
+	m.AppStoreGuid = gm.AppStoreGuid()
 }
 
 func (b *Backend) GetModuleByName(name string) (*model.Module, error) {
@@ -152,7 +200,9 @@ func (b *Backend) GetModuleByName(name string) (*model.Module, error) {
 	if err != nil || mi == nil {
 		return nil, err
 	}
-	return moduleFromInfo(mi), nil
+	m := moduleFromInfo(mi)
+	b.enrichModule(m)
+	return m, nil
 }
 
 func (b *Backend) GetModule(id model.ID) (*model.Module, error) {
@@ -160,7 +210,9 @@ func (b *Backend) GetModule(id model.ID) (*model.Module, error) {
 	if err != nil || mi == nil {
 		return nil, err
 	}
-	return moduleFromInfo(mi), nil
+	m := moduleFromInfo(mi)
+	b.enrichModule(m)
+	return m, nil
 }
 
 // moduleFromInfo converts the modelsdk ModuleInfo (ID + Name) into our

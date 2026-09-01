@@ -32,6 +32,7 @@ const (
 	ShowAssociation
 	ShowMicroflows
 	ShowNanoflows
+	ShowRules
 	ShowPages
 	ShowSnippets
 	ShowLayouts
@@ -102,6 +103,9 @@ const (
 	ShowConsumedMCPServices   // SHOW CONSUMED MCP SERVICES [IN module] (agent-editor MCP documents)
 	ShowJarDependencies       // LIST JAR DEPENDENCIES [IN module]
 	ShowBuildingBlocks        // SHOW BUILDING BLOCKS [IN module]
+	ShowConnections           // SHOW CONNECTIONS (open external SQL connections in this session)
+	// ShowAnnotations lists a domain model's canvas notes.
+	ShowAnnotations
 )
 
 // String returns the human-readable name of the show object type.
@@ -121,12 +125,16 @@ func (t ShowObjectType) String() string {
 		return "ENTITY"
 	case ShowAssociations:
 		return "ASSOCIATIONS"
+	case ShowAnnotations:
+		return "ANNOTATIONS"
 	case ShowAssociation:
 		return "ASSOCIATION"
 	case ShowMicroflows:
 		return "MICROFLOWS"
 	case ShowNanoflows:
 		return "NANOFLOWS"
+	case ShowRules:
+		return "RULES"
 	case ShowPages:
 		return "PAGES"
 	case ShowSnippets:
@@ -245,6 +253,8 @@ func (t ShowObjectType) String() string {
 		return "JAR DEPENDENCIES"
 	case ShowBuildingBlocks:
 		return "BUILDING BLOCKS"
+	case ShowConnections:
+		return "CONNECTIONS"
 	default:
 		return "UNKNOWN"
 	}
@@ -322,6 +332,7 @@ const (
 	DescribeContractMessage      // DESCRIBE CONTRACT MESSAGE Service.MessageName
 	DescribeJsonStructure        // DESCRIBE JSON STRUCTURE Module.Name
 	DescribeNanoflow             // DESCRIBE NANOFLOW Module.Name
+	DescribeRule                 // DESCRIBE RULE Module.Name
 	DescribeImportMapping        // DESCRIBE IMPORT MAPPING Module.Name
 	DescribeExportMapping        // DESCRIBE EXPORT MAPPING Module.Name
 	DescribeModel                // DESCRIBE MODEL Module.Name (agent-editor Model document)
@@ -330,6 +341,10 @@ const (
 	DescribeConsumedMCPService   // DESCRIBE CONSUMED MCP SERVICE Module.Name (agent-editor MCP document)
 	DescribeJarDependency        // DESCRIBE JAR DEPENDENCY ModuleName 'group:artifact'
 	DescribeBuildingBlock        // DESCRIBE BUILDING BLOCK Module.Name
+	DescribeMenu                 // DESCRIBE MENU Module.Name (standalone Menus$MenuDocument)
+	DescribeQueue                // DESCRIBE QUEUE Module.Name
+	DescribeScheduledEvent       // DESCRIBE SCHEDULED EVENT Module.Name
+	DescribeRegularExpression    // DESCRIBE REGULAR EXPRESSION Module.Name
 	DescribeAuto                 // DESCRIBE Module.Name — type auto-detected at execution time
 )
 
@@ -402,6 +417,8 @@ func (t DescribeObjectType) String() string {
 		return "JSON STRUCTURE"
 	case DescribeNanoflow:
 		return "NANOFLOW"
+	case DescribeRule:
+		return "RULE"
 	case DescribeImportMapping:
 		return "IMPORT MAPPING"
 	case DescribeExportMapping:
@@ -418,6 +435,8 @@ func (t DescribeObjectType) String() string {
 		return "JAR DEPENDENCY"
 	case DescribeBuildingBlock:
 		return "BUILDING BLOCK"
+	case DescribeMenu:
+		return "MENU"
 	case DescribeAuto:
 		return "AUTO"
 	default:

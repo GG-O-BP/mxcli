@@ -74,7 +74,7 @@ func (pb *pageBuilder) buildPageV3(s *ast.CreatePageStmtV3) (*pages.Page, error)
 				ID:       model.ID(types.GenerateID()),
 				TypeName: "Texts$Text",
 			},
-			Translations: map[string]string{"en_US": s.Title},
+			Translations: map[string]string{pb.textLang(): s.Title},
 		}
 	}
 
@@ -374,6 +374,18 @@ func (pb *pageBuilder) buildWidgetV3(w *ast.WidgetV3) (pages.Widget, error) {
 		return nil, mdlerrors.NewValidation("tabpage must be a direct child of tabcontainer")
 	case "groupbox":
 		widget, err = pb.buildGroupBoxV3(w)
+	case "scrollcontainer":
+		widget, err = pb.buildScrollContainerV3(w)
+	case "region":
+		// A region is a slot of a scroll container, not a widget in its own
+		// right — it has no Name in the BSON, only a position.
+		return nil, mdlerrors.NewValidation("region must be a direct child of scrollcontainer")
+	case "navigationtree":
+		widget, err = pb.buildNavigationTreeV3(w)
+	case "menubar":
+		widget, err = pb.buildMenuBarV3(w)
+	case "placeholder":
+		widget, err = pb.buildPlaceholderV3(w)
 	case "radiobuttons":
 		widget, err = pb.buildRadioButtonsV3(w)
 	case "navigationlist":
@@ -1237,6 +1249,20 @@ func (pb *pageBuilder) buildClientActionV3(action *ast.ActionV3) (pages.ClientAc
 
 		// Build parameter mappings from Args
 		for _, arg := range action.Args {
+			// mxcli stores this action with an empty ParameterMappings array and
+			// lets Mendix infer the argument from the enclosing widget's context
+			// object — required, because an explicit mapping is rejected as CE0115
+			// (#296). An argument naming anything else therefore cannot be honoured,
+			// and was previously dropped in silence: the button opened the page with
+			// the context object, `mx check` reported 0 errors, and DESCRIBE printed
+			// the inferred mapping. Refuse instead of re-pointing the argument.
+			if strVal, ok := arg.Value.(string); ok && !pageArgumentBindsContextObject(strVal, pb.contextVarName, pb.contextKnown) {
+				return nil, mdlerrors.NewValidationf(
+					"show_page %s: argument %s: %s cannot be stored — a widget's page argument is always the enclosing context object, which mxcli records by leaving the mapping empty (an explicit one is rejected as CE0115). Writing %s here would silently open the page with %s instead. Use $currentObject%s, or call a microflow that shows the page with the object you want [MDL-PAGEARG01]",
+					action.Target, arg.Name, strVal, strVal, pb.describeContextObject(),
+					pb.contextVarAlternative())
+			}
+
 			mapping := &pages.PageClientParameterMapping{
 				BaseElement: model.BaseElement{
 					ID:       model.ID(types.GenerateID()),
@@ -2158,13 +2184,19 @@ func (pb *pageBuilder) expandBuildingBlockRef(w *ast.WidgetV3) ([]*ast.WidgetV3,
 	}
 
 	// Apply optional rebind overrides. Binding-point rule (prototype): the
-	// override rewrites the FIRST widget in pre-order that carries a datasource /
-	// an action — the block's outermost datasource and primary action.
+	// override rewrites the FIRST widget in pre-order that CAN carry a datasource
+	// / an action — the block's outermost datasource and primary action.
+	//
+	// Can, not does. A reusable block is a template: its datasource is unbound
+	// and its buttons have no action, so neither property is present in the
+	// rendered MDL. The action override already matched by widget type for that
+	// reason; the datasource override matched on an existing DataSource property
+	// and only worked because an unbound datasource used to render as the
+	// malformed `DataSource: database from ,` — the very output #941 fixed.
 	if ds, ok := w.Properties["DataSourceOverride"].(*ast.DataSourceV3); ok && ds != nil {
 		// Datasource target: the first widget that already carries a datasource
 		// (a block's outermost list/grid/dataview always emits one).
-		hit := rebindFirst(widgets,
-			func(t *ast.WidgetV3) bool { _, has := t.Properties["DataSource"]; return has },
+		hit := rebindFirst(widgets, isDataSourceWidget,
 			func(t *ast.WidgetV3) { t.Properties["DataSource"] = ds })
 		if !hit {
 			return nil, mdlerrors.NewValidation(fmt.Sprintf(
@@ -2186,6 +2218,18 @@ func (pb *pageBuilder) expandBuildingBlockRef(w *ast.WidgetV3) ([]*ast.WidgetV3,
 }
 
 // isButtonWidget reports whether a widget is an action-capable button.
+// isDataSourceWidget reports whether a widget is one that takes a datasource,
+// whether or not it currently carries one. The list is the data containers a
+// building block can be built around; anything else in a block is layout or a
+// leaf.
+func isDataSourceWidget(w *ast.WidgetV3) bool {
+	switch strings.ToLower(w.Type) {
+	case "gallery", "listview", "datagrid", "datagrid2", "dataview", "templategrid", "referenceselector":
+		return true
+	}
+	return false
+}
+
 func isButtonWidget(w *ast.WidgetV3) bool {
 	switch strings.ToLower(w.Type) {
 	case "actionbutton", "linkbutton", "button":
@@ -2271,4 +2315,113 @@ func flowArgsToParameterMappings(args []ast.FlowArgV3) []*pages.MicroflowParamet
 		out = append(out, mapping)
 	}
 	return out
+}
+
+// buildScrollContainerV3 builds a scroll container from its five named regions.
+//
+// `region top { … }` rather than a bare `top { … }`: every other widget in MDL
+// is `<type> <name> (props) { body }`, and a region is the one place where the
+// "name" is a fixed position rather than free text. Keeping the shape means one
+// keyword instead of five and no special case in the widget grammar.
+func (pb *pageBuilder) buildScrollContainerV3(w *ast.WidgetV3) (pages.Widget, error) {
+	sc := &pages.ScrollContainer{
+		BaseWidget: pages.BaseWidget{
+			BaseElement: model.BaseElement{
+				ID:       model.ID(types.GenerateID()),
+				TypeName: "Forms$ScrollContainer",
+			},
+			Name: w.Name,
+		},
+	}
+
+	seen := map[pages.ScrollContainerSlot]bool{}
+	for _, child := range w.Children {
+		if strings.ToLower(child.Type) != "region" {
+			return nil, mdlerrors.NewValidation(fmt.Sprintf(
+				"scrollcontainer %q: %q is not a region; a scroll container's children are its regions", w.Name, child.Type))
+		}
+		slot := pages.ScrollContainerSlot(strings.ToLower(child.Name))
+		switch slot {
+		case pages.ScrollSlotTop, pages.ScrollSlotRight, pages.ScrollSlotBottom,
+			pages.ScrollSlotLeft, pages.ScrollSlotCenter:
+		default:
+			return nil, mdlerrors.NewValidation(fmt.Sprintf(
+				"scrollcontainer %q: unknown region %q (want top, right, bottom, left or center)", w.Name, child.Name))
+		}
+		// Two regions in one slot is a script that means two different things
+		// and gets one; the second would silently win.
+		if seen[slot] {
+			return nil, mdlerrors.NewValidation(fmt.Sprintf(
+				"scrollcontainer %q: region %q given twice", w.Name, slot))
+		}
+		seen[slot] = true
+
+		region := &pages.ScrollContainerRegion{
+			BaseElement: model.BaseElement{ID: model.ID(types.GenerateID()), TypeName: "Forms$ScrollContainerRegion"},
+			Slot:        slot,
+			Class:       child.GetStringProp("Class"),
+			SizeMode:    child.GetStringProp("SizeMode"),
+			Size:        child.GetIntProp("Size"),
+		}
+		for _, gc := range child.Children {
+			cw, err := pb.buildWidgetV3(gc)
+			if err != nil {
+				return nil, err
+			}
+			region.Widgets = append(region.Widgets, cw)
+		}
+		sc.Regions = append(sc.Regions, region)
+	}
+	return sc, nil
+}
+
+// buildNavigationTreeV3 builds the sidebar menu. The profile is stored inside a
+// Forms$NavigationSource, not on the tree — see widget_write.go.
+func (pb *pageBuilder) buildNavigationTreeV3(w *ast.WidgetV3) (pages.Widget, error) {
+	nt := &pages.NavigationTree{
+		BaseWidget: pages.BaseWidget{
+			BaseElement: model.BaseElement{
+				ID:       model.ID(types.GenerateID()),
+				TypeName: "Forms$NavigationTree",
+			},
+			Name: w.Name,
+		},
+		NavigationProfile: w.GetStringProp("Profile"),
+	}
+	return nt, nil
+}
+
+// buildPlaceholderV3 declares a slot a page can bind to.
+//
+// The name is the API: a page references it as Module.Layout.<Name>, so it is
+// required here rather than defaulted.
+func (pb *pageBuilder) buildPlaceholderV3(w *ast.WidgetV3) (pages.Widget, error) {
+	if w.Name == "" {
+		return nil, mdlerrors.NewValidation("placeholder needs a name: pages bind to it as Module.Layout.<Name>")
+	}
+	ph := &pages.LayoutPlaceholder{
+		BaseWidget: pages.BaseWidget{
+			BaseElement: model.BaseElement{
+				ID:       model.ID(types.GenerateID()),
+				TypeName: "Forms$Placeholder",
+			},
+			Name: w.Name,
+		},
+	}
+	return ph, nil
+}
+
+// buildMenuBarV3 builds the horizontal navigation a topbar carries. Same shape
+// as a navigation tree — see widget_write.go.
+func (pb *pageBuilder) buildMenuBarV3(w *ast.WidgetV3) (pages.Widget, error) {
+	return &pages.MenuBar{
+		BaseWidget: pages.BaseWidget{
+			BaseElement: model.BaseElement{
+				ID:       model.ID(types.GenerateID()),
+				TypeName: "Forms$MenuBar",
+			},
+			Name: w.Name,
+		},
+		NavigationProfile: w.GetStringProp("Profile"),
+	}, nil
 }

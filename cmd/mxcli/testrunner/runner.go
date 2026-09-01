@@ -68,11 +68,28 @@ type RunOptions struct {
 	// counts.
 	SkipAppStartup bool
 
+	// ConstantOverrides are the constant values the app should run with, layered
+	// over the defaults in the deployment. Resolved by the caller from the
+	// project's configuration (and, in future, the higher layers of
+	// docs/11-proposals/PROPOSAL_constant_values.md) so the runner stays a
+	// carrier rather than a second place that decides precedence.
+	//
+	// Only --local uses these: --attach runs against an app someone else booted
+	// and inherits ITS constants, and the Docker path configures the container.
+	ConstantOverrides map[string]string
+
 	// Timeout for runtime startup and test execution.
 	Timeout time.Duration
 
 	// JUnitOutput is the path for JUnit XML output (empty = no file output).
 	JUnitOutput string
+
+	// RequireAssertions turns a test that asserts nothing into an ERROR.
+	//
+	// Off by default: a smoke test — "this microflow runs without throwing" — is
+	// a legitimate thing to write. The summary line reports vacuous tests either
+	// way; this is for a project that has decided every test must assert.
+	RequireAssertions bool
 
 	// Verbose shows all runtime log output.
 	Verbose bool
@@ -137,18 +154,58 @@ func Run(opts RunOptions) (*SuiteResult, error) {
 		return nil, fmt.Errorf("parsing test files: %w", err)
 	}
 	fmt.Fprintf(w, "  Found %d test(s) in %d file(s)\n", len(suite.Tests), len(opts.TestFiles))
+	for _, fe := range suite.FileErrors {
+		fmt.Fprintf(w, "  ERROR %s: %v\n", fe.Path, fe.Err)
+	}
 
 	if len(suite.Tests) == 0 {
+		// A directory whose every file is malformed is not an empty directory,
+		// and must not be reported as one (#903).
+		if len(suite.FileErrors) > 0 {
+			return nil, fmt.Errorf("no tests could be parsed: %d file(s) failed to parse", len(suite.FileErrors))
+		}
 		return nil, fmt.Errorf("no tests found in the provided files")
 	}
 
+	result, err := dispatchRun(opts, suite, timeout, w)
+	if result != nil {
+		// Appended after execution so an unparseable file lands in the summary,
+		// the JUnit report and the exit code alongside the tests that did run.
+		result.Tests = append(result.Tests, suiteFileErrorResults(suite.FileErrors)...)
+	}
+	return result, err
+}
+
+// dispatchRun hands the suite to the runner the options select.
+func dispatchRun(opts RunOptions, suite *TestSuite, timeout time.Duration, w io.Writer) (*SuiteResult, error) {
 	if opts.Attach {
 		return runAttached(opts, suite, timeout, w)
 	}
 	if opts.Local && !opts.LegacyRunner {
 		return runEndpoint(opts, suite, timeout, w)
 	}
+	// @verify needs a seam after each test's call, and a reachable admin API to
+	// query — neither of which the after-startup runner has: its tests execute
+	// during boot and its results are recovered from the log. Refuse rather than
+	// run the suite with those assertions quietly skipped.
+	if err := rejectVerifyOnLegacyRunner(suite); err != nil {
+		return nil, err
+	}
 	return runAfterStartup(opts, suite, timeout, w)
+}
+
+// rejectVerifyOnLegacyRunner refuses a suite the after-startup runner cannot
+// fully evaluate.
+func rejectVerifyOnLegacyRunner(suite *TestSuite) error {
+	for _, tc := range suite.Tests {
+		if len(tc.Verify) > 0 {
+			return fmt.Errorf(
+				"test %q uses @verify, which the after-startup runner cannot evaluate: "+
+					"its tests run during boot, so there is no point at which to query the app. "+
+					"Run with --local (the default test endpoint) or --attach", tc.Name)
+		}
+	}
+	return nil
 }
 
 // validateOptions rejects combinations that cannot work, with a message that
@@ -225,6 +282,7 @@ func runEndpoint(opts RunOptions, suite *TestSuite, timeout time.Duration, w io.
 		fmt.Fprintln(w, "Cleaning up...")
 		cleanupErr := cleanupEndpoint(opts.ProjectPath, state, cleanupSuite, w)
 		removeGeneratedJavaSource(opts.ProjectPath, w)
+		restoreProjectFile(state, cleanupErr, w)
 		reportCleanup(w, cleanupErr)
 		if cleanupErr == nil {
 			fmt.Fprintln(w, "  project restored")
@@ -313,15 +371,18 @@ func runAfterStartup(opts RunOptions, suite *TestSuite, timeout time.Duration, w
 		logOutput, err = runDockerAndCapture(opts, timeout, w)
 	}
 	if err != nil {
-		reportCleanup(w, cleanup(opts.ProjectPath, state, w))
+		cleanupErr := cleanup(opts.ProjectPath, state, w)
+		restoreProjectFile(state, cleanupErr, w)
+		reportCleanup(w, cleanupErr)
 		return nil, err
 	}
 
 	fmt.Fprintln(w, "Parsing test results...")
-	result := ParseLogResults(strings.NewReader(logOutput), suite)
+	result := ParseLogResults(strings.NewReader(logOutput), suite, opts.RequireAssertions)
 
 	fmt.Fprintln(w, "Cleaning up...")
 	cleanupErr := cleanup(opts.ProjectPath, state, w)
+	restoreProjectFile(state, cleanupErr, w)
 	reportCleanup(w, cleanupErr)
 
 	PrintResults(w, result, opts.Color)
@@ -365,19 +426,57 @@ func ListTests(files []string, w io.Writer) error {
 	fmt.Fprintf(w, "Found %d test(s):\n", len(suite.Tests))
 	for _, tc := range suite.Tests {
 		fmt.Fprintf(w, "  %s: %s\n", tc.ID, tc.Name)
-		if len(tc.Expects) > 0 {
-			for _, exp := range tc.Expects {
-				fmt.Fprintf(w, "    @expect %s %s %s\n", exp.Variable, exp.Operator, exp.Value)
-			}
+		for _, flow := range tc.Setups {
+			fmt.Fprintf(w, "    @setup %s\n", flow)
+		}
+		for _, exp := range tc.Expects {
+			fmt.Fprintf(w, "    @expect %s\n", exp.Raw)
+		}
+		for _, v := range tc.Verify {
+			fmt.Fprintf(w, "    @verify %s\n", v.Raw)
 		}
 		if tc.Throws != "" {
 			fmt.Fprintf(w, "    @throws '%s'\n", tc.Throws)
 		}
-		for _, v := range tc.Verify {
-			fmt.Fprintf(w, "    @verify %s\n", v)
+		for _, e := range tc.AssertionErrors {
+			fmt.Fprintf(w, "    ERROR: %s\n", e)
+		}
+		if tc.AssertionCount() == 0 && len(tc.AssertionErrors) == 0 {
+			fmt.Fprintf(w, "    (no assertions — this test can only report that the body did not throw)\n")
 		}
 	}
-	return nil
+	return reportFileErrors(suite.FileErrors, w)
+}
+
+// reportFileErrors prints the files that could not be parsed and returns an
+// error when there were any, so listing a partly-readable directory exits
+// non-zero instead of looking like a clean listing.
+func reportFileErrors(errs []FileError, w io.Writer) error {
+	if len(errs) == 0 {
+		return nil
+	}
+	fmt.Fprintf(w, "\n%d file(s) could not be parsed:\n", len(errs))
+	for _, fe := range errs {
+		fmt.Fprintf(w, "  ERROR %s: %v\n", fe.Path, fe.Err)
+	}
+	return fmt.Errorf("%d test file(s) could not be parsed", len(errs))
+}
+
+// suiteFileErrorResults turns unparseable files into ERROR results so they are
+// counted in the summary and in the JUnit report, and so the run's exit code is
+// non-zero — the same fail-closed handling assertionErrorResult gives an
+// @expect that cannot be compiled.
+func suiteFileErrorResults(errs []FileError) []TestResult {
+	out := make([]TestResult, 0, len(errs))
+	for _, fe := range errs {
+		out = append(out, TestResult{
+			Name:       fmt.Sprintf("%s (file could not be parsed)", filepath.Base(fe.Path)),
+			Status:     StatusError,
+			Message:    fe.Err.Error(),
+			SourceFile: fe.Path,
+		})
+	}
+	return out
 }
 
 // parseTestFiles parses one or more test files or directories.
@@ -401,10 +500,15 @@ func parseTestFiles(paths []string) (*TestSuite, error) {
 				combined.Name = dirSuite.Name
 			}
 			combined.Tests = append(combined.Tests, dirSuite.Tests...)
+			combined.FileErrors = append(combined.FileErrors, dirSuite.FileErrors...)
 		} else {
 			fileSuite, err := ParseTestFile(path)
 			if err != nil {
-				return nil, err
+				// Isolated rather than fatal, for the same reason as in a
+				// directory (#903): naming three files should not cost the two
+				// that parse. The run is still red — see suiteFileErrorResults.
+				combined.FileErrors = append(combined.FileErrors, FileError{Path: path, Err: err})
+				continue
 			}
 			if combined.Name == "mxtest" && fileSuite.Name != "" {
 				combined.Name = fileSuite.Name
@@ -424,6 +528,11 @@ func parseTestFiles(paths []string) (*TestSuite, error) {
 // projectState records what Run changed in the project, captured before the first
 // mutation so cleanup can put things back exactly rather than guessing.
 type projectState struct {
+	// snapshot is the project file as it was before anything was injected,
+	// restored on the way out so a run that changes nothing leaves it
+	// byte-identical.
+	snapshot projectSnapshot
+
 	// afterStartup is the project's original after-startup microflow ("" = none).
 	afterStartup string
 	// createdMxTest reports whether Run created the MxTest module, i.e. it did not
@@ -447,7 +556,18 @@ func captureProjectState(projectPath string) (projectState, error) {
 		return st, fmt.Errorf("listing modules: %w", err)
 	}
 	st.createdMxTest = !exists
+
+	st.snapshot = takeProjectSnapshot(projectPath)
 	return st, nil
+}
+
+// restoreProjectFile puts the .mpr back byte-for-byte once cleanup has genuinely
+// undone every injection, so a test run is a no-op on disk. See projectSnapshot
+// for why restoring the model's content is not enough on its own.
+func restoreProjectFile(st projectState, cleanupErr error, w io.Writer) {
+	if err := st.snapshot.restore(cleanupErr == nil); err != nil {
+		fmt.Fprintf(w, "  note: could not restore the project file: %v\n", err)
+	}
 }
 
 // getAfterStartup reads the current after-startup microflow setting.

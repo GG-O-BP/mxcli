@@ -24,15 +24,27 @@ This command performs the following steps:
   1. Downloads MxBuild for the specified Mendix version
   2. Creates a blank Mendix project using mx create-project
   3. Applies mxcli's default styling (--theme, see 'mxcli theme list')
-  4. Initializes AI tooling and devcontainer configuration (mxcli init)
-  5. Runs one build so generated sources are settled (--skip-build to skip)
-  6. Links this mxcli into the project (or downloads a Linux build on macOS/Windows)
+  4. Creates a layout the project owns and moves its pages onto it (--layout none)
+  5. Initializes AI tooling and devcontainer configuration (mxcli init)
+  6. Runs one build so generated sources are settled (--skip-build to skip)
+  7. Links this mxcli into the project (or downloads a Linux build on macOS/Windows)
+
+Step 4 exists because Atlas's layouts live in a Marketplace module, and Mendix's
+own guidance is not to edit them: an update replaces the module and the edit is
+gone. A generated app therefore starts with a layout it can change.
+
+The project is created in a short temporary directory and moved into place, so
+--output-dir may be as deep as your filesystem allows and a failure never leaves
+partial output behind. Mendix tooling itself refuses paths over 259 characters,
+so a project deeper than that is created but reported as one Studio Pro on
+Windows may not open.
 
 Examples:
   mxcli new MyApp
   mxcli new MyApp --version 11.8.0
   mxcli new MyApp --version 10.24.0 --output-dir ./projects/my-app
   mxcli new MyApp --version 11.8.0 --theme none
+  mxcli new MyApp --version 11.8.0 --layout none
 `,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
@@ -42,6 +54,7 @@ Examples:
 		skipInit, _ := cmd.Flags().GetBool("skip-init")
 		themeName, _ := cmd.Flags().GetString("theme")
 		skipBuild, _ := cmd.Flags().GetBool("skip-build")
+		layoutMode, _ := cmd.Flags().GetString("layout")
 
 		if mendixVersion == "" {
 			fmt.Fprintln(os.Stderr, "Error: --version is required (e.g., --version 11.8.0)")
@@ -51,7 +64,7 @@ Examples:
 		// Validate the theme before downloading ~800MB of MxBuild: a typo should
 		// fail in a second, not after the slowest step in the command.
 		if themeName != theme.NoneName {
-			if _, err := theme.Get(themeName); err != nil {
+			if _, err := theme.Get("", themeName); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -87,22 +100,47 @@ Examples:
 			os.Exit(1)
 		}
 
-		// Step 2: Create project
+		// Step 2: Create project.
+		//
+		// Created in a SHORT staging directory and moved into place afterwards.
+		// MxToolset refuses to extract past a 259-character full path and aborts
+		// PART WAY THROUGH when it hits that, so pointing it straight at a deep
+		// output directory left the user with a few hundred orphaned files and no
+		// .mpr (issue #825). Staging removes the limit from the equation entirely —
+		// the destination may be as deep as the filesystem allows — and means the
+		// destination is only ever written to after creation has succeeded.
 		fmt.Printf("\nStep 2/6: Creating Mendix project '%s'...\n", appName)
 		if err := os.MkdirAll(absDir, 0755); err != nil {
 			fmt.Fprintf(os.Stderr, "Error creating directory: %v\n", err)
 			os.Exit(1)
 		}
 
+		stageDir, cleanupStage, err := stagedProjectDirs()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		defer cleanupStage()
+
 		mxCmd := exec.Command(mxPath, "create-project", "--app-name", appName)
-		mxCmd.Dir = absDir
+		mxCmd.Dir = stageDir
 		mxCmd.Stdout = os.Stdout
 		mxCmd.Stderr = os.Stderr
 		docker.PrepareMxCommand(mxCmd)
 		if err := mxCmd.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating project: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error creating project: %v\n", describeCreateProjectFailure(stageDir, err))
 			os.Exit(1)
 		}
+
+		// Measure the template's deepest path before moving, so the portability
+		// warning uses this version's real number rather than a constant that
+		// drifts (181 characters on 11.13.0, 182 on 11.12.0).
+		longest, longestPath := longestRelativePath(stageDir)
+		if err := moveProject(stageDir, absDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Error moving project into place: %v\n", err)
+			os.Exit(1)
+		}
+		warnIfPathTooLongForStudioPro(os.Stdout, absDir, longest, longestPath)
 
 		// Clean up duplicate locale files that mx create-project generates.
 		// MxBuild's AtlasPlugin.LoadTranslations crashes with "An item with the same
@@ -158,7 +196,7 @@ Examples:
 		// writes files under theme/ only — the model is untouched, so the theme
 		// can be re-applied, swapped or removed at any point.
 		if themeName != theme.NoneName {
-			fmt.Printf("\nStep 3/6: Applying '%s' styling...\n", themeName)
+			fmt.Printf("\nStep 3/7: Applying '%s' styling...\n", themeName)
 			res, err := theme.Apply(absDir, themeName, theme.Options{})
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error applying theme: %v\n", err)
@@ -168,15 +206,36 @@ Examples:
 				fmt.Printf("  %-9s %s\n", f.Action, f.Path)
 			}
 		} else {
-			fmt.Printf("\nStep 3/6: Skipped styling (--theme none)\n")
+			fmt.Printf("\nStep 3/7: Skipped styling (--theme none)\n")
 		}
 
-		// Step 4: Initialize tooling
+		// Step 4: A layout the project owns. Every generated app used to start
+		// on Atlas_Core.Atlas_TopBar — a layout in a Marketplace module, which
+		// Mendix's own guidance says not to edit because an update replaces the
+		// module. Scaffolding one inverts that from an obstacle you discover
+		// into a starting point you already have.
+		//
+		// Best-effort, like the first build: a project without it is a perfectly
+		// good project, so a failure is a warning rather than an exit.
+		if layoutMode != LayoutNone {
+			fmt.Printf("\nStep 4/7: Creating a layout the project owns...\n")
+			if mod, err := scaffoldProjectLayout(mprPath, os.Stdout); err != nil {
+				fmt.Fprintf(os.Stderr, "  Warning: could not create the project layout: %v\n", err)
+				fmt.Fprintln(os.Stderr, "  The project is usable and keeps Atlas's layouts. See 'mxcli syntax layout'.")
+			} else {
+				fmt.Printf("  Pages now render inside %s.%s — edit it with 'mxcli syntax layout.alter'\n",
+					mod, scaffoldLayoutName)
+			}
+		} else {
+			fmt.Printf("\nStep 4/7: Skipped the project layout (--layout none)\n")
+		}
+
+		// Step 5: Initialize tooling
 		if !skipInit {
-			fmt.Printf("\nStep 4/6: Initializing AI tooling...\n")
+			fmt.Printf("\nStep 5/7: Initializing AI tooling...\n")
 			initCmd.Run(initCmd, []string{absDir})
 		} else {
-			fmt.Printf("\nStep 4/6: Skipped (--skip-init)\n")
+			fmt.Printf("\nStep 5/7: Skipped (--skip-init)\n")
 		}
 
 		// Step 5: Settle the sources MxBuild generates. The template ships the JS
@@ -187,9 +246,9 @@ Examples:
 		// in the first commit. Best-effort: this is a nicety, not a precondition
 		// for a usable project, so a missing JDK or a build failure is a warning.
 		if skipBuild {
-			fmt.Printf("\nStep 5/6: Skipped first build (--skip-build)\n")
+			fmt.Printf("\nStep 6/7: Skipped first build (--skip-build)\n")
 		} else {
-			fmt.Printf("\nStep 5/6: Running the first build (settles generated sources)...\n")
+			fmt.Printf("\nStep 6/7: Running the first build (settles generated sources)...\n")
 			if err := docker.SettleGeneratedSources(mprPath, mxPath, mendixVersion, os.Stdout); err != nil {
 				fmt.Fprintf(os.Stderr, "  Warning: could not run the first build: %v\n", err)
 				fmt.Fprintln(os.Stderr, "  The project is usable. Note that the first build will rewrite the")
@@ -199,7 +258,7 @@ Examples:
 		}
 
 		// Step 6: Ensure correct mxcli binary for devcontainer
-		fmt.Printf("\nStep 6/6: Setting up mxcli binary...\n")
+		fmt.Printf("\nStep 7/7: Setting up mxcli binary...\n")
 		mxcliBinPath := filepath.Join(absDir, "mxcli")
 		if runtime.GOOS != "linux" {
 			// Running on Windows/macOS — download the Linux binary for devcontainer
@@ -300,6 +359,8 @@ func init() {
 		"Skip the first build (leaves generated action stubs to be rewritten by the next build)")
 	newCmd.Flags().String("theme", theme.DefaultName,
 		"Default styling to apply ('none' to keep plain Atlas; see 'mxcli theme list')")
+	newCmd.Flags().String("layout", "app-default",
+		"Create a layout the project owns and move its pages onto it ('none' to keep Atlas's)")
 
 	rootCmd.AddCommand(newCmd)
 }

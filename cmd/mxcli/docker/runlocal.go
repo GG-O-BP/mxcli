@@ -38,12 +38,22 @@ type LocalAppInfo struct {
 	AdminPort int
 	ServePort int
 	AdminPass string
+	// BootConfig is the update_configuration payload the runtime was started
+	// with. A caller wanting to change ONE setting on the running app re-sends
+	// this with that key replaced — the admin API has no read-back, so anything
+	// not re-sent is simply gone from the configuration.
+	BootConfig map[string]any
 }
 
 // LocalRunOptions configures RunLocal.
 type LocalRunOptions struct {
 	// ProjectPath is the .mpr file.
 	ProjectPath string
+	// ConstantOverrides are the constant values of the configuration this run
+	// represents (qualified name -> value), merged over the defaults mxbuild
+	// wrote into the deployment. Empty means "every constant keeps its default",
+	// which is what a local run always did before — see runconstants.go.
+	ConstantOverrides map[string]string
 	// DeployDir is where the serve Deploy target writes (default <projectDir>/deployment).
 	DeployDir string
 	// MxBuildPath overrides mxbuild resolution (optional).
@@ -565,7 +575,10 @@ func RunLocal(opts LocalRunOptions) error {
 
 	// 2. Ensure mxbuild + runtime are cached, and linked for the serve javac step.
 	fmt.Fprintln(w, "Ensuring MxBuild and runtime are available...")
-	mxbuildPath, err := DownloadMxBuild(version, w)
+	// Resolve what this host can actually execute: Studio Pro before the cache
+	// on macOS/Windows, and honour --mxbuild-path, which the local path used to
+	// ignore (#916).
+	mxbuildPath, err := ResolveMxBuildForLocal(opts.MxBuildPath, version, w)
 	if err != nil {
 		return fmt.Errorf("setting up mxbuild: %w", err)
 	}
@@ -594,7 +607,7 @@ func RunLocal(opts LocalRunOptions) error {
 	// reachability and point the user at --ensure-db.
 	if opts.EnsureDB {
 		fmt.Fprintln(w, "Ensuring database...")
-		if err := EnsureDatabase(opts.DB, w); err != nil {
+		if err := EnsureDatabase(&opts.DB, w); err != nil {
 			return fmt.Errorf("ensuring database: %w", err)
 		}
 	} else if err := pingTCP(opts.DB.Host, 3*time.Second); err != nil {
@@ -728,6 +741,7 @@ func RunLocal(opts LocalRunOptions) error {
 		Trace:              opts.Trace,
 		TraceServiceName:   traceService,
 		TraceOTLPEndpoint:  opts.TraceOTLP,
+		ConstantOverrides:  opts.ConstantOverrides,
 		Env:                opts.Env,
 		Stdout:             w,
 		Stderr:             stderr,
@@ -751,10 +765,11 @@ func RunLocal(opts LocalRunOptions) error {
 
 	if opts.OnReady != nil {
 		opts.OnReady(LocalAppInfo{
-			AppPort:   opts.AppPort,
-			AdminPort: opts.AdminPort,
-			ServePort: opts.ServePort,
-			AdminPass: opts.AdminPass,
+			AppPort:    opts.AppPort,
+			AdminPort:  opts.AdminPort,
+			ServePort:  opts.ServePort,
+			AdminPass:  opts.AdminPass,
+			BootConfig: rt.BootConfig(),
 		})
 	}
 
@@ -1082,6 +1097,39 @@ func ensureClientServed(deployDir, appURL, mxbuildPath string, out io.Writer) er
 	return nil
 }
 
+// sourceSettleWindow is how long the model source must stop changing before a
+// rebuild starts. Two poll intervals: long enough that the gaps between an
+// exec's individual unit writes do not read as "finished", short enough that a
+// single editor save still rebuilds promptly.
+const sourceSettleWindow = 2
+
+// settleSource waits until the model source stops changing, and returns the
+// mtime it settled at (or the zero time if interrupted).
+//
+// The wait is unbounded on purpose: a long exec is exactly the case this exists
+// for, and rebuilding a project mid-write is worse than rebuilding it late. It
+// returns as soon as the source has been quiet for sourceSettleWindow polls, so
+// an ordinary single-file save costs one extra poll.
+func settleSource(projectPath string, seen time.Time, poll time.Duration, sigCh <-chan os.Signal) time.Time {
+	quiet := 0
+	for {
+		select {
+		case <-sigCh:
+			return time.Time{}
+		case <-time.After(poll):
+		}
+		now := sourceMTime(projectPath)
+		if now.After(seen) {
+			seen = now
+			quiet = 0
+			continue
+		}
+		if quiet++; quiet >= sourceSettleWindow {
+			return seen
+		}
+	}
+}
+
 // watchAndApply polls the project for changes and applies each rebuild until the
 // user interrupts (Ctrl-C). StartLocalRuntime already resolved the JVM; here we
 // only rebuild via serve and let the RuntimeController decide reload vs restart.
@@ -1110,6 +1158,23 @@ func watchAndApply(opts LocalRunOptions, serve *ServeServer, rt *LocalRuntime, w
 			now := sourceMTime(opts.ProjectPath)
 			if !now.After(last) {
 				continue
+			}
+			// Wait for the writer to finish before reading the model.
+			//
+			// An `mxcli exec` of a real script rewrites the .mpr and many
+			// mprcontents/*.mxunit files over several seconds. Building on the
+			// first mtime bump deploys whatever happens to be on disk at that
+			// instant — a half-applied model — and the escape hatch used to be
+			// "run the script again". Byte-idempotent exec closed that: the
+			// second run writes nothing, so nothing re-triggers the watcher and
+			// the stale build is what you are left with, with no way out the tool
+			// offers. Settling first means the watcher can only ever observe a
+			// model that has stopped changing.
+			now = settleSource(opts.ProjectPath, now, opts.PollInterval, sigCh)
+			if now.IsZero() {
+				// Interrupted while settling.
+				fmt.Fprintln(w, "\nShutting down...")
+				return nil
 			}
 			last = now
 			gen++

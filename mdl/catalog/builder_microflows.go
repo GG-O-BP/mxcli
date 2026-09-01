@@ -23,6 +23,15 @@ func (b *Builder) buildMicroflows() error {
 		return err
 	}
 
+	// Get all rules (cached). A rule is a distinct doctype and lands in
+	// microflows_data with MicroflowType "RULE", the way a nanoflow does —
+	// without a row here a rule is not an object at all, so `show callers` can
+	// never resolve it and GRAPH_DEAD_ASSETS cannot see it.
+	rules, err := b.cachedRules()
+	if err != nil {
+		return err
+	}
+
 	mfStmt, err := b.tx.Prepare(`
 		INSERT INTO microflows_data (Id, Name, QualifiedName, ModuleName, Folder, MicroflowType,
 			Description, ReturnType, ParameterCount, ActivityCount, Complexity, Excluded,
@@ -33,6 +42,16 @@ func (b *Builder) buildMicroflows() error {
 		return err
 	}
 	defer mfStmt.Close()
+
+	paramStmt, err := b.tx.Prepare(`
+		INSERT INTO microflow_parameters_data (Id, MicroflowId, MicroflowQualifiedName,
+			ModuleName, Name, ParameterType, Description, Ordinal, ProjectId, SnapshotId)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+		return err
+	}
+	defer paramStmt.Close()
 
 	// Prepare activity statement only in full mode
 	var actStmt *sql.Stmt
@@ -53,6 +72,38 @@ func (b *Builder) buildMicroflows() error {
 
 	mfCount := 0
 	nfCount := 0
+	ruleCount := 0
+	paramCount := 0
+
+	// insertParams writes one row per parameter. Microflows and nanoflows share
+	// it: both carry []*MicroflowParameter and both land in microflows_data, so
+	// splitting them here would only invite the two paths to drift.
+	insertParams := func(flowID, qualifiedName, moduleName string, params []*microflows.MicroflowParameter) error {
+		for i, prm := range params {
+			if prm == nil {
+				continue
+			}
+			id := string(prm.ID)
+			if id == "" {
+				id = flowID + "/" + prm.Name
+			}
+			if _, err := paramStmt.Exec(
+				id,
+				flowID,
+				qualifiedName,
+				moduleName,
+				prm.Name,
+				getDataTypeName(prm.Type),
+				prm.Documentation,
+				i,
+				projectID, snapshotID,
+			); err != nil {
+				return err
+			}
+			paramCount++
+		}
+		return nil
+	}
 	actCount := 0
 
 	// Process microflows
@@ -90,6 +141,9 @@ func (b *Builder) buildMicroflows() error {
 			projectID, snapshotID,
 		)
 		if err != nil {
+			return err
+		}
+		if err := insertParams(string(mf.ID), qualifiedName, moduleName, mf.Parameters); err != nil {
 			return err
 		}
 		mfCount++
@@ -181,6 +235,9 @@ func (b *Builder) buildMicroflows() error {
 		if err != nil {
 			return err
 		}
+		if err := insertParams(string(nf.ID), qualifiedName, moduleName, nf.Parameters); err != nil {
+			return err
+		}
 		nfCount++
 
 		// Insert activities only in full mode
@@ -234,8 +291,70 @@ func (b *Builder) buildMicroflows() error {
 		}
 	}
 
+	// Process rules. Their bodies are walked for activities in full mode like
+	// any other flow; the reference edges out of those bodies are emitted by
+	// builder_references.go, and the two must land together — a rule that is an
+	// object but whose body is not walked reports every document it calls as
+	// dead, which is worse than not knowing about rules at all.
+	for _, rule := range rules {
+		moduleID := b.hierarchy.findModuleID(rule.ContainerID)
+		moduleName := b.hierarchy.getModuleName(moduleID)
+		qualifiedName := moduleName + "." + rule.Name
+
+		returnType := ""
+		if rule.ReturnType != nil {
+			returnType = getDataTypeName(rule.ReturnType)
+		}
+
+		_, err = mfStmt.Exec(
+			string(rule.ID),
+			rule.Name,
+			qualifiedName,
+			moduleName,
+			b.hierarchy.buildFolderPath(rule.ContainerID),
+			"RULE",
+			rule.Documentation,
+			returnType,
+			len(rule.Parameters),
+			countRuleActivities(rule),
+			calculateRuleComplexity(rule),
+			rule.Excluded,
+			projectID, snapshotID,
+		)
+		if err != nil {
+			return err
+		}
+		if err := insertParams(string(rule.ID), qualifiedName, moduleName, rule.Parameters); err != nil {
+			return err
+		}
+		ruleCount++
+
+		if b.fullMode && rule.ObjectCollection != nil {
+			for seq, obj := range rule.ObjectCollection.Objects {
+				activityType := getMicroflowObjectType(obj)
+				activityName := activityType
+				actionType := ""
+				if act, ok := obj.(*microflows.ActionActivity); ok && act.Action != nil {
+					actionType = getMicroflowActionType(act.Action)
+					activityName = actionType
+				}
+				if _, err := actStmt.Exec(
+					string(obj.GetID()), activityName, "Activity", activityType, seq+1,
+					string(rule.ID), qualifiedName, moduleName, moduleName,
+					"", actionType, "", "", "",
+					projectID, snapshotID,
+				); err != nil {
+					return err
+				}
+				actCount++
+			}
+		}
+	}
+
 	b.report("Microflows", mfCount)
 	b.report("Nanoflows", nfCount)
+	b.report("Rules", ruleCount)
+	b.report("Flow parameters", paramCount)
 	if b.fullMode {
 		b.report("Activities", actCount)
 	}
@@ -431,5 +550,39 @@ func calculateNanoflowComplexity(nf *microflows.Nanoflow) int {
 	}
 
 	complexity += countDecisionPoints(nf.ObjectCollection.Objects)
+	return complexity
+}
+
+// countRuleActivities counts meaningful activities in a rule, excluding
+// structural elements — the nanoflow counterpart, kept beside it because the two
+// differ only in the type they take.
+func countRuleActivities(rule *microflows.Rule) int {
+	if rule.ObjectCollection == nil {
+		return 0
+	}
+	count := 0
+	for _, obj := range rule.ObjectCollection.Objects {
+		switch obj.(type) {
+		case *microflows.StartEvent, *microflows.EndEvent, *microflows.ExclusiveMerge:
+			// Structural, not activities.
+		default:
+			count++
+		}
+	}
+	return count
+}
+
+// calculateRuleComplexity calculates McCabe cyclomatic complexity for a rule.
+func calculateRuleComplexity(rule *microflows.Rule) int {
+	if rule.ObjectCollection == nil {
+		return 1
+	}
+	complexity := 1
+	for _, obj := range rule.ObjectCollection.Objects {
+		switch obj.(type) {
+		case *microflows.ExclusiveSplit, *microflows.InheritanceSplit, *microflows.LoopedActivity:
+			complexity++
+		}
+	}
 	return complexity
 }

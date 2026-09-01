@@ -85,7 +85,7 @@ func (fb *flowBuilder) addLogMessageAction(s *ast.LogStmt) model.ID {
 		MessageTemplate: &model.Text{
 			BaseElement: model.BaseElement{ID: model.ID(types.GenerateID())},
 			Translations: map[string]string{
-				"en_US": templateText,
+				fb.textLangOrDefault(): templateText,
 			},
 		},
 		TemplateParameters: templateParams,
@@ -109,6 +109,54 @@ func (fb *flowBuilder) addLogMessageAction(s *ast.LogStmt) model.ID {
 }
 
 // addCallMicroflowAction creates a CALL MICROFLOW statement.
+// buildQueueSettings resolves an `IN QUEUE Module.Name` clause into the
+// Queues$QueueSettings element that binds a call activity to a task queue.
+//
+// The queue must exist: mxbuild reports CE1613 ("The selected task queue … no
+// longer exists") on the call activity otherwise, and that error names the
+// activity rather than the script, which makes a typo here expensive to trace.
+//
+// `what` names the statement in the error (e.g. "CALL MICROFLOW").
+func (fb *flowBuilder) buildQueueSettings(q *ast.QualifiedName, what string) *microflows.QueueSettings {
+	if q == nil {
+		return nil
+	}
+	qn := q.Module + "." + q.Name
+	if !fb.queueExists(q.Module, q.Name) {
+		fb.addError("%s ... IN QUEUE '%s': task queue not found in the project (create it with `CREATE QUEUE %s (Parallelism: 1)`)", what, qn, qn)
+	}
+	return &microflows.QueueSettings{
+		BaseElement: model.BaseElement{ID: model.ID(types.GenerateID())},
+		Queue:       qn,
+	}
+}
+
+// queueExists reports whether a Queues$Queue with the given module-qualified
+// name is in the project. A backend that cannot answer is treated as "exists",
+// matching microflowExists — this check exists to catch typos, not to be the
+// last line of defence.
+func (fb *flowBuilder) queueExists(moduleName, name string) bool {
+	if fb.backend == nil {
+		return true
+	}
+	queues, err := fb.backend.ListQueues()
+	if err != nil {
+		return true
+	}
+	for _, q := range queues {
+		if !strings.EqualFold(q.Name, name) {
+			continue
+		}
+		if fb.hierarchy == nil {
+			return true
+		}
+		if strings.EqualFold(fb.hierarchy.GetModuleName(fb.hierarchy.FindModuleID(q.ContainerID)), moduleName) {
+			return true
+		}
+	}
+	return false
+}
+
 func (fb *flowBuilder) addCallMicroflowAction(s *ast.CallMicroflowStmt) model.ID {
 	mfQN := s.MicroflowName.Module + "." + s.MicroflowName.Name
 
@@ -134,6 +182,7 @@ func (fb *flowBuilder) addCallMicroflowAction(s *ast.CallMicroflowStmt) model.ID
 		BaseElement:       model.BaseElement{ID: model.ID(types.GenerateID())},
 		Microflow:         mfQN,
 		ParameterMappings: mappings,
+		QueueSettings:     fb.buildQueueSettings(s.Queue, "CALL MICROFLOW"),
 	}
 	action := &microflows.MicroflowCallAction{
 		BaseElement:        model.BaseElement{ID: model.ID(types.GenerateID())},
@@ -350,6 +399,7 @@ func (fb *flowBuilder) addCallJavaActionAction(s *ast.CallJavaActionStmt) model.
 		ErrorHandlingType:  fb.ehType(s.ErrorHandling),
 		JavaAction:         actionQN,
 		ParameterMappings:  mappings,
+		QueueSettings:      fb.buildQueueSettings(s.Queue, "CALL JAVA ACTION"),
 		ResultVariableName: s.OutputVariable,
 		UseReturnVariable:  s.OutputVariable != "",
 	}
@@ -742,7 +792,7 @@ func (fb *flowBuilder) addShowPageAction(s *ast.ShowPageStmt) model.ID {
 				ID:       model.ID(types.GenerateID()),
 				TypeName: "Texts$Text",
 			},
-			Translations: map[string]string{"en_US": s.Title},
+			Translations: map[string]string{fb.textLangOrDefault(): s.Title},
 		}
 	}
 
@@ -808,7 +858,7 @@ func (fb *flowBuilder) addShowMessageAction(s *ast.ShowMessageStmt) model.ID {
 
 	template := &model.Text{
 		BaseElement:  model.BaseElement{ID: model.ID(types.GenerateID())},
-		Translations: map[string]string{"en_US": templateText},
+		Translations: map[string]string{fb.textLangOrDefault(): templateText},
 	}
 
 	msgType := microflows.MessageType(s.Type)
@@ -959,7 +1009,7 @@ func (fb *flowBuilder) addValidationFeedbackAction(s *ast.ValidationFeedbackStmt
 	// Create template with translations map (default language "en_US")
 	template := &model.Text{
 		BaseElement:  model.BaseElement{ID: model.ID(types.GenerateID())},
-		Translations: map[string]string{"en_US": templateText},
+		Translations: map[string]string{fb.textLangOrDefault(): templateText},
 	}
 
 	// Build attribute or association name from variable type and attribute path.
@@ -1119,6 +1169,14 @@ func (fb *flowBuilder) addRestCallAction(s *ast.RestCallStmt) model.ID {
 				Template:       template,
 				TemplateParams: templateParams,
 			}
+		case ast.RestBodyBinary:
+			// Binary body — the raw bytes the expression yields. Studio Pro stores
+			// a FileDocument's Contents member here (`$Doc/Contents`), and the
+			// action's RequestHandlingType becomes "Binary".
+			requestHandling = &microflows.BinaryRequestHandling{
+				BaseElement: model.BaseElement{ID: model.ID(types.GenerateID())},
+				Expression:  fb.exprToString(s.Body.Template),
+			}
 		case ast.RestBodyMapping:
 			// Export mapping
 			mappingQN := s.Body.MappingName.Module + "." + s.Body.MappingName.Name
@@ -1158,6 +1216,16 @@ func (fb *flowBuilder) addRestCallAction(s *ast.RestCallStmt) model.ID {
 			BaseElement:  model.BaseElement{ID: model.ID(types.GenerateID())},
 			VariableName: s.OutputVariable,
 		}
+	case ast.RestResultFileDocument:
+		// `returns Module.Entity` — store the response in a file document. The
+		// entity is always a System.FileDocument specialization; the base type
+		// is rejected by Mendix as a return type (CE0362), which checkRestCall
+		// reports before the write. Issue #922.
+		resultHandling = &microflows.ResultHandlingFileDocument{
+			BaseElement:  model.BaseElement{ID: model.ID(types.GenerateID())},
+			VariableName: s.OutputVariable,
+			EntityRef:    s.Result.ResultEntity.String(),
+		}
 	case ast.RestResultMapping:
 		mappingQN := s.Result.MappingName.Module + "." + s.Result.MappingName.Name
 		entityQN := s.Result.ResultEntity.Module + "." + s.Result.ResultEntity.Name
@@ -1167,16 +1235,42 @@ func (fb *flowBuilder) addRestCallAction(s *ast.RestCallStmt) model.ID {
 			s.OutputVariable = s.Result.ResultEntity.Name
 		}
 		// Cardinality is authored on the microflow's ImportMappingCall in
-		// BSON (Range.SingleObject + ForceSingleOccurrence) — the same
-		// import mapping can yield either single or list depending on the
-		// call site. The describer emits `as list of Module.Entity` for a
-		// list and `as Module.Entity` for a single object; the builder
-		// trusts that explicit choice. ForceSingleOccurrence mirrors
-		// SingleObject so the writer reproduces the BSON shape Studio Pro
-		// emits (Range and ForceSingleOccurrence agree on whether one
-		// value is bound).
+		// BSON — the same import mapping can yield either single or list
+		// depending on the call site. The describer emits `as list of
+		// Module.Entity` for a list and `as Module.Entity` for a single
+		// object; the builder trusts that explicit choice for the result
+		// VARIABLE's type. The two BSON flags beside it are not the same
+		// axis and are not authored here (issue #242):
+		//
+		//	ForceSingleOccurrence  "the mapping yields many, bind one" — true
+		//	                       only when the mapping's ROOT is a list and
+		//	                       the call site binds a single object
+		//	Range.SingleObject     Studio Pro's First/All range. MDL's REST
+		//	                       syntax has no range keyword, so it is All.
+		//
+		// Mirroring both onto SingleObject wrote ForceSingleOccurrence=true
+		// for `as Entity` against an OBJECT-rooted mapping, which builds
+		// cleanly (mxcli check, mx check and mxbuild all pass) and then
+		// throws when the activity runs:
+		//
+		//	MicroflowException: key not found: Path(QName(None,),None,)
+		//	  at ...importer.mapping.MappingCache.storeValueMappingElement
+		//
+		// Measured on 11.13.0 over all four flag combinations: the exception
+		// tracks ForceSingleOccurrence alone — Range.SingleObject does not
+		// affect it either way. Both are written to match the shapes Studio
+		// Pro stores: PrivateCloudData.REST_GetEnvironmentByUUID (list-rooted
+		// mapping, single object) keeps ForceSingleOccurrence=true, and all
+		// three reference documents store Range.SingleObject=false.
 		singleObject := !s.Result.IsList
-		fso := singleObject
+		fso := false
+		if singleObject && fb.backend != nil {
+			if im, err := fb.backend.GetImportMappingByQualifiedName(
+				s.Result.MappingName.Module, s.Result.MappingName.Name); err == nil {
+				fso = fb.mappingRootIsList(im)
+			}
+		}
+		rangeAll := false
 		resultHandling = &microflows.ResultHandlingMapping{
 			BaseElement:           model.BaseElement{ID: model.ID(types.GenerateID())},
 			MappingID:             model.ID(mappingQN),
@@ -1184,6 +1278,7 @@ func (fb *flowBuilder) addRestCallAction(s *ast.RestCallStmt) model.ID {
 			ResultVariable:        s.OutputVariable,
 			SingleObject:          singleObject,
 			ForceSingleOccurrence: &fso,
+			RangeSingleObject:     &rangeAll,
 		}
 	case ast.RestResultNone:
 		resultHandling = &microflows.ResultHandlingNone{
@@ -1454,6 +1549,47 @@ func (fb *flowBuilder) addExecuteDatabaseQueryAction(s *ast.ExecuteDatabaseQuery
 	return activity.ID
 }
 
+// mappingRootIsList reports whether the import mapping's ROOT yields many
+// objects rather than one — the mapping's own shape, independent of what any
+// call site binds it to.
+//
+// JSON-backed mappings answer from the structure's root element kind; XML-schema
+// and message-definition mappings carry no JsonStructure, so the root mapping
+// element's occurrence bound answers instead (unbounded is stored as -1).
+// A mapping that cannot be resolved reads as object-rooted: that is the shape
+// mxbuild rejects loudly with CE0243 when it is wrong, whereas guessing "list"
+// writes ForceSingleOccurrence=true, which fails only once the activity runs.
+func (fb *flowBuilder) mappingRootIsList(im *model.ImportMapping) bool {
+	if im == nil {
+		return false
+	}
+	// A mapping rooted BELOW an array yields one object per item, whatever the
+	// structure's own root is (#267). The structure check below answers from
+	// js.Elements[0], which for `root choices/message` is the document root —
+	// an Object — so it reported a single object and mxbuild rejected the
+	// activity with CE0243 "the mapping ... now returns a value of type
+	// 'List of X'". The mapping document itself is right: Studio Pro's own
+	// OpenAI_API.IM_OpenAI stores the same MaxOccurs 1 on that root, so
+	// list-ness cannot be read off the root element either — only off its path.
+	if len(im.Elements) > 0 && im.Elements[0] != nil &&
+		mappingRootPathCrossesArray(im.Elements[0].JsonPath) {
+		return true
+	}
+	if im.JsonStructure != "" && fb.backend != nil {
+		parts := strings.SplitN(im.JsonStructure, ".", 2)
+		if len(parts) == 2 {
+			if js, err := fb.backend.GetJsonStructureByQualifiedName(parts[0], parts[1]); err == nil && len(js.Elements) > 0 {
+				return js.Elements[0].ElementType == "Array"
+			}
+		}
+	}
+	if len(im.Elements) > 0 && im.Elements[0] != nil {
+		root := im.Elements[0]
+		return root.MaxOccurs == -1 || root.MaxOccurs > 1
+	}
+	return false
+}
+
 // addImportFromMappingAction adds an ImportXmlAction to the microflow.
 func (fb *flowBuilder) addImportFromMappingAction(s *ast.ImportFromMappingStmt) model.ID {
 	activityX := fb.posX
@@ -1471,6 +1607,58 @@ func (fb *flowBuilder) addImportFromMappingAction(s *ast.ImportFromMappingStmt) 
 		SingleObject:   true,
 	}
 
+	// The RANGE and the RESULT VARIABLE's type are two independent axes, and
+	// conflating them is what made the first attempt at this emit CE0243 ("the
+	// mapping used to return 'List of X' but now returns 'X'"):
+	//
+	//   Range          which part of the source is imported — the authored keyword
+	//   SingleObject   whether the bound variable is an object or a list — the
+	//                  MAPPING's own root cardinality, inferred below
+	//
+	// Mendix's own SUB_Feedback_PostToAppInsights proves they are separate: it
+	// stores ConstantRange{SingleObject:false} (i.e. "all") against an ObjectType
+	// variable, because its mapping is object-rooted. So ALL and LIMIT set only
+	// the range and leave the inference alone; only FIRST also pins the variable
+	// to a single object, which is exactly what "first" means. (issue #881)
+	if s.All {
+		f := false
+		resultHandling.RangeSingleObject = &f
+		resultHandling.ForceSingleOccurrence = &f
+	} else if s.First {
+		t := true
+		resultHandling.SingleObject = true
+		resultHandling.RangeSingleObject = &t
+		resultHandling.ForceSingleOccurrence = &t
+	} else if s.LimitExpr != nil || s.OffsetExpr != nil {
+		f := false
+		resultHandling.ForceSingleOccurrence = &f
+		if s.LimitExpr != nil {
+			resultHandling.LimitExpression = fb.exprToString(s.LimitExpr)
+		}
+		if s.OffsetExpr != nil {
+			resultHandling.OffsetExpression = fb.exprToString(s.OffsetExpr)
+		}
+	} else {
+		// No range keyword: the range is ALL, written explicitly. Leaving both
+		// pointers nil let them fall back to SingleObject — true for an
+		// object-rooted mapping — which stores Studio Pro's FIRST. That builds
+		// cleanly (mx check: 0 errors) and then throws at import time:
+		//
+		//	MicroflowException: key not found: Path(QName(None,),None,)
+		//	  at ...importer.mapping.MappingCache.storeValueMappingElement
+		//
+		// Studio Pro writes both flags false for a plain single-object import and
+		// expresses "one object" solely through VariableType=ObjectType. Only the
+		// RANGE is set here; the cardinality inference below is untouched.
+		f := false
+		resultHandling.RangeSingleObject = &f
+		resultHandling.ForceSingleOccurrence = &f
+	}
+	// Only FIRST overrides the mapping's cardinality; saying nothing leaves both
+	// axes to the inference, which is what keeps existing scripts writing what
+	// they always did.
+	rangeAuthored := s.First
+
 	// Determine single vs list and result entity from the import mapping.
 	// JSON structure check covers JSON-backed mappings; for XML schema or
 	// message-definition mappings JsonStructure is empty and the root
@@ -1478,25 +1666,8 @@ func (fb *flowBuilder) addImportFromMappingAction(s *ast.ImportFromMappingStmt) 
 	resultEntityQN := ""
 	if fb.backend != nil {
 		if im, err := fb.backend.GetImportMappingByQualifiedName(s.Mapping.Module, s.Mapping.Name); err == nil {
-			resolved := false
-			if im.JsonStructure != "" {
-				parts := strings.SplitN(im.JsonStructure, ".", 2)
-				if len(parts) == 2 {
-					if js, err := fb.backend.GetJsonStructureByQualifiedName(parts[0], parts[1]); err == nil && len(js.Elements) > 0 {
-						if js.Elements[0].ElementType == "Array" {
-							resultHandling.SingleObject = false
-						}
-						resolved = true
-					}
-				}
-			}
-			if !resolved && len(im.Elements) > 0 && im.Elements[0] != nil {
-				// MaxOccurs > 1 or unbounded (-1) signals a list even when
-				// the kind is Object.
-				root := im.Elements[0]
-				if root.MaxOccurs == -1 || root.MaxOccurs > 1 {
-					resultHandling.SingleObject = false
-				}
+			if !rangeAuthored && fb.mappingRootIsList(im) {
+				resultHandling.SingleObject = false
 			}
 			if len(im.Elements) > 0 && im.Elements[0] != nil && im.Elements[0].Entity != "" {
 				resultEntityQN = im.Elements[0].Entity
@@ -1598,4 +1769,32 @@ func (fb *flowBuilder) addExportToMappingAction(s *ast.ExportToMappingStmt) mode
 	fb.finishCustomErrorHandler(activity.ID, activityX, s.ErrorHandling, "")
 
 	return activity.ID
+}
+
+// mappingRootPathCrossesArray reports whether a mapping root's stored JsonPath
+// passes through an array on its way down.
+//
+// An array contributes a marker segment for its item — "(Object)" for objects,
+// "(Wrapper)" for primitives — so any marker AFTER the first segment means the
+// root sits inside an array and the mapping yields many objects:
+//
+//	(Object)                             one object
+//	(Object)|data                        one object, a nested root
+//	(Array)|(Object)                     many — an array-rooted structure (#248)
+//	(Object)|choices|(Object)|message    many — rooted below an array (#267)
+//
+// The first segment is skipped because it is always the document's own root
+// marker, which says nothing about arrays.
+func mappingRootPathCrossesArray(jsonPath string) bool {
+	segs := strings.Split(jsonPath, "|")
+	for i, seg := range segs {
+		if i == 0 {
+			continue
+		}
+		switch seg {
+		case "(Object)", "(Array)", "(Wrapper)":
+			return true
+		}
+	}
+	return false
 }

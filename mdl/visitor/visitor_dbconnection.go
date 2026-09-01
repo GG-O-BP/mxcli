@@ -16,6 +16,9 @@ func (b *Builder) ExitCreateDatabaseConnectionStatement(ctx *parser.CreateDataba
 	stmt := &ast.CreateDatabaseConnectionStmt{
 		Name: buildQualifiedName(ctx.QualifiedName()),
 	}
+	if lit := ctx.STRING_LITERAL(); lit != nil {
+		stmt.Folder = unquoteString(lit.GetText())
+	}
 
 	// Parse options
 	for _, optCtx := range ctx.AllDatabaseConnectionOption() {
@@ -74,11 +77,16 @@ func (b *Builder) ExitCreateDatabaseConnectionStatement(ctx *parser.CreateDataba
 			q.Name = identifierOrKeywordText(iok)
 		}
 
-		// SQL string (STRING_LITERAL(0) is the SQL query)
-		if sl := qc.STRING_LITERAL(0); sl != nil {
-			q.SQL = unquoteString(sl.GetText())
-		} else if ds := qc.DOLLAR_STRING(); ds != nil {
+		// SQL string. The DOLLAR_STRING form is checked FIRST: when the SQL is
+		// written as $$…$$, STRING_LITERAL(0) is not the query at all — it is the
+		// first parameter's DEFAULT '…'. Taking it produced a connection whose
+		// query body was silently replaced by that default, with mx check
+		// reporting 0 errors either way. The parameter-default indexing below
+		// already compensates for the dollar-string case; this did not.
+		if ds := qc.DOLLAR_STRING(); ds != nil {
 			q.SQL = unquoteDollarString(ds.GetText())
+		} else if sl := qc.STRING_LITERAL(0); sl != nil {
+			q.SQL = unquoteString(sl.GetText())
 		}
 
 		// RETURNS entity

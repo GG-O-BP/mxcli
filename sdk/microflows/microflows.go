@@ -4,6 +4,7 @@
 package microflows
 
 import (
+	"github.com/mendixlabs/mxcli/mdl/types"
 	"github.com/mendixlabs/mxcli/model"
 )
 
@@ -32,6 +33,13 @@ type Microflow struct {
 
 	// Concurrent execution settings
 	ConcurrentExecutionSettings *ConcurrentExecutionSettings `json:"concurrentExecutionSettings,omitempty"`
+
+	// Toolbox entries. A microflow can be exposed twice — once for the microflow
+	// editor's toolbox and once for the workflow editor's — and Mendix stores the
+	// two under different keys with the same element type. Whoever drags the
+	// result in does not need to know it is a microflow, which is the point.
+	MicroflowActionInfo *types.MicroflowActionInfo `json:"microflowActionInfo,omitempty"`
+	WorkflowActionInfo  *types.MicroflowActionInfo `json:"workflowActionInfo,omitempty"`
 }
 
 // GetName returns the microflow's name.
@@ -75,14 +83,28 @@ func (n *Nanoflow) GetContainerID() model.ID {
 	return n.ContainerID
 }
 
-// Rule represents a rule in the Mendix model.
+// Rule represents a rule (Microflows$Rule) in the Mendix model — Mendix's own
+// reference calls it "a special kind of microflow" that returns a Boolean or an
+// enumeration and may only be used from a decision.
+//
+// The fields are the ten properties a rule document stores, measured against two
+// Studio Pro-authored rules (ako/TestApp, Mendix 11.13.0). A rule is a microflow
+// minus nine properties, and the nine are the ones a rule has no concept of:
+// AllowedModuleRoles (a rule is not independently callable, so there is nothing
+// to grant), the concurrency group, Url/UrlSearchParameters, StableId, and the
+// two action-info slots.
 type Rule struct {
 	model.BaseElement
-	ContainerID   model.ID `json:"containerId"`
-	Name          string   `json:"name"`
-	Documentation string   `json:"documentation,omitempty"`
+	ContainerID        model.ID `json:"containerId"`
+	Name               string   `json:"name"`
+	Documentation      string   `json:"documentation,omitempty"`
+	Excluded           bool     `json:"excluded"`
+	MarkAsUsed         bool     `json:"markAsUsed"`
+	ApplyEntityAccess  bool     `json:"applyEntityAccess"`
+	ReturnVariableName string   `json:"returnVariableName,omitempty"`
 
-	// Return type (always boolean)
+	// Return type — Boolean or an enumeration. Not "always boolean": Rules.Rule2
+	// in the reference app returns Rules.RuleResult.
 	ReturnType DataType `json:"returnType,omitempty"`
 
 	// Parameters

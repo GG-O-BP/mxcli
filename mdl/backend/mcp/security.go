@@ -11,6 +11,7 @@ import (
 	"github.com/mendixlabs/mxcli/mdl/backend"
 	"github.com/mendixlabs/mxcli/mdl/types"
 	"github.com/mendixlabs/mxcli/model"
+	"github.com/mendixlabs/mxcli/sdk/security"
 )
 
 // Entity access rules over MCP.
@@ -29,6 +30,65 @@ import (
 // NEVER be removed ("Element of type … cannot be removed"). So the MCP backend
 // can author a new rule, but cannot replace an existing one in place (that would
 // need member removal) or revoke a rule. Those paths are rejected, not faked.
+//
+// The REPLACE half of that reasoning expired on Studio Pro 11.14, and the two
+// halves are no longer equivalent. 11.14's `set` replaces a NON-NULL element
+// outright, so overwriting an existing rule no longer requires removing its
+// members. Probed live on 11.14 (see PED_MCP_CAPABILITIES.md § 11.14): a `set` at
+// /entities/N/accessRules/M clears the document layer AND shape validation and
+// fails only at reference resolution ("Reference with qualified name … of type
+// Security$ModuleRole not found"), with the stored rule verified unchanged after.
+// REVOKE is NOT in the same position: `set` may never target an array, so removal
+// has no set-shaped spelling, and whether a remove is still refused could not be
+// measured — the bounds check and the module-writability check each fire first.
+//
+// Both refusals below therefore stay as they are. Lifting the replace one needs a
+// successful mutation against a throwaway project plus a version gate (the project
+// Mendix version, since serverInfo is frozen at 1.0.0), not this comment.
+
+// Security READS come from the local .mpr, like every other read in this hybrid
+// backend — PED exposes no security document, but nothing about that makes the
+// stored one unreadable. Leaving them on unsupportedBackend made the whole GRANT
+// statement unreachable: the executor validates the referenced module role before
+// it ever calls AddEntityAccessRule, so `GRANT … --mcp` aborted on the read with
+// "GetModuleSecurity: not supported" and never issued a single PED call — while
+// `mcp capabilities` reported entity access rules as available (#900, on top of
+// #704). SHOW MODULE ROLES / USER ROLES / PROJECT SECURITY were unreachable the
+// same way.
+//
+// Serving them from disk is the same freshness bargain every other read here
+// makes, and a favourable one: PED cannot author roles at all, so the only writer
+// is Studio Pro itself, and the local file is stale only for roles added since the
+// user last saved. That produces a clear "module role not found" — not a wrong
+// write, because the roles are by-name references Studio Pro resolves on apply.
+//
+// There is no dirty-set routing to do (unlike the domain model): this session
+// cannot have changed these documents.
+
+// GetModuleSecurity returns a module's security document from the local .mpr.
+func (b *Backend) GetModuleSecurity(moduleID model.ID) (*security.ModuleSecurity, error) {
+	for _, m := range b.sessionModules {
+		if m.ID == moduleID {
+			// Created over PED this session: no security document exists yet, and
+			// PED cannot author one. Say so instead of "not found for module
+			// mcp~module~X", which reads like a bug.
+			return nil, fmt.Errorf("module %q was created over MCP this session and has no security document yet; "+
+				"module roles cannot be authored over MCP (PED does not expose Security$ModuleSecurity) — "+
+				"add them in Studio Pro, or run without --mcp against a local .mpr", m.Name)
+		}
+	}
+	return b.reader.GetModuleSecurity(moduleID)
+}
+
+// ListModuleSecurity returns every module-security document from the local .mpr.
+func (b *Backend) ListModuleSecurity() ([]*security.ModuleSecurity, error) {
+	return b.reader.ListModuleSecurity()
+}
+
+// GetProjectSecurity returns the project-security document from the local .mpr.
+func (b *Backend) GetProjectSecurity() (*security.ProjectSecurity, error) {
+	return b.reader.GetProjectSecurity()
+}
 
 // AddEntityAccessRule adds an entity access rule to the domain model via PED.
 // The role(s) referenced must already exist (PED cannot create module roles).

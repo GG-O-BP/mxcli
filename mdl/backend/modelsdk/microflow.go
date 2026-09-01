@@ -129,6 +129,63 @@ func nanoflowFromGen(nf *genMf.Nanoflow, containerID model.ID) *microflows.Nanof
 	return out
 }
 
+// ListRules returns every Microflows$Rule document. A rule is its own doctype,
+// so it is deliberately absent from ListMicroflows — SHOW MICROFLOWS lists
+// microflows only, as it already does for nanoflows and workflows.
+func (b *Backend) ListRules() ([]*microflows.Rule, error) {
+	units, err := mprread.ListUnitsWithContainer[*genMf.Rule](b.reader)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*microflows.Rule, 0, len(units))
+	for _, u := range units {
+		out = append(out, ruleFromGen(u.Element, u.ContainerID))
+	}
+	return out, nil
+}
+
+func (b *Backend) GetRule(id model.ID) (*microflows.Rule, error) {
+	units, err := mprread.ListUnitsWithContainer[*genMf.Rule](b.reader)
+	if err != nil {
+		return nil, err
+	}
+	for _, u := range units {
+		if model.ID(u.Element.ID()) == id {
+			return ruleFromGen(u.Element, u.ContainerID), nil
+		}
+	}
+	return nil, nil
+}
+
+// ruleFromGen mirrors nanoflowFromGen — a rule shares the parameter, flow-object
+// and return-type structures with a microflow, so the same helpers apply.
+//
+// gen also declares a ReturnType string beside MicroflowReturnType. Studio Pro
+// 11.13 does not write it (measured on both reference rules) and
+// generated/metamodel does not list it, so it is not read here and must not be
+// written: it is a pre-7 legacy property with nothing to carry through.
+func ruleFromGen(r *genMf.Rule, containerID model.ID) *microflows.Rule {
+	out := &microflows.Rule{
+		ContainerID:        containerID,
+		Name:               r.Name(),
+		Documentation:      r.Documentation(),
+		Excluded:           r.Excluded(),
+		MarkAsUsed:         r.MarkAsUsed(),
+		ApplyEntityAccess:  r.ApplyEntityAccess(),
+		ReturnVariableName: r.ReturnVariableName(),
+		ReturnType:         dataTypeFromGen(r.MicroflowReturnType()),
+	}
+	out.ID = model.ID(r.ID())
+	params, objs := splitFlowObjects(r.ObjectCollection())
+	out.Parameters = params
+	flows := flowsFromGen(r.FlowsItems())
+	annotFlows := annotationFlowsFromGen(r.FlowsItems())
+	if objs != nil || flows != nil || annotFlows != nil {
+		out.ObjectCollection = &microflows.MicroflowObjectCollection{Objects: objs, Flows: flows, AnnotationFlows: annotFlows}
+	}
+	return out
+}
+
 func microflowFromGen(mf *genMf.Microflow, containerID model.ID) *microflows.Microflow {
 	out := &microflows.Microflow{
 		ContainerID:        containerID,
@@ -150,6 +207,11 @@ func microflowFromGen(mf *genMf.Microflow, containerID model.ID) *microflows.Mic
 	for _, qn := range mf.AllowedModuleRolesQualifiedNames() {
 		out.AllowedModuleRoles = append(out.AllowedModuleRoles, model.ID(qn))
 	}
+	// The two toolbox entries. Read them so a rewrite can carry the icon and
+	// image bitmaps MDL cannot express — a rebuild from caption and category
+	// alone destroyed them, and `mx check` reported 0 errors either way.
+	out.MicroflowActionInfo = actionInfoFromGen(mf.MicroflowActionInfo())
+	out.WorkflowActionInfo = actionInfoFromGen(mf.WorkflowActionInfo())
 	params, objs := splitFlowObjects(mf.ObjectCollection())
 	out.Parameters = params
 	// Flows live on the gen Microflow, but the model keeps them in the object
@@ -180,6 +242,13 @@ func flowsFromGen(items []element.Element) []*microflows.SequenceFlow {
 			DestinationConnectionIndex: int(g.DestinationConnectionIndex()),
 			IsErrorHandler:             g.IsErrorHandler(),
 			CaseValue:                  caseValueFromGen(g),
+		}
+		// The line's bezier control vectors — the edge's hand-drawn shape. Read
+		// them, or DESCRIBE cannot emit @curve and the next exec straightens the
+		// edge back to "0;0". The legacy parser has always read them. (#884)
+		if line, ok := g.Line().(*genMf.BezierCurve); ok && line != nil {
+			f.OriginControlVector = line.OriginControlVector()
+			f.DestinationControlVector = line.DestinationControlVector()
 		}
 		f.ID = model.ID(g.ID())
 		flows = append(flows, f)

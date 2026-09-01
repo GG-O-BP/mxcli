@@ -26,23 +26,56 @@ END IF;
 
 ### Nested IF
 
-Since MDL does not support `CASE`/`WHEN` (switch statements), use nested `IF...ELSE` blocks:
+For multi-way branching on anything other than an enumeration, use nested `IF...ELSE`
+blocks. (To branch on an **enumeration**, use [CASE (Enum Split)](#case-enum-split)
+instead — it maps to a Mendix enum split rather than a chain of decisions.)
 
 ```sql
-IF $Order/Status = 'Draft' THEN
-  CHANGE $Order (Status = 'Submitted');
+IF $Order/TotalAmount > 10000 THEN
+  CHANGE $Order (DiscountPercentage = 15);
 ELSE
-  IF $Order/Status = 'Submitted' THEN
-    CHANGE $Order (Status = 'Approved');
+  IF $Order/TotalAmount > 5000 THEN
+    CHANGE $Order (DiscountPercentage = 10);
   ELSE
-    IF $Order/Status = 'Approved' THEN
-      CHANGE $Order (Status = 'Shipped');
+    IF $Order/TotalAmount > 1000 THEN
+      CHANGE $Order (DiscountPercentage = 5);
     ELSE
-      LOG WARNING 'Unexpected order status: ' + $Order/Status;
+      CHANGE $Order (DiscountPercentage = 0);
     END IF;
   END IF;
 END IF;
 ```
+
+### Comparing Enumerations
+
+An enumeration is compared against its **qualified value**, never a string literal.
+A string literal here fails the build with **CE0117** *"Error(s) in expression"* —
+`mxcli check` does not catch it (see
+[expression type checking](https://github.com/mendixlabs/mxcli/blob/main/docs/11-proposals/PROPOSAL_expression_type_checking.md)),
+so the first sign is a failed build.
+
+```sql
+-- CORRECT
+IF $Order/Status = Sales.OrderStatus.Draft THEN ... END IF;
+
+-- WRONG: CE0117 "Error(s) in expression."
+IF $Order/Status = 'Draft' THEN ... END IF;
+```
+
+The same applies to putting an enumeration into a string — concatenating it directly
+is CE0117, so render it first:
+
+```sql
+-- CORRECT
+LOG WARNING 'Unexpected status: ' + getCaption($Order/Status);
+
+-- WRONG: CE0117
+LOG WARNING 'Unexpected status: ' + $Order/Status;
+```
+
+The string form **is** accepted outside comparisons — in a `CREATE`/`CHANGE` member
+value, an attribute `DEFAULT`, and an XPath constraint (where enums live as strings at
+the database level). The qualified form works everywhere, so prefer it.
 
 ### Complex Conditions
 
@@ -173,10 +206,75 @@ $Response = CALL MICROFLOW Integration.CallExternalAPI (
 };
 
 -- Rollback on commit failure
-COMMIT $Order WITH EVENTS ON ERROR ROLLBACK;
+COMMIT $Order ON ERROR ROLLBACK;
 ```
 
 > **Note:** `ON ERROR` is not supported on `EXECUTE DATABASE QUERY` activities.
+
+## CASE (Enum Split)
+
+`CASE` branches on an **enumeration** and compiles to a Mendix enum split. It is not a
+general-purpose switch: the source is an enum attribute or variable, and the values are
+bare enum member names.
+
+```sql
+CASE $Order/Status
+  WHEN Draft, Submitted THEN
+    LOG INFO 'Not shipped yet';
+  WHEN Approved THEN
+    LOG INFO 'Ready to ship';
+  WHEN Shipped, (empty) THEN
+    LOG INFO 'Nothing to do';
+END CASE;
+```
+
+Rules, each of which `mxcli check` enforces:
+
+| Rule | Why |
+|------|-----|
+| Values are **bare identifiers** — not `'Quoted'`, not `Module.Enum.Value` | Parse error otherwise |
+| One branch per enum value, **including `(empty)`** | A missing `(empty)` is **MDL056**; mxbuild reports **CE0079** for any uncovered value. Required even when the attribute is `not null` |
+| **No `ELSE`** | **MDL008**. An enum split is exclusive with one outgoing flow per value; mxbuild reports CE0079 per uncovered value *and* CE0773 on the else flow |
+| **No `AS` alias** | Parse error: `mismatched input 'as' expecting WHEN` |
+
+Several values may share a branch (`WHEN Draft, Submitted THEN …`). `CASE` works in
+nanoflows on the same terms.
+
+## SPLIT TYPE (Object Type Split)
+
+`SPLIT TYPE` branches on an object's **runtime specialization** and compiles to a Mendix
+object type decision. Branches use the same `WHEN … THEN` shape as [CASE](#case-enum-split),
+so the two splits differ only in what they branch on.
+
+```sql
+SPLIT TYPE $Animal
+  WHEN Zoo.Dog THEN
+    CAST $Dog;
+    LOG INFO 'woof';
+  WHEN Zoo.Cat THEN
+    LOG INFO 'meow';
+  WHEN Zoo.Animal THEN
+    LOG INFO 'some other animal';
+  WHEN (empty) THEN
+    LOG INFO 'no animal at all';
+END SPLIT;
+```
+
+Use `CAST` inside a branch to bind the specialized variable its body needs.
+
+| Rule | Why |
+|------|-----|
+| A branch for **every** subtype **and** the base entity | mxbuild reports **CE0090** *"The 'X' value should be configured for an outgoing flow"* for each type with no branch. The base entity is what covers "none of the more specific ones" |
+| `WHEN (empty) THEN` is the **null-object** branch, not a default | It is taken when the variable is empty. It does **not** cover unnamed types — measured on 11.13.0, one named type plus an empty branch still gives CE0090 for every other type. Branch on the base entity for that |
+| The empty branch cannot be omitted | **CE0089**. mxcli emits the flow unconditionally, so MDL cannot express a split without one |
+| A non-void microflow needs a `RETURN` after `END SPLIT;` | Branches converge on a merge that continues to the end event — otherwise **MDL003** and **CE0067** |
+
+The pre-#913 spelling — `CASE Zoo.Dog` for a branch and `ELSE` for the empty one — still
+parses and builds the identical flow, but warns **MDL065**. It was replaced because `CASE`
+introduced a *branch* here while introducing the *subject* in `CASE $x WHEN v THEN`, and
+because `ELSE` reads as a default branch and never was one.
+
+`SPLIT TYPE` works in nanoflows on the same terms.
 
 ## Unsupported Control Flow
 
@@ -184,7 +282,7 @@ The following constructs are **not** supported in MDL and will cause parse error
 
 | Unsupported | Use Instead |
 |-------------|-------------|
-| `CASE ... WHEN ... END CASE` | Nested `IF ... ELSE ... END IF` |
+| `CASE ... WHEN 'String' ... ELSE ...` | Bare enum values and a branch per value — see [CASE (Enum Split)](#case-enum-split); `CASE` itself is supported |
 | `TRY ... CATCH ... END TRY` | `ON ERROR { ... }` blocks on individual activities |
 
 ## Complete Example

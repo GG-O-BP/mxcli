@@ -101,7 +101,9 @@ func (b *Backend) WriteJavaSourceFile(moduleName, actionName string, javaCode st
 		return fmt.Errorf("WriteJavaSourceFile: create dir: %w", err)
 	}
 	source := javaactions.GenerateSource(moduleName, actionName, javaCode, params, returnType, extraImports, extraCode)
-	if err := os.WriteFile(filepath.Join(javaDir, actionName+".java"), []byte(source), 0o644); err != nil {
+	changed, err := javaactions.WriteSourceIfChanged(filepath.Join(javaDir, actionName+".java"), source)
+	b.noteFileWrite(changed)
+	if err != nil {
 		return fmt.Errorf("WriteJavaSourceFile: write: %w", err)
 	}
 	return nil
@@ -268,6 +270,17 @@ func codeActionParamTypeToGen(t javaactions.CodeActionParameterType) element.Ele
 		assignID(e)
 		e.SetTypeParameterID(element.ID(v.TypeParameterID))
 		return e
+	case *javaactions.MicroflowType:
+		// Direct, not wrapped in a BasicParameterType — the shape Studio Pro
+		// stores (measured on MCP Server 5.1.0's AddTool.ExecutingMicroflow).
+		// Without this an update of a java action that has a microflow-typed
+		// parameter would rewrite it as a String. See codeActionBasicFromGen.
+		m := genJa.NewMicroflowJavaActionParameterType()
+		if v.ID != "" {
+			m.SetID(element.ID(v.ID))
+		}
+		assignID(m)
+		return m
 	default:
 		b := genCa.NewBasicParameterType()
 		assignID(b)

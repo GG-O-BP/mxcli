@@ -4,6 +4,8 @@ package modelsdkbackend
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/mendixlabs/mxcli/modelsdk/element"
 	genDm "github.com/mendixlabs/mxcli/modelsdk/gen/domainmodels"
@@ -133,7 +135,46 @@ func domainModelFromGen(dm *genDm.DomainModel, containerID model.ID) *domainmode
 			out.CrossAssociations = append(out.CrossAssociations, crossAssocFromGen(ca))
 		}
 	}
+	// The canvas notes. Read so SHOW/DESCRIBE can list them and so an edit can
+	// match an existing note rather than appending a duplicate; the WRITE path
+	// still mutates the gen elements in place, so nothing unmodelled is lost.
+	for _, el := range dm.AnnotationsItems() {
+		if a, ok := el.(*genDm.Annotation); ok {
+			out.Annotations = append(out.Annotations, annotationFromGen(a))
+		}
+	}
 	return out
+}
+
+// annotationFromGen converts a canvas note to the semantic type.
+//
+// Location is the string "x;y" — the same convention an entity's Location uses,
+// and what every Studio Pro-authored annotation stores. gen types it as a string
+// and generated/metamodel types it as a Point; the documents agree with gen.
+func annotationFromGen(a *genDm.Annotation) *domainmodel.Annotation {
+	out := &domainmodel.Annotation{
+		Caption: a.Caption(),
+		Width:   int(a.Width()),
+	}
+	out.ID = model.ID(a.ID())
+	if x, y, ok := parsePointString(a.Location()); ok {
+		out.Location = model.Point{X: x, Y: y}
+	}
+	return out
+}
+
+// parsePointString reads Mendix's "x;y" position encoding.
+func parsePointString(s string) (int, int, bool) {
+	before, after, found := strings.Cut(s, ";")
+	if !found {
+		return 0, 0, false
+	}
+	x, errX := strconv.Atoi(strings.TrimSpace(before))
+	y, errY := strconv.Atoi(strings.TrimSpace(after))
+	if errX != nil || errY != nil {
+		return 0, 0, false
+	}
+	return x, y, true
 }
 
 func entityFromGen(e *genDm.Entity) *domainmodel.Entity {
@@ -262,6 +303,16 @@ func attributeFromGen(a *genDm.Attribute) *domainmodel.Attribute {
 	switch v := a.Value().(type) {
 	case *genDm.StoredValue:
 		attr.Value = &domainmodel.AttributeValue{DefaultValue: v.DefaultValue()}
+	case *genDm.CalculatedValue:
+		// Reading the binding back is what makes a read-modify-write safe: without
+		// it every calculated attribute comes back as a plain value and the
+		// writer's CalculatedValue arm never fires, so an unrelated ALTER on the
+		// same entity silently converts the attribute to a stored one (#917).
+		attr.Value = &domainmodel.AttributeValue{
+			Type:          "CalculatedValue",
+			MicroflowName: v.MicroflowQualifiedName(),
+			PassEntity:    v.PassEntity(),
+		}
 	case *genDm.OqlViewValue:
 		// View-entity attribute: the OQL column reference must survive a
 		// read-modify-write (e.g. MOVE ENTITY) or the view goes out of sync (CE6770).
@@ -350,21 +401,72 @@ func validationRuleFromGen(vr *genDm.ValidationRule) *domainmodel.ValidationRule
 	if txt, ok := vr.ErrorMessage().(*genTexts.Text); ok {
 		out.ErrorMessage = textFromGen(txt)
 	}
+	out.Rule = ruleInfoFromGen(vr.RuleInfo())
 	return out
 }
 
+// ruleInfoFromGen carries the rule's payload back onto the model, so a
+// read-modify-write can rebuild it. Without this the reader reported the right
+// TYPE and dropped everything that made the rule mean something, and the writer
+// then had no choice but to refuse (see ruleInfoToGen).
+//
+// A type with no case here reads as a nil payload, which the writer treats as a
+// refusal — the safe direction.
+func ruleInfoFromGen(ri element.Element) domainmodel.ValidationRuleInfo {
+	switch info := ri.(type) {
+	case *genDm.RegExRuleInfo:
+		out := &domainmodel.RegexValidationRuleInfo{
+			RegularExpressionQualifiedName: info.RegularExpressionQualifiedName(),
+		}
+		out.ID = model.ID(info.ID())
+		return out
+	case *genDm.RangeRuleInfo:
+		out := &domainmodel.RangeValidationRuleInfo{
+			UseMinValue:               info.UseMinValue(),
+			UseMaxValue:               info.UseMaxValue(),
+			MinAttributeQualifiedName: info.MinAttributeQualifiedName(),
+			MaxAttributeQualifiedName: info.MaxAttributeQualifiedName(),
+		}
+		if v := info.MinValue(); v != "" {
+			out.MinValue = &v
+		}
+		if v := info.MaxValue(); v != "" {
+			out.MaxValue = &v
+		}
+		out.ID = model.ID(info.ID())
+		return out
+	case *genDm.RequiredRuleInfo:
+		out := &domainmodel.RequiredValidationRuleInfo{}
+		out.ID = model.ID(info.ID())
+		return out
+	case *genDm.UniqueRuleInfo:
+		out := &domainmodel.UniqueValidationRuleInfo{}
+		out.ID = model.ID(info.ID())
+		return out
+	default:
+		return nil
+	}
+}
+
 // ruleTypeFromGen maps a gen RuleInfo element back to the domainmodel rule-type
-// string (reverse of ruleInfoToGen, which today emits Unique/Required).
+// string.
+//
+// It reports the type it actually found rather than collapsing everything to
+// "Required". The old default did exactly that, and because ALTER ENTITY
+// round-trips an entity through this, a stored RegEx rule was READ as Required
+// and WRITTEN BACK as Required — the regex reference silently gone, the field
+// merely mandatory. Any type the writers cannot reproduce is refused at the
+// write, not quietly rewritten (see ruleInfoToGen).
 func ruleTypeFromGen(ri element.Element) string {
 	if ri == nil {
 		return "Required"
 	}
-	switch ri.TypeName() {
-	case "DomainModels$UniqueRuleInfo":
-		return "Unique"
-	default:
+	// "DomainModels$RegExRuleInfo" -> "RegEx"
+	name := strings.TrimSuffix(strings.TrimPrefix(ri.TypeName(), "DomainModels$"), "RuleInfo")
+	if name == "" {
 		return "Required"
 	}
+	return name
 }
 
 // textFromGen converts a gen Text (translations) back to a model.Text.

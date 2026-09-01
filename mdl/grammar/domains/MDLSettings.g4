@@ -15,10 +15,23 @@ options { tokenVocab = MDLLexer; }
  * ALTER SETTINGS CONFIGURATION 'name' Key = Value, ...;
  * ALTER SETTINGS CONSTANT 'name' VALUE 'value' [IN CONFIGURATION 'name'];
  * ALTER SETTINGS LANGUAGE Key = Value, ...;
+ * ALTER SETTINGS LANGUAGE ADD [OR MODIFY] 'ar_SD' [(Key: Value, ...)];
+ * ALTER SETTINGS LANGUAGE MODIFY 'ar_SD' (Key: Value, ...);
+ * ALTER SETTINGS LANGUAGE REMOVE 'ar_SD';
  * ALTER SETTINGS WORKFLOWS Key = Value, ...;
+ *
+ * ADD/REMOVE name the ENABLED languages — the list Studio Pro shows under
+ * App Settings > Languages, and the only languages a build emits anything for.
+ * A language is identified by its code alone: Studio Pro's "Arabic, Sudan" is
+ * derived from `ar_SD` for display and is not stored (verified against a
+ * Studio Pro-authored reference on 11.13.0).
  */
 alterSettingsClause
-    : settingsSection settingsAssignment (COMMA settingsAssignment)*
+    : settingsSection ADD OR MODIFY STRING_LITERAL languageOptions?
+    | settingsSection ADD STRING_LITERAL languageOptions?
+    | settingsSection MODIFY STRING_LITERAL languageOptions
+    | settingsSection REMOVE STRING_LITERAL
+    | settingsSection settingsAssignment (COMMA settingsAssignment)*
     | CONSTANT STRING_LITERAL (VALUE settingsValue | DROP) (IN CONFIGURATION STRING_LITERAL)?
     | DROP CONSTANT STRING_LITERAL (IN CONFIGURATION STRING_LITERAL)?
     | CONFIGURATION STRING_LITERAL settingsAssignment (COMMA settingsAssignment)*
@@ -32,6 +45,18 @@ settingsSection
 
 settingsAssignment
     : IDENTIFIER EQUALS settingsValue
+    ;
+
+// The optional properties of an added language, in the ( key: value ) form every
+// other MDL statement uses. All five are what Texts$Language stores; omitting
+// them reproduces what Studio Pro's Add Language dialog writes.
+//   ( CheckCompleteness: true, CustomDateFormat: 'yyyy-MM-dd' )
+languageOptions
+    : LPAREN languageOption (COMMA languageOption)* RPAREN
+    ;
+
+languageOption
+    : IDENTIFIER COLON settingsValue
     ;
 
 settingsValue
@@ -417,6 +442,32 @@ booleanLiteral
     | FALSE
     ;
 
+/**
+ * CREATE [OR MODIFY|REPLACE] TRANSLATIONS [IN Module] FOR <lang> ( 'src' AS 'target', ... );
+ *
+ * A translation maps a user-provided name to another name, so entries use AS
+ * rather than COLON — the same rule CUSTOM NAME map follows
+ * (.claude/skills/design-mdl-syntax.md, "colon vs as").
+ *
+ * The thing that exists is the LANGUAGE: bare CREATE refuses when it already has
+ * translations, OR MODIFY merges, OR REPLACE makes the file authoritative.
+ *
+ * The entry list may be EMPTY. Under OR REPLACE that is the statement's own
+ * semantics taken to the limit — the file names nothing, so every translation in
+ * scope is removed — and it is the only way to take a language's translations
+ * out of the model, which `alter settings LANGUAGE remove` points at. It parsed
+ * as an error before, so the documented way to do it did not exist.
+ * See docs/11-proposals/PROPOSAL_translations.md.
+ */
+createTranslationsStatement
+    : TRANSLATIONS (IN identifierOrKeyword)? FOR identifierOrKeyword
+      LPAREN (translationEntry (COMMA translationEntry)* COMMA?)? RPAREN
+    ;
+
+translationEntry
+    : STRING_LITERAL AS STRING_LITERAL
+    ;
+
 /** Documentation comment */
 docComment
     : DOC_COMMENT
@@ -486,7 +537,7 @@ annotationParenValue
  */
 keyword
     // DDL / DML
-    : ADD | ALTER | BATCH | BROWSER | CHANGE | CLOSE | COMMIT | CREATE | DECLARE | DELETE | DESCRIBE
+    : QUEUE | QUEUES | ADD | ALTER | BATCH | BROWSER | CHANGE | CLOSE | COMMIT | CREATE | DECLARE | DELETE | DESCRIBE
     | DOWNLOAD | DROP | EXECUTE | EXPORT | GENERATE | IMPORT | INSERT | INTO | MODIFY | MOVE | REFRESH
     | SYNCHRONIZE | UNSYNCHRONIZED
     | REMOVE | RENAME | REPLACE | RETRIEVE | RETURN | ROLLBACK | SET | UPDATE
@@ -509,7 +560,7 @@ keyword
     // Module / project structure
     | ACTIONS | ARTIFACT | COLLECTION | DEPENDENCIES | DEPENDENCY | EXCLUSION | FOLDER | FOLDERS
     | INCLUDED | JAR | LAYOUT | LAYOUTS | LOCAL | MODEL | MODELS | MODULE | MODULES
-    | NOTEBOOK | NOTEBOOKS | PAGE | PAGES | PROJECT | SNIPPET | SNIPPETS
+    | PAGE | PAGES | PROJECT | SNIPPET | SNIPPETS
     | BUILDING | BLOCK | BLOCKS
     | STORE | STRUCTURE | STRUCTURES | VIEW
 
@@ -525,7 +576,7 @@ keyword
 
     // Query / SQL
     | SELECT | FROM | WHERE | JOIN | LEFT | RIGHT | INNER | OUTER | FULL | CROSS
-    | ORDER_BY | GROUP_BY | SORT_BY | HAVING | LIMIT | OFFSET | AS | ON
+    | ORDER_BY | GROUP_BY | SORT_BY | HAVING | LIMIT | OFFSET | FIRST | AS | ON
     | AND | OR | NOT | NULL | IN | LIKE | BETWEEN | TRUE | FALSE
     | COUNT | SUM | AVG | MIN | MAX | DISTINCT | ALL
     | ASC | DESC | UNION | INTERSECT | SUBTRACT | EXISTS
@@ -562,8 +613,13 @@ keyword
     | RADIOBUTTONS | REFERENCESELECTOR | SEARCHBAR | SNIPPETCALL
     | STATICIMAGE | STATICTEXT | DYNAMICIMAGE | TEXTAREA | TEXTBOX | TEXTFILTER
     | TABCONTAINER | TABPAGE | WIDGET | WIDGETS
+    // Layout structure. SCROLLREGION is spelled `region`, an ordinary enough
+    // word that leaving it out of this rule would make `region` unusable as an
+    // attribute or widget name anywhere in MDL.
+    | SCROLLCONTAINER | SCROLLREGION | NAVIGATIONTREE | MENUBAR
     // Object-list container keywords for pluggable widgets (#538)
     | GROUP | CUSTOMITEM | MARKER | DYNAMICMARKER | SERIES | LINE | SCALECOLOR
+    | CUSTOMBUTTON | ALLOWEDFILEFORMAT
     // Dual-stack keyword (#539)
     | LEGACYDATAGRID
 
@@ -572,7 +628,7 @@ keyword
     | CAPTION | CAPTIONPARAMS | CLASS | COLUMN | COLUMNS | CONTENT | CONTENTPARAMS
     | DATASOURCE | DEFAULT | DESIGNPROPERTIES | DESKTOPWIDTH | DISPLAY | DOCUMENTATION
     | EDITABLE | FILTER | FILTERTYPE | HEADER | FOOTER
-    | ICON | LABEL | ONCLICK | ONCHANGE | PARAMS | PASSING
+    | ICON | DARK | LABEL | ONCLICK | ONCHANGE | PARAMS | PASSING
     | PHONEWIDTH | TABLETWIDTH | READONLY | RENDERMODE | REQUIRED | NULLABLE
     | SELECTION | STYLE | STYLING | TABINDEX | TITLE | TOOLTIP
     | URL | POSITION | VISIBLE | WIDTH | HEIGHT | WIDGETTYPE
@@ -616,7 +672,7 @@ keyword
     | GET | POST | PUT | PATCH
 
     // Workflow
-    | ABORT | ACTIVITY | ANNOTATION | BOUNDARY | BY | COMPLETE_TASK
+    | ABORT | ACTIVITY | ANNOTATION | ANNOTATIONS | AT_KW | BOUNDARY | BY | COMPLETE_TASK
     | CONDITION | DATE | DECISION | DUE | GROUPS | INTERRUPTING | JUMP
     | LOCK | MULTI | NODE | NON | NOTIFICATION | NOTIFY
     | OPEN | OUTCOME | OUTCOMES | OVERVIEW | PARALLEL | PAUSE
@@ -624,7 +680,7 @@ keyword
     | UNLOCK | UNPAUSE | WAIT | WORKFLOW | WORKFLOWS
 
     // Business events / settings
-    | BUSINESS | CONFIGURATION | EVENT | EVENTS | HANDLER | SETTINGS | SUBSCRIBE
+    | BUSINESS | CONFIGURATION | EVENT | EVENTS | HANDLER | REGULAR | EXPRESSIONS | SCHEDULED | SETTINGS | SUBSCRIBE
 
     // Code search / analysis
     | BACKGROUND | CALLERS | CALLEES | DEPTH | IMPACT | REFERENCES
@@ -633,7 +689,7 @@ keyword
     // CLI commands
     | BUILD | CATALOG | CHECK | CLEAR | COMMENT | CUSTOM_NAME_MAP
     | DESIGN | DRY | EXEC | FEATURES | ADDED | SINCE | FORCE
-    | LANGUAGES | LINT | PROPERTIES | READ | RULES | RUN | SARIF | SCRIPT
+    | LANGUAGES | LINT | PROPERTIES | READ | RULES | RUN | SARIF | SCRIPT | TRANSLATIONS
     | SHOW | USE | STATUS | WRITE | VIA | VIEWS | TABLES
 
     // Sequence flow anchors (for @anchor annotation)
@@ -644,7 +700,8 @@ keyword
 
     // General-purpose words (only tokens not already listed above)
     | ACTION | BOTH | CONTEXT | DATA | FORMAT | ITEM | LIST
-    | MESSAGE | MOD | DIV | MULTIPLE | NONE | OBJECT | OBJECTS
+    | DEFINITION | IGNORE | MESSAGE | MOD | DIV | MULTIPLE | NONE | OBJECT | OBJECTS
+    | OVERRIDABLE | ROOT
     | SINGLE | SQL | TEMPLATE | TEXT | TYPE | VALUE
 
     // Data transformers

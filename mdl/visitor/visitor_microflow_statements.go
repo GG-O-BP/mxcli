@@ -3,6 +3,7 @@
 package visitor
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/antlr4-go/antlr/v4"
@@ -309,6 +310,56 @@ func extractMicroflowAnnotations(annotations []parser.IAnnotationContext) *ast.A
 				hasAny = true
 			}
 			seenActivityMetadata = true
+
+		case "merge":
+			// @merge(x, y) — the implicit merge node that closes a split. Same
+			// positional shape as @position, which belongs to the split. (#884)
+			if params := ann.AnnotationParams(); params != nil {
+				allParams := params.(*parser.AnnotationParamsContext).AllAnnotationParam()
+				if len(allParams) >= 2 {
+					result.Merge = &ast.Position{
+						X: parseAnnotationParamInt(allParams[0]),
+						Y: parseAnnotationParamInt(allParams[1]),
+					}
+					hasAny = true
+				}
+			}
+			seenActivityMetadata = true
+
+		case "start":
+			// @start(x, y) — the StartEvent, the implicit node the flow begins
+			// at. Written on the FIRST statement, the one the start flows into;
+			// same positional shape and same reason as @merge, which positions
+			// the other node that has no statement of its own. (#951)
+			if params := ann.AnnotationParams(); params != nil {
+				allParams := params.(*parser.AnnotationParamsContext).AllAnnotationParam()
+				if len(allParams) >= 2 {
+					result.Start = &ast.Position{
+						X: parseAnnotationParamInt(allParams[0]),
+						Y: parseAnnotationParamInt(allParams[1]),
+					}
+					hasAny = true
+				}
+			}
+			seenActivityMetadata = true
+
+		case "curve":
+			// @curve(from: (40, -90), to: (-40, 90)) — the bezier control
+			// vectors of the flow LEAVING this statement. Needed no grammar
+			// change: `name: (x, y)` is already annotationParenValue, the same
+			// shape the association anchors use. (#884)
+			if params := ann.AnnotationParams(); params != nil {
+				parseCurveAnnotation(params.(*parser.AnnotationParamsContext), result)
+				hasAny = true
+			}
+			seenActivityMetadata = true
+
+		default:
+			// Record rather than drop. The grammar accepts any @name, so this
+			// arm catches both an annotation mxcli does not implement (@size)
+			// and — the reason it matters — a typo of one it does. (#884)
+			result.UnknownNames = append(result.UnknownNames, ann.AnnotationName().GetText())
+			hasAny = true
 		}
 	}
 
@@ -631,13 +682,22 @@ func buildInheritanceSplitStatement(ctx parser.IInheritanceSplitStatementContext
 	}
 	for _, caseCtx := range splitCtx.AllInheritanceSplitCase() {
 		c := caseCtx.(*parser.InheritanceSplitCaseContext)
+		// `case X <body>` and `when X then <body>` are the same branch; only
+		// the spelling differs, and it is recorded for MDL065.
+		if c.CASE() != nil {
+			stmt.LegacyCaseKeyword = true
+		}
 		stmt.Cases = append(stmt.Cases, ast.InheritanceSplitCase{
 			Entity: buildQualifiedName(c.QualifiedName()),
 			Body:   buildMicroflowBody(c.MicroflowBody()),
 		})
 	}
-	if splitCtx.ELSE() != nil {
-		stmt.ElseBody = buildMicroflowBody(splitCtx.MicroflowBody())
+	if elseCtx := splitCtx.InheritanceSplitElse(); elseCtx != nil {
+		e := elseCtx.(*parser.InheritanceSplitElseContext)
+		if e.ELSE() != nil {
+			stmt.LegacyElseKeyword = true
+		}
+		stmt.ElseBody = buildMicroflowBody(e.MicroflowBody())
 	}
 	return stmt
 }
@@ -993,6 +1053,7 @@ func buildCreateObjectStatement(ctx parser.ICreateObjectStatementContext) *ast.C
 	}
 
 	stmt.Commit = buildCommitClause(createCtx.CommitClause())
+	stmt.RefreshInClient = createCtx.REFRESH() != nil
 
 	// Check for ON ERROR clause
 	if errClause := createCtx.OnErrorClause(); errClause != nil {
@@ -1041,7 +1102,7 @@ func buildChangeObjectStatement(ctx parser.IChangeObjectStatementContext) *ast.C
 }
 
 // buildCommitStatement converts COMMIT statement context to MfCommitStmt.
-// Grammar: COMMIT VARIABLE (WITH EVENTS)? REFRESH?
+// Grammar: COMMIT VARIABLE ((WITH | WITHOUT) EVENTS)? REFRESH?
 func buildCommitStatement(ctx parser.ICommitStatementContext) *ast.MfCommitStmt {
 	if ctx == nil {
 		return nil
@@ -1055,10 +1116,16 @@ func buildCommitStatement(ctx parser.ICommitStatementContext) *ast.MfCommitStmt 
 		stmt.Variable = strings.TrimPrefix(v.GetText(), "$")
 	}
 
-	// Check for WITH EVENTS
-	if commitCtx.EVENTS() != nil {
-		stmt.WithEvents = true
+	// Check for WITHOUT EVENTS.
+	//
+	// Absent means events ON — Mendix's default for the Commit activity (#895).
+	// A bare WITH EVENTS also leaves the flag clear: it says the same thing as
+	// writing nothing, and every script written before the default was corrected
+	// spells it out that way.
+	if commitCtx.WITHOUT() != nil {
+		stmt.WithoutEvents = true
 	}
+	stmt.ExplicitWithEvents = commitCtx.WITH() != nil
 
 	// Check for REFRESH
 	if commitCtx.REFRESH() != nil {
@@ -1074,6 +1141,7 @@ func buildCommitStatement(ctx parser.ICommitStatementContext) *ast.MfCommitStmt 
 }
 
 // buildDeleteObjectStatement converts DELETE statement context to DeleteObjectStmt.
+// Grammar: DELETE VARIABLE REFRESH?
 func buildDeleteObjectStatement(ctx parser.IDeleteObjectStatementContext) *ast.DeleteObjectStmt {
 	if ctx == nil {
 		return nil
@@ -1086,6 +1154,8 @@ func buildDeleteObjectStatement(ctx parser.IDeleteObjectStatementContext) *ast.D
 	if v := delCtx.VARIABLE(); v != nil {
 		stmt.Variable = strings.TrimPrefix(v.GetText(), "$")
 	}
+
+	stmt.RefreshInClient = delCtx.REFRESH() != nil
 
 	// Check for ON ERROR clause
 	if errClause := delCtx.OnErrorClause(); errClause != nil {
@@ -1623,4 +1693,69 @@ func buildReturnStatement(ctx parser.IReturnStatementContext) *ast.ReturnStmt {
 	}
 
 	return stmt
+}
+
+// parseCurveAnnotation populates result.Curve from @curve(from: (x, y), to: (x, y)).
+// Either end may be omitted, which leaves that end straight.
+func parseCurveAnnotation(params *parser.AnnotationParamsContext, result *ast.ActivityAnnotations) {
+	curve := &ast.FlowCurve{}
+	for _, p := range params.AllAnnotationParam() {
+		pCtx := p.(*parser.AnnotationParamContext)
+		nameCtx := pCtx.AnnotationParamName()
+		if nameCtx == nil {
+			result.InvalidCurves = append(result.InvalidCurves, strings.TrimSpace(pCtx.GetText()))
+			continue
+		}
+		pt, ok := annotationPointValue(pCtx)
+		if !ok {
+			result.InvalidCurves = append(result.InvalidCurves, strings.TrimSpace(pCtx.GetText()))
+			continue
+		}
+		switch strings.ToLower(nameCtx.GetText()) {
+		case "from":
+			curve.From = pt
+		case "to":
+			curve.To = pt
+		default:
+			result.InvalidCurves = append(result.InvalidCurves, strings.TrimSpace(pCtx.GetText()))
+		}
+	}
+	if curve.From != nil || curve.To != nil {
+		result.Curve = curve
+	}
+}
+
+// annotationPointValue reads a `(x, y)` parenthesised annotation value into a
+// Position. Reports false for any other shape — including a non-integer
+// coordinate, which the caller records so validation can refuse it.
+//
+// A free function rather than the Builder method the association anchors use
+// (annotationParenPoint), because extractMicroflowAnnotations has no Builder to
+// report through; the caller records the raw text on the AST instead.
+func annotationPointValue(paramCtx *parser.AnnotationParamContext) (*ast.Position, bool) {
+	paren := paramCtx.AnnotationParenValue()
+	if paren == nil {
+		return nil, false
+	}
+	inner := paren.(*parser.AnnotationParenValueContext).AnnotationParams()
+	if inner == nil {
+		return nil, false
+	}
+	coords := inner.(*parser.AnnotationParamsContext).AllAnnotationParam()
+	if len(coords) != 2 {
+		return nil, false
+	}
+	vals := make([]int, 0, 2)
+	for _, c := range coords {
+		cCtx := c.(*parser.AnnotationParamContext)
+		if cCtx.AnnotationParamName() != nil {
+			return nil, false // named, not a coordinate pair
+		}
+		v, err := strconv.Atoi(strings.TrimSpace(cCtx.GetText()))
+		if err != nil {
+			return nil, false
+		}
+		vals = append(vals, v)
+	}
+	return &ast.Position{X: vals[0], Y: vals[1]}, true
 }

@@ -299,8 +299,15 @@ func createConstant(ctx *ExecContext, stmt *ast.CreateConstantStmt) error {
 					if err := ctx.Backend.UpdateConstant(c); err != nil {
 						return mdlerrors.NewBackend("update constant", err)
 					}
+					target, err := resolveRequestedFolder(ctx, module.ID, stmt.Folder)
+					if err != nil {
+						return err
+					}
+					if _, err := applyDocumentFolder(ctx, c.ID, c.ContainerID, target); err != nil {
+						return err
+					}
 					invalidateHierarchy(ctx)
-					fmt.Fprintf(ctx.Output, "Modified constant: %s.%s\n", modName, c.Name)
+					ctx.ReportMutation("Modified", "constant: %s.%s", modName, c.Name)
 					return nil
 				}
 				return mdlerrors.NewAlreadyExistsMsg("constant", modName+"."+c.Name, fmt.Sprintf("constant already exists: %s.%s (use create or modify to update)", modName, c.Name))

@@ -50,6 +50,31 @@ var engineScriptSkip = map[string]string{
 	// The legacy widget builder has no `barchart` pluggable-widget template, so
 	// page build fails ("template not found: barchart"). Passes on modelsdk.
 	"legacy/34-chart-widget-examples.mdl": "legacy widget builder lacks the barchart template (works on modelsdk); tracked",
+	// Menu-document authoring is modelsdk-only *by design*, not a gap: Studio Pro
+	// stores a menu document's item lists with typed-array marker 3, which the
+	// codec emits by default, while the legacy navigation writer hand-builds menu
+	// items with marker 1. Rather than ship a second writer of unverified shape,
+	// the legacy backend refuses create/modify/drop — so the script cannot pass
+	// there and the refusal is the intended behaviour.
+	"legacy/26-menu-examples.mdl": "menu authoring is modelsdk-only by design; the legacy backend refuses it",
+	// Same shape as the menu skip: rule authoring is modelsdk-only. sdk/mpr has
+	// no serializeRule, and a rule document is close enough to a microflow that
+	// a half-written one would look valid, so the legacy backend refuses
+	// create/modify/drop rather than emitting one. Reads work on both engines.
+	"legacy/rules.mdl": "rule authoring is modelsdk-only by design; the legacy backend refuses it",
+	// Same shape again: layout authoring is modelsdk-only. A layout's widget tree
+	// hangs off a Forms$WebLayoutContent wrapper the legacy writer cannot build —
+	// its serializeLayout emitted four header keys, a string $ID where Studio Pro
+	// stores binary, and a LayoutType on the layout element rather than on the
+	// wrapper. Nothing had ever called it, because nothing created a layout until
+	// now. The legacy backend refuses rather than writing a document with nowhere
+	// for the tree to go. Reads (SHOW/DESCRIBE LAYOUT) work on both engines.
+	"legacy/layouts.mdl": "layout authoring is modelsdk-only by design; the legacy backend refuses it",
+	// Enabling a language writes Settings$LanguageSettings.Languages, which the
+	// legacy serializer carries through from the stored document rather than
+	// writing — so the list cannot change on that engine. The backend refuses it
+	// rather than reporting a write that never lands.
+	"legacy/languages.mdl": "enabling a language is modelsdk-only by design; the legacy backend refuses it",
 	// The legacy widget builder has no `linechart` template either, so the OL08
 	// LineChart object-list example (added in 6b837ad7) fails page build
 	// ("template not found: linechart"). Passes on modelsdk. Same class as the
@@ -254,6 +279,12 @@ func TestMxCheck_DoctypeScripts(t *testing.T) {
 				if skippedLines > 0 {
 					t.Logf("Mendix %s: skipped %d version-gated lines", pv.ProductVersion, skippedLines)
 				}
+
+				// A relative path inside a script (a toolbox icon PNG) names a file
+				// next to that script. The harness's working directory is this
+				// package, so without this every such fixture would fail here and
+				// nowhere else.
+				env.executor.SetScriptDir(doctypeDir)
 
 				// Execute the script
 				prog, errs := visitor.Build(filtered)

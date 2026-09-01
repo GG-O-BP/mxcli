@@ -85,34 +85,55 @@ Modifies an existing entity without full replacement.
 
 | Operation | Syntax | Notes |
 |-----------|--------|-------|
-| Add attributes | `alter entity Module.Name add (attr: type [constraints]);` | One or more attributes |
-| Drop attributes | `alter entity Module.Name drop (AttrName, ...);` | |
+| Add attribute | `alter entity Module.Name add attribute [if not exists] attr: type [constraints];` | Comma-separate the whole action to add several: `add attribute A: integer, add attribute B: string(20)`. `if not exists` skips instead of erroring, so the script re-runs |
+| Drop attribute | `alter entity Module.Name drop attribute [if exists] AttrName;` | `if exists` skips when it is already gone |
 | Modify attributes | `alter entity Module.Name modify (attr: NewType [constraints]);` | Change type/constraints |
-| Rename attribute | `alter entity Module.Name rename OldName to NewName;` | |
-| Add index | `alter entity Module.Name add index [name] [on] (Col1 [asc\|desc], ...);` | `on` is optional (SQL-like) |
-| Drop index | `alter entity Module.Name drop index (Col1, ...);` | |
+| Rename attribute | `alter entity Module.Name rename attribute OldName to NewName;` | Also rewrites stored references (microflow members, page widgets, validation/access rules) and XPath constraints. Microflow expressions are free text and are **not** rewritten |
+| Add index | `alter entity Module.Name add index [if not exists] [name] [on] (Col1 [asc\|desc], ...);` | `on` is optional (SQL-like). **Without `if not exists`, re-running is an error** — a second identical index fails the build with CE0072 |
+| Document an association | `/** What it links. */`<br>`create association Mod.C_P from Mod.C to Mod.P;`<br>or `... to Mod.P comment 'What it links.';` | Both spellings work on create; the doc comment wins when both are present. `comment` survives here — and only here among the CREATE statements — because it is an association's **only inline** spelling |
+| Create if absent | `create entity if not exists Module.Name (...);`<br>`create association if not exists Module.Assoc from ... to ...;` | Skips when it already exists, leaving the stored definition untouched. Unlike `create or modify`, which rebuilds the element from the statement and drops any attribute the statement omits |
+| Add index (SQL form) | `create index IdxName on Module.Name (Col1 [asc\|desc], ...);` | Same effect as `alter entity … add index`. The index name is accepted and discarded — a Mendix index is identified by its columns |
+| Drop index | `alter entity Module.Name drop index [if exists] (Col1 [asc\|desc], ...);` | Selected by its columns — a Mendix index stores no name, so the columns are its identity, and they are what `describe entity` prints. The legacy positional form `drop index idx1` still works but shifts when an earlier index is dropped |
 | Add event handler | `alter entity Module.Name add event handler on before commit call Mod.MF($currentObject) [raise error];` | `($currentObject)` or `()`, RAISE ERROR only on BEFORE |
 | Drop event handler | `alter entity Module.Name drop event handler on before commit;` | |
 | Set documentation | `alter entity Module.Name set documentation 'text';` | |
 | Set position | `alter entity Module.Name set position (100, 200);` | Canvas position |
 | Add system attribute | `alter entity Module.Name add attribute owner: autoowner;` | Same syntax as regular attributes |
 | Drop system attribute | `alter entity Module.Name drop attribute owner;` | Drop by system attribute name |
-| Add attribute (idempotent) | `alter entity Module.Name add attribute if not exists AttrName: type;` | Skipped (not an error) if the attribute already exists — re-runnable |
-| Drop attribute (idempotent) | `alter entity Module.Name drop attribute if exists AttrName;` | Skipped (not an error) if the attribute is already gone — re-runnable |
 
-> **Re-running domain scripts.** `IF NOT EXISTS` / `IF EXISTS` make an individual add/drop a no-op when already applied. To re-run a whole script that is partly applied, use `mxcli exec script.mdl --continue-on-error`: every statement is attempted, each failure is reported with its statement number, and the command exits non-zero if any failed (a real error is still surfaced, never masked).
+> **Re-running domain scripts.** `IF NOT EXISTS` / `IF EXISTS` make an individual
+> create/add/drop a no-op when already applied — accepted on `create entity`,
+> `create association`, `add attribute`, `add index`, `add event handler` and
+> their drops. A script built from guarded statements re-runs to a byte-identical
+> project.
+>
+> Prefer them to `CREATE OR MODIFY`, which is not the same thing: `or modify`
+> rebuilds the element from the statement and **drops any attribute the statement
+> omits**, so it is only safe when the statement is the element's complete
+> definition. Writing both (`create or modify … if not exists`) is refused as
+> **MDL067**.
+>
+> To re-run a whole script that is partly applied and not guarded, use
+> `mxcli exec script.mdl --continue-on-error`: every statement is attempted, each
+> failure is reported with its statement number, and the command exits non-zero if
+> any failed (a real error is still surfaced, never masked).
 
 **Example:**
 ```sql
 alter entity Sales.Customer
-  add (Phone: string(50), Notes: string(unlimited));
+  add attribute Phone: string(50),
+  add attribute Notes: string(unlimited);
 
 alter entity Sales.Customer
-  rename Phone to PhoneNumber;
+  rename attribute Phone to PhoneNumber;
 
 alter entity Sales.Customer
   add index (Email);
 ```
+
+> An `INDEX` on `create entity` goes **after** the closing parenthesis of the
+> attribute list, not inside it — `create entity M.Cell (Row: Integer) index (Row);`.
+> Written inside, it parses as an attribute missing its type.
 
 ## Constants
 
@@ -138,6 +159,161 @@ create constant MyModule.MaxRetries type integer default 3;
 create constant MyModule.EnableLogging type boolean default true;
 ```
 
+## Task Queues
+
+| Statement | Syntax | Notes |
+|-----------|--------|-------|
+| Show queues | `show queues [in module];` (`list queues` too) | Parallelism + cluster-wide flag |
+| Describe queue | `describe queue Module.Name;` | Re-executable MDL |
+| Create queue | `create [or modify] queue Module.Name [folder 'path'] ( Parallelism: 3, ClusterWide: true );` | Body optional; defaults `1` / `false` |
+| Drop queue | `drop queue Module.Name;` | |
+
+`Parallelism` is an **expression**, not a number — Mendix stores it as a string
+(`Queues$BasicQueueConfig.ParallelismExpression`). A bare integer is the common
+case; quote anything else.
+
+Binding a microflow **call** to a queue is not yet expressible in MDL. Because a
+rebuild would drop an existing binding, `create or replace|modify microflow` is
+**refused** when the stored microflow has a queued call — change those in Studio
+Pro. (Without the refusal the binding was written back as null and `mx check`
+stopped reporting CE1613, so the project looked healthy while the configuration
+was gone.)
+
+**Example:**
+```sql
+create queue Ops.OrderProcessing ( Parallelism: 3, ClusterWide: true );
+create queue Ops.Mail;
+create or modify queue Ops.OrderProcessing ( Parallelism: '$MyModule.Workers' );
+drop queue Ops.Mail;
+```
+
+## Regular Expressions
+
+Named patterns, shared by attribute validation rules.
+
+| Statement | Syntax | Notes |
+|-----------|--------|-------|
+| Show regular expressions | `show regular expressions [in module];` (`list` too) | Pattern + documentation |
+| Describe regular expression | `describe regular expression Module.Name;` | Re-executable MDL |
+| Create regular expression | `create [or modify] regular expression Module.Name [folder 'path'] ( Expression: '<pattern>' );` | `Expression` required |
+| Drop regular expression | `drop regular expression Module.Name;` | |
+
+A regex is a **document**, not a string on a rule: Mendix stores a validation
+rule's reference to it by qualified name, so one pattern is shared by every
+attribute that validates against it. `show references to <regex>` lists the
+entities that use it.
+
+The pattern is an ordinary MDL string, so a single quote inside it is doubled
+(`'^it''s$'`). Backslashes are **not** escape characters — write the regex
+exactly as Mendix should see it.
+
+Mendix validates with .NET's regex engine, which accepts constructs Go does not
+(lookaround, backreferences). mxcli stores such a pattern unchanged; `describe`
+notes that it could not verify it rather than calling it invalid.
+
+Bind a pattern to an attribute with `create validation rule` — see below.
+
+## Validation Rules
+
+Constrain a single attribute. The rule is anonymous and lives on the entity, so
+the statement names the **attribute**, not the rule.
+
+| Statement | Syntax | Notes |
+|-----------|--------|-------|
+| Create regex rule | `create validation rule for Module.Entity.Attribute regex Module.Pattern feedback '<msg>';` | Pattern must already exist |
+| Create range rule | `create validation rule for Module.Entity.Attribute range from <lit> to <lit> feedback '<msg>';` | Bounds inclusive |
+| Lower bound only | `... range from <lit> ...` | Mendix `GreaterThanOrEqualTo` |
+| Upper bound only | `... range to <lit> ...` | Mendix `SmallerThanOrEqualTo` |
+
+Mendix has **no strict `<` or `>`**, so there is no exclusive form.
+
+Re-running a rule replaces the one of the **same type** on that attribute and
+leaves the others alone — an attribute can carry a Required rule and a RegEx
+rule at once.
+
+`regex` takes the **qualified name of a regular expression document**, never an
+inline pattern. A name that does not resolve is refused, because Mendix stores
+the reference by name and the build would otherwise report CE0135 "No regular
+expression specified".
+
+**Required and Unique are attribute constraints, not this statement:**
+
+```sql
+create entity Shop.Product ( Email: String(200) not null error 'Required' );
+alter entity Shop.Product modify attribute Code String(20) unique error 'Unique';
+```
+
+A range bounded by another *attribute* cannot be authored in MDL, but survives a
+rewrite untouched; `describe entity` marks it with a comment rather than
+rendering it wrong. `MaxLength` and `EqualsTo` cannot be represented at all —
+mxcli refuses to rewrite an entity carrying one rather than downgrading it to a
+Required rule.
+
+**Example:**
+```sql
+create regular expression Val.EmailAddress (
+  Expression: '\w+((-|\+|\.)\w+)*@\w+([\.-]?\w+)*(\.\w{2,})+',
+  Documentation: 'A, not too restrictive, email address regular expression'
+);
+
+-- .NET lookbehind: legal in Mendix, not verifiable by mxcli
+create regular expression Val.NoTrailingSlash ( Expression: '.*(?<!/)$' );
+
+show references to Val.EmailAddress;
+```
+
+## Scheduled Events
+
+Mendix's cron: run a microflow on a repeating schedule.
+
+| Statement | Syntax | Notes |
+|-----------|--------|-------|
+| Show scheduled events | `show scheduled events [in module];` (`list` too) | Repeat, microflow, enabled |
+| Describe scheduled event | `describe scheduled event Module.Name;` | Re-executable MDL |
+| Create scheduled event | `create [or modify] scheduled event Module.Name [folder 'path'] ( Microflow: ..., Repeat: ..., ... );` | |
+| Drop scheduled event | `drop scheduled event Module.Name;` | |
+
+`Microflow` and `Repeat` are always required. Each repeat takes **only** its own
+fields — anything else is refused by `mxcli check` (MDL-SCHED01) and by `exec`:
+
+| Repeat | Fields |
+|--------|--------|
+| `Minutely` | `Multiplier` |
+| `Hourly` | `Multiplier`, `MinuteOffset` |
+| `Daily` | `HourOfDay`, `MinuteOfHour` |
+| `Weekly` | `Weekdays`, `HourOfDay`, `MinuteOfHour` |
+| `MonthlyByDate` | `Multiplier`, `MonthOffset`, `DayOfMonth`, `HourOfDay`, `MinuteOfHour` |
+| `MonthlyByWeekday` | `Multiplier`, `MonthOffset`, `DaySelector`, `Weekday`, `HourOfDay`, `MinuteOfHour` |
+| `YearlyByDate` | `Month`, `DayOfMonth`, `HourOfDay`, `MinuteOfHour` |
+| `YearlyByWeekday` | `Month`, `DaySelector`, `Weekday`, `HourOfDay`, `MinuteOfHour` |
+
+Optional on any repeat: `Enabled` (default false), `OnOverlap`
+(`DelayNext` default / `SkipNext`), `TimeZone` (`UTC` default / `Server`),
+`StartDateTime` (RFC 3339), `Documentation`.
+
+`OnOverlap` is a scheduled event's own concurrency control — scheduled events do
+**not** go through a task queue.
+
+**Example:**
+```sql
+create scheduled event Ops.NightlyCleanup (
+  Microflow: Ops.SE_Cleanup,
+  Repeat: Daily,
+  HourOfDay: 4,
+  MinuteOfHour: 0,
+  TimeZone: Server,
+  Enabled: true
+);
+
+create scheduled event Ops.WeeklyReport (
+  Microflow: Ops.SE_Report,
+  Repeat: Weekly,
+  Weekdays: 'Monday, Friday',
+  HourOfDay: 9,
+  MinuteOfHour: 30
+);
+```
+
 ## OData Clients, Services & External Entities
 
 | Statement | Syntax | Notes |
@@ -150,6 +326,7 @@ create constant MyModule.EnableLogging type boolean default true;
 | Show OData services | `show odata services [in module];` | Published OData services |
 | Describe OData service | `describe odata service Module.Name;` | Full MDL output |
 | Create OData service | `create [or modify] odata service Module.Name (...) authentication ... { publish entity ... };` | |
+| Publish as GraphQL too | `create odata service Module.Name (SupportsGraphQL: Yes) {...};` | Mendix 10.14+. Same location, clients POST a query. Exposed names must be unique beyond case (CE2881); query fields are camelCased |
 | Alter OData service | `alter odata service Module.Name set key = value;` | |
 | Drop OData service | `drop odata service Module.Name;` | |
 | Show external entities | `show external entities [in module];` | OData-backed entities |
@@ -257,7 +434,31 @@ Studio Pro picks the dropdown label from the referenced microflow's
 return type (`System.ConsumedODataConfiguration` vs
 `list of System.HttpHeader`).
 
-## Microflows & Nanoflows
+## Domain-Model Annotations
+
+The note boxes Studio Pro draws on the canvas. They belong to a module's domain
+model, not to a document, so the statements name a module.
+
+| Statement | Syntax | Notes |
+|-----------|--------|-------|
+| Show annotations | `show annotations [in Module];` | Module, Title, Position, Width, Lines. **Title** is the first line of the caption — the addressable key |
+| Create | `create annotation in Module ( Caption: 'text' );` | New notes get Studio Pro's defaults: position (60, 240), width 440 |
+| Create with layout | `create annotation in Module ( Caption: $$Orders\nmulti-line$$, Position: (60, 40), Width: 400 );` | Caption accepts `$$…$$` for a multi-line note; an MDL string literal is single-line |
+| Update in place | `create or modify annotation in Module ( Caption: 'new wording', Position: (60, 40) );` | **Position is the identity when given** — reword and re-run without duplicating. An omitted `Width` keeps the stored one |
+| Drop by title | `drop annotation 'Orders' in Module;` | Refused when two notes share a first line |
+| Drop by position | `drop annotation at (60, 40) in Module;` | The unambiguous form |
+
+**There is no colour.** A domain model holds exactly four child collections
+(Annotations, Associations, CrossAssociations, Entities), and
+`DomainModels$Annotation` stores only Caption, ExportLevel, Location and Width.
+A "coloured section box" is this element in Studio Pro's own styling — nothing
+about that styling is in the model, so nothing can author it.
+
+**Give a note a Position if you intend to re-run the script.** Without one the
+only handle is the caption's first line, so rewording creates a second note
+rather than updating the first.
+
+## Microflows, Nanoflows & Rules
 
 | Statement | Syntax | Notes |
 |-----------|--------|-------|
@@ -272,8 +473,19 @@ return type (`System.ConsumedODataConfiguration` vs
 | Drop microflow | `drop microflow Module.Name;` | |
 | Drop nanoflow | `drop nanoflow Module.Name;` | |
 | Create nanoflow | `create [or modify] nanoflow Module.Name (params) returns type [folder 'path'] begin ... end;` | Same body syntax as microflows |
+| Expose in the toolbox | `create microflow Module.Name () exposed as microflow action 'Caption' in 'Category' begin ... end;` | Studio Pro's "Expose as microflow action". A microflow has **two** toolbox entries, so the clause names which |
+| Expose to the workflow editor | `... exposed as workflow action 'Caption' in 'Category' ...` | The second entry; both may be set on one microflow |
+| Toolbox bitmaps | `... exposed as microflow action 'C' in 'Cat' icon 'i.png' image 'm.png' ...` | Icon 64x64 PNG, image 256x192; `icon dark`/`image dark` for the dark variants. Paths relative to the .mdl file's own directory |
+| Remove a toolbox entry | `... not exposed as workflow action ...` | An **omitted** clause preserves what is stored — icon and image included — so removal is explicit. Nanoflows and rules refuse the clause: only a microflow stores one |
 | Move nanoflow | `move nanoflow Module.Name to folder 'path';` | |
 | Nanoflow restrictions | N/A | No Java actions, ErrorEvent, REST calls, database queries, external actions, download file, workflow actions, import/export mappings, JSON transformation, show home page |
+| Show rules | `show rules [in module];` | `list rules` is the same statement |
+| Describe rule | `describe rule Module.Name;` | Round-trippable |
+| Create rule | `create [or modify] rule Module.Name (params) returns Boolean\|enum Module.Enum [folder 'path'] begin ... end;` | Same body syntax as microflows |
+| Drop rule | `drop rule Module.Name;` | |
+| Move rule | `move rule Module.Name to folder 'path';` | |
+| Call a rule | `if Module.Rule_Name(Param = $Value) then ... end if;` | A decision is the ONLY place a rule can be called |
+| Rule restrictions | N/A | Return type must be Boolean or an enumeration (mxbuild CE0103/CE0139); no create/change/delete/commit/rollback, no client interaction, no web-service calls (CE0009). There is no `grant execute on rule` — a rule stores no module-role security |
 
 ## Microflows - Supported Statements
 
@@ -285,26 +497,31 @@ it is for pages.
 
 | Statement | Syntax | Notes |
 |-----------|--------|-------|
-| Variable declaration | `declare $Var type = value;` | Primitives: String, Integer, Boolean, Decimal, DateTime |
+| Variable declaration | `declare $Var type = value;` | Primitives: String, Integer, Boolean, Decimal, DateTime. The value is **required** — Mendix has no uninitialized variable and a bare `declare` is CE0038 / MDL061. Lists (MDL040) and objects (MDL043) cannot be declared at all |
 | Entity declaration | `declare $entity Module.Entity;` | No AS keyword, no = empty |
 | List declaration | `declare $list list of Module.Entity = empty;` | |
 | Assignment | `set $Var = expression;` | Variable must be declared first |
-| Create object | `$Var = create Module.Entity (attr = value) [commit [without events]];` | `commit` = Commit Yes, `commit without events` = YesWithoutEvents; omitted = No (the default) |
+| Create object | `$Var = create Module.Entity (attr = value) [commit [without events]] [refresh];` | `commit` = Commit Yes, `commit without events` = YesWithoutEvents; omitted = No (the default) |
 | Change object | `change $entity (attr = value) [commit [without events]] [refresh];` | `commit` as above, before `refresh`; `refresh` updates the changed object in the client |
-| Commit | `commit $entity [with events] [refresh];` | |
-| Delete | `delete $entity;` | |
+| Commit | `commit $entity [without events] [refresh];` | **Omitted = with events**, matching Studio Pro's default. `without events` is the deviation and the only form that changes the stored value; `with events` still parses and means the default |
+| Delete | `delete $entity [refresh];` | |
 | Rollback | `rollback $entity [refresh];` | Reverts uncommitted changes |
 | Retrieve (DB) | `retrieve $Var from Module.Entity [where condition];` | Database XPath retrieve |
 | Retrieve (Assoc) | `retrieve $list from $Parent/Module.AssocName;` | Retrieve by association |
 | Add to list | `add expression to $list;` | Also accepts existing `add $item to $list;` form |
-| Call microflow | `$Result = call microflow Module.Name (Param = $value);` | |
+| Call microflow | `$Result = call microflow Module.Name (Param = $value);` | A Mendix **expression** cannot call anything — `declare $r Boolean = Module.Name(...)` is CE0117 (MDL066) |
+| Call a rule | `if Module.SomeRule (Param = $value) then ... end if;` | A decision is the **only** place a rule can be evaluated; there is no call activity for one. The name must resolve to a rule — a microflow there is CE0117 |
+| Call microflow on a queue | `call microflow Module.Name (Param = $value) in queue Module.Queue;` | Background execution; the queue must exist (CE1613) |
+| Call Java action on a queue | `call java action Module.Name (Param = $value) in queue Module.Queue;` | The Java action must `returns void`, else CE7038 |
 | Call nanoflow | `$Result = call nanoflow Module.Name (Param = $value);` | |
 | Call JS action | `$Result = call javascript action Module.Name (Param = $value);` | JavaScript action (nanoflow/microflow) |
 | Call Java action | `$Result = call java action Module.Name (Param = $value);` | Java action (microflow only) |
 | Call web service | `$Result = call web service Module.Service operation OperationName;` | Legacy SOAP; quoted refs are fallback for dangling raw IDs |
 | Call web service raw | `$Result = call web service raw 'base64-bson';` | Escape hatch for byte-for-byte legacy SOAP round-trip |
 | REST call (string) | `$Var = rest call get '<url>' returns string;` | Body as string |
-| REST call (response) | `$Var = rest call get '<url>' returns response;` | `System.HttpResponse` object |
+| REST call (response) | `$Var = rest call get '<url>' returns response;` | `System.HttpResponse` object. There is no specialization form — Mendix does not allow HttpResponse to be specialized (CE1540) |
+| REST call (file document) | `$Var = rest call get '<url>' returns Module.MyFile;` | Stores the body in a file document. Must be a **specialization** of `System.FileDocument` — the base type is rejected as a return type (CE0362 / MDL064) |
+| REST call (binary body) | `rest call post '<url>' header 'ContentType' = 'application/pdf' body binary $Doc/Contents returns response;` | Uploads raw bytes (`Microflows$BinaryRequestHandling`). The expression is the FileDocument's **Contents member**, not the document. A consumed REST **client document** has no binary body — `Body: FILE FROM $Doc` there is refused as MDL-REST02 |
 | REST call (mapping single) | `$Var = rest call get '<url>' returns mapping Module.IMM as Module.Entity;` | Single object — Studio Pro emits `ForceSingleOccurrence=true` |
 | REST call (mapping list) | `$Var = rest call get '<url>' returns mapping Module.IMM as list of Module.Entity;` | List result |
 | REST call (none) | `rest call get '<url>' returns nothing;` | Discard response |
@@ -316,27 +533,47 @@ it is for pages.
 | Validation | `validation feedback $entity/attribute message 'message';` | Requires attribute path + MESSAGE |
 | Log | `log info\|warning\|error [node 'name'] 'message';` | |
 | Position | `@position(x, y)` | Canvas position (before activity) |
+| Start event | `@start(x, y)` | Canvas position of the start, on the **first** statement. Omit it and the start is placed one spacing unit left of the first activity and MOVES with it on a rewrite; a start that is not at that derived spot is treated as hand-placed, survives a rewrite, and is emitted by DESCRIBE (#951) |
 | Caption | `@caption 'text'` | Custom caption (before activity) |
 | Color | `@color Green` | Background color (before activity) |
 | Annotation | `@annotation 'text'` | Visual note attached to next activity |
 | Free annotation | `@annotation 'text'` before `@position(...)` | Free-floating visual note preserved by order |
 | IF | `if condition then ... [else ...] end if;` | |
-| Enum split | `case $Var when Value then ... end case;` | Enumeration decision branches |
-| Type split | `split type $Var case Module.Entity ... end split;` | Runtime specialization branches |
+| Enum split | `case $Var when Value then ... end case;` | Enumeration decision branches. Bare enum values (never quoted or qualified), one branch per value **including `(empty)`** (MDL056), no `else` (MDL008), no `AS` alias |
+| Type split | `split type $Var when Module.Entity then ... when (empty) then ... end split;` | Runtime specialization branches. Same `when ... then` shape as the enum split. Needs a branch per subtype **and** the base entity (CE0090); `when (empty) then` is the **null-object** flow, not a default, and cannot be omitted (CE0089). Legacy `case Module.Entity` / `else` still parse (MDL065 warns) |
 | Cast | `cast $SpecificVar;` | Downcast inside a type split branch |
-| LOOP | `loop $item in $list begin ... end loop;` | FOR EACH over list |
+| LOOP | `loop $item in $list begin ... end loop;` | FOR EACH over list. No `return` inside — an End event cannot sit in a loop (CE0068 / MDL062); use `break` and return after the loop |
 | WHILE | `while condition begin ... end while;` | Condition-based loop |
-| Return | `return $value;` | Required at end of every flow path |
+| Return | `return $value;` | Required at end of every flow path, and never inside a loop (MDL062) |
+| List range (paging) | `$Page = range($List, <offset>, <amount>);` | **Offset first, then amount.** `range($L, 0, $N)` = first N; `range($L, $Off)` = skip and take the rest. At least one bound is required — a bare `range($L)` is CE6520 / MDL068. Stored as a `CustomRange` nested inside the `ListRange` |
 | Execute DB query | `$Result = execute database query Module.Conn.Query;` | 3-part name; supports DYNAMIC, params, CONNECTION override |
-| Import mapping | `[$Var =] import from mapping Module.IMM($SourceVar);` | Apply import mapping to string variable |
+| Import mapping | `[$Var =] import from mapping Module.IMM($SourceVar) [all\|first\|limit <e> [offset <e>]];` | Apply import mapping to string variable. Trailing clause is Studio Pro's Range; omitted = infer from the mapping's root. `first` binds one OBJECT (`limit 1` is a one-element LIST). Mendix rejects `offset` on a non-list mapping (CE6100) |
 | Export mapping | `$Var = export to mapping Module.EMM($EntityVar);` | Apply export mapping to entity, returns string |
 | Error handling | `... on error continue\|rollback\|{ handler };` | Not supported on EXECUTE DATABASE QUERY |
+
+**Activity defaults.** An omitted modifier always means Mendix's own default, so a
+bare MDL statement produces the same activity as dragging a fresh one onto the
+canvas in Studio Pro:
+
+| Activity | Commit | With events | Refresh in client |
+|----------|--------|-------------|-------------------|
+| `create` | No | — | No |
+| `change` | No | — | No |
+| `commit` | — | **Yes** | No |
+| `delete` | — | — | No |
+| `rollback` | — | — | No |
+
+`commit` is the only one whose default is ON, which is why it is the only one
+with a `without` form. Before #895 mxcli wrote it OFF: the commit event handlers
+silently did not run, and no tool reported it — a commit that skips its handlers
+is a valid model, so `mxcli check`, `mxcli lint`, Studio Pro's consistency check
+and `mxbuild` were all clean. Only the running app showed it.
 
 ## Microflows - NOT Supported (Will Cause Parse Errors)
 
 | Unsupported | Use Instead | Notes |
 |-------------|-------------|-------|
-| `case ... when ... end case` | Nested `if ... else ... end if` | Switch not implemented |
+| `case ... when 'String' ... else ...` | Bare enum values, one branch per value | `case` itself IS supported for **enum splits** (see above); what fails is quoted/qualified values, an `else` branch, and an `AS` alias |
 | `TRY ... CATCH ... end TRY` | `on error { ... }` blocks | Use error handlers on specific activities |
 
 **Notes:**
@@ -352,7 +589,10 @@ it is for pages.
 | Page folder | `folder: 'path'` (in properties) | `create page ... (folder: 'pages/Detail') { ... }` |
 | Drop folder | `drop folder 'path' in module;` | Folder must be empty |
 | Move folder | `move folder Module.FolderName to folder 'path';` | Target folders auto-created |
-| Move to folder | `move page\|microflow\|snippet\|nanoflow\|enumeration Module.Name to folder 'path';` | Folders created automatically |
+| Move to folder | `move <doctype> Module.Name to folder 'path';` | Folders created automatically. Any top-level doctype, spelled as `describe` spells it |
+| Move a mapping / structure | `move import mapping\|export mapping\|json structure Module.Name to folder 'path';` | |
+| Place while creating | `create <doctype> Module.Name folder 'path' ...` | Every doctype. Pages/snippets use `folder: 'path'` as a property; microflows/nanoflows a keyword before `begin` |
+| Place an existing document | `create or modify ... folder 'path' ...` | Moves it; omitting the clause leaves placement alone |
 | Move to module root | `move page Module.Name to module;` | Removes from folder |
 | Move across modules | `move page Old.Name to NewModule;` | **Breaks by-name references** — use `show impact of` first |
 | Move to folder in other module | `move page Old.Name to folder 'path' in NewModule;` | |
@@ -386,6 +626,8 @@ Nested folders use `/` separator: `'Parent/Child/Grandchild'`. Missing folders a
 | Revoke entity access (partial) | `revoke Mod.Role on Mod.Entity (read (attr));` | Partial — downgrades specific rights |
 | Set security level | `alter project security level off\|prototype\|production;` | |
 | Toggle demo users | `alter project security demo users on\|off;` | |
+| Enable guest access | `alter project security guest access on role UserRole;` | Anonymous users. The role is what visitors get — its entity access is the public surface. Mendix fails the build without one (CE0133), so `on` is refused unless a role is given or already stored. mxcli validates the role exists; Mendix does not |
+| Disable guest access | `alter project security guest access off;` | Keeps the stored role, so re-enabling needs no `role` clause |
 | Create demo user | `create demo user 'name' password 'pass' [entity Module.Entity] (UserRole, ...);` | |
 | Drop demo user | `drop demo user 'name';` | |
 
@@ -395,7 +637,7 @@ Nested folders use `/` separator: `'Parent/Child/Grandchild'`. Missing folders a
 |-----------|--------|-------|
 | Show workflows | `show workflows [in module];` | List all or filter by module |
 | Describe workflow | `describe workflow Module.Name;` | Full MDL output |
-| Create workflow | `create [or modify] workflow Module.Name parameter $Ctx: Module.Entity begin ... end workflow;` | See activity types below |
+| Create workflow | `create [or modify] workflow Module.Name [folder 'path'] parameter $Ctx: Module.Entity begin ... end workflow;` | See activity types below |
 | Drop workflow | `drop workflow Module.Name;` | |
 
 **Workflow Activity Types:**
@@ -549,11 +791,16 @@ two with a comment instead of emitting an `icon` clause that would convert them.
 | Alter configuration | `alter settings configuration 'Name' key = value;` | DatabaseType, DatabaseUrl, HttpPortNumber, etc. |
 | Alter constant | `alter settings constant 'Name' value 'val' in configuration 'cfg';` | Override constant per configuration |
 | Drop constant override | `alter settings drop constant 'Name' in configuration 'cfg';` | Reset to default value |
+| Create or modify configuration | `create or modify configuration 'Name' [key = value, ...];` | Upsert — what `describe settings` emits, so a described project replays onto a target that already has `Default` |
 | Create configuration | `create configuration 'Name' [key = value, ...];` | New server configuration. `DatabaseType` must be `Db2`, `Hsqldb`, `MySql`, `Oracle`, `PostgreSql`, `SapHana` or `SqlServer` (case-insensitive) |
 | Drop configuration | `drop configuration 'Name';` | Remove a configuration |
-| Alter language | `alter settings LANGUAGE key = value;` | DefaultLanguageCode |
+| Alter language | `alter settings LANGUAGE key = value;` | DefaultLanguageCode (must already be enabled). Set it **before** creating pages — it decides what language their captions are stored in |
+| Enable a language | `alter settings LANGUAGE add 'de_DE' [(CheckCompleteness: true, CustomDateFormat: 'yyyy-MM-dd')];` | Adds to the enabled list — the only languages a build emits translations for. A language is identified by its code; Studio Pro's "German, Germany" is derived for display and not stored |
+| Enable or modify (upsert) | `alter settings LANGUAGE add or modify 'de_DE' (CheckCompleteness: true);` | What `describe settings` emits, so a described project replays onto itself or onto one that already has the language |
+| Modify a language | `alter settings LANGUAGE modify 'de_DE' (CheckCompleteness: true);` | Changes only the options it names. `CheckCompleteness` turns on error reporting for texts with no translation in that language (the default language is always checked regardless) |
+| Disable a language | `alter settings LANGUAGE remove 'de_DE';` | The **default** language is refused (every missing translation falls back on it). Translations are NOT deleted — they stay in the model and stop being built; the run reports how many |
 | Alter workflows | `alter settings workflows key = value;` | UserEntity, DefaultTaskParallelism |
-| List languages | `show languages;` | Lists language codes with translation string counts (requires `refresh catalog full`) |
+| List languages | `show languages;` | ⚠️ languages that have TRANSLATIONS, not enabled ones (a stock app reports 8 while 1 is enabled). For the enabled list use `describe settings`. Requires `refresh catalog full` |
 
 ## Business Events
 
@@ -654,7 +901,7 @@ Respond in {{Language}}.$$,
 |-----------|--------|-------|
 | Show collections | `show image collection [in module];` | List all or filter by module |
 | Describe collection | `describe image collection Module.Name;` | Full MDL output with embedded images |
-| Create collection | `create image collection Module.Name [export level 'Hidden'\|'Public'] [comment 'text'] [(image Name from file 'path', ...)];` | With or without images |
+| Create collection | `create image collection Module.Name [folder 'path'] [export level 'Hidden'\|'Public'] [comment 'text'] [(image Name from file 'path', ...)];` | With or without images |
 | Create or modify | `create or modify image collection Module.Name [...];` | Preserves UUID — preferred for AI agents |
 | Drop collection | `drop image collection Module.Name;` | Removes collection and all embedded images |
 
@@ -831,9 +1078,18 @@ source json '{"latitude": 51.9, "current": {"temp": 12.8}}'
 |-----------|--------|-------|
 | Show mappings | `show import mappings [in module];` | List all or filter by module |
 | Describe mapping | `describe import mapping Module.Name;` | Re-executable CREATE statement |
-| Create mapping | See below | Assignment syntax: `attr = jsonField` |
+| Create mapping | See below | Assignment syntax: `attr = jsonField`, or `attr = a/b/c` to reach a nested leaf with **no entity per level** — the shape Studio Pro produces. The path may not cross a `0..*` element (CE0256) |
 | Create or modify | `create or modify import mapping Module.Name ...;` | Updates existing mapping, preserves UUID |
+| Place in a folder | `create [or modify] import mapping Module.Name folder 'path' ...;` | Clause goes after the name. On `or modify` it **moves** the mapping; omitting it leaves placement alone |
 | Drop mapping | `drop import mapping Module.Name;` | |
+| Schema source | `with json structure Module.JSON_X` / `with message definition Module.Collection.Definition` / `with xml schema Module.Schema` | A **message definition** is derived from the domain model rather than a payload sample, so its members are the definition's exposed names and the reference is **three parts** — the definitions live inside a collection document. Read-only: map over one that already exists |
+| Nested schema root | `with json structure Module.JSON_X root choices/message` | Starts the mapping at a nested element instead of the structure's root. Written in member names; the path may pass through an array, and the mapping is then rooted at the item |
+| Array-rooted structure | no special syntax | The root is taken from the structure, so `[{...}]` and `{...}` are written the same way |
+| Export grouping node | `group as wrapper { Assoc/Entity as items { ... } }` | A JSON object with no Mendix object behind it. **Object children only** — a value there has no entity to bind to, and Mendix reports CE0061 |
+| Array of primitives | `Assoc/Entity = tags { Value = Value }` (import) / `Assoc/Entity as tags { Value = Value }` (export) | `["a","b"]` maps to one entity per string. Written like any other array — the wrapper level is generated — and the primitive is the reserved member `Value` |
+| Export array | `Assoc/Entity as items { values }` | Declared like a nested object; mxcli generates the bare Array container Studio Pro stores. The older two-level form `Assoc/Entity as items { ItemAssoc/ItemEntity as ItemsItem { ... } }` still works and names an entity per level |
+| Custom object handling | `find Module.Entity by Module.Microflow ( Param: parent ) = member { ... }` | A microflow resolves the object instead of Create/Find. Parameter sources: `parent` (the enclosing mapped object), `parameter` (the mapping's own input), `parent(2)` (an ancestor N levels up), or a member path such as `idx` (a value from the payload — mxcli adds the value element Mendix requires for it). modelsdk engine only |
+| Value transform | `Attr = Module.Microflow(jsonField)` (import) / `jsonField = Module.Microflow(Attr)` (export) | The value passes through a microflow. The stored element carries only the microflow — its input **is** the member the element binds, which is why the member is named inside the call. An unresolvable microflow is refused |
 
 ```sql
 create import mapping Module.IMM_Pet
@@ -847,7 +1103,30 @@ create import mapping Module.IMM_Pet
 };
 ```
 
-**Object handling:** `create` (default), `find` (requires KEY), `find or create`
+**Input object:** an import mapping may take an object as a parameter, which a
+custom handler binds with `Param: parameter`:
+
+```sql
+create import mapping Module.IMM_Response
+  with json structure Module.JSON_Response
+  parameter GenAICommons.ChunkCollection
+{ ... }
+```
+
+Import only — an export mapping's parameter is its root object.
+
+**Object handling:** `create` (default), or `find` — which requires a KEY *and*
+must say what happens when nothing is found:
+
+| Syntax | When the object is not found |
+|--------|------------------------------|
+| `find Module.Entity or create` | Create one (same as `find or create Module.Entity`) |
+| `find Module.Entity or error` | Fail the import |
+| `find Module.Entity or ignore` | Skip the element |
+
+Add `overridable` (`find Module.Entity or create overridable`) to let the caller
+override the choice at import time. A bare `find` is refused: the three
+behaviours are not interchangeable, and mxcli used to pick one silently.
 
 **Nested objects:** Use association path `Assoc/entity = jsonKey`:
 ```sql
@@ -863,8 +1142,9 @@ create Module.OrderResponse_CustomerInfo/Module.CustomerInfo = customer {
 |-----------|--------|-------|
 | Show mappings | `show export mappings [in module];` | List all or filter by module |
 | Describe mapping | `describe export mapping Module.Name;` | Re-executable CREATE statement |
-| Create mapping | See below | Assignment syntax: `jsonField = attr` |
+| Create mapping | See below | Assignment syntax: `jsonField = attr`. **No nested `a/b/c` form**: an export has to produce the intermediate node, so Mendix rejects a collapsed member with CE5015 — give it its own element |
 | Create or modify | `create or modify export mapping Module.Name ...;` | Updates existing mapping, preserves UUID |
+| Place in a folder | `create [or modify] export mapping Module.Name folder 'path' ...;` | Clause goes after the name. On `or modify` it **moves** the mapping; omitting it leaves placement alone |
 | Drop mapping | `drop export mapping Module.Name;` | |
 
 ```sql
@@ -894,9 +1174,12 @@ Module.OrderResponse_CustomerInfo/Module.CustomerInfo as customer {
 |-----------|--------|-------|
 | Show Java actions | `show java actions [in module];` | List all or filtered by module |
 | Describe Java action | `describe java action Module.Name;` | Full MDL output with signature |
-| Create Java action | `create [or modify] java action Module.Name(params) returns type as $$ ... $$;` | OR MODIFY updates signature/body, preserves UUID |
+| Create Java action | `create [or modify] java action Module.Name [folder 'path'](params) returns type as $$ ... $$;` | OR MODIFY updates signature/body, preserves UUID |
 | Create with type params | `create java action Module.Name(EntityType: entity <pEntity>, Obj: pEntity) ...;` | Generic type parameters |
 | Create exposed action | `... exposed as 'caption' in 'Category' as $$ ... $$;` | Toolbox-visible in Studio Pro |
+| Exposed action with bitmaps | `... exposed as 'caption' in 'Category' icon 'i.png' icon dark 'id.png' image 'm.png' image dark 'md.png' as $$ ... $$;` | Icon 64x64 PNG, image 256x192; paths relative to the .mdl file's own directory. A wrong size warns and is written; a non-PNG is refused |
+| Remove a toolbox entry | `... not exposed as $$ ... $$;` | An **omitted** clause preserves the stored entry (bitmaps included), so removal is explicit |
+| Clear one bitmap | `... exposed as 'c' in 'C' drop icon dark as $$ ... $$;` | `drop icon\|image [dark]` clears exactly one; the others are untouched |
 | Rename Java action | `rename java action Module.Old to New;` | Renames BSON unit and .java source file |
 | Rename Java action (dry run) | `rename java action Module.Old to New dry run;` | Preview reference changes without modifying |
 | Drop Java action | `drop java action Module.Name;` | Deletes MPR unit and .java source file |
@@ -904,7 +1187,7 @@ Module.OrderResponse_CustomerInfo/Module.CustomerInfo as customer {
 | Empty argument | `call java action Module.Name(Param = empty);` | Unbound code-action parameter preserved as empty mapping |
 | Show JavaScript actions | `show javascript actions [in module];` | List all or filtered by module |
 | Describe JavaScript action | `describe javascript action Module.Name;` | Re-executable MDL with signature + body |
-| Create JavaScript action | `create [or modify] javascript action Module.Name(params) returns type [platform Web] as $$ ... $$;` | Writes the unit + `javascriptsource/<Module>/actions/<Name>.js`; OR MODIFY preserves UUID |
+| Create JavaScript action | `create [or modify] javascript action Module.Name [folder 'path'](params) returns type [platform Web] as $$ ... $$;` | Writes the unit + `javascriptsource/<Module>/actions/<Name>.js`; OR MODIFY preserves UUID |
 | Create exposed/native | `... exposed as 'caption' in 'Category' platform Native as $$ ... $$;` | `platform` is Web (default), Native, Hybrid, or All |
 | Drop JavaScript action | `drop javascript action Module.Name;` | Deletes MPR unit and .js source file |
 | Call from nanoflow | `$Result = call javascript action Module.Name(Param = value);` | Inside a nanoflow |
@@ -956,6 +1239,28 @@ MDL uses explicit property declarations for pages:
 | Paging position | `PagingPosition: pos` | `datagrid dg (PagingPosition: both)` |
 | Paging buttons | `ShowPagingButtons: mode` | `datagrid dg (ShowPagingButtons: auto)` |
 
+**Layouts:**
+
+| Operation | Syntax | Notes |
+|-----------|--------|-------|
+| List layouts | `show layouts [in module];` | |
+| Describe layout | `describe layout Module.Name;` | Round-trippable MDL — describe an Atlas layout, rename it, run it to get a copy in your own module |
+| Create layout | `create [or replace] layout Module.Name ( layouttype: 'X' ) { <widgets> };` | modelsdk engine only. Refused in a Marketplace module: an update replaces the module and the edit is gone |
+| Alter layout | `alter layout Module.Name { <alter-page operations> };` | Edits the stored document, so widgets MDL cannot spell survive. Refused for a Marketplace target |
+| Repoint one page | `alter page Module.Page { set Layout = Module.Layout [map (Old as New, …)]; };` | Rewrites the layout reference **and** every placeholder binding |
+| Repoint many pages | `alter pages [in <module>] set layout = Module.Layout [map (…)] [where layout = Module.Old];` | The migration form. Marketplace pages are skipped and named. A `where layout` that names no real layout is an error, not a 0-page success |
+
+| Layout element | Syntax | Notes |
+|----------------|--------|-------|
+| Layout type | `layouttype: 'Responsive' \| 'Phone' \| 'Tablet' \| 'ModalPopup'` (web) · `'Default' \| 'Popup'` (native) | The two vocabularies are disjoint, so the platform is inferred — there is no `native:` flag |
+| Layout class | `class: 'layout-atlas layout-atlas-responsive-topbar'` | **Load-bearing.** Atlas scopes ~24 layout rules to `.layout-atlas`; without it the layout builds clean and renders with no topbar bar or sidebar rail. Use `-responsive-default` for sidebar navigation; popups are bare |
+| Scroll container | `scrollcontainer name { <regions> }` | The layout's root; its children are regions, not widgets |
+| Region | `region top \| right \| bottom \| left \| center [( size: N, sizemode: 'Fixed'\|'Pixels'\|'Auto', class: '…' )] { <widgets> }` | Five named slots, not a list. One region per slot |
+| Placeholder | `placeholder Main` | The slot a page's content goes into. The name is API — a page binds as `Module.Layout.<Name>`. Name one `Main`: that is how Mendix picks the main placeholder (`Forms$Layout` has no property for it). At least one is required |
+| Navigation tree | `navigationtree name (profile: 'Responsive')` | The sidebar menu (vertical); the profile is a navigation profile name |
+| Menu bar | `menubar name (profile: 'Responsive')` | The topbar menu (horizontal); same stored shape as a navigation tree |
+| Region as ALTER target | `<scrollContainerName>.<slot>` | A region has no name — its slot is its identity. `INSERT INTO layoutContainer.top { … }`. Only `INSERT INTO`; use a widget name for `BEFORE`/`AFTER` |
+
 **Snippets & Building Blocks (read-only discovery):**
 
 | Operation | Syntax | Notes |
@@ -964,6 +1269,12 @@ MDL uses explicit property declarations for pages:
 | Describe snippet | `describe snippet Module.Name;` | Round-trippable MDL output |
 | List building blocks | `show building blocks [in module];` | Read-only; cannot be authored via MDL |
 | Describe building block | `describe building block Module.Name;` | Informational (header comment + widget tree), not a `create` statement |
+| Create menu | `create [or modify] menu Module.Name [folder 'path'] ( <items> );` | Standalone `Menus$MenuDocument`. Full replacement: the item list is the document's complete contents |
+| Describe menu | `describe menu Module.Name;` | Round-trippable MDL. Not the navigation-profile menu — see `show navigation menu` |
+| Drop menu | `drop menu Module.Name;` | |
+| Create menu | `create [or modify] menu Module.Name [folder 'path'] ( <items> );` | Standalone `Menus$MenuDocument`. Full replacement: the item list is the document's complete contents |
+| Describe menu | `describe menu Module.Name;` | Round-trippable MDL. Not the navigation-profile menu — see `show navigation menu` |
+| Drop menu | `drop menu Module.Name;` | |
 
 **DataGrid Column Properties:**
 
@@ -1019,6 +1330,50 @@ create page MyModule.Customer_Edit
 - Layout: `layoutgrid`, `row`, `column`, `container`, `customcontainer`
 - Input: `textbox`, `textarea`, `checkbox`, `radiobuttons`, `datepicker`, `combobox`
 - Display: `dynamictext`, `datagrid`, `gallery`, `listview`, `image`, `staticimage`, `dynamicimage`
+
+### List View specialization templates
+
+A List View over a generalization can render a different body per specialization.
+The template is identified by the **entity** it renders — it has no name:
+
+```sql
+listview vehicleListView (DataSource: database from Pages.Vehicle) {
+  dynamictext defaultVehicle (Content: '{1}', ContentParams: [{1} = Brand])
+
+  template for Pages.Bus {
+    dynamictext busLabel (Content: 'Bus, capacity {1}', ContentParams: [{1} = PassengerCapacity])
+  }
+  template for Pages.Truck {
+    dynamictext truckLabel (Content: 'Truck, max load {1} kg', ContentParams: [{1} = MaxLoadKg])
+  }
+}
+```
+
+Widgets in the list view body are the **default** rendering, used for an object no
+template matches. Templates keep their source order — Mendix stores and matches in
+that order, so it is authored, not derived.
+
+`template for Module.Entity` is not the same statement as a Gallery's
+`template <name>`, which is a named content slot. The entity must be the list
+view's entity or a specialization of it, and at most one template per entity is
+allowed. Inside a template the context object is the specialization, so an
+attribute only that specialization has still resolves.
+
+Editing them with `alter page` — adding reuses `insert into` with the same block;
+removing needs its own form, because a template has no name:
+
+```sql
+alter page Pages.Vehicle_Overview {
+  insert into vehicleListView {
+    template for Pages.Motorcycle { dynamictext mcLabel (Content: 'M') }
+  };
+  drop template for Pages.SUV in vehicleListView
+};
+```
+
+Naming the list view in the `drop` is required: one page can hold two list views
+with a template for the same entity. Widgets inside a template are ordinary named
+widgets, so `set … on busLabel` and `insert after busLabel { … }` need nothing new.
 - Actions: `actionbutton`, `linkbutton`, `navigationlist`
 - Structure: `dataview`, `header`, `footer`, `controlbar`, `snippetcall`
 
@@ -1157,6 +1512,37 @@ sql disconnect source;
 
 CLI subcommand: `mxcli sql --driver postgres --dsn '...' "select 1"` (see `mxcli syntax sql`). Supported drivers: `postgres` (pg, postgresql), `oracle` (ora), `sqlserver` (mssql).
 
+## Translations
+
+Bulk translation of every user-visible string, one file per language. Entries use
+`as`, not a colon: a translation maps a user-provided name to another name.
+
+| Statement | Syntax | Notes |
+|-----------|--------|-------|
+| Describe | `describe translations [in Module] for <lang>;` | Emits the CREATE form; an untranslated string comes back with an **empty** target, which is what makes the output an LLM prompt |
+| Create | `create translations [in Module] for <lang> ( 'src' as 'target', ... );` | The language is the thing that exists — **errors** if it already has translations |
+| Merge | `create or modify translations ...` | A source the file does not name is left alone |
+| Replace | `create or replace translations ...` | The file is authoritative: a translation whose source it does not name is **REMOVED**, and the run says which. `in Module` **bounds** the deletion |
+| Remove a language's translations | `create or replace translations [in Module] for <lang> ( );` | An empty file is authoritative over nothing, so everything in scope goes — the only way to take a language's translations out of the model |
+| Show languages | `show languages;` | ⚠️ languages that **have translations**, not enabled ones — a stock app reports 8 while 1 is enabled. The enabled list is in `describe settings`. Needs `refresh catalog full` |
+| Default language | `alter settings LANGUAGE DefaultLanguageCode = 'en_US';` | The language a translation file's left column is written in — **and the language a new `Caption:`/`Title:` is stored under**, so set it before authoring content. Changing it later does not move existing text and nothing warns |
+
+**A translation for a language the project has not enabled is discarded at build
+time** — it is stored in the model, passes `mx check`, and produces no
+`translations_<code>.properties` at all. The run warns; enable the language in
+project settings first.
+
+Keyed on the **source string**, so one entry translates every occurrence. A key
+that matches nothing is **reported**, not skipped — a source edited after the
+file was written stops matching, and the run names the string it has probably
+become.
+
+```bash
+mxcli -p app.mpr -c "describe translations for de_DE" > de_DE.mdl
+# fill in the right-hand side (by hand or with an LLM)
+mxcli exec de_DE.mdl -p app.mpr
+```
+
 ## Catalog & Search
 
 | Statement | Syntax | Notes |
@@ -1165,7 +1551,7 @@ CLI subcommand: `mxcli sql --driver postgres --dsn '...' "select 1"` (see `mxcli
 | Refresh with refs | `refresh catalog full;` | Include cross-references and source |
 | Show catalog tables | `show catalog tables;` | List available queryable tables |
 | Query catalog | `select ... from CATALOG.<table> [where ...];` | SQL against project metadata |
-| Show callers | `show callers of Module.Name;` | What calls this element |
+| Show callers | `show callers of Module.Name;` | What INVOKES this element: microflow call activities, page action buttons and other widget actions, calculated attributes, and navigation entries. A page counts as a caller of the microflow its button runs, and of the page that button opens |
 | Show callees | `show callees of Module.Name;` | What this element calls |
 | Show references | `show references of Module.Name;` | All references to/from |
 | Show impact | `show impact of Module.Name;` | Impact analysis |
@@ -1173,6 +1559,8 @@ CLI subcommand: `mxcli sql --driver postgres --dsn '...' "select 1"` (see `mxcli
 | Full-text search | `search '<keyword>';` | Search across all strings and source |
 
 Cross-reference commands require `refresh catalog full` to populate reference data.
+
+`show callers` covers invocation only. A document that merely *uses a type* — an entity as a page datasource, a microflow parameter, an entity's generalization — is not a caller of it; `show references to` lists those.
 
 ## Connection & Session
 

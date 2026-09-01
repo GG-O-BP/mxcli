@@ -16,18 +16,22 @@ import (
 
 // flowBuilder helps construct the flow graph from AST statements.
 type flowBuilder struct {
-	objects             []microflows.MicroflowObject
-	flows               []*microflows.SequenceFlow
-	annotationFlows     []*microflows.AnnotationFlow
-	posX                int
-	posY                int
-	baseY               int // Base Y position (for returning after ELSE branches)
-	spacing             int
-	returnValue         string // Return value expression for RETURN statement (used by buildFlowGraph final EndEvent)
-	returnType          *ast.MicroflowReturnType
-	endsWithReturn      bool              // True if the flow already ends with EndEvent(s) from RETURN statements
-	lastReturnEndID     model.ID          // Last explicit RETURN EndEvent, used as a fallback error-handler target
-	varTypes            map[string]string // Variable name -> entity qualified name (for CHANGE statements)
+	objects         []microflows.MicroflowObject
+	flows           []*microflows.SequenceFlow
+	annotationFlows []*microflows.AnnotationFlow
+	posX            int
+	posY            int
+	baseY           int // Base Y position (for returning after ELSE branches)
+	spacing         int
+	returnValue     string // Return value expression for RETURN statement (used by buildFlowGraph final EndEvent)
+	returnType      *ast.MicroflowReturnType
+	endsWithReturn  bool              // True if the flow already ends with EndEvent(s) from RETURN statements
+	lastReturnEndID model.ID          // Last explicit RETURN EndEvent, used as a fallback error-handler target
+	varTypes        map[string]string // Variable name -> entity qualified name (for CHANGE statements)
+	// textLang is the language a bare message/caption string is stored under
+	// (mendixlabs/mxcli#970). Empty means en_US, which keeps a zero-value
+	// flowBuilder — validateFlowBody builds one — behaving as before.
+	textLang            string
 	declaredVars        map[string]string // Declared primitive variables: name -> type (e.g., "$IsValid" -> "Boolean")
 	errors              []string          // Validation errors collected during build
 	measurer            *layoutMeasurer   // For measuring statement dimensions
@@ -46,7 +50,18 @@ type flowBuilder struct {
 	// continues) so the continuing branch's @anchor survives to the actual
 	// splitID→nextActivity flow — which is emitted one iteration later by the
 	// outer loop, not by addIfStatement.
-	nextFlowAnchor       *ast.FlowAnchors
+	nextFlowAnchor *ast.FlowAnchors
+	// curveByOrigin holds each statement's @curve keyed by the activity it was
+	// written on, applied to that activity's outgoing flows by applyFlowCurves
+	// once the graph is complete. (#884)
+	curveByOrigin map[model.ID]*ast.FlowCurve
+	// startPosition is the StartEvent position read off the microflow being
+	// REPLACED, carried over so a hand-laid-out start survives the rebuild. The
+	// start has no MDL statement to annotate and DESCRIBE cannot emit it, so
+	// without this a describe→exec round-trip silently moved it (a Studio Pro
+	// flow's 145;200 became 100;200). Nil on a fresh CREATE, where the position
+	// is derived from the first annotated activity as before.
+	startPosition        *model.Point
 	backend              backend.FullBackend          // For looking up page/microflow references
 	hierarchy            *ContainerHierarchy          // For resolving container IDs to module names
 	pendingAnnotations   *ast.ActivityAnnotations     // Pending annotations to attach to next activity
@@ -596,6 +611,20 @@ func (fb *flowBuilder) buildSplitCondition(expr ast.Expression, fallbackExpressi
 	if ruleCond := fb.tryBuildRuleSplitCondition(expr); ruleCond != nil {
 		return ruleCond
 	}
+	// A qualified call that did NOT resolve to a rule cannot become a condition
+	// either: Mendix expressions have no user-callable functions, so falling back
+	// to an ExpressionSplitCondition here writes text the build rejects with
+	// CE0117. MDL066 catches the same mistake in value positions without needing a
+	// project; this is the decision position, where telling a rule from a
+	// microflow needs the backend. Refuse rather than write it (#939).
+	if call := unwrapParenCall(expr); call != nil && strings.Contains(call.Name, ".") {
+		fb.addErrorWithExample(fmt.Sprintf(
+			"if condition calls '%s(...)', which is not a rule in this project — a decision "+
+				"can only call a rule, and a Mendix expression cannot call anything, so the "+
+				"build fails CE0117 \"Error(s) in expression\"", call.Name),
+			"    $Result = CALL MICROFLOW "+call.Name+" (...);\n"+
+				"    if $Result then ... end if;")
+	}
 	return &microflows.ExpressionSplitCondition{
 		BaseElement: model.BaseElement{ID: model.ID(types.GenerateID())},
 		Expression:  fallbackExpression,
@@ -684,4 +713,15 @@ func extractNamedArg(expr ast.Expression) (string, ast.Expression) {
 		}
 	}
 	return "", nil
+}
+
+// textLangOrDefault is the language this builder stores a bare message/caption
+// string under. A zero-value flowBuilder (validateFlowBody builds one, and it
+// never writes) reports en_US, so the fallback is identical to the pre-#970
+// behaviour rather than an empty LanguageCode.
+func (fb *flowBuilder) textLangOrDefault() string {
+	if fb.textLang == "" {
+		return fallbackLanguageCode
+	}
+	return fb.textLang
 }

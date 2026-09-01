@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/mendixlabs/mxcli/model"
@@ -206,6 +207,170 @@ func emitAnchorAnnotationWithActivityMap(
 		return
 	}
 	*lines = append(*lines, indentStr+fmt.Sprintf("@anchor(%s)", strings.Join(parts, ", ")))
+}
+
+// emitCurveAnnotation emits @curve(...) for the bezier control vectors on the
+// flow LEAVING this activity.
+//
+// Without it the shape of a hand-curved edge does not round-trip: DESCRIBE was
+// identical before and after the curve was drawn, so re-executing the output
+// reset the line to "0;0" and flattened it. The vectors are stored as "x;y"
+// strings on the flow's Microflows$BezierCurve line; "0;0" is straight and is
+// omitted, so an untouched flow describes exactly as it did before. (#884)
+func emitCurveAnnotation(
+	obj microflows.MicroflowObject,
+	flowsByOrigin map[model.ID][]*microflows.SequenceFlow,
+	activityMap map[model.ID]microflows.MicroflowObject,
+	lines *[]string,
+	indentStr string,
+) {
+	outgoing := flowsByOrigin[obj.GetID()]
+	var flow *microflows.SequenceFlow
+	for _, f := range outgoing {
+		if isNonWritableLoopBodyTailFlow(obj.GetID(), f, activityMap) {
+			continue
+		}
+		flow = f
+		break
+	}
+	if flow == nil {
+		return
+	}
+	var parts []string
+	if p, ok := controlVectorPair(flow.OriginControlVector); ok {
+		parts = append(parts, "from: "+p)
+	}
+	if p, ok := controlVectorPair(flow.DestinationControlVector); ok {
+		parts = append(parts, "to: "+p)
+	}
+	if len(parts) == 0 {
+		return
+	}
+	*lines = append(*lines, indentStr+fmt.Sprintf("@curve(%s)", strings.Join(parts, ", ")))
+}
+
+// emitMergeAnnotation emits @merge(x, y) for the implicit merge node that closes
+// a split.
+//
+// Without it the merge position does not round-trip: the layout pass recomputes
+// it on the next exec, so a merge moved off a neighbour goes straight back on
+// top of it. The split's own @position belongs to the split, hence a separate
+// annotation.
+//
+// The merge is found by walking forward from EVERY branch of the split and
+// taking the first node reachable from all of them that is an ExclusiveMerge.
+// The describer's own split→merge map is not in scope at this call site, and
+// threading it here would mean touching ten-plus call sites of
+// emitObjectAnnotations — the multi-site change that silently skips one. Both
+// inputs this needs are already parameters. (upstream #884)
+func emitMergeAnnotation(
+	obj microflows.MicroflowObject,
+	flowsByOrigin map[model.ID][]*microflows.SequenceFlow,
+	activityMap map[model.ID]microflows.MicroflowObject,
+	lines *[]string,
+	indentStr string,
+) {
+	if activityMap == nil {
+		return
+	}
+	switch obj.(type) {
+	case *microflows.ExclusiveSplit, *microflows.InheritanceSplit:
+	default:
+		return
+	}
+	merge := commonMergeAfter(obj.GetID(), flowsByOrigin, activityMap)
+	if merge == nil {
+		return
+	}
+	p := merge.GetPosition()
+	*lines = append(*lines, indentStr+fmt.Sprintf("@merge(%d, %d)", p.X, p.Y))
+}
+
+// commonMergeAfter returns the nearest ExclusiveMerge reachable from every
+// outgoing branch of splitID, or nil when the branches do not rejoin (each
+// returns, say).
+//
+// Bounded: a microflow canvas is small, but a retry loop makes the flow graph
+// cyclic, so the walk carries a visited set per branch and a hard node cap.
+func commonMergeAfter(
+	splitID model.ID,
+	flowsByOrigin map[model.ID][]*microflows.SequenceFlow,
+	activityMap map[model.ID]microflows.MicroflowObject,
+) microflows.MicroflowObject {
+	const maxNodes = 500
+
+	branches := flowsByOrigin[splitID]
+	if len(branches) < 2 {
+		return nil
+	}
+
+	// Merges reachable from one branch, in breadth-first order.
+	reachable := func(start model.ID) []model.ID {
+		var order []model.ID
+		seen := map[model.ID]bool{splitID: true}
+		queue := []model.ID{start}
+		for len(queue) > 0 && len(seen) < maxNodes {
+			id := queue[0]
+			queue = queue[1:]
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			if _, isMerge := activityMap[id].(*microflows.ExclusiveMerge); isMerge {
+				order = append(order, id)
+			}
+			for _, f := range flowsByOrigin[id] {
+				if !seen[f.DestinationID] {
+					queue = append(queue, f.DestinationID)
+				}
+			}
+		}
+		return order
+	}
+
+	first := reachable(branches[0].DestinationID)
+	if len(first) == 0 {
+		return nil
+	}
+	inAll := map[model.ID]int{}
+	for _, id := range first {
+		inAll[id] = 1
+	}
+	for _, b := range branches[1:] {
+		for _, id := range reachable(b.DestinationID) {
+			if inAll[id] > 0 {
+				inAll[id]++
+			}
+		}
+	}
+	// Preserve the first branch's breadth-first order, so "nearest" wins.
+	for _, id := range first {
+		if inAll[id] == len(branches) {
+			return activityMap[id]
+		}
+	}
+	return nil
+}
+
+// controlVectorPair renders a stored "x;y" control vector as "(x, y)", reporting
+// false for the straight-line default so an untouched edge emits nothing.
+func controlVectorPair(v string) (string, bool) {
+	if v == "" || v == "0;0" {
+		return "", false
+	}
+	x, y, found := strings.Cut(v, ";")
+	if !found {
+		return "", false
+	}
+	xi, errX := strconv.Atoi(strings.TrimSpace(x))
+	yi, errY := strconv.Atoi(strings.TrimSpace(y))
+	if errX != nil || errY != nil {
+		return "", false
+	}
+	if xi == 0 && yi == 0 {
+		return "", false
+	}
+	return fmt.Sprintf("(%d, %d)", xi, yi), true
 }
 
 func isNonWritableLoopBodyTailFlow(originID model.ID, flow *microflows.SequenceFlow, activityMap map[model.ID]microflows.MicroflowObject) bool {
@@ -479,6 +644,8 @@ func emitObjectAnnotations(
 		// The emitter sorts out the right form (simple / split / loop) based on
 		// the object type.
 		emitAnchorAnnotationWithActivityMap(obj, flowsByOrigin, flowsByDest, activityMap, lines, indentStr)
+		emitCurveAnnotation(obj, flowsByOrigin, activityMap, lines, indentStr)
+		emitMergeAnnotation(obj, flowsByOrigin, activityMap, lines, indentStr)
 	}
 
 	if activity, ok := obj.(*microflows.ActionActivity); ok {
@@ -1225,7 +1392,9 @@ func emitLoopBody(
 	// Find the first activity in the loop body (the one with no incoming flow from within the loop)
 	incomingCount := make(map[model.ID]int)
 	for _, loopObj := range loop.ObjectCollection.Objects {
-		incomingCount[loopObj.GetID()] = 0
+		if isFlowNode(loopObj) {
+			incomingCount[loopObj.GetID()] = 0
+		}
 	}
 	for _, flows := range loopFlowsByOrigin {
 		for _, flow := range flows {
@@ -1302,6 +1471,22 @@ func sequenceFlowIdentity(flow *microflows.SequenceFlow) string {
 		return string(flow.ID)
 	}
 	return fmt.Sprintf("%s>%s:%t:%d:%d:%v", flow.OriginID, flow.DestinationID, flow.IsErrorHandler, flow.OriginConnectionIndex, flow.DestinationConnectionIndex, flow.CaseValue)
+}
+
+// isFlowNode reports whether an object participates in the sequence-flow graph,
+// and so can legitimately start a loop body.
+//
+// An Annotation is an object in ObjectCollection.Objects but connects through
+// AnnotationFlows, never through Flows — so its incoming-sequence-flow count is
+// permanently 0 and it looked like a start candidate to preferLoopBodyStart,
+// which picks leftmost-then-topmost. Studio Pro places annotations above/left of
+// what they describe, so the annotation usually won, traversal began at a node
+// with no outgoing sequence flow, and the entire loop body vanished from
+// describe output — silently, at exit 0 (#965). Annotations reach the output
+// through annotationsByTarget instead, attached to the activity they point at.
+func isFlowNode(obj microflows.MicroflowObject) bool {
+	_, isAnnotation := obj.(*microflows.Annotation)
+	return !isAnnotation
 }
 
 func preferLoopBodyStart(candidate, current microflows.MicroflowObject) bool {
@@ -1404,13 +1589,17 @@ func emitEnumSplitStatement(
 		branches = append(branches, enumBranch{values: []string{caseValue}, flow: flow})
 	}
 
+	// Bodies traverse at indent+2, one level in from their `when` at indent+1.
+	// They used to traverse at indent+1 — the SAME column as the `when` — which
+	// made a nested `if`'s `else` land exactly where a reader expects a branch
+	// keyword, in output where an `else` on a `case` is an MDL008 error (#913).
 	for _, branch := range branches {
 		*lines = append(*lines, indentStr+"  when "+formatEnumSplitCaseValues(branch.values)+" then")
-		traverseFlowUntilMerge(ctx, branch.flow.DestinationID, mergeID, activityMap, flowsByOrigin, flowsByDest, splitMergeMap, cloneVisited(visited), entityNames, microflowNames, lines, indent+1, sourceMap, headerLineCount, annotationsByTarget)
+		traverseFlowUntilMerge(ctx, branch.flow.DestinationID, mergeID, activityMap, flowsByOrigin, flowsByDest, splitMergeMap, cloneVisited(visited), entityNames, microflowNames, lines, indent+2, sourceMap, headerLineCount, annotationsByTarget)
 	}
 	if elseFlow != nil {
 		*lines = append(*lines, indentStr+"  else")
-		traverseFlowUntilMerge(ctx, elseFlow.DestinationID, mergeID, activityMap, flowsByOrigin, flowsByDest, splitMergeMap, cloneVisited(visited), entityNames, microflowNames, lines, indent+1, sourceMap, headerLineCount, annotationsByTarget)
+		traverseFlowUntilMerge(ctx, elseFlow.DestinationID, mergeID, activityMap, flowsByOrigin, flowsByDest, splitMergeMap, cloneVisited(visited), entityNames, microflowNames, lines, indent+2, sourceMap, headerLineCount, annotationsByTarget)
 	}
 
 	*lines = append(*lines, indentStr+"end case;")
@@ -1456,13 +1645,13 @@ func emitInheritanceSplitStatement(
 			elseFlow = flow
 			continue
 		}
-		*lines = append(*lines, indentStr+"case "+caseName)
-		traverseFlowUntilMerge(ctx, flow.DestinationID, branchStopID, activityMap, flowsByOrigin, flowsByDest, splitMergeMap, cloneVisited(visited), entityNames, microflowNames, lines, indent+1, sourceMap, headerLineCount, annotationsByTarget)
+		*lines = append(*lines, indentStr+"  when "+caseName+" then")
+		traverseFlowUntilMerge(ctx, flow.DestinationID, branchStopID, activityMap, flowsByOrigin, flowsByDest, splitMergeMap, cloneVisited(visited), entityNames, microflowNames, lines, indent+2, sourceMap, headerLineCount, annotationsByTarget)
 	}
 	if elseFlow != nil {
 		elseLineIdx := len(*lines)
-		*lines = append(*lines, indentStr+"else")
-		traverseFlowUntilMerge(ctx, elseFlow.DestinationID, branchStopID, activityMap, flowsByOrigin, flowsByDest, splitMergeMap, cloneVisited(visited), entityNames, microflowNames, lines, indent+1, sourceMap, headerLineCount, annotationsByTarget)
+		*lines = append(*lines, indentStr+"  when (empty) then")
+		traverseFlowUntilMerge(ctx, elseFlow.DestinationID, branchStopID, activityMap, flowsByOrigin, flowsByDest, splitMergeMap, cloneVisited(visited), entityNames, microflowNames, lines, indent+2, sourceMap, headerLineCount, annotationsByTarget)
 		// Remove an empty else block, as the if/else emitters above do. On an
 		// object-type decision this flow is the `(empty)` case (for a null
 		// object), which the builder emits unconditionally — CE0089 without it —

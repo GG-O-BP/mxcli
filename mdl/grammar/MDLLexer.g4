@@ -70,7 +70,6 @@ SNIPPET: S N I P P E T;
 BUILDING: B U I L D I N G;
 BLOCK: B L O C K;
 LAYOUT: L A Y O U T;
-NOTEBOOK: N O T E B O O K;
 CONSTANT: C O N S T A N T;
 
 ATTRIBUTE: A T T R I B U T E;
@@ -126,6 +125,7 @@ SELECT: S E L E C T;
 FROM: F R O M;
 WHERE: W H E R E;
 HAVING: H A V I N G;
+FIRST: F I R S T;
 OFFSET: O F F S E T;
 LIMIT: L I M I T;
 AS: A S;
@@ -239,9 +239,12 @@ PAGES: P A G E S;
 LAYOUTS: L A Y O U T S;
 SNIPPETS: S N I P P E T S;
 BLOCKS: B L O C K S;
-NOTEBOOKS: N O T E B O O K S;
 
 PLACEHOLDER: P L A C E H O L D E R;
+SCROLLCONTAINER: S C R O L L C O N T A I N E R;
+SCROLLREGION: R E G I O N;
+MENUBAR: M E N U B A R;
+NAVIGATIONTREE: N A V I G A T I O N T R E E;
 SNIPPETCALL: S N I P P E T C A L L;
 
 // Grid/Layout widgets
@@ -268,6 +271,8 @@ DYNAMICMARKER: D Y N A M I C M A R K E R; // Maps dynamicMarkers
 SERIES: S E R I E S;                    // AreaChart / chart series
 LINE: L I N E;                          // LineChart / TimeSeries / BubbleChart lines
 SCALECOLOR: S C A L E C O L O R;        // HeatMap scaleColors
+CUSTOMBUTTON: C U S T O M B U T T O N;  // FileUploader customButtons
+ALLOWEDFILEFORMAT: A L L O W E D F I L E F O R M A T; // FileUploader allowedFileFormats
 
 // Dual-stack keywords (Phase 2 — issue #539). LEGACY* keywords route to the
 // dojo-based native widgets even on Mendix 11+ where the pluggable React
@@ -314,6 +319,9 @@ WIDGET: W I D G E T;
 WIDGETS: W I D G E T S;
 CAPTION: C A P T I O N;
 ICON: I C O N;
+// DARK selects the dark-mode variant of a toolbox icon or image
+// (EXPOSED AS … ICON DARK 'icon-dark.png').
+DARK: D A R K;
 TOOLTIP: T O O L T I P;
 DATASOURCE: D A T A S O U R C E;
 SOURCE_KW: S O U R C E;
@@ -354,6 +362,11 @@ READONLY: R E A D O N L Y;
 ATTRIBUTES: A T T R I B U T E S;
 FILTERTYPE: F I L T E R T Y P E;
 IMAGE: I M A G E;
+QUEUE: Q U E U E;
+QUEUES: Q U E U E S;
+SCHEDULED: S C H E D U L E D;
+REGULAR: R E G U L A R;
+EXPRESSIONS: E X P R E S S I O N S;
 COLLECTION: C O L L E C T I O N S?;   // accept singular + plural ("collection(s)")
 JAR: J A R;
 DEPENDENCY: D E P E N D E N C Y;
@@ -477,6 +490,8 @@ RULE: R U L E;
 REQUIRED: R E Q U I R E D;
 NULLABLE: N U L L A B L E;                 // MODIFY ATTRIBUTE … NULLABLE — clears NOT NULL (Bug 12a)
 ERROR: E R R O R;
+IGNORE: I G N O R E;
+OVERRIDABLE: O V E R R I D A B L E;
 RAISE: R A I S E;
 RANGE: R A N G E;
 REGEX: R E G E X;
@@ -587,6 +602,7 @@ FRAGMENT: F R A G M E N T;
 FRAGMENTS: F R A G M E N T S;
 SLOT: S L O T;
 LANGUAGES: L A N G U A G E S;
+TRANSLATIONS: T R A N S L A T I O N S;   // create/describe translations for <lang>
 
 // ALTER PAGE keywords
 INSERT: I N S E R T;
@@ -603,6 +619,8 @@ LINT: L I N T;
 RULES: R U L E S;
 TEXT: T E X T;
 SARIF: S A R I F;
+DEFINITION: D E F I N I T I O N;
+ROOT: R O O T;
 MESSAGE: M E S S A G E;
 MESSAGES: M E S S A G E S;
 CHANNELS: C H A N N E L S;
@@ -698,6 +716,10 @@ CREATED: C R E A T E D;
 PARALLEL: P A R A L L E L;
 WAIT: W A I T;
 ANNOTATION: A N N O T A T I O N;
+ANNOTATIONS: A N N O T A T I O N S;
+// AT_KW is the WORD "at" — DROP ANNOTATION AT (x, y). The AT token is the '@'
+// symbol that opens an annotation like @position, so it cannot serve here.
+AT_KW: A T;
 BOUNDARY: B O U N D A R Y;
 INTERRUPTING: I N T E R R U P T I N G;
 NON: N O N;

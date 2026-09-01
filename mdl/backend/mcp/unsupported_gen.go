@@ -184,6 +184,11 @@ func (unsupportedBackend) CreateLayout(_ *pages.Layout) (err0 error) {
 	return
 }
 
+func (unsupportedBackend) CreateMenuDocument(_ *types.MenuDocument) (err0 error) {
+	err0 = errUnsupported("CreateMenuDocument")
+	return
+}
+
 func (unsupportedBackend) CreateMicroflow(_ *microflows.Microflow) (err0 error) {
 	err0 = errUnsupported("CreateMicroflow")
 	return
@@ -211,6 +216,26 @@ func (unsupportedBackend) CreatePublishedODataService(_ *model.PublishedODataSer
 
 func (unsupportedBackend) CreatePublishedRestService(_ *model.PublishedRestService) (err0 error) {
 	err0 = errUnsupported("CreatePublishedRestService")
+	return
+}
+
+func (unsupportedBackend) CreateQueue(_ *types.Queue) (err0 error) {
+	err0 = errUnsupported("CreateQueue")
+	return
+}
+
+func (unsupportedBackend) CreateRegularExpression(_ *model.RegularExpression) (err0 error) {
+	err0 = errUnsupported("CreateRegularExpression")
+	return
+}
+
+func (unsupportedBackend) CreateRule(_ *microflows.Rule) (err0 error) {
+	err0 = errUnsupported("CreateRule")
+	return
+}
+
+func (unsupportedBackend) CreateScheduledEvent(_ *model.ScheduledEvent) (err0 error) {
+	err0 = errUnsupported("CreateScheduledEvent")
 	return
 }
 
@@ -354,6 +379,11 @@ func (unsupportedBackend) DeleteLayout(_ model.ID) (err0 error) {
 	return
 }
 
+func (unsupportedBackend) DeleteMenuDocument(_ model.ID) (err0 error) {
+	err0 = errUnsupported("DeleteMenuDocument")
+	return
+}
+
 func (unsupportedBackend) DeleteMicroflow(_ model.ID) (err0 error) {
 	err0 = errUnsupported("DeleteMicroflow")
 	return
@@ -386,6 +416,26 @@ func (unsupportedBackend) DeletePublishedODataService(_ model.ID) (err0 error) {
 
 func (unsupportedBackend) DeletePublishedRestService(_ model.ID) (err0 error) {
 	err0 = errUnsupported("DeletePublishedRestService")
+	return
+}
+
+func (unsupportedBackend) DeleteQueue(_ string) (err0 error) {
+	err0 = errUnsupported("DeleteQueue")
+	return
+}
+
+func (unsupportedBackend) DeleteRegularExpression(_ string) (err0 error) {
+	err0 = errUnsupported("DeleteRegularExpression")
+	return
+}
+
+func (unsupportedBackend) DeleteRule(_ model.ID) (err0 error) {
+	err0 = errUnsupported("DeleteRule")
+	return
+}
+
+func (unsupportedBackend) DeleteScheduledEvent(_ string) (err0 error) {
+	err0 = errUnsupported("DeleteScheduledEvent")
 	return
 }
 
@@ -431,6 +481,11 @@ func (unsupportedBackend) FindAllViewEntitySourceDocumentIDs(_ string, _ string)
 
 func (unsupportedBackend) FindCustomWidgetType(_ string) (r0 *types.RawCustomWidgetType, err1 error) {
 	err1 = errUnsupported("FindCustomWidgetType")
+	return
+}
+
+func (unsupportedBackend) FindDocumentUnit(_ string, _ string) (r0 *types.DocumentUnit, err1 error) {
+	err1 = errUnsupported("FindDocumentUnit")
 	return
 }
 
@@ -481,6 +536,11 @@ func (unsupportedBackend) GetLayout(_ model.ID) (r0 *pages.Layout, err1 error) {
 
 func (unsupportedBackend) GetMendixVersion() (r0 string, err1 error) {
 	err1 = errUnsupported("GetMendixVersion")
+	return
+}
+
+func (unsupportedBackend) GetMenuDocumentByQualifiedName(_ string, _ string) (r0 *types.MenuDocument, err1 error) {
+	err1 = errUnsupported("GetMenuDocumentByQualifiedName")
 	return
 }
 
@@ -559,6 +619,11 @@ func (unsupportedBackend) GetRawUnitBytes(_ model.ID) (r0 []uint8, err1 error) {
 	return
 }
 
+func (unsupportedBackend) GetRule(_ model.ID) (r0 *microflows.Rule, err1 error) {
+	err1 = errUnsupported("GetRule")
+	return
+}
+
 func (unsupportedBackend) GetScheduledEvent(_ model.ID) (r0 *model.ScheduledEvent, err1 error) {
 	err1 = errUnsupported("GetScheduledEvent")
 	return
@@ -584,6 +649,11 @@ func (unsupportedBackend) IsConnected() (r0 bool) {
 
 func (unsupportedBackend) IsRule(_ string) (r0 bool, err1 error) {
 	err1 = errUnsupported("IsRule")
+	return
+}
+
+func (unsupportedBackend) LayoutPlaceholders(_ model.ID) (r0 []string, err1 error) {
+	err1 = errUnsupported("LayoutPlaceholders")
 	return
 }
 
@@ -647,6 +717,11 @@ func (unsupportedBackend) ListDatabaseConnections() (r0 []*model.DatabaseConnect
 	return
 }
 
+func (unsupportedBackend) ListDocumentUnits() (r0 []*types.DocumentUnit, err1 error) {
+	err1 = errUnsupported("ListDocumentUnits")
+	return
+}
+
 func (unsupportedBackend) ListDomainModels() (r0 []*domainmodel.DomainModel, err1 error) {
 	err1 = errUnsupported("ListDomainModels")
 	return
@@ -707,6 +782,16 @@ func (unsupportedBackend) ListLayouts() (r0 []*pages.Layout, err1 error) {
 	return
 }
 
+func (unsupportedBackend) ListMenuDocuments() (r0 []*types.MenuDocument, err1 error) {
+	err1 = errUnsupported("ListMenuDocuments")
+	return
+}
+
+func (unsupportedBackend) ListMessageDefinitionCollections() (r0 []*model.MessageDefinitionCollection, err1 error) {
+	err1 = errUnsupported("ListMessageDefinitionCollections")
+	return
+}
+
 func (unsupportedBackend) ListMicroflows() (r0 []*microflows.Microflow, err1 error) {
 	err1 = errUnsupported("ListMicroflows")
 	return
@@ -757,6 +842,11 @@ func (unsupportedBackend) ListPublishedRestServices() (r0 []*model.PublishedRest
 	return
 }
 
+func (unsupportedBackend) ListQueues() (r0 []*types.Queue, err1 error) {
+	err1 = errUnsupported("ListQueues")
+	return
+}
+
 func (unsupportedBackend) ListRawUnits(_ string) (r0 []*types.RawUnitInfo, err1 error) {
 	err1 = errUnsupported("ListRawUnits")
 	return
@@ -764,6 +854,16 @@ func (unsupportedBackend) ListRawUnits(_ string) (r0 []*types.RawUnitInfo, err1 
 
 func (unsupportedBackend) ListRawUnitsByType(_ string) (r0 []*types.RawUnit, err1 error) {
 	err1 = errUnsupported("ListRawUnitsByType")
+	return
+}
+
+func (unsupportedBackend) ListRegularExpressions() (r0 []*model.RegularExpression, err1 error) {
+	err1 = errUnsupported("ListRegularExpressions")
+	return
+}
+
+func (unsupportedBackend) ListRules() (r0 []*microflows.Rule, err1 error) {
+	err1 = errUnsupported("ListRules")
 	return
 }
 
@@ -799,6 +899,11 @@ func (unsupportedBackend) MoveConstant(_ *model.Constant) (err0 error) {
 
 func (unsupportedBackend) MoveDatabaseConnection(_ *model.DatabaseConnection) (err0 error) {
 	err0 = errUnsupported("MoveDatabaseConnection")
+	return
+}
+
+func (unsupportedBackend) MoveDocument(_ model.ID, _ model.ID) (err0 error) {
+	err0 = errUnsupported("MoveDocument")
 	return
 }
 
@@ -852,6 +957,11 @@ func (unsupportedBackend) MovePublishedODataService(_ *model.PublishedODataServi
 	return
 }
 
+func (unsupportedBackend) MoveRule(_ *microflows.Rule) (err0 error) {
+	err0 = errUnsupported("MoveRule")
+	return
+}
+
 func (unsupportedBackend) MoveSnippet(_ *pages.Snippet) (err0 error) {
 	err0 = errUnsupported("MoveSnippet")
 	return
@@ -869,6 +979,11 @@ func (unsupportedBackend) OpenPageForMutation(_ model.ID) (r0 backend.PageMutato
 
 func (unsupportedBackend) OpenWorkflowForMutation(_ model.ID) (r0 backend.WorkflowMutator, err1 error) {
 	err1 = errUnsupported("OpenWorkflowForMutation")
+	return
+}
+
+func (unsupportedBackend) PageLayoutName(_ model.ID) (r0 string, err1 error) {
+	err1 = errUnsupported("PageLayoutName")
 	return
 }
 
@@ -997,8 +1112,18 @@ func (unsupportedBackend) SerializeWorkflowActivity(_ workflows.WorkflowActivity
 	return
 }
 
+func (unsupportedBackend) SetDomainModelAnnotations(_ model.ID, _ []*domainmodel.Annotation) (err0 error) {
+	err0 = errUnsupported("SetDomainModelAnnotations")
+	return
+}
+
 func (unsupportedBackend) SetProjectDemoUsersEnabled(_ model.ID, _ bool) (err0 error) {
 	err0 = errUnsupported("SetProjectDemoUsersEnabled")
+	return
+}
+
+func (unsupportedBackend) SetProjectGuestAccess(_ model.ID, _ bool, _ string) (err0 error) {
+	err0 = errUnsupported("SetProjectGuestAccess")
 	return
 }
 
@@ -1122,6 +1247,11 @@ func (unsupportedBackend) UpdateLayout(_ *pages.Layout) (err0 error) {
 	return
 }
 
+func (unsupportedBackend) UpdateMenuDocument(_ *types.MenuDocument) (err0 error) {
+	err0 = errUnsupported("UpdateMenuDocument")
+	return
+}
+
 func (unsupportedBackend) UpdateMicroflow(_ *microflows.Microflow) (err0 error) {
 	err0 = errUnsupported("UpdateMicroflow")
 	return
@@ -1182,8 +1312,33 @@ func (unsupportedBackend) UpdateQualifiedNameInAllUnits(_ string, _ string) (r0 
 	return
 }
 
+func (unsupportedBackend) UpdateQueue(_ *types.Queue) (err0 error) {
+	err0 = errUnsupported("UpdateQueue")
+	return
+}
+
 func (unsupportedBackend) UpdateRawUnit(_ string, _ []uint8) (err0 error) {
 	err0 = errUnsupported("UpdateRawUnit")
+	return
+}
+
+func (unsupportedBackend) UpdateRawUnitOwningTranslations(_ string, _ []uint8) (err0 error) {
+	err0 = errUnsupported("UpdateRawUnitOwningTranslations")
+	return
+}
+
+func (unsupportedBackend) UpdateRegularExpression(_ *model.RegularExpression) (err0 error) {
+	err0 = errUnsupported("UpdateRegularExpression")
+	return
+}
+
+func (unsupportedBackend) UpdateRule(_ *microflows.Rule) (err0 error) {
+	err0 = errUnsupported("UpdateRule")
+	return
+}
+
+func (unsupportedBackend) UpdateScheduledEvent(_ *model.ScheduledEvent) (err0 error) {
+	err0 = errUnsupported("UpdateScheduledEvent")
 	return
 }
 

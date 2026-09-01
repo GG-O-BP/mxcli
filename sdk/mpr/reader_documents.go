@@ -214,6 +214,40 @@ func (r *Reader) GetMicroflow(id model.ID) (*microflows.Microflow, error) {
 	return r.parseMicroflow(unit.ID, unit.ContainerID, unit.Contents)
 }
 
+// ListRules returns every rule document (Microflows$Rule). Rules are a distinct
+// doctype and deliberately absent from ListMicroflows.
+func (r *Reader) ListRules() ([]*microflows.Rule, error) {
+	units, err := r.listUnitsByType("Microflows$Rule")
+	if err != nil {
+		return nil, err
+	}
+
+	var result []*microflows.Rule
+	for _, u := range units {
+		rule, err := r.parseRule(u.ID, u.ContainerID, u.Contents)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse rule %s: %w", u.ID, err)
+		}
+		result = append(result, rule)
+	}
+
+	return result, nil
+}
+
+// GetRule retrieves a rule by ID.
+func (r *Reader) GetRule(id model.ID) (*microflows.Rule, error) {
+	rules, err := r.ListRules()
+	if err != nil {
+		return nil, err
+	}
+	for _, rule := range rules {
+		if rule.ID == id {
+			return rule, nil
+		}
+	}
+	return nil, nil
+}
+
 // IsRule reports whether the given qualified name refers to a rule
 // (Microflows$Rule). Rules share the microflow namespace but are stored
 // under a distinct BSON type — the flow-builder needs this distinction so
@@ -1009,4 +1043,63 @@ func parseJarDependencyExclusion(raw map[string]any) *types.JarDependencyExclusi
 		GroupID:    extractString(raw["GroupId"]),
 		ArtifactID: extractString(raw["ArtifactId"]),
 	}
+}
+
+// ListMenuDocuments returns all standalone Menus$MenuDocument documents.
+//
+// A menu document holds its entries in a Menus$MenuItemCollection rather than
+// directly, but the entries themselves are ordinary Menus$MenuItem elements, so
+// the recursive conversion reuses parseNavMenuItem.
+func (r *Reader) ListMenuDocuments() ([]*types.MenuDocument, error) {
+	units, err := r.listUnitsByType("Menus$MenuDocument")
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]*types.MenuDocument, 0, len(units))
+	for _, u := range units {
+		var raw map[string]any
+		if err := bson.Unmarshal(u.Contents, &raw); err != nil {
+			return nil, fmt.Errorf("failed to parse menu document %s: %w", u.ID, err)
+		}
+		md := &types.MenuDocument{
+			ID:            model.ID(u.ID),
+			ContainerID:   model.ID(u.ContainerID),
+			Name:          extractString(raw["Name"]),
+			Documentation: extractString(raw["Documentation"]),
+			ExportLevel:   extractString(raw["ExportLevel"]),
+		}
+		if b, ok := raw["Excluded"].(bool); ok {
+			md.Excluded = b
+		}
+		if coll, ok := raw["ItemCollection"].(map[string]any); ok {
+			for _, item := range extractBsonArray(coll["Items"]) {
+				if m, ok := item.(map[string]any); ok {
+					if mi := parseNavMenuItem(m); mi != nil {
+						md.Items = append(md.Items, mi)
+					}
+				}
+			}
+		}
+		result = append(result, md)
+	}
+	return result, nil
+}
+
+// GetMenuDocumentByQualifiedName finds a menu document by module + name.
+func (r *Reader) GetMenuDocumentByQualifiedName(moduleName, name string) (*types.MenuDocument, error) {
+	all, err := r.ListMenuDocuments()
+	if err != nil {
+		return nil, err
+	}
+	moduleMap, err := r.buildContainerModuleNameMap()
+	if err != nil {
+		return nil, err
+	}
+	for _, md := range all {
+		if md.Name == name && moduleMap[md.ContainerID] == moduleName {
+			return md, nil
+		}
+	}
+	return nil, fmt.Errorf("menu not found: %s.%s", moduleName, name)
 }

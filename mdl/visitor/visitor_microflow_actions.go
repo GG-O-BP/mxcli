@@ -83,8 +83,16 @@ func buildTemplateParams(ctx parser.ITemplateParamsContext) []ast.TemplateParam 
 	allParams := paramsCtx.AllTemplateParam()
 	for i, param := range allParams {
 		paramCtx := param.(*parser.TemplateParamContext)
-		indexStr := paramCtx.NUMBER_LITERAL().GetText()
-		index, _ := strconv.Atoi(indexStr)
+		// The grammar requires at least one parameter, so `with ()` does not
+		// parse — but ANTLR error-recovers by handing the walker a templateParam
+		// with no index token rather than by skipping the rule. The syntax error
+		// is already reported; dereferencing here killed the whole process
+		// instead of failing the one statement (FINDINGS §55).
+		numTok := paramCtx.NUMBER_LITERAL()
+		if numTok == nil {
+			continue
+		}
+		index, _ := strconv.Atoi(numTok.GetText())
 
 		var tp ast.TemplateParam
 		tp.Index = index
@@ -352,6 +360,25 @@ func appendSourceExpressionSuffix(
 	return &ast.SourceExpr{Expression: innerExpr, Source: source + suffix}
 }
 
+// buildQueueClause converts an `IN QUEUE Module.Name` clause into a qualified
+// name, or returns nil when the call is not queued. Shared by CALL MICROFLOW and
+// CALL JAVA ACTION — the only two activities Mendix can run on a task queue.
+func buildQueueClause(ctx parser.IQueueClauseContext) *ast.QualifiedName {
+	if ctx == nil {
+		return nil
+	}
+	qc, ok := ctx.(*parser.QueueClauseContext)
+	if !ok {
+		return nil
+	}
+	qn := qc.QualifiedName()
+	if qn == nil {
+		return nil
+	}
+	name := buildQualifiedName(qn)
+	return &name
+}
+
 // buildCallMicroflowStatement converts CALL MICROFLOW statement context to CallMicroflowStmt.
 // Grammar: (VARIABLE EQUALS)? CALL MICROFLOW qualifiedName LPAREN callArgumentList? RPAREN
 func buildCallMicroflowStatement(ctx parser.ICallMicroflowStatementContext) *ast.CallMicroflowStmt {
@@ -376,6 +403,9 @@ func buildCallMicroflowStatement(ctx parser.ICallMicroflowStatementContext) *ast
 	if argList := callCtx.CallArgumentList(); argList != nil {
 		stmt.Arguments = buildCallArgumentList(argList)
 	}
+
+	// IN QUEUE Module.Name — runs the call on a task queue.
+	stmt.Queue = buildQueueClause(callCtx.QueueClause())
 
 	// Check for ON ERROR clause
 	if errClause := callCtx.OnErrorClause(); errClause != nil {
@@ -442,6 +472,9 @@ func buildCallJavaActionStatement(ctx parser.ICallJavaActionStatementContext) *a
 	if argList := callCtx.CallArgumentList(); argList != nil {
 		stmt.Arguments = buildCallArgumentList(argList)
 	}
+
+	// IN QUEUE Module.Name — runs the call on a task queue.
+	stmt.Queue = buildQueueClause(callCtx.QueueClause())
 
 	// Check for ON ERROR clause
 	if errClause := callCtx.OnErrorClause(); errClause != nil {
@@ -1434,7 +1467,15 @@ func buildRestCallStatement(ctx parser.IRestCallStatementContext) *ast.RestCallS
 		bodyCtx := bodyClause.(*parser.RestCallBodyClauseContext)
 		body := &ast.RestBody{}
 
-		if bodyCtx.MAPPING() != nil {
+		if bodyCtx.BINARY_TYPE() != nil {
+			// Binary body: BODY BINARY <expression>. Studio Pro stores the
+			// expression that yields the bytes — a FileDocument's Contents
+			// member, e.g. `$Doc/Contents` — as Microflows$BinaryRequestHandling.
+			body.Type = ast.RestBodyBinary
+			if expr := bodyCtx.Expression(); expr != nil {
+				body.Template = buildSourceExpression(expr)
+			}
+		} else if bodyCtx.MAPPING() != nil {
 			// Export mapping: BODY MAPPING QualifiedName FROM $Variable
 			body.Type = ast.RestBodyMapping
 			if qn := bodyCtx.QualifiedName(); qn != nil {
@@ -1496,6 +1537,13 @@ func buildRestCallStatement(ctx parser.IRestCallStatementContext) *ast.RestCallS
 			}
 		} else if returnsCtx.NONE() != nil || returnsCtx.NOTHING() != nil {
 			result.Type = ast.RestResultNone
+		} else if qns := returnsCtx.AllQualifiedName(); len(qns) == 1 {
+			// `returns Module.Entity` — store the response in a file document.
+			// Reached only after the keyword alternatives, so a bare entity name
+			// can never shadow `String` / `response` / `none` / `nothing`, each
+			// of which is its own token.
+			result.Type = ast.RestResultFileDocument
+			result.ResultEntity = buildQualifiedName(qns[0])
 		}
 
 		stmt.Result = result

@@ -190,7 +190,7 @@ func outputRestOperation(w io.Writer, op *model.RestClientOperation) {
 		case "export_mapping":
 			if op.BodyVariable != "" && len(op.BodyMappings) > 0 {
 				fmt.Fprintf(w, "    Body: mapping %s {\n", op.BodyVariable)
-				writeExportMappings(w, op.BodyMappings, 6)
+				writeExportMappings(w, op.BodyMappings, 6, "(Object)")
 				fmt.Fprintln(w, "    },")
 			} else if op.BodyVariable != "" {
 				fmt.Fprintf(w, "    Body: mapping %s,\n", op.BodyVariable)
@@ -224,7 +224,7 @@ func outputRestOperation(w io.Writer, op *model.RestClientOperation) {
 	case "mapping":
 		if op.ResponseEntity != "" && len(op.ResponseMappings) > 0 {
 			fmt.Fprintf(w, "    Response: mapping %s {\n", op.ResponseEntity)
-			writeResponseMappings(w, op.ResponseMappings, 6)
+			writeResponseMappings(w, op.ResponseMappings, 6, "(Object)")
 			fmt.Fprintln(w, "    }")
 		} else if op.ResponseEntity != "" {
 			fmt.Fprintf(w, "    Response: mapping %s\n", op.ResponseEntity)
@@ -253,17 +253,56 @@ func restParamTypeOrDefault(dataType string) string {
 	return dataType
 }
 
+// inlineMemberName is the JSON member DESCRIBE should print for an inline REST
+// mapping element: its stored JsonPath rendered relative to the enclosing
+// element, not its ExposedName.
+//
+// The two differ for any MULTI-SEGMENT member. `Title = fields/Title` stores
+// JsonPath "(Object)|fields|Title" and ExposedName "Title" (the last segment,
+// as Studio Pro does), so printing ExposedName emitted `"Title" = "Title"` —
+// output that parses, re-executes, and silently binds the wrong member. Before
+// the path fix the two happened to agree, because the whole "fields/Title"
+// string was crammed into ExposedName; correcting the path is what made the
+// printer wrong, so the two changes belong together.
+//
+// The generated markers — "(Object)", "(Array)", "(Wrapper)" — are dropped:
+// they are levels MDL generates rather than names an author writes, the same
+// rule the array forms follow (ako/mxcli#248, #262).
+func inlineMemberName(parentPath string, m *model.RestResponseMapping) string {
+	if m.JsonPath == "" {
+		return m.ExposedName
+	}
+	rel := m.JsonPath
+	if parentPath != "" && strings.HasPrefix(rel, parentPath+"|") {
+		rel = rel[len(parentPath)+1:]
+	} else if i := strings.LastIndex(rel, "|"); i >= 0 {
+		rel = rel[i+1:]
+	}
+	var segs []string
+	for _, seg := range strings.Split(rel, "|") {
+		switch seg {
+		case "", "(Object)", "(Array)", "(Wrapper)":
+			continue
+		}
+		segs = append(segs, seg)
+	}
+	if len(segs) == 0 {
+		return m.ExposedName
+	}
+	return strings.Join(segs, "/")
+}
+
 // writeResponseMappings writes import-direction mappings (JSON → Entity): EntityAttr = jsonField.
 // Matches the import mapping syntax: CREATE Association/Entity = jsonField { ... }.
-func writeResponseMappings(w io.Writer, mappings []*model.RestResponseMapping, indent int) {
+func writeResponseMappings(w io.Writer, mappings []*model.RestResponseMapping, indent int, parentPath string) {
 	pad := strings.Repeat(" ", indent)
 	for _, m := range mappings {
 		if m.Entity != "" {
 			// Object mapping → nested entity via association (import style: CREATE Assoc/Entity = jsonField)
-			fmt.Fprintf(w, "%screate %s/%s = %s", pad, m.Association, m.Entity, m.ExposedName)
+			fmt.Fprintf(w, "%screate %s/%s = %s", pad, m.Association, m.Entity, inlineMemberName(parentPath, m))
 			if len(m.Children) > 0 {
 				fmt.Fprintln(w, " {")
-				writeResponseMappings(w, m.Children, indent+2)
+				writeResponseMappings(w, m.Children, indent+2, m.JsonPath)
 				fmt.Fprintf(w, "%s},\n", pad)
 			} else {
 				fmt.Fprintln(w, " {},")
@@ -274,28 +313,28 @@ func writeResponseMappings(w io.Writer, mappings []*model.RestResponseMapping, i
 			if m.JsonPath != "" {
 				jsonComment = fmt.Sprintf("  -- %s", m.JsonPath)
 			}
-			fmt.Fprintf(w, "%s%s = %s,%s\n", pad, safeIdent(m.Attribute), safeIdent(m.ExposedName), jsonComment)
+			fmt.Fprintf(w, "%s%s = %s,%s\n", pad, safeIdent(m.Attribute), safeIdent(inlineMemberName(parentPath, m)), jsonComment)
 		}
 	}
 }
 
 // writeExportMappings writes export-direction mappings (Entity → JSON): jsonField = EntityAttr.
 // Matches the export mapping syntax.
-func writeExportMappings(w io.Writer, mappings []*model.RestResponseMapping, indent int) {
+func writeExportMappings(w io.Writer, mappings []*model.RestResponseMapping, indent int, parentPath string) {
 	pad := strings.Repeat(" ", indent)
 	for _, m := range mappings {
 		if m.Entity != "" {
-			fmt.Fprintf(w, "%s%s/%s = %s", pad, m.Association, m.Entity, m.ExposedName)
+			fmt.Fprintf(w, "%s%s/%s = %s", pad, m.Association, m.Entity, inlineMemberName(parentPath, m))
 			if len(m.Children) > 0 {
 				fmt.Fprintln(w, " {")
-				writeExportMappings(w, m.Children, indent+2)
+				writeExportMappings(w, m.Children, indent+2, m.JsonPath)
 				fmt.Fprintf(w, "%s},\n", pad)
 			} else {
 				fmt.Fprintln(w, " {},")
 			}
 		} else {
 			// Export direction: jsonField = EntityAttr
-			fmt.Fprintf(w, "%s%s = %s,\n", pad, safeIdent(m.ExposedName), safeIdent(m.Attribute))
+			fmt.Fprintf(w, "%s%s = %s,\n", pad, safeIdent(inlineMemberName(parentPath, m)), safeIdent(m.Attribute))
 		}
 	}
 }
@@ -335,6 +374,10 @@ func createRestClient(ctx *ExecContext, stmt *ast.CreateRestClientStmt) error {
 	}
 
 	var preservedID model.ID
+	// Where the service currently sits. A rest client is rewritten as
+	// delete+create, so its container is re-applied on every statement and an
+	// unset value files a foldered service back into the module root (#932).
+	var preservedContainerID model.ID
 	wasModified := false
 	for _, existing := range existingServices {
 		existModID := h.FindModuleID(existing.ContainerID)
@@ -343,6 +386,7 @@ func createRestClient(ctx *ExecContext, stmt *ast.CreateRestClientStmt) error {
 			if stmt.CreateOrModify {
 				// Preserve the existing ID so SEND REST REQUEST references stay valid after replace.
 				preservedID = existing.ID
+				preservedContainerID = existing.ContainerID
 				wasModified = true
 				if err := ctx.Backend.DeleteConsumedRestService(existing.ID); err != nil {
 					return mdlerrors.NewBackend("delete existing rest client", err)
@@ -353,7 +397,7 @@ func createRestClient(ctx *ExecContext, stmt *ast.CreateRestClientStmt) error {
 		}
 	}
 
-	// Resolve folder if specified
+	// Resolve folder if specified, else keep where the service already was.
 	containerID := module.ID
 	if stmt.Folder != "" {
 		folderID, err := resolveFolder(ctx, module.ID, stmt.Folder)
@@ -361,6 +405,8 @@ func createRestClient(ctx *ExecContext, stmt *ast.CreateRestClientStmt) error {
 			return mdlerrors.NewBackend(fmt.Sprintf("resolve folder '%s'", stmt.Folder), err)
 		}
 		containerID = folderID
+	} else if preservedContainerID != "" {
+		containerID = preservedContainerID
 	}
 
 	// Build the model from AST
@@ -440,6 +486,9 @@ func createRestClient(ctx *ExecContext, stmt *ast.CreateRestClientStmt) error {
 // buildRestClientOperation converts an AST RestOperationDef to a model RestClientOperation.
 func buildRestClientOperation(opDef *ast.RestOperationDef) (*model.RestClientOperation, error) {
 	if err := checkInlineMappingBody(opDef); err != nil {
+		return nil, err
+	}
+	if err := checkFileRequestBody(opDef); err != nil {
 		return nil, err
 	}
 	// model.RestClientOperation documents BodyType/ResponseType as upper-case
@@ -550,6 +599,48 @@ func checkInlineMappingBody(opDef *ast.RestOperationDef) error {
 			m.clause, m.def.Entity.String(), m.syntax)
 	}
 	return nil
+}
+
+// checkFileRequestBody rejects `Body: file from $Doc`.
+//
+// Mendix has no binary request body. The 11.13 metamodel offers exactly three
+// implementations of a consumed operation's request body — Rest$JsonBody,
+// Rest$StringBody and Rest$ImplicitMappingBody — so there is nowhere for a file
+// document to go. Both serializers folded FILE into the TEMPLATE branch and
+// wrote a Rest$StringBody holding the *expression text*, which meant the
+// request sent the four bytes `$Doc` in place of the document:
+//
+//	Content-Length: 4
+//	data:application/octet-stream;base64,JERvYw==   ->  b'$Doc'
+//
+// measured against httpbingo with an 8090-byte PNG. `mxcli check` passed,
+// `mx check` reported 0 errors and the call returned 200 — nothing anywhere
+// said the payload was wrong.
+//
+// Refusing is the fix, not writing a different type: there is no correct type to
+// write, and a silent downgrade that returns 200 is worse than an error. Binary
+// upload needs a Java action.
+//
+// The RESPONSE side is deliberately untouched: `Response: file as $Doc`
+// downloads correctly.
+func checkFileRequestBody(opDef *ast.RestOperationDef) error {
+	if !strings.EqualFold(opDef.BodyType, "FILE") {
+		return nil
+	}
+	target := opDef.BodyVariable
+	if target == "" {
+		target = "$Doc"
+	}
+	return fmt.Errorf(
+		"Body: file from %s cannot be stored — Mendix has no binary request body.\n"+
+			"  A consumed REST operation's body is one of Rest$JsonBody, Rest$StringBody or\n"+
+			"  Rest$ImplicitMappingBody, so a file document has nowhere to go. mxcli used to\n"+
+			"  write a string body holding the literal text %q, which sends %d bytes and\n"+
+			"  still returns 200.\n"+
+			"  Binary POST lives on the microflow activity, not the client document:\n"+
+			"    rest call post '<url>' header 'ContentType' = '<type>' body binary %s/Contents\n"+
+			"  (Microflows$BinaryRequestHandling — the shape Studio Pro writes).",
+		target, target, len(target), target)
 }
 
 // convertMappingEntries converts AST RestMappingEntry slices to model RestResponseMapping slices.
@@ -754,8 +845,13 @@ func createRestClientFromSpec(ctx *ExecContext, stmt *ast.CreateRestClientStmt) 
 		existModName := h.GetModuleName(existModID)
 		if strings.EqualFold(existModName, moduleName) && strings.EqualFold(existing.Name, stmt.Name.Name) {
 			if stmt.CreateOrModify {
-				// Reuse the existing ID so microflow references stay valid.
+				// Reuse the existing ID so microflow references stay valid, and
+				// its container so a spec re-import does not file the service
+				// back into the module root (#932).
 				svc.ID = existing.ID
+				if stmt.Folder == "" {
+					svc.ContainerID = existing.ContainerID
+				}
 				openAPIWasModified = true
 				if err := ctx.Backend.DeleteConsumedRestService(existing.ID); err != nil {
 					return mdlerrors.NewBackend("delete existing rest client", err)

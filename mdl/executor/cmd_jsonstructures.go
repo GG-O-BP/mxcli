@@ -217,13 +217,20 @@ func execCreateJsonStructure(ctx *ExecContext, s *ast.CreateJsonStructureStmt) e
 		JsonSnippet:   types.PrettyPrintJSON(s.JsonSnippet),
 		Elements:      elements,
 	}
+	if existing != nil {
+		// Excluded is model state, not script state (#914).
+		js.Excluded = existing.Excluded
+	}
 
 	if existing != nil {
 		js.ID = existing.ID
 		if err := ctx.Backend.UpdateJsonStructure(js); err != nil {
 			return mdlerrors.NewBackend("update json structure", err)
 		}
-		fmt.Fprintf(ctx.Output, "Modified json structure: %s\n", s.Name)
+		if _, err := applyDocumentFolder(ctx, js.ID, existing.ContainerID, containerID); err != nil {
+			return err
+		}
+		ctx.ReportMutation("Modified", "json structure: %s", s.Name)
 	} else {
 		if err := ctx.Backend.CreateJsonStructure(js); err != nil {
 			return mdlerrors.NewBackend("create json structure", err)

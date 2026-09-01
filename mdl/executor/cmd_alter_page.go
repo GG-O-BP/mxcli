@@ -10,6 +10,7 @@ import (
 	"github.com/mendixlabs/mxcli/mdl/ast"
 	"github.com/mendixlabs/mxcli/mdl/backend"
 	mdlerrors "github.com/mendixlabs/mxcli/mdl/errors"
+	"github.com/mendixlabs/mxcli/mdl/types"
 	"github.com/mendixlabs/mxcli/model"
 	"github.com/mendixlabs/mxcli/sdk/pages"
 )
@@ -35,14 +36,33 @@ func execAlterPage(ctx *ExecContext, s *ast.AlterPageStmt) error {
 		containerType = "page"
 	}
 
-	if containerType == "snippet" {
+	switch containerType {
+	case "snippet":
 		snippet, modID, err := findSnippetByName(ctx, s.PageName, h)
 		if err != nil {
 			return err
 		}
 		unitID = snippet.ID
 		containerID = modID
-	} else {
+	case "layout":
+		layout, err := findLayoutByQName(ctx, s.PageName)
+		if err != nil {
+			return err
+		}
+		modID := h.FindModuleID(layout.ContainerID)
+		// The same refusal CREATE LAYOUT makes, for the same reason: a
+		// Marketplace update replaces the module wholesale, so an edit here is
+		// gone at the next update with nothing to show it ever happened.
+		if mod, _ := ctx.Backend.GetModule(modID); isMarketplaceModule(ctx, mod) {
+			return mdlerrors.NewValidation(fmt.Sprintf(
+				"layout %s is in a marketplace module — an edit there is overwritten by the next module update. "+
+					"Copy it into a module of your own first: `describe layout %s`, rename it, run it, "+
+					"then repoint pages with `alter pages set layout = <yours> where layout = %s`",
+				s.PageName.String(), s.PageName.String(), s.PageName.String()))
+		}
+		unitID = layout.ID
+		containerID = modID
+	default:
 		page, err := findPageByName(ctx, s.PageName, h)
 		if err != nil {
 			return err
@@ -74,6 +94,10 @@ func execAlterPage(ctx *ExecContext, s *ast.AlterPageStmt) error {
 			if err := applyDropWidgetMutator(mutator, o); err != nil {
 				return mdlerrors.NewBackend("drop", err)
 			}
+		case *ast.DropListViewTemplateOp:
+			if err := mutator.DropListViewTemplate(o.ListView, o.Specialization); err != nil {
+				return mdlerrors.NewBackend("drop TEMPLATE", err)
+			}
 		case *ast.ReplaceWidgetOp:
 			if err := applyReplaceWidgetMutator(ctx, mutator, o, modName, containerID); err != nil {
 				return mdlerrors.NewBackend("replace", err)
@@ -91,6 +115,9 @@ func execAlterPage(ctx *ExecContext, s *ast.AlterPageStmt) error {
 				return mdlerrors.NewUnsupported("set Layout is not supported for snippets")
 			}
 			newLayoutQN := o.NewLayout.Module + "." + o.NewLayout.Name
+			if err := checkRepointPlaceholders(ctx, mutator, o, newLayoutQN); err != nil {
+				return err
+			}
 			if err := mutator.SetLayout(newLayoutQN, o.Mappings); err != nil {
 				return mdlerrors.NewBackend("set Layout", err)
 			}
@@ -238,6 +265,30 @@ func applyInsertWidgetMutator(ctx *ExecContext, mutator backend.PageMutator, op 
 		return mutator.InsertColumns(op.Target.Widget, op.Target.Column, backend.InsertPosition(op.Position), specs)
 	}
 
+	// Special path: inserting specialization templates into a List View. A
+	// Forms$ListViewTemplate lives in the list view's Templates array, not in its
+	// Widgets array, and is not a widget — the same reason DataGrid2 columns take
+	// their own path above. Routed through InsertWidget it would append a
+	// non-widget to the widget list, producing a page Studio Pro cannot open.
+	if allListViewTemplates(op.Widgets) {
+		if !strings.EqualFold(op.Position, "INTO") {
+			return mdlerrors.NewValidation(
+				"a list view template can only be added with INSERT INTO <listview> { template for … }: " +
+					"templates are not siblings of the widgets in the list view's body")
+		}
+		templates, err := buildListViewTemplatesFromAST(ctx, op.Widgets, moduleName, moduleID, mutator, op.Target.Widget)
+		if err != nil {
+			return err
+		}
+		return mutator.InsertListViewTemplates(op.Target.Widget, templates)
+	}
+	if hasListViewTemplate(op.Widgets) {
+		return mdlerrors.NewValidation(
+			"mixing `template for …` blocks with ordinary widgets in one INSERT is not supported: " +
+				"they go to different places (the list view's Templates and its default body). " +
+				"Use one INSERT for the templates and another for the widgets")
+	}
+
 	// Find entity context for the new widgets. For INSERT BEFORE/AFTER the target
 	// is a sibling, so use its enclosing container's context; for INSERT INTO the
 	// target IS the container, so the children take the target's own context (e.g.
@@ -325,6 +376,79 @@ func applyReplaceWidgetMutator(ctx *ExecContext, mutator backend.PageMutator, op
 // allColumns returns true if all widgets in the slice have type "column".
 // Used to dispatch ALTER PAGE INSERT/REPLACE into a DataGrid2 column to the
 // column-specific mutator path.
+// allListViewTemplates reports whether every inserted node is a `template for
+// Module.Entity { … }` block.
+func allListViewTemplates(widgets []*ast.WidgetV3) bool {
+	if len(widgets) == 0 {
+		return false
+	}
+	for _, w := range widgets {
+		if w.Specialization == "" {
+			return false
+		}
+	}
+	return true
+}
+
+// hasListViewTemplate reports whether ANY inserted node is a template, so a
+// mixed insert can be refused rather than silently sending the templates down
+// the widget path.
+func hasListViewTemplate(widgets []*ast.WidgetV3) bool {
+	for _, w := range widgets {
+		if w.Specialization != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// buildListViewTemplatesFromAST builds specialization templates for INSERT INTO.
+//
+// Each template's children are built in the SPECIALIZATION's entity context, not
+// the list view's: an attribute only the specialization has must resolve inside
+// its own template.
+func buildListViewTemplatesFromAST(ctx *ExecContext, nodes []*ast.WidgetV3, moduleName string, moduleID model.ID, mutator backend.PageMutator, listViewRef string) ([]*pages.ListViewTemplate, error) {
+	// The specialization check needs the domain model, which the mutator does not
+	// have — it sees raw BSON. A minimal builder over the same cache answers it.
+	checker := &pageBuilder{ctx: ctx, backend: ctx.Backend, moduleID: moduleID, moduleName: moduleName, execCache: ctx.Cache}
+	listEntity := mutator.EnclosingEntityForChildren(listViewRef)
+
+	seen := make(map[string]bool, len(nodes))
+	out := make([]*pages.ListViewTemplate, 0, len(nodes))
+	for _, node := range nodes {
+		spec := node.Specialization
+		if seen[spec] {
+			return nil, mdlerrors.NewValidation(fmt.Sprintf(
+				"this INSERT adds two templates for %s", spec))
+		}
+		seen[spec] = true
+
+		// Mendix matches a template against the object's type, so a template for
+		// an entity outside the list view's hierarchy can never render. Refuse it
+		// here rather than writing a template nothing will ever reach.
+		if listEntity != "" && !checker.entityIsOrDescendsFrom(spec, listEntity) {
+			return nil, mdlerrors.NewValidation(fmt.Sprintf(
+				"template for %s in list view %s: %s is not %s or a specialization of it, "+
+					"so the template can never match an object the list view shows",
+				spec, listViewRef, spec, listEntity))
+		}
+
+		widgets, err := buildWidgetsFromAST(ctx, node.Children, moduleName, moduleID, spec, mutator)
+		if err != nil {
+			return nil, mdlerrors.NewBackend("build template widgets", err)
+		}
+		out = append(out, &pages.ListViewTemplate{
+			BaseElement: model.BaseElement{
+				ID:       model.ID(types.GenerateID()),
+				TypeName: "Forms$ListViewTemplate",
+			},
+			Specialization: spec,
+			Widgets:        widgets,
+		})
+	}
+	return out, nil
+}
+
 func allColumns(widgets []*ast.WidgetV3) bool {
 	if len(widgets) == 0 {
 		return false

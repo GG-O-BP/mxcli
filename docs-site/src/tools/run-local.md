@@ -47,9 +47,15 @@ so structural changes need a restart; behavioural changes do not.
 - A **PostgreSQL** database. Defaults: `127.0.0.1:5432`, user `mendix`, database
   derived from the project file name (`App1112.mpr` → `app1112`). Two ways to have it:
   - **`--ensure-db`** (recommended for a fresh session) provisions it: starts the
-    local Postgres service if the port is down, and creates the app role + database
-    if missing (via a local `sudo -u postgres` superuser). For a non-local `--db-host`
-    it only verifies reachability — mxcli won't provision a remote database.
+    local Postgres server if the port is down, and creates the app role + database
+    if missing. It uses a service manager, or a user-owned `initdb`/`pg_ctl` cluster
+    under `~/.mxcli/postgres` when no service becomes ready (e.g. Arch) — no
+    `postgres` OS account or `sudo` required. For a non-local `--db-host` it only verifies
+    reachability — mxcli won't provision a remote database.
+    The user-owned cluster persists across sessions; its server log is
+    `~/.mxcli/postgres/server.log`. Stop it with
+    `pg_ctl -D "$HOME/.mxcli/postgres/data" stop`. To remove it, stop it first and
+    then delete `~/.mxcli/postgres` (this permanently deletes its databases).
   - Otherwise create it once yourself; without `--ensure-db`, `run --local` stops with
     an actionable message if the DB is unreachable:
 
@@ -71,7 +77,7 @@ so structural changes need a restart; behavioural changes do not.
 | `--app-port` | 8080 | App HTTP port |
 | `--admin-port` | 8090 | M2EE admin API port |
 | `--serve-port` | 6543 | `mxbuild --serve` port |
-| `--db-host` | 127.0.0.1:5432 | Database `host:port` |
+| `--db-host` | 127.0.0.1:5432 | Database `host:port`; bracket IPv6 endpoints (`[::1]:5432`) |
 | `--db-name` | derived from project | Database name |
 | `--db-user` / `--db-password` | mendix / mendix | Database credentials |
 | `--screenshot` | off | Capture a Playwright PNG after boot and each applied change |
@@ -151,10 +157,33 @@ the file. Use `--runtime-log <path>` to relocate it or `--runtime-log -` to turn
 
 ## External browser preview (`--hub`)
 
+> **Linux builds only.** `--hub` and `mxcli tunnel-hub` are available in the
+> **Linux** build of mxcli only.
+>
+> The tunnel exists to get a preview *out of a Linux container*, which is the only
+> place it ever ran. Shipping it in the Windows and macOS binaries meant those
+> binaries embedded a general-purpose tunnelling tool they could never use — and
+> endpoint security noticed: Microsoft Defender flagged the Windows binary, and
+> enterprise EDR (Defender for Endpoint, CrowdStrike, SentinelOne) flags this class
+> of payload harder still. That blocked mxcli on exactly the managed corporate
+> laptops most Mendix developers work on.
+>
+> So it is built for Linux only. On Windows and macOS the commands still exist and
+> still show help, but fail with a message pointing you here. To use `--hub`, run
+> mxcli **inside the project's devcontainer** (or any Linux container) — which is
+> where the warm loop already runs. Everything else in `mxcli run --local` is
+> unaffected.
+>
+> We deliberately did **not** hide the dependency to dodge the scanners; that would
+> be dishonest and would make the binary less trustworthy, not more. The fix is not
+> shipping the capability where it is not used. See
+> [ADR-0009](https://github.com/mendixlabs/mxcli/blob/main/docs/13-decisions/0009-tunnel-is-linux-only.md).
+
+
 `--hub <url>` makes the running app reachable **in a browser at a public URL** — without
 the app leaving this machine and without committing. It's for reviewing work-in-progress
 from a phone or tablet, or from an egress-only environment such as Claude Code on the web.
-The app stays local and a **chisel reverse tunnel** dials *out* to a hub over 443; the hub
+The app stays local and a **reverse tunnel** dials *out* to a hub over 443; the hub
 proxies browser requests back down the tunnel. Nothing is pushed — only live HTTP — and
 because everything rides a single 443 connection, it works even from an egress-only proxy.
 
@@ -250,6 +279,18 @@ the log instead of guessed.
 
 The intended cycle: an agent (or you) edits the model with `mxcli exec`/MDL — or edits
 a theme `.scss` — and the running `run --local` picks it up and hot-applies it.
+
+**A rebuild starts once the source stops changing, not on the first change.** An
+`mxcli exec` of a real script rewrites the `.mpr` and many `mprcontents/*.mxunit` files
+over several seconds; building on the first change would deploy whatever was on disk at
+that instant — a half-applied model. The watcher therefore waits for a couple of quiet
+polls before it builds, so a long `exec` produces one build of the finished model
+rather than a build of the first file it touched.
+
+This matters more than it used to. The old escape hatch was "run the script again", and
+byte-idempotent `exec` closed it: re-running an already-applied script writes nothing,
+so nothing re-triggers the watcher and the stale build has no way out. If you do need to
+force a rebuild without changing anything, `touch` the `.mpr` — the signal is mtime.
 
 ## Editing themes (SCSS): rebuild, don't clear caches
 

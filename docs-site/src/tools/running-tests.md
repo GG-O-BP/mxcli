@@ -12,6 +12,18 @@ and **Docker is only needed for the first**:
   (8081/8091) and its own `<project>_test` database, so a `mxcli run --local`
   dev loop can keep serving the same project while tests run.
 
+A `--local` run boots the app with the same **constant values** `mxcli run --local`
+uses — the project configuration's shared overrides layered over each constant's
+default — and prints what it applied. Use `--configuration <name>` to choose
+between several, and `--constant Module.Name=value` (repeatable) to set one for
+this run only — it wins over everything and is never written anywhere. For a
+value that should persist on this machine without being committed, use
+`mxcli constant set` (see [Constant values](#constant-values) below). A constant
+the project does not declare is refused before anything boots. `--attach` takes
+none of these, since it inherits the constants of the app it attaches to. This
+matters whenever a test asserts on something a constant feeds: the two modes
+used to disagree silently.
+
 `--local` also downloads what it needs on first use. To pre-cache it:
 
 ```bash
@@ -24,6 +36,25 @@ The `mx` binary, when you need it directly:
 |-------------|------|
 | Dev container | `~/.mxcli/mxbuild/{version}/modeler/mx` |
 | Repository | `reference/mxbuild/modeler/mx` |
+
+## Constant values
+
+Highest layer wins:
+
+| Layer | Set with | In git? |
+|---|---|---|
+| this run | `--constant Module.Name=value` | no |
+| this machine | `mxcli constant set Module.Name value` | no — gitignored, 0600 |
+| this configuration | `alter settings constant … in configuration 'X'` | yes |
+| default | `create constant … default '…'` | yes |
+
+`mxcli constant list` shows the winner for each constant and which layer set it,
+masking machine-local values unless `--show-values` is passed.
+
+A machine-local value normally takes effect at the next boot. `mxcli constant
+set … --apply` pushes it into a `mxcli run --local` that is already up, as
+`update_configuration` followed by `reload_model` — both are needed, since the
+first call only stages the change.
 
 ## Basic Usage
 
@@ -86,6 +117,163 @@ not registered at all without a per-run token in the runtime's environment,
 every request must present that token, non-loopback callers are refused, and it
 will only ever invoke the generated `MxTest.Test_*` microflows. The token is
 never written into your project.
+
+### A run leaves the project byte-identical
+
+`mxcli test` injects an `MxTest` module, builds, runs, and removes it again. When
+cleanup succeeds the `.mpr` is restored **byte-for-byte**, so `git status` is
+clean after a run and a "run the tests, then assert the tree is clean" CI step
+holds.
+
+Restoring the model is not enough on its own: every unit write stamps a fresh
+UUID into the `.mpr`'s `_Transaction` row, and the inject/remove cycle relays
+SQLite's pages, so the file differs even once its content matches. Version
+control compares bytes, and a `.mpr` diff is opaque.
+
+The restore is declined when cleanup failed, or when the `mprcontents/` tree
+changed during the run — in both cases the project is not in the state the
+snapshot describes, and putting the old file back would hide that.
+
+### `@expect`: what an assertion may say, and what happens when it cannot
+
+An `@expect` is a **Mendix expression that must evaluate to true**. Any
+expression the Mendix engine accepts works — built-in functions, every
+comparison operator, `and` / `or` / `not(...)`, attribute paths and enumeration
+values:
+
+```mdl
+/**
+ * @test the dealt board is a full grid with blanks
+ * @expect length($result) = 81
+ * @expect find($result, '0') >= 0
+ * @expect substring($result, 0, 9) != substring($result, 9, 18)
+ */
+$result = CALL MICROFLOW Sudoku.SUB_BlankSquares(Grid = $solved);
+/
+```
+
+`<>` is accepted and rewritten to `!=`, which is the spelling Mendix's
+expression engine accepts — `<>` fails the build with CE0117.
+
+**An assertion the runner cannot compile is an ERROR, not a pass.** Unknown
+functions, wrong arity, unbalanced parentheses, and expressions that produce a
+value rather than a condition are each reported against the test that carries
+them, and an ERROR counts with the failures, so the run exits non-zero:
+
+```
+ERROR  a self-evident falsehood
+       @expect randomInt($result) = 1: randomInt() is not a Mendix expression
+       function at column 1 ("randomInt")
+```
+
+A failing assertion reports **what came back**, not only what was wanted:
+
+```
+FAIL  the board is 81 squares
+      expected length($result) = 81, actual: 27
+```
+
+The observed value is omitted rather than guessed when nothing in the assertion
+pins down its type (`@expect $a = $b`, where both sides are variables). Mendix's
+expression engine is typed, and a wrong guess would fail the build rather than
+the test.
+
+### A file that does not parse is one ERROR, not a dead run
+
+A malformed test file is reported the same way an uncompilable assertion is:
+against itself, as an ERROR that counts with the failures. The tests in every
+other file still run.
+
+```
+  PASS  the board is 81 squares (6ms, 2 assertions)
+  ERROR  broken.test.mdl (file could not be parsed)
+         test "first" is followed by another @test doc comment ("second") with
+         no '/' separator between them
+```
+
+`--list` prints the same thing under the listing and exits non-zero, so a
+directory that was only partly readable cannot look like a clean one. A path
+that does not *exist* is still a hard error — that is a mistake in the
+invocation, not a malformed test, and continuing would run a different suite
+than the one that was asked for.
+
+### A test that asserts nothing, and `@verify`
+
+Every result line reports what the test actually checked:
+
+```
+  PASS  the board is 81 squares (6ms, 2 assertions)
+  FAIL  the mix keeps the shared block (8ms, 1 assertion)
+         expected length($result) = 81, actual: 27
+  PASS  asserts nothing at all (4ms, no assertions)
+------------------------------------------------------------
+1 test(s) asserted nothing beyond "did not throw". Run with
+--require-assertions to make that an error.
+```
+
+A test with no `@expect` and no `@throws` is a smoke test — it reports only that
+the body did not throw. It still passes, because that is a legitimate thing to
+write; what it may not do is look the same as a test with six assertions.
+`--require-assertions` makes every vacuous test an ERROR for projects that want
+CI to enforce it.
+
+`@verify` asserts on the database instead of the return value — see below.
+
+The JUnit report (`--junit`) carries the assertion count as a
+`<property name="assertions">` on each case, and `classname`/`file` identify the
+source test file so a failure in a multi-file run says where it lives.
+
+### `@verify`: asserting on what the microflow wrote
+
+`@expect` sees only what a microflow returned. Most Mendix microflows are side
+effects, so `@verify` is how you assert on the rows one left behind — an OQL
+query, a comparison, and the value it must satisfy:
+
+```mdl
+/**
+ * @test dealing a board writes 81 cells
+ * @cleanup none
+ * @expect $result = 'ok'
+ * @verify select count(*) as n from Sudoku.Cell = 81
+ * @verify select count(*) as n from Sudoku.Cell where Value = 0 > 0
+ */
+$result = CALL MICROFLOW Sudoku.ACT_DealGame();
+/
+```
+
+The query runs after the microflow returns, over the same admin API `mxcli oql`
+uses. Three rules follow, each enforced rather than left to trip you up:
+
+- **`@cleanup none` is required.** `rollback` is the default and undoes the
+  test's writes before the query could see them, so a `@verify` on a rollback
+  test is refused rather than run against the pre-test state.
+- **The query must return exactly one row and one column** — aggregate it, or
+  select one attribute of one row. Picking a cell out of a table would be a
+  guess.
+- **The expected value is a literal**: a number, a quoted string, `true`/`false`
+  or `empty`. It is split off at the last comparison operator outside quotes and
+  parentheses, so a `where Value = 5` inside the query is left alone.
+- **Every selected column needs a name.** Mendix's OQL rejects a bare
+  `select count(*)` with *"All OQL select columns must have a name"* — write
+  `select count(*) as n`.
+
+Operators are `=`, `!=` (`<>` accepted), `<`, `<=`, `>`, `>=`; numbers compare
+numerically even though the runtime returns them as strings.
+
+A `@verify` that cannot be evaluated — unknown entity, malformed OQL, a
+non-scalar result, or something that was never a query — is an **ERROR**, never
+a pass. A false one fails with the value that came back:
+
+```
+FAIL   dealing a board writes 81 cells
+       expected select count(*) as n from Sudoku.Cell = 81, actual: 27
+ERROR  cells exist for a game that does not
+       @verify select count(*) as n from Sudoku.NoSuch = 1: OQL error: Unknown entity
+```
+
+`@verify` needs the test endpoint, so it works under `--local` and `--attach`.
+The Docker / `--legacy-runner` path refuses a suite that uses it: its tests run
+during boot, so there is no point at which to query the app.
 
 ### The app's own after-startup microflow
 

@@ -159,11 +159,8 @@ func (c *endpointClient) waitReady(timeout time.Duration) error {
 // (StatusError — the test did not reach a verdict), or the verdict came back in
 // a shape this runner does not recognise.
 func toResult(tc TestCase, rr *runResponse) TestResult {
-	res := TestResult{
-		ID:       tc.ID,
-		Name:     tc.Name,
-		Duration: time.Duration(rr.DurationMicros) * time.Microsecond,
-	}
+	res := newResult(tc)
+	res.Duration = time.Duration(rr.DurationMicros) * time.Microsecond
 	switch {
 	case !rr.OK:
 		res.Status = StatusError
@@ -176,6 +173,11 @@ func toResult(tc TestCase, rr *runResponse) TestResult {
 	case strings.HasPrefix(rr.Result, verdictFailPrefix):
 		res.Status = StatusFail
 		res.Message = strings.TrimPrefix(rr.Result, verdictFailPrefix)
+	case strings.HasPrefix(rr.Result, verdictSetupPrefix):
+		// The setup threw, so the test never ran — an ERROR, not a FAIL.
+		res.Status = StatusError
+		res.Message = "setup microflow " + strings.TrimPrefix(rr.Result, verdictSetupPrefix) +
+			" failed, so the test did not run"
 	default:
 		res.Status = StatusError
 		res.Message = fmt.Sprintf("unrecognised verdict from the test microflow: %q", truncate(rr.Result, 200))

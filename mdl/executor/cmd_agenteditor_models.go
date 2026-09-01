@@ -13,6 +13,7 @@ import (
 
 	"github.com/mendixlabs/mxcli/mdl/ast"
 	mdlerrors "github.com/mendixlabs/mxcli/mdl/errors"
+	"github.com/mendixlabs/mxcli/model"
 	"github.com/mendixlabs/mxcli/sdk/agenteditor"
 )
 
@@ -86,7 +87,7 @@ func describeAgentEditorModel(ctx *ExecContext, name ast.QualifiedName) error {
 		fmt.Fprintf(ctx.Output, "/**\n * %s\n */\n", m.Documentation)
 	}
 
-	fmt.Fprintf(ctx.Output, "create model %s (\n", qualifiedName)
+	fmt.Fprintf(ctx.Output, "create model %s%s (\n", qualifiedName, describeFolderClause(ctx, m.ContainerID))
 
 	// Emit properties in stable order. User-set properties (Provider, Key)
 	// come first; Portal-populated metadata comes last and only if non-empty.
@@ -136,6 +137,16 @@ func execCreateAgentEditorModel(ctx *ExecContext, s *ast.CreateModelStmt) error 
 		return mdlerrors.NewNotConnected()
 	}
 
+	// Agent Editor documents need Studio Pro 11.9+ and the AgentEditorCommons
+	// module. Nothing downstream catches an older project: the documents are
+	// custom blobs, so mxbuild does not validate them and the build stays green
+	// while Studio Pro cannot open the result.
+	if err := checkFeature(ctx, "agent_documents", "agent_model",
+		"create model",
+		"upgrade your project to Mendix 11.9+ and install the AgentEditorCommons module"); err != nil {
+		return err
+	}
+
 	existing := findAgentEditorModel(ctx, s.Name.Module, s.Name.Name)
 	if existing != nil && !s.CreateOrModify {
 		return mdlerrors.NewAlreadyExists("model", s.Name.String())
@@ -159,8 +170,17 @@ func execCreateAgentEditorModel(ctx *ExecContext, s *ast.CreateModelStmt) error 
 		provider = "MxCloudGenAI"
 	}
 
+	var existingContainerM model.ID
+	if existing != nil {
+		existingContainerM = existing.ContainerID
+	}
+	containerIDM, err := containerForDocument(ctx, module.ID, s.Folder, existingContainerM)
+	if err != nil {
+		return err
+	}
+
 	m := &agenteditor.Model{
-		ContainerID:   module.ID,
+		ContainerID:   containerIDM,
 		Name:          s.Name.Name,
 		Documentation: s.Documentation,
 		Provider:      provider,
@@ -175,11 +195,16 @@ func execCreateAgentEditorModel(ctx *ExecContext, s *ast.CreateModelStmt) error 
 
 	if existing != nil {
 		m.ID = existing.ID
+		// Excluded is model state, not script state (#914).
+		m.Excluded = existing.Excluded
 		if err := ctx.Backend.UpdateAgentEditorModel(m); err != nil {
 			return mdlerrors.NewBackend("update model", err)
 		}
 		invalidateHierarchy(ctx)
-		fmt.Fprintf(ctx.Output, "Modified model: %s\n", s.Name)
+		if _, err := applyDocumentFolder(ctx, m.ID, existingContainerM, containerIDM); err != nil {
+			return err
+		}
+		ctx.ReportMutation("Modified", "model: %s", s.Name)
 		return nil
 	}
 

@@ -17,6 +17,9 @@ func (b *Builder) ExitCreateJavaActionStatement(ctx *parser.CreateJavaActionStat
 	if qn := ctx.QualifiedName(); qn != nil {
 		stmt.Name = buildQualifiedName(qn)
 	}
+	if lit := ctx.STRING_LITERAL(); lit != nil {
+		stmt.Folder = unquoteString(lit.GetText())
+	}
 
 	// Get parameters
 	if paramList := ctx.JavaActionParameterList(); paramList != nil {
@@ -62,9 +65,15 @@ func (b *Builder) ExitCreateJavaActionStatement(ctx *parser.CreateJavaActionStat
 	// Get exposed clause (EXPOSED AS 'caption' IN 'category')
 	if exposed := ctx.JavaActionExposedClause(); exposed != nil {
 		allStrings := exposed.AllSTRING_LITERAL()
-		if len(allStrings) >= 2 {
+		switch {
+		case exposed.NOT() != nil:
+			// NOT EXPOSED removes the toolbox entry. An absent clause preserves
+			// it, so removal has to be said out loud.
+			stmt.NotExposed = true
+		case len(allStrings) >= 2:
 			stmt.ExposedCaption = unquoteString(allStrings[0].GetText())
 			stmt.ExposedCategory = unquoteString(allStrings[1].GetText())
+			stmt.ExposedBitmaps = buildExposeBitmaps(exposed.AllExposeBitmapClause())
 		}
 	}
 
@@ -113,6 +122,9 @@ func (b *Builder) ExitCreateJavaScriptActionStatement(ctx *parser.CreateJavaScri
 	if qn := ctx.QualifiedName(); qn != nil {
 		stmt.Name = buildQualifiedName(qn)
 	}
+	if lit := ctx.STRING_LITERAL(); lit != nil {
+		stmt.Folder = unquoteString(lit.GetText())
+	}
 
 	if paramList := ctx.JavaActionParameterList(); paramList != nil {
 		for _, paramCtx := range paramList.AllJavaActionParameter() {
@@ -154,9 +166,15 @@ func (b *Builder) ExitCreateJavaScriptActionStatement(ctx *parser.CreateJavaScri
 
 	if exposed := ctx.JavaActionExposedClause(); exposed != nil {
 		allStrings := exposed.AllSTRING_LITERAL()
-		if len(allStrings) >= 2 {
+		switch {
+		case exposed.NOT() != nil:
+			// NOT EXPOSED removes the toolbox entry. An absent clause preserves
+			// it, so removal has to be said out loud.
+			stmt.NotExposed = true
+		case len(allStrings) >= 2:
 			stmt.ExposedCaption = unquoteString(allStrings[0].GetText())
 			stmt.ExposedCategory = unquoteString(allStrings[1].GetText())
+			stmt.ExposedBitmaps = buildExposeBitmaps(exposed.AllExposeBitmapClause())
 		}
 	}
 

@@ -51,6 +51,77 @@ alter settings model
   BcryptCost = 12,
   AllowUserMultipleSessions = true;
 
+/**
+ * Example 1.4: Enable optimistic locking
+ *
+ * Studio Pro calls this App Settings -> Runtime -> "Optimistic locking". The
+ * runtime then tracks an MxObjectVersion per persistable entity, and a commit
+ * whose version no longer matches the database throws
+ * ConcurrentModificationRuntimeException.
+ *
+ * Turn it on when a microflow reads a value, decides on it, and writes it back
+ * -- "check the balance, then debit it". A microflow is one transaction, so each
+ * run is atomic, but that does not make two concurrent runs serialisable: both
+ * can pass the check and the second overwrites the first. With this on, the
+ * second commit fails and its microflow rolls back instead of overdrawing.
+ *
+ * It detects rather than retries -- the handler must catch, reload the object,
+ * re-apply and re-commit.
+ */
+alter settings model EnableDataStorageOptimisticLocking = true;
+
+/**
+ * Example 1.5: The remaining runtime model settings
+ *
+ * FirstDayOfWeek (Default, Monday..Sunday) and SslCertificateAlgorithm (PKIX,
+ * SunX509) are enumerations -- matched case-insensitively and stored in Mendix's
+ * own spelling. A non-member is refused rather than written through, because an
+ * enum value the metamodel cannot resolve is what makes Studio Pro throw
+ * "Sequence contains no matching element".
+ *
+ * Which of these a project stores depends on its Mendix version: a blank 9.24
+ * project stores 12 model settings, a blank 11.13 stores 17. An alter naming one
+ * this project does not store is refused rather than introducing it.
+ *
+ * That refusal covers the WHOLE statement, so a version-specific setting has to
+ * be its own alter -- naming it alongside portable ones takes them down with it.
+ * These five are stored by every version in the test matrix (measured on a blank
+ * 10.24: all five present, and each accepted on its own).
+ */
+alter settings model
+  FirstDayOfWeek = 'Monday',
+  UseDatabaseForeignKeyConstraints = true,
+  UseOQLVersion2 = true,
+  SslCertificateAlgorithm = 'PKIX',
+  DefaultTimeZoneCode = 'Europe/Amsterdam';
+
+-- The @version directive opens the gated section, and everything up to the next
+-- directive is removed on a version that does not match. The `/** */` block
+-- below therefore sits INSIDE the section, not above it: a doc comment binds to
+-- the statement that follows it, so gating the statement while leaving the
+-- comment outside orphans it and the script stops parsing ("no viable
+-- alternative at input '/**...'"). Line comments like this one are free-standing
+-- and safe either side of the directive.
+-- @version: 11.0+
+/**
+ * Example 1.6: A setting older versions do not store
+ *
+ * DecimalScale is the one model setting a blank 11.6.6 project stores that a
+ * blank 10.24 does not -- measured: 11 settings against 12, and the only
+ * difference. Ungated, this line failed the 10.24 nightly on both engines.
+ *
+ * mxcli refused it correctly: Studio Pro will not open a model carrying a
+ * property its version does not define, and mxbuild does not catch it. The
+ * refusal covers the whole statement, which is why this is its own alter rather
+ * than one more line in the block above.
+ */
+alter settings model DecimalScale = 8;
+-- @version: any
+
+-- Note: UseSystemContextForBackgroundTasks is read and preserved but NOT
+-- writable -- Mendix withdrew it, and mx check on 11.13 rejects a project
+-- holding true with CE9436 "not supported anymore".
+
 -- MARK: Configuration Settings
 
 -- ============================================================================

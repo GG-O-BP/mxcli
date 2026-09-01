@@ -78,7 +78,12 @@ func (b *Builder) ExitShowStatement(ctx *parser.ShowStatementContext) {
 			}
 		}
 		b.statements = append(b.statements, stmt)
-	} else if ctx.ENTITY() != nil {
+	} else if ctx.ENTITY() != nil && ctx.ACCESS() == nil {
+		// SHOW ENTITY Module.Entity. The ACCESS guard is load-bearing: this
+		// branch runs long before the ACCESS one below, so without it
+		// `SHOW ACCESS ON ENTITY Module.Entity` would answer with the entity's
+		// definition instead of its access rules — a wrong answer rather than an
+		// error, which is the harder kind to notice.
 		if qn := ctx.QualifiedName(); qn != nil {
 			name := buildQualifiedName(qn)
 			b.statements = append(b.statements, &ast.ShowStmt{
@@ -86,6 +91,16 @@ func (b *Builder) ExitShowStatement(ctx *parser.ShowStatementContext) {
 				Name:       &name,
 			})
 		}
+	} else if ctx.ANNOTATIONS() != nil {
+		stmt := &ast.ShowStmt{ObjectType: ast.ShowAnnotations}
+		if ctx.IN() != nil {
+			if qn := ctx.QualifiedName(); qn != nil {
+				stmt.InModule = getQualifiedNameText(qn)
+			} else if id := ctx.IDENTIFIER(); id != nil {
+				stmt.InModule = id.GetText()
+			}
+		}
+		b.statements = append(b.statements, stmt)
 	} else if ctx.ASSOCIATIONS() != nil {
 		stmt := &ast.ShowStmt{ObjectType: ast.ShowAssociations}
 		if ctx.IN() != nil {
@@ -164,6 +179,16 @@ func (b *Builder) ExitShowStatement(ctx *parser.ShowStatementContext) {
 			}
 		}
 		b.statements = append(b.statements, stmt)
+	} else if ctx.RULES() != nil {
+		stmt := &ast.ShowStmt{ObjectType: ast.ShowRules}
+		if ctx.IN() != nil {
+			if qn := ctx.QualifiedName(); qn != nil {
+				stmt.InModule = getQualifiedNameText(qn)
+			} else if id := ctx.IDENTIFIER(); id != nil {
+				stmt.InModule = id.GetText()
+			}
+		}
+		b.statements = append(b.statements, stmt)
 	} else if ctx.WORKFLOWS() != nil {
 		stmt := &ast.ShowStmt{ObjectType: ast.ShowWorkflows}
 		if ctx.IN() != nil {
@@ -184,6 +209,34 @@ func (b *Builder) ExitShowStatement(ctx *parser.ShowStatementContext) {
 			}
 		}
 		b.statements = append(b.statements, stmt)
+	} else if ctx.PAGE() != nil && ctx.ACCESS() == nil {
+		// `SHOW PAGE Module.Page` (singular) is an alias for DESCRIBE PAGE, the
+		// same way SHOW ENTITY / SHOW ASSOCIATION read as their describe. The
+		// grammar alternative existed with no visitor branch, so the statement
+		// parsed to nothing and the command exited 0 printing nothing — which
+		// reads as "this page is empty", not "this command does nothing".
+		//
+		// The ACCESS guard is the sibling of the one on the ENTITY branch above:
+		// this branch sits ~200 lines before the ACCESS one, so without it
+		// `SHOW ACCESS ON PAGE Module.Page` printed the page's whole definition
+		// instead of its allowed roles. Found by the #925 test sweep — the
+		// spelling parsed, which is why it was reported as working.
+		if qn := ctx.QualifiedName(); qn != nil {
+			b.statements = append(b.statements, &ast.DescribeStmt{
+				ObjectType: ast.DescribePage,
+				Name:       buildQualifiedName(qn),
+			})
+		}
+	} else if ctx.CONNECTIONS() != nil && ctx.DATABASE() == nil {
+		// SHOW CONNECTIONS lists the external SQL connections open in this
+		// session (sql.Manager). The grammar alternative had no visitor branch,
+		// so it parsed to nothing and printed nothing — indistinguishable from
+		// "no connections are open", which is a plausible and wrong answer.
+		//
+		// The DATABASE() guard is load-bearing: `SHOW DATABASE CONNECTIONS`
+		// also matches CONNECTIONS(), so without it this branch swallows the
+		// stored-document listing and answers it with live session state.
+		b.statements = append(b.statements, &ast.ShowStmt{ObjectType: ast.ShowConnections})
 	} else if ctx.SNIPPETS() != nil {
 		stmt := &ast.ShowStmt{ObjectType: ast.ShowSnippets}
 		if ctx.IN() != nil {
@@ -201,6 +254,36 @@ func (b *Builder) ExitShowStatement(ctx *parser.ShowStatementContext) {
 				stmt.InModule = getQualifiedNameText(qn)
 			} else if id := ctx.IDENTIFIER(); id != nil {
 				stmt.InModule = id.GetText()
+			}
+		}
+		b.statements = append(b.statements, stmt)
+	} else if ctx.QUEUES() != nil {
+		stmt := &ast.ShowQueuesStmt{}
+		if ctx.IN() != nil {
+			if qn := ctx.QualifiedName(); qn != nil {
+				stmt.Module = getQualifiedNameText(qn)
+			} else if id := ctx.IDENTIFIER(); id != nil {
+				stmt.Module = id.GetText()
+			}
+		}
+		b.statements = append(b.statements, stmt)
+	} else if ctx.SCHEDULED() != nil && ctx.EVENTS() != nil {
+		stmt := &ast.ShowScheduledEventsStmt{}
+		if ctx.IN() != nil {
+			if qn := ctx.QualifiedName(); qn != nil {
+				stmt.Module = getQualifiedNameText(qn)
+			} else if id := ctx.IDENTIFIER(); id != nil {
+				stmt.Module = id.GetText()
+			}
+		}
+		b.statements = append(b.statements, stmt)
+	} else if ctx.REGULAR() != nil && ctx.EXPRESSIONS() != nil {
+		stmt := &ast.ShowRegularExpressionsStmt{}
+		if ctx.IN() != nil {
+			if qn := ctx.QualifiedName(); qn != nil {
+				stmt.Module = getQualifiedNameText(qn)
+			} else if id := ctx.IDENTIFIER(); id != nil {
+				stmt.Module = id.GetText()
 			}
 		}
 		b.statements = append(b.statements, stmt)
@@ -347,7 +430,9 @@ func (b *Builder) ExitShowStatement(ctx *parser.ShowStatementContext) {
 		// SHOW DEMO USERS
 		b.statements = append(b.statements, &ast.ShowStmt{ObjectType: ast.ShowDemoUsers})
 	} else if ctx.ACCESS() != nil {
-		// SHOW ACCESS ON [MICROFLOW|PAGE|WORKFLOW|NANOFLOW] Module.Entity
+		// SHOW ACCESS ON [ENTITY|MICROFLOW|PAGE|WORKFLOW|NANOFLOW] Module.Name.
+		// A bare name and an explicit ENTITY both fall through to ShowAccessOn,
+		// which reports entity access rules.
 		if qn := ctx.QualifiedName(); qn != nil {
 			name := buildQualifiedName(qn)
 			if ctx.MICROFLOW() != nil {
@@ -694,6 +779,46 @@ func (b *Builder) ExitCatalogSelectQuery(ctx *parser.CatalogSelectQueryContext) 
 
 // ExitDescribeStatement handles DESCRIBE ENTITY/ASSOCIATION/ENUMERATION/MODULE
 func (b *Builder) ExitDescribeStatement(ctx *parser.DescribeStatementContext) {
+	// DESCRIBE TRANSLATIONS [IN Module] FOR <lang>. Placed first: TRANSLATIONS is
+	// its own token, so nothing else can match, and reading it here keeps the
+	// rest of the chain unaware of a statement that names no document.
+	if ctx.TRANSLATIONS() != nil {
+		ids := ctx.AllIdentifierOrKeyword()
+		if len(ids) == 0 {
+			return
+		}
+		stmt := &ast.DescribeTranslationsStmt{Language: identifierOrKeywordText(ids[len(ids)-1])}
+		if len(ids) > 1 {
+			stmt.Module = identifierOrKeywordText(ids[0])
+		}
+		b.statements = append(b.statements, stmt)
+		return
+	}
+
+	// DESCRIBE QUEUE Module.Name
+	if ctx.QUEUE() != nil {
+		if qn := ctx.QualifiedName(); qn != nil {
+			b.statements = append(b.statements, &ast.DescribeQueueStmt{Name: buildQualifiedName(qn)})
+		}
+		return
+	}
+
+	// DESCRIBE SCHEDULED EVENT Module.Name
+	if ctx.SCHEDULED() != nil && ctx.EVENT() != nil {
+		if qn := ctx.QualifiedName(); qn != nil {
+			b.statements = append(b.statements, &ast.DescribeScheduledEventStmt{Name: buildQualifiedName(qn)})
+		}
+		return
+	}
+
+	// DESCRIBE REGULAR EXPRESSION Module.Name
+	if ctx.REGULAR() != nil && ctx.EXPRESSION() != nil {
+		if qn := ctx.QualifiedName(); qn != nil {
+			b.statements = append(b.statements, &ast.DescribeRegularExpressionStmt{Name: buildQualifiedName(qn)})
+		}
+		return
+	}
+
 	// Handle DESCRIBE MODULE ROLE (uses qualifiedName)
 	if ctx.MODULE() != nil && ctx.ROLE() != nil {
 		if qn := ctx.QualifiedName(); qn != nil {
@@ -724,7 +849,7 @@ func (b *Builder) ExitDescribeStatement(ctx *parser.DescribeStatementContext) {
 		roleName := ""
 		if sl := ctx.STRING_LITERAL(); sl != nil {
 			roleName = unquoteString(sl.GetText())
-		} else if iok := ctx.IdentifierOrKeyword(); iok != nil {
+		} else if iok := ctx.IdentifierOrKeyword(0); iok != nil {
 			roleName = identifierOrKeywordText(iok)
 		}
 		if roleName != "" {
@@ -740,7 +865,7 @@ func (b *Builder) ExitDescribeStatement(ctx *parser.DescribeStatementContext) {
 	// module names that happen to match a keyword, like "Agents").
 	if ctx.MODULE() != nil {
 		var moduleName string
-		if iok := ctx.IdentifierOrKeyword(); iok != nil {
+		if iok := ctx.IdentifierOrKeyword(0); iok != nil {
 			moduleName = iok.GetText()
 		} else if id := ctx.IDENTIFIER(); id != nil {
 			// Fallback for older grammar versions.
@@ -835,7 +960,7 @@ func (b *Builder) ExitDescribeStatement(ctx *parser.DescribeStatementContext) {
 			}
 			qn := buildQualifiedName(ctx.QualifiedName())
 			widgetName := ""
-			if iok := ctx.IdentifierOrKeyword(); iok != nil {
+			if iok := ctx.IdentifierOrKeyword(0); iok != nil {
 				widgetName = identifierOrKeywordText(iok)
 			}
 			b.statements = append(b.statements, &ast.DescribeFragmentFromStmt{
@@ -846,7 +971,7 @@ func (b *Builder) ExitDescribeStatement(ctx *parser.DescribeStatementContext) {
 			return
 		}
 		// Simple: DESCRIBE FRAGMENT Name
-		if iok := ctx.IdentifierOrKeyword(); iok != nil {
+		if iok := ctx.IdentifierOrKeyword(0); iok != nil {
 			b.statements = append(b.statements, &ast.DescribeStmt{
 				ObjectType: ast.DescribeFragment,
 				Name:       ast.QualifiedName{Name: identifierOrKeywordText(iok)},
@@ -995,6 +1120,11 @@ func (b *Builder) ExitDescribeStatement(ctx *parser.DescribeStatementContext) {
 			ObjectType: ast.DescribeNanoflow,
 			Name:       name,
 		})
+	} else if ctx.RULE() != nil {
+		b.statements = append(b.statements, &ast.DescribeStmt{
+			ObjectType: ast.DescribeRule,
+			Name:       name,
+		})
 	} else if ctx.WORKFLOW() != nil {
 		b.statements = append(b.statements, &ast.DescribeStmt{
 			ObjectType: ast.DescribeWorkflow,
@@ -1008,6 +1138,11 @@ func (b *Builder) ExitDescribeStatement(ctx *parser.DescribeStatementContext) {
 	} else if ctx.BUILDING() != nil && ctx.BLOCK() != nil {
 		b.statements = append(b.statements, &ast.DescribeStmt{
 			ObjectType: ast.DescribeBuildingBlock,
+			Name:       name,
+		})
+	} else if ctx.MENU_KW() != nil {
+		b.statements = append(b.statements, &ast.DescribeStmt{
+			ObjectType: ast.DescribeMenu,
 			Name:       name,
 		})
 	} else if ctx.SNIPPET() != nil {

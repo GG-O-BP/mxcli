@@ -50,14 +50,16 @@ Primitive types: `String`, `Integer`, `Long`, `Decimal`, `Boolean`, `DateTime`. 
 **Object Operations**
 
 ```sql
-$Var = CREATE Module.Entity ( Attr1 = value1, Attr2 = value2 );
-CHANGE $Entity ( Attr = value );
-COMMIT $Entity [ WITH EVENTS ] [ REFRESH ];
-DELETE $Entity;
+$Var = CREATE Module.Entity ( Attr1 = value1, Attr2 = value2 ) [ COMMIT [ WITHOUT EVENTS ] ] [ REFRESH ];
+CHANGE $Entity ( Attr = value ) [ COMMIT [ WITHOUT EVENTS ] ] [ REFRESH ];
+COMMIT $Entity [ WITHOUT EVENTS ] [ REFRESH ];
+DELETE $Entity [ REFRESH ];
 ROLLBACK $Entity [ REFRESH ];
 ```
 
-`CREATE` instantiates a new object with initial attribute values. `CHANGE` modifies attributes on an existing object. `COMMIT` persists changes to the database -- `WITH EVENTS` triggers before/after commit event handlers, `REFRESH` updates client-side state. `ROLLBACK` reverts uncommitted changes to an object.
+`CREATE` instantiates a new object with initial attribute values. `CHANGE` modifies attributes on an existing object. `COMMIT` persists changes to the database -- the before/after commit event handlers run unless you write `WITHOUT EVENTS`, matching Studio Pro's default, and `REFRESH` updates client-side state. `ROLLBACK` reverts uncommitted changes to an object.
+
+Every one of these modifiers is optional, and leaving one out always means Mendix's own default -- `Commit: No` and `Refresh in client: No` throughout, and `With events: Yes` on the standalone `COMMIT`. A bare statement therefore produces the same activity as dragging a fresh one onto the Studio Pro canvas.
 
 **Retrieval**
 
@@ -148,10 +150,22 @@ Annotations are placed before an activity to control visual appearance in the mi
 
 ```sql
 @position(x, y)          -- Canvas position
+@start(x, y)             -- Canvas position of the start event (first statement only)
 @caption 'text'          -- Custom caption
 @color Green             -- Background color
 @annotation 'text'       -- Visual note attached to next activity
 ```
+
+`@start` positions the start event, which has no statement of its own, so it is
+written on the first statement — the one the start flows into. It is optional:
+omit it and the start is placed one spacing unit left of the first activity, on
+that activity's centre line, and a later rewrite re-derives it so it follows the
+activities when they move.
+
+A start that is *not* at that derived spot — one dragged somewhere in Studio Pro,
+or written with `@start` — is treated as placed on purpose. It survives a rewrite
+that does not mention it, and `DESCRIBE` emits an `@start` line for it so the
+description reproduces the flow exactly. An explicit `@start` overrides both.
 
 ## Parameters
 
@@ -197,9 +211,9 @@ CREATE MICROFLOW Sales.ACT_ApproveOrder
     (DECLARE $Order: Sales.Order)
     RETURN Boolean
 BEGIN
-    IF $Order/Status = 'Pending' THEN
-        CHANGE $Order (Status = 'Approved');
-        COMMIT $Order WITH EVENTS;
+    IF $Order/Status = Sales.OrderStatus.Pending THEN
+        CHANGE $Order (Status = Sales.OrderStatus.Approved);
+        COMMIT $Order;
         LOG INFO NODE 'OrderProcessing' 'Order approved';
         RETURN true;
     ELSE
@@ -285,7 +299,7 @@ BEGIN
         Status = 'Draft',
         CreatedBy = '[%CurrentUser%]'
     );
-    COMMIT $Order WITH EVENTS;
+    COMMIT $Order;
     RETURN $Order;
 END;
 ```

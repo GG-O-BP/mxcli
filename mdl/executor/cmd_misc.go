@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/mendixlabs/mxcli/cmd/mxcli/syntax"
@@ -118,7 +117,7 @@ Domain Model - Associations:
     to Module.Child
     type Reference|ReferenceSet
     [owner Default|Both|Parent|Child]
-    [delete_behavior DELETE_BUT_KEEP_REFERENCES|DELETE_CASCADE];
+    [delete_behavior DELETE_BUT_KEEP_REFERENCES|DELETE_AND_REFERENCES|DELETE_IF_NO_REFERENCES];
   /
 
   drop association Module.Name;
@@ -152,6 +151,7 @@ Microflows:
     @caption 'text'                      -- Custom caption for activity
     @color Green                         -- Background color for activity
     @position(100, 200)                  -- Canvas position for activity
+    @start(60, 200)                      -- Canvas position for the start event
     return $ReturnVar;
   end;
   /
@@ -242,6 +242,7 @@ Security - Access Control:
 Security - Project Settings:
   alter project security level off|prototype|production;
   alter project security demo users on|off;
+  alter project security guest access on role <UserRole>|off;
   create demo user 'name' password 'pass' (UserRole [, ...]);
   drop demo user 'name';
 
@@ -410,20 +411,17 @@ func execExecuteScript(ctx *ExecContext, s *ast.ExecuteScriptStmt) error {
 		return mdlerrors.NewValidationf("maximum script nesting depth (%d) exceeded — possible recursive EXECUTE SCRIPT", maxScriptDepth)
 	}
 
-	// Resolve path relative to current working directory
-	scriptPath := s.Path
-	if !filepath.IsAbs(scriptPath) {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return mdlerrors.NewBackend("get current directory", err)
-		}
-		scriptPath = filepath.Join(cwd, scriptPath)
+	// Resolve against the including script's directory first, so a script that
+	// pulls in a sibling works from any working directory.
+	scriptPath, err := ctx.ResolveScriptRelative(s.Path)
+	if err != nil {
+		return mdlerrors.NewBackend("get current directory", err)
 	}
 
 	// Read the script file
-	content, err := os.ReadFile(scriptPath)
-	if err != nil {
-		return mdlerrors.NewBackend("read script file '"+s.Path+"'", err)
+	content, readErr := os.ReadFile(scriptPath)
+	if readErr != nil {
+		return mdlerrors.NewBackend("read script file '"+s.Path+"'", readErr)
 	}
 
 	// Pre-process: remove "/" statement separators (SQL*Plus style)

@@ -18,6 +18,11 @@ type rawObjectList struct {
 type rawObjectListItem struct {
 	Props      []rawExplicitProp
 	DataSource *rawDataSource
+	// Children are the widgets nested in a Widgets-typed sub-property of the
+	// item — an Accordion group's `content` / `headerContent` slot. Without
+	// these an accordion described as an empty group, and re-executing that
+	// description deleted whatever was inside it (#891).
+	Children []rawWidget
 }
 
 // extractObjectLists reconstructs every object-list property of a pluggable
@@ -67,7 +72,7 @@ func extractObjectLists(ctx *ExecContext, w map[string]any) []rawObjectList {
 				continue
 			}
 			item := extractObjectListItem(ctx, om, nestedMap)
-			if len(item.Props) > 0 || item.DataSource != nil {
+			if len(item.Props) > 0 || item.DataSource != nil || len(item.Children) > 0 {
 				items = append(items, item)
 			}
 		}
@@ -150,6 +155,33 @@ func extractObjectListItem(ctx *ExecContext, itemObj map[string]any, nestedMap m
 			}
 			continue
 		}
+		// Child widgets (an Accordion group's `content` slot). A Widgets-typed
+		// sub-property holds a widget tree, not a scalar, so it is parsed with the
+		// same recursion the rest of DESCRIBE uses rather than stringified (#891).
+		if childElems := getBsonArrayElements(value["Widgets"]); len(childElems) > 0 {
+			for _, ce := range childElems {
+				cm, ok := ce.(map[string]any)
+				if !ok {
+					continue
+				}
+				item.Children = append(item.Children, parseRawWidget(ctx, cm)...)
+			}
+			continue
+		}
+		// Action sub-property (a chart series' staticOnClickAction, a popupmenu
+		// item's action, a maps marker's onClick). Emitted under the schema key,
+		// which is how MDL addresses an item action slot — there is no alias
+		// (#956). A NoAction is the unset default and is skipped, so an
+		// untouched item describes exactly as it did before.
+		if action, ok := value["Action"].(map[string]any); ok && action != nil {
+			if t := extractString(action["$Type"]); t != "Forms$NoAction" && t != "Pages$NoAction" {
+				if mdl := renderClientActionMDL(ctx, action); mdl != "" {
+					item.Props = append(item.Props, rawExplicitProp{
+						Key: objectListMDLKey(key), Value: mdl, IsRef: true})
+				}
+			}
+			continue
+		}
 		// Attribute binding (staticXAttribute, staticYAttribute, …).
 		if attrRef, ok := value["AttributeRef"].(map[string]any); ok && attrRef != nil {
 			if a := extractString(attrRef["Attribute"]); a != "" {
@@ -162,9 +194,24 @@ func extractObjectListItem(ctx *ExecContext, itemObj map[string]any, nestedMap m
 			item.Props = append(item.Props, rawExplicitProp{Key: objectListMDLKey(key), Value: expr})
 			continue
 		}
-		// TextTemplate sub-property (e.g. chart series `staticName`).
+		// TextTemplate sub-property (e.g. chart series `staticName`, a File
+		// Uploader custom button's `buttonCaption`).
 		if text, _ := extractTextTemplateText(value); text != "" {
 			item.Props = append(item.Props, rawExplicitProp{Key: objectListMDLKey(key), Value: text})
+			// …and its PARAMETERS. A template carrying `{1}` with no parameter is
+			// CE0720 ("Place holder index 1 is greater than 0, the number of
+			// parameter(s)"), so describing the text alone turns a valid page
+			// into one that fails the build — measured on a Studio Pro-authored
+			// File Uploader custom button (#956). The companion property is the
+			// template's own name + "Params", which is the same convention the
+			// engine reads back.
+			if params := extractClientTemplateParameters(ctx, value, "TextTemplate"); len(params) > 0 {
+				item.Props = append(item.Props, rawExplicitProp{
+					Key:   objectListMDLKey(key) + "Params",
+					Value: "[" + strings.Join(formatParametersV3(params), ", ") + "]",
+					IsRef: true, // a param list is syntax, not a quoted literal
+				})
+			}
 			continue
 		}
 		// Primitive value (dataSet, interpolation, colorValue, …). Skip

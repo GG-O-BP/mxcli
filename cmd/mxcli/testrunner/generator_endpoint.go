@@ -14,6 +14,11 @@ import (
 const (
 	verdictPass       = "PASS"
 	verdictFailPrefix = "FAIL:"
+	// verdictSetupPrefix is followed by the setup microflow that threw. It is a
+	// third outcome on purpose: the test never ran, so it neither passed nor
+	// failed, and reporting a broken fixture as a FAIL blames the code under
+	// test for it.
+	verdictSetupPrefix = "SETUP:"
 )
 
 // GenerateTestFlows returns the MDL declaring one microflow per test case.
@@ -34,6 +39,12 @@ func GenerateTestFlows(suite *TestSuite) string {
 	var b strings.Builder
 	b.WriteString("CREATE MODULE " + mxTestModule + ";\n\n")
 	for _, tc := range suite.Tests {
+		// A test with an uncompilable @expect gets no microflow. The runner
+		// reports it as an ERROR from the parse message, which is more useful
+		// than a microflow that runs and cannot assert anything.
+		if len(tc.AssertionErrors) > 0 {
+			continue
+		}
 		writeTestFlow(&b, tc)
 		b.WriteString("\n")
 	}
@@ -48,6 +59,10 @@ func writeTestFlow(b *strings.Builder, tc TestCase) {
 	b.WriteString("BEGIN\n")
 	fmt.Fprintf(b, "  DECLARE $Verdict String = '%s';\n", verdictPass)
 
+	// Before the body, and before a @throws test pre-sets its failing verdict:
+	// the fixture is not the thing expected to throw.
+	writeSetupCalls(b, tc)
+
 	if tc.Throws != "" {
 		writeThrowsFlowBody(b, tc)
 	} else {
@@ -59,6 +74,22 @@ func writeTestFlow(b *strings.Builder, tc TestCase) {
 	b.WriteString("/\n")
 }
 
+// writeSetupCalls writes the @setup microflow calls that precede a test's body.
+//
+// Each is a plain call — a fixture is a microflow, so there is nothing to
+// resolve and nothing to declare — with a handler that returns the SETUP verdict
+// and stops. Continuing into a test whose preconditions were not established
+// produces an assertion failure that says nothing about the code under test.
+func writeSetupCalls(b *strings.Builder, tc TestCase) {
+	for _, flow := range tc.Setups {
+		fmt.Fprintf(b, "  CALL MICROFLOW %s() ON ERROR {\n", flow)
+		fmt.Fprintf(b, "    SET $Verdict = '%s';\n",
+			escapeMDLString(verdictSetupPrefix+flow))
+		b.WriteString("    RETURN $Verdict;\n")
+		b.WriteString("  };\n")
+	}
+}
+
 // writeExpectFlowBody writes the body of a normal test: run the MDL, then check
 // each @expect. An error during the body short-circuits to a FAIL verdict.
 func writeExpectFlowBody(b *strings.Builder, tc TestCase) {
@@ -67,8 +98,25 @@ func writeExpectFlowBody(b *strings.Builder, tc TestCase) {
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
+	writeExpectAggregates(b, "  ", tc.Expects)
 	for _, exp := range tc.Expects {
 		writeExpectCheck(b, exp)
+	}
+}
+
+// writeExpectAggregates emits the Aggregate list activities the assertions need,
+// after the body has produced the lists and before the first decision reads
+// them. One activity per variable, however many assertions refer to it.
+func writeExpectAggregates(b *strings.Builder, indent string, expects []Expect) {
+	seen := map[string]bool{}
+	for _, exp := range expects {
+		for _, agg := range exp.Aggregates {
+			if seen[agg.Var] {
+				continue
+			}
+			seen[agg.Var] = true
+			fmt.Fprintf(b, "%s%s = %s(%s);\n", indent, agg.Var, agg.Op, agg.List)
+		}
 	}
 }
 
@@ -87,29 +135,34 @@ func writeThrowsFlowBody(b *strings.Builder, tc TestCase) {
 
 // writeExpectCheck writes one @expect assertion.
 //
-// Only the pass condition is expressed with `=`; a `<>` expectation is compiled
-// as the same equality with the branches swapped. That is deliberate and
-// inherited from the monolithic generator: `<>` in a generated Mendix expression
-// produced expression errors, so the operator never reaches the model.
+// The assertion is emitted as the expression the author wrote, so whatever
+// Mendix can evaluate is evaluated. `<>` never reaches the model — ParseExpect
+// rewrites it to `!=`, the spelling Mendix's expression engine accepts — which
+// is what the old branch-swapping workaround was for.
 func writeExpectCheck(b *strings.Builder, exp Expect) {
-	equal := fmt.Sprintf("%s = %s", exp.Variable, exp.Value)
-	failMsg := escapeMDLString(fmt.Sprintf("%sexpected %s %s %s",
-		verdictFailPrefix, exp.Variable, exp.Operator, exp.Value))
-
 	// An earlier statement may already have failed the test; never overwrite an
 	// existing failure with a later assertion's result.
 	fmt.Fprintf(b, "  IF $Verdict = '%s' THEN\n", verdictPass)
-	if exp.Operator == "<>" {
-		fmt.Fprintf(b, "    IF %s THEN\n", equal)
-		fmt.Fprintf(b, "      SET $Verdict = '%s';\n", failMsg)
-		b.WriteString("    END IF;\n")
-	} else {
-		fmt.Fprintf(b, "    IF %s THEN\n", equal)
-		b.WriteString("    ELSE\n")
-		fmt.Fprintf(b, "      SET $Verdict = '%s';\n", failMsg)
-		b.WriteString("    END IF;\n")
-	}
+	fmt.Fprintf(b, "    IF %s THEN\n", exp.Condition)
+	b.WriteString("    ELSE\n")
+	fmt.Fprintf(b, "      SET $Verdict = %s;\n", failVerdictExpr(exp))
+	b.WriteString("    END IF;\n")
 	b.WriteString("  END IF;\n")
+}
+
+// failVerdictExpr builds the MDL expression assigned to $Verdict when an
+// assertion fails.
+//
+// When the observed value can be rendered as a String without guessing its type,
+// it is concatenated onto the message. A failure that says only what was expected
+// tells you nothing about what came back, which is half the value of a failing
+// test.
+func failVerdictExpr(exp Expect) string {
+	msg := verdictFailPrefix + "expected " + exp.Raw
+	if exp.Actual == "" {
+		return "'" + escapeMDLString(msg) + "'"
+	}
+	return "'" + escapeMDLString(msg+", actual: ") + "' + " + exp.Actual
 }
 
 // rewriteBodyForVerdict attaches an ON ERROR handler to every CALL in the test

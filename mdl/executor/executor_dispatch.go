@@ -90,6 +90,7 @@ func (e *Executor) newExecContext(ctx context.Context) *ExecContext {
 	return &ExecContext{
 		Context:          ctx,
 		Backend:          e.backend,
+		lastWriteStats:   currentWriteStats(e.backend),
 		Output:           e.output,
 		Format:           e.format,
 		Quiet:            e.quiet,
@@ -98,6 +99,7 @@ func (e *Executor) newExecContext(ctx context.Context) *ExecContext {
 		Catalog:          cat,
 		Cache:            e.cache,
 		MprPath:          e.mprPath,
+		ScriptDir:        e.scriptDir,
 		SqlMgr:           e.sqlMgr,
 		ThemeRegistry:    e.themeRegistry,
 		Settings:         e.settings,

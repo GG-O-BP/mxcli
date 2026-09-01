@@ -168,12 +168,14 @@ func findPublishedRestService(ctx *ExecContext, moduleName, name string) (*model
 	if err != nil {
 		return nil, err
 	}
-	for _, svc := range services {
-		modID := h.FindModuleID(svc.ContainerID)
-		modName := h.GetModuleName(modID)
-		if modName == moduleName && svc.Name == name {
-			return svc, nil
-		}
+	// Prefer the live service over an excluded twin of the same name (#914).
+	if svc, ok := pickLive(services,
+		func(svc *model.PublishedRestService) bool {
+			return h.GetModuleName(h.FindModuleID(svc.ContainerID)) == moduleName && svc.Name == name
+		},
+		func(svc *model.PublishedRestService) bool { return svc.Excluded },
+	); ok {
+		return svc, nil
 	}
 	return nil, mdlerrors.NewNotFound("published rest service", moduleName+"."+name)
 }
@@ -225,6 +227,8 @@ func execCreatePublishedRestService(ctx *ExecContext, s *ast.CreatePublishedRest
 	if existing != nil {
 		svc.ID = existing.ID
 		svc.AllowedRoles = existing.AllowedRoles
+		// Excluded is model state, not script state (#914).
+		svc.Excluded = existing.Excluded
 	}
 
 	for _, resDef := range s.Resources {
@@ -245,11 +249,17 @@ func execCreatePublishedRestService(ctx *ExecContext, s *ast.CreatePublishedRest
 	}
 
 	if existing != nil {
+		if s.Folder == "" {
+			svc.ContainerID = existing.ContainerID
+		}
 		if err := ctx.Backend.UpdatePublishedRestService(svc); err != nil {
 			return mdlerrors.NewBackend("update published rest service", err)
 		}
+		if _, err := applyDocumentFolder(ctx, svc.ID, existing.ContainerID, svc.ContainerID); err != nil {
+			return err
+		}
 		if !ctx.Quiet {
-			fmt.Fprintf(ctx.Output, "Modified published rest service %s.%s\n", s.Name.Module, s.Name.Name)
+			ctx.ReportMutation("Modified", "published rest service %s.%s", s.Name.Module, s.Name.Name)
 		}
 	} else {
 		if err := ctx.Backend.CreatePublishedRestService(svc); err != nil {

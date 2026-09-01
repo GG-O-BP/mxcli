@@ -68,6 +68,7 @@ func actionFromGen(el element.Element) microflows.MicroflowAction {
 			EntityQualifiedName: a.EntityQualifiedName(),
 			OutputVariable:      a.OutputVariableName(),
 			Commit:              microflows.CommitType(a.Commit()),
+			RefreshInClient:     a.RefreshInClient(),
 			InitialMembers:      memberChangesFromGen(a.ItemsItems()),
 		}
 		out.ID = model.ID(a.ID())
@@ -135,6 +136,7 @@ func actionFromGen(el element.Element) microflows.MicroflowAction {
 					call.ParameterMappings = append(call.ParameterMappings, m)
 				}
 			}
+			call.QueueSettings = queueSettingsFromRaw(mc.Raw())
 			out.MicroflowCall = call
 		}
 		return out
@@ -291,6 +293,7 @@ func actionFromGen(el element.Element) microflows.MicroflowAction {
 		if b, ok := raw.Lookup("UseReturnVariable").BooleanOK(); ok {
 			out.UseReturnVariable = b
 		}
+		out.QueueSettings = queueSettingsFromRaw(raw)
 		if arr, ok := raw.Lookup("ParameterMappings").ArrayOK(); ok {
 			vals, _ := arr.Values()
 			for _, v := range vals {
@@ -326,7 +329,7 @@ func actionFromGen(el element.Element) microflows.MicroflowAction {
 			out.RequestHandling = restRequestHandlingFromRaw(rh)
 		}
 		if rh, ok := raw.Lookup("ResultHandling").DocumentOK(); ok {
-			out.ResultHandling = restResultHandlingFromRaw(rh)
+			out.ResultHandling = restResultHandlingFromRaw(rh, rawStr(raw, "ResultHandlingType"))
 		}
 		return out
 
@@ -489,9 +492,24 @@ func actionFromGen(el element.Element) microflows.MicroflowAction {
 		out.ID = model.ID(a.ID())
 		if rh, ok := a.Raw().Lookup("ResultHandling").DocumentOK(); ok {
 			if imc, ok := rh.Lookup("ImportMappingCall").DocumentOK(); ok {
-				h, force, _ := readMappingCall(rh, imc)
-				if !h.SingleObject && force {
+				h, force, vtType := readMappingCall(rh, imc)
+				// The stored VariableType is the authority on the result
+				// variable's cardinality, and it does NOT track the range:
+				// Mendix's own SUB_Feedback_PostToAppInsights stores
+				// ConstantRange{SingleObject:false} against an ObjectType. Only
+				// where no VariableType is stored does ForceSingleOccurrence
+				// stand in — and never for a bounded range, which is always a
+				// list, or a Custom range would read back as `first` and lose
+				// the limit. (issue #881)
+				switch vtType {
+				case "DataTypes$ObjectType":
 					h.SingleObject = true
+				case "DataTypes$ListType":
+					h.SingleObject = false
+				default:
+					if !h.SingleObject && force && h.LimitExpression == "" && h.OffsetExpression == "" {
+						h.SingleObject = true
+					}
 				}
 				out.ResultHandling = h
 			}
@@ -744,6 +762,14 @@ func restRequestHandlingFromRaw(doc bson.Raw) microflows.RequestHandling {
 			h.Template, h.TemplateParams = stringTemplateFromRaw(t)
 		}
 		return h
+	case "Microflows$BinaryRequestHandling":
+		// Binary request body — the expression yielding the bytes, stored as
+		// source text (Studio Pro writes a FileDocument's Contents member,
+		// e.g. `$Doc/Contents`). Without this case DESCRIBE dropped the body
+		// silently and the round trip produced a request with no payload.
+		h := &microflows.BinaryRequestHandling{Expression: rawStr(doc, "Expression")}
+		h.ID = id
+		return h
 	case "Microflows$MappingRequestHandling":
 		// The export-mapping source variable is stored under "MappingVariableName"
 		// (same key ExportXmlAction uses), not "ParameterVariable". Reading the
@@ -771,10 +797,18 @@ func restRequestHandlingFromRaw(doc bson.Raw) microflows.RequestHandling {
 }
 
 // restResultHandlingFromRaw reconstructs a REST call's result handling. A Mapping
-// result carries an ImportMappingCall; the other variants discriminate on the
-// VariableType ($Type Void → Nothing, ObjectType System.HttpResponse → response,
-// else String). Inverse of restResultHandlingToGen.
-func restResultHandlingFromRaw(doc bson.Raw) microflows.ResultHandling {
+// result carries an ImportMappingCall; the rest are told apart by Mendix's own
+// ResultHandlingType discriminator, falling back to the VariableType when that
+// property is absent (it is omitempty, so a Studio Pro document need not carry
+// it). Inverse of restResultHandlingToGen.
+//
+// The fallback must distinguish FileDocument from HttpResponse by entity name,
+// because both are stored as DataTypes$ObjectType. Reading it as "anything that
+// is not literally System.HttpResponse is a String" was issue #922: a REST call
+// storing into a file document described as `returns String`, and a describe →
+// exec round trip rewrote the stored type from FileDocument to String — with
+// mxbuild still reporting zero errors, so nothing downstream noticed.
+func restResultHandlingFromRaw(doc bson.Raw, handlingType string) microflows.ResultHandling {
 	id := model.ID(rawStr(doc, "$ID"))
 	resultVar := rawStr(doc, "ResultVariableName")
 	if imc, ok := doc.Lookup("ImportMappingCall").DocumentOK(); ok {
@@ -794,11 +828,17 @@ func restResultHandlingFromRaw(doc bson.Raw) microflows.ResultHandling {
 		entity = rawStr(vt, "Entity")
 	}
 	switch {
-	case vtType == "DataTypes$VoidType":
+	case handlingType == "FileDocument" ||
+		(handlingType == "" && vtType == "DataTypes$ObjectType" && entity != "" && entity != "System.HttpResponse"):
+		h := &microflows.ResultHandlingFileDocument{VariableName: resultVar, EntityRef: entity}
+		h.ID = id
+		return h
+	case handlingType == "None" || vtType == "DataTypes$VoidType":
 		h := &microflows.ResultHandlingNone{}
 		h.ID = id
 		return h
-	case vtType == "DataTypes$ObjectType" && entity == "System.HttpResponse":
+	case handlingType == "HttpResponse" ||
+		(handlingType == "" && vtType == "DataTypes$ObjectType" && entity == "System.HttpResponse"):
 		h := &microflows.ResultHandlingHttpResponse{VariableName: resultVar}
 		h.ID = id
 		return h
@@ -826,8 +866,20 @@ func readMappingCall(doc, imc bson.Raw) (h *microflows.ResultHandlingMapping, fo
 	h.MappingID = model.ID(mapping)
 	force, _ = imc.Lookup("ForceSingleOccurrence").BooleanOK()
 	h.ForceSingleOccurrence = &force
+	// The Range is polymorphic: a ConstantRange carries SingleObject (All/First)
+	// while a CustomRange carries the limit and offset expressions. Reading only
+	// SingleObject dropped the Custom setting entirely, so a describe→edit→exec
+	// cycle turned a bounded import into an unbounded one (issue #881).
 	if rng, ok := imc.Lookup("Range").DocumentOK(); ok {
-		if b, ok := rng.Lookup("SingleObject").BooleanOK(); ok {
+		if rawStr(rng, "$Type") == "Microflows$CustomRange" {
+			h.LimitExpression = rawStr(rng, "LimitExpression")
+			h.OffsetExpression = rawStr(rng, "OffsetExpression")
+		} else if b, ok := rng.Lookup("SingleObject").BooleanOK(); ok {
+			// SingleObject is the RANGE's own flag (All/First). It is only a
+			// fallback for the result variable's cardinality — where a
+			// VariableType is stored, that wins, because the two disagree in
+			// Mendix's own models (see RangeSingleObject).
+			h.RangeSingleObject = &b
 			h.SingleObject = b
 		}
 	}
@@ -935,7 +987,26 @@ func listOperationFromRaw(doc bson.Raw) microflows.ListOperation {
 		o.ID = id
 		return o
 	case "Microflows$ListRange":
-		o := &microflows.ListRangeOperation{ListVariable: list, LimitExpression: rawStr(doc, "LimitExpression"), OffsetExpression: rawStr(doc, "OffsetExpression")}
+		// The bounds are one level down, on a Microflows$CustomRange child —
+		// not on the ListRange itself. Reading them flat found nothing in every
+		// document Mendix wrote, so a paged range described as the unbounded
+		// `range($List)`: no warning, exit 0, and `mxcli check` clean on output
+		// that re-executes with pagination silently removed. (issue #966)
+		o := &microflows.ListRangeOperation{ListVariable: list}
+		if cr, ok := doc.Lookup("CustomRange").DocumentOK(); ok {
+			o.LimitExpression = rawStr(cr, "LimitExpression")
+			o.OffsetExpression = rawStr(cr, "OffsetExpression")
+		} else {
+			// A project written by mxcli 0.18 or earlier has the bounds flat
+			// here, because the writer put them there. Such a project does not
+			// build (CE6520), but the expressions the author typed ARE on disk
+			// — so reading them lets DESCRIBE show the range that was meant,
+			// and re-executing that output stores the nested form and repairs
+			// the project. Mendix itself never writes these keys, so the
+			// fallback cannot misfire on a Studio Pro document.
+			o.LimitExpression = rawStr(doc, "LimitExpression")
+			o.OffsetExpression = rawStr(doc, "OffsetExpression")
+		}
 		o.ID = id
 		return o
 	default:
@@ -1094,4 +1165,20 @@ func rawDocElements(raw bson.Raw, key string) []bson.Raw {
 		}
 	}
 	return out
+}
+
+// queueSettingsFromRaw reads a call's Queues$QueueSettings child back into the
+// semantic model. Retry is carried as raw storage rather than decoded: MDL
+// cannot author one, and the rewrite guard needs to know it is there so it can
+// refuse rather than drop it (guard-don't-drop, ADR-0005).
+func queueSettingsFromRaw(raw bson.Raw) *microflows.QueueSettings {
+	doc, ok := raw.Lookup("QueueSettings").DocumentOK()
+	if !ok {
+		return nil
+	}
+	qs := &microflows.QueueSettings{Queue: rawStr(doc, "Queue")}
+	if v, err := doc.LookupErr("Retry"); err == nil && v.Type != bson.TypeNull {
+		qs.Retry = v
+	}
+	return qs
 }

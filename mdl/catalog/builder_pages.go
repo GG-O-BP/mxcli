@@ -34,9 +34,9 @@ func (b *Builder) buildPages() error {
 	if b.fullMode {
 		widgetStmt, err = b.tx.Prepare(`
 			INSERT INTO widgets_data (Id, Name, WidgetType, ContainerId, ContainerQualifiedName, ContainerType,
-				ModuleName, Folder, EntityRef, AttributeRef, MicroflowRef, NanoflowRef, Description,
+				ModuleName, Folder, EntityRef, AttributeRef, MicroflowRef, NanoflowRef, PageRef, Description,
 				ProjectId, SnapshotId)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`)
 		if err != nil {
 			return err
@@ -114,6 +114,7 @@ func (b *Builder) buildPages() error {
 					w.AttributeRef,
 					w.MicroflowRef,
 					w.NanoflowRef,
+					w.PageRef,
 					"",
 					projectID, snapshotID,
 				); err != nil {
@@ -156,9 +157,9 @@ func (b *Builder) buildSnippets() error {
 	if b.fullMode {
 		widgetStmt, err = b.tx.Prepare(`
 			INSERT INTO widgets_data (Id, Name, WidgetType, ContainerId, ContainerQualifiedName, ContainerType,
-				ModuleName, Folder, EntityRef, AttributeRef, MicroflowRef, NanoflowRef, Description,
+				ModuleName, Folder, EntityRef, AttributeRef, MicroflowRef, NanoflowRef, PageRef, Description,
 				ProjectId, SnapshotId)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`)
 		if err != nil {
 			return err
@@ -205,7 +206,7 @@ func (b *Builder) buildSnippets() error {
 					w.ID, w.Name, w.WidgetType,
 					string(sn.ID), qualifiedName, "SNIPPET",
 					moduleName, folder,
-					w.EntityRef, w.AttributeRef, w.MicroflowRef, w.NanoflowRef, "",
+					w.EntityRef, w.AttributeRef, w.MicroflowRef, w.NanoflowRef, w.PageRef, "",
 					projectID, snapshotID,
 				); err != nil {
 					return fmt.Errorf("insert widget %s for snippet %s: %w", w.Name, qualifiedName, err)
@@ -292,6 +293,7 @@ type rawWidgetInfo struct {
 	AttributeRef string
 	MicroflowRef string // action/datasource microflow (Forms$MicroflowSettings.Microflow, …)
 	NanoflowRef  string // action/datasource nanoflow
+	PageRef      string // action page (Forms$PageSettings.Form) — see scanWidgetOwnRefs
 }
 
 // widgetChildKeys are the keys under which a widget nests *other* widgets. The
@@ -299,6 +301,14 @@ type rawWidgetInfo struct {
 // references (each child is visited separately by extractWidgetsRecursive).
 var widgetChildKeys = map[string]bool{
 	"Widgets": true, "Rows": true, "FooterWidgets": true, "TabPages": true,
+	// A List View's specialization templates. Missing here, the list view's own
+	// scan descended into them and collected each template's Entity — then
+	// returned the lexicographically smallest candidate, so a specialization
+	// sorting before the list view's real datasource silently replaced it. The
+	// widgets table recorded the wrong entity for the list view, decided by
+	// alphabetical accident. Each template is indexed as a container in its own
+	// right instead (see extractWidgetsRecursive). Issue #940.
+	"Templates": true,
 }
 
 // scanWidgetOwnRefs collects the entity/microflow/nanoflow a widget references in
@@ -306,8 +316,8 @@ var widgetChildKeys = map[string]bool{
 // Returns the lexicographically smallest match of each kind so the result is
 // deterministic regardless of BSON map iteration order; page-level dedup in the
 // refs projection makes the per-widget choice immaterial to the final graph.
-func scanWidgetOwnRefs(w map[string]any) (entity, microflow, nanoflow string) {
-	var ents, mfs, nfs []string
+func scanWidgetOwnRefs(w map[string]any) (entity, microflow, nanoflow, page string) {
+	var ents, mfs, nfs, forms []string
 	var walk func(v any)
 	walk = func(v any) {
 		switch x := v.(type) {
@@ -320,6 +330,14 @@ func scanWidgetOwnRefs(w map[string]any) (entity, microflow, nanoflow string) {
 			}
 			if s, ok := x["Nanoflow"].(string); ok && s != "" {
 				nfs = append(nfs, s)
+			}
+			// A page reference is stored under "Form" — Mendix's original word for
+			// a page, the same rename behind ShowFormAction/CloseFormAction. Not
+			// collecting it is why an action button that opens a page created no
+			// reference, so the page reported "(no callers found)" however many
+			// buttons pointed at it (issue #773).
+			if s, ok := x["Form"].(string); ok && s != "" {
+				forms = append(forms, s)
 			}
 			for k, val := range x {
 				if widgetChildKeys[k] {
@@ -346,7 +364,7 @@ func scanWidgetOwnRefs(w map[string]any) (entity, microflow, nanoflow string) {
 		}
 		return m
 	}
-	return min(ents), min(mfs), min(nfs)
+	return min(ents), min(mfs), min(nfs), min(forms)
 }
 
 // extractLayoutRef extracts the layout reference from raw page BSON. Regular
@@ -461,7 +479,7 @@ func extractWidgetsRecursive(w map[string]any) []rawWidgetInfo {
 
 	// Extract datasource entity + action microflow/nanoflow references from this
 	// widget's own content (not its child widgets).
-	widget.EntityRef, widget.MicroflowRef, widget.NanoflowRef = scanWidgetOwnRefs(w)
+	widget.EntityRef, widget.MicroflowRef, widget.NanoflowRef, widget.PageRef = scanWidgetOwnRefs(w)
 
 	// Index user-authored containers, but skip the synthetic
 	// "conditionalVisibilityWidget*" wrapper that mxcli / Studio Pro insert as a
@@ -496,6 +514,22 @@ func extractWidgetsRecursive(w map[string]any) []rawWidgetInfo {
 					}
 				}
 			}
+		}
+	}
+
+	// Handle List View specialization templates. A template is not a widget, but
+	// it is a container that carries its own entity — the specialization it
+	// renders — so it is walked as one: the row it produces holds that entity,
+	// and its children are indexed like any other nested widgets.
+	//
+	// Without this, every widget inside a template was absent from the index, and
+	// because the refs projection is built from the widgets table, an entity used
+	// only inside a template reported 0 pages and 0 widgets — so anything using
+	// reference counts to decide "unused, safe to delete" would delete a document
+	// in active use. Issue #940.
+	for _, tpl := range getBsonArrayElements(w["Templates"]) {
+		if tplMap, ok := tpl.(map[string]any); ok {
+			result = append(result, extractWidgetsRecursive(tplMap)...)
 		}
 	}
 

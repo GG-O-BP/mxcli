@@ -14,9 +14,12 @@ func (b *Builder) exitAlterPageStatement(ctx *parser.AlterStatementContext) {
 	stmt := &ast.AlterPageStmt{}
 
 	// Container type
-	if ctx.SNIPPET() != nil {
+	switch {
+	case ctx.SNIPPET() != nil:
 		stmt.ContainerType = "SNIPPET"
-	} else {
+	case ctx.LAYOUT() != nil:
+		stmt.ContainerType = "LAYOUT"
+	default:
 		stmt.ContainerType = "PAGE"
 	}
 
@@ -35,6 +38,8 @@ func (b *Builder) exitAlterPageStatement(ctx *parser.AlterStatementContext) {
 			stmt.Operations = append(stmt.Operations, b.buildAlterPageInsert(insertCtx.(*parser.AlterPageInsertContext)))
 		} else if dropCtx := op.AlterPageDrop(); dropCtx != nil {
 			stmt.Operations = append(stmt.Operations, b.buildAlterPageDrop(dropCtx.(*parser.AlterPageDropContext)))
+		} else if dropTplCtx := op.AlterPageDropTemplate(); dropTplCtx != nil {
+			stmt.Operations = append(stmt.Operations, b.buildAlterPageDropTemplate(dropTplCtx.(*parser.AlterPageDropTemplateContext)))
 		} else if replaceCtx := op.AlterPageReplace(); replaceCtx != nil {
 			stmt.Operations = append(stmt.Operations, b.buildAlterPageReplace(replaceCtx.(*parser.AlterPageReplaceContext)))
 		} else if addVarCtx := op.AlterPageAddVariable(); addVarCtx != nil {
@@ -45,6 +50,19 @@ func (b *Builder) exitAlterPageStatement(ctx *parser.AlterStatementContext) {
 	}
 
 	b.statements = append(b.statements, stmt)
+}
+
+// buildAlterPageDropTemplate builds a DropListViewTemplateOp:
+// DROP TEMPLATE FOR Module.Specialization IN listViewName
+func (b *Builder) buildAlterPageDropTemplate(ctx *parser.AlterPageDropTemplateContext) ast.AlterPageOperation {
+	op := &ast.DropListViewTemplateOp{}
+	if qn := ctx.QualifiedName(); qn != nil {
+		op.Specialization = qn.GetText()
+	}
+	if wr := ctx.WidgetRef(); wr != nil {
+		op.ListView = buildWidgetRef(wr).Widget
+	}
+	return op
 }
 
 // buildAlterPageSet builds a SetPropertyOp or SetLayoutOp from the parse tree.
@@ -228,4 +246,39 @@ func (b *Builder) buildAlterPageDropVariable(ctx *parser.AlterPageDropVariableCo
 		op.VariableName = strings.TrimPrefix(varTok.GetText(), "$")
 	}
 	return op
+}
+
+// exitAlterPagesLayoutStatement builds the bulk repoint:
+// ALTER PAGES [IN <module>] SET LAYOUT = QN [MAP (…)] [WHERE LAYOUT = QN]
+func (b *Builder) exitAlterPagesLayoutStatement(ctx *parser.AlterPagesLayoutStatementContext) {
+	stmt := &ast.AlterPagesLayoutStmt{}
+
+	if id := ctx.IdentifierOrKeyword(); id != nil {
+		stmt.Module = identifierOrKeywordText(id)
+	}
+
+	// Two qualified names in the rule, in source order: the new layout, then
+	// the WHERE filter. Positional rather than named because ANTLR gives back
+	// one list — and getting the order backwards would repoint every page onto
+	// the layout being migrated away from.
+	qns := ctx.AllQualifiedName()
+	if len(qns) > 0 {
+		stmt.NewLayout = buildQualifiedName(qns[0])
+	}
+	if len(qns) > 1 {
+		where := buildQualifiedName(qns[1])
+		stmt.WhereLayout = &where
+	}
+
+	if mappings := ctx.AllAlterLayoutMapping(); len(mappings) > 0 {
+		stmt.Mappings = make(map[string]string, len(mappings))
+		for _, m := range mappings {
+			ids := m.(*parser.AlterLayoutMappingContext).AllIdentifierOrKeyword()
+			if len(ids) == 2 {
+				stmt.Mappings[identifierOrKeywordText(ids[0])] = identifierOrKeywordText(ids[1])
+			}
+		}
+	}
+
+	b.statements = append(b.statements, stmt)
 }

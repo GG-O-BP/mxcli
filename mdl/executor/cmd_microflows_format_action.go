@@ -37,6 +37,21 @@ func commitModifier(c microflows.CommitType) string {
 	}
 }
 
+// refreshModifier renders the REFRESH modifier shared by create, change,
+// commit, delete and rollback. Absent means Refresh in client = No, which is
+// Mendix's default on every one of them.
+//
+// It is a helper rather than five inline conditionals because the five drifted:
+// delete and create had no REFRESH in the grammar and none in the describer, so
+// a Studio Pro activity with the flag set round-tripped back to No — the same
+// defect #407 fixed for change alone.
+func refreshModifier(refresh bool) string {
+	if refresh {
+		return " refresh"
+	}
+	return ""
+}
+
 // escapeExpressionValue escapes raw control characters inside string literals
 // of a Mendix expression value so it can be safely embedded in MDL output.
 // The lexer's STRING_LITERAL rule forbids raw \r and \n inside single-quoted
@@ -301,9 +316,9 @@ func formatAction(
 				}
 				members = append(members, fmt.Sprintf("%s = %s", memberName, escapeExpressionValue(m.Value)))
 			}
-			return fmt.Sprintf("$%s = create %s (%s)%s;", outputVar, entityName, strings.Join(members, ", "), commitModifier(a.Commit))
+			return fmt.Sprintf("$%s = create %s (%s)%s%s;", outputVar, entityName, strings.Join(members, ", "), commitModifier(a.Commit), refreshModifier(a.RefreshInClient))
 		}
-		return fmt.Sprintf("$%s = create %s%s;", outputVar, entityName, commitModifier(a.Commit))
+		return fmt.Sprintf("$%s = create %s%s%s;", outputVar, entityName, commitModifier(a.Commit), refreshModifier(a.RefreshInClient))
 
 	case *microflows.ChangeObjectAction:
 		varName := a.ChangeVariable
@@ -331,38 +346,30 @@ func formatAction(
 				}
 				members = append(members, fmt.Sprintf("%s = %s", memberName, escapeExpressionValue(m.Value)))
 			}
-			if a.RefreshInClient {
-				return fmt.Sprintf("change $%s (%s)%s refresh;", varName, strings.Join(members, ", "), commitModifier(a.Commit))
-			}
-			return fmt.Sprintf("change $%s (%s)%s;", varName, strings.Join(members, ", "), commitModifier(a.Commit))
+			return fmt.Sprintf("change $%s (%s)%s%s;", varName, strings.Join(members, ", "), commitModifier(a.Commit), refreshModifier(a.RefreshInClient))
 		}
-		if a.RefreshInClient {
-			return fmt.Sprintf("change $%s%s refresh;", varName, commitModifier(a.Commit))
-		}
-		return fmt.Sprintf("change $%s%s;", varName, commitModifier(a.Commit))
+		return fmt.Sprintf("change $%s%s%s;", varName, commitModifier(a.Commit), refreshModifier(a.RefreshInClient))
 
 	case *microflows.CommitObjectsAction:
 		varName := a.CommitVariable
 		if varName == "" {
 			varName = "Object"
 		}
+		// Events ON is the default and is left unwritten; events OFF is the
+		// deviation and must be spelled out, or a describe → exec round trip
+		// silently turns the handlers back on (#895).
 		suffix := ""
-		if a.WithEvents {
-			suffix += " with events"
+		if !a.WithEvents {
+			suffix += " without events"
 		}
-		if a.RefreshInClient {
-			suffix += " refresh"
-		}
+		suffix += refreshModifier(a.RefreshInClient)
 		return fmt.Sprintf("commit $%s%s;", varName, suffix)
 
 	case *microflows.DeleteObjectAction:
-		return fmt.Sprintf("delete $%s;", a.DeleteVariable)
+		return fmt.Sprintf("delete $%s%s;", a.DeleteVariable, refreshModifier(a.RefreshInClient))
 
 	case *microflows.RollbackObjectAction:
-		if a.RefreshInClient {
-			return fmt.Sprintf("rollback $%s refresh;", a.RollbackVariable)
-		}
-		return fmt.Sprintf("rollback $%s;", a.RollbackVariable)
+		return fmt.Sprintf("rollback $%s%s;", a.RollbackVariable, refreshModifier(a.RefreshInClient))
 
 	case *microflows.CreateListAction:
 		// Use EntityQualifiedName (BY_NAME_REFERENCE) or fall back to EntityID lookup
@@ -580,10 +587,14 @@ func formatAction(
 			paramStr = strings.Join(params, ", ")
 		}
 
-		if a.UseReturnVariable && a.ResultVariableName != "" {
-			return fmt.Sprintf("$%s = call microflow %s(%s);", a.ResultVariableName, mfName, paramStr)
+		queue := ""
+		if a.MicroflowCall != nil {
+			queue = queueClauseMDL(a.MicroflowCall.QueueSettings)
 		}
-		return fmt.Sprintf("call microflow %s(%s);", mfName, paramStr)
+		if a.UseReturnVariable && a.ResultVariableName != "" {
+			return fmt.Sprintf("$%s = call microflow %s(%s)%s;", a.ResultVariableName, mfName, paramStr, queue)
+		}
+		return fmt.Sprintf("call microflow %s(%s)%s;", mfName, paramStr, queue)
 
 	case *microflows.NanoflowCallAction:
 		nfName := ""
@@ -663,10 +674,11 @@ func formatAction(
 			paramStr = strings.Join(params, ", ")
 		}
 
+		queue := queueClauseMDL(a.QueueSettings)
 		if a.UseReturnVariable && a.ResultVariableName != "" {
-			return fmt.Sprintf("$%s = call java action %s(%s);", a.ResultVariableName, javaActionName, paramStr)
+			return fmt.Sprintf("$%s = call java action %s(%s)%s;", a.ResultVariableName, javaActionName, paramStr, queue)
 		}
-		return fmt.Sprintf("call java action %s(%s);", javaActionName, paramStr)
+		return fmt.Sprintf("call java action %s(%s)%s;", javaActionName, paramStr, queue)
 
 	case *microflows.CallExternalAction:
 		serviceName := a.ConsumedODataService
@@ -1237,6 +1249,19 @@ func extractFieldName(attribute, association string) string {
 	return parts[len(parts)-1]
 }
 
+// unsupportedRestResult renders a result handling mxcli cannot express as MDL.
+//
+// It deliberately produces something the parser REJECTS. A describe whose output
+// silently means something else is worse than one that fails: the previous
+// behaviour rendered any unrecognised handling as `returns String`, so a
+// describe → exec round trip rewrote a FileDocument result into a String one and
+// mxbuild still reported zero errors (#922). Anything that reaches this is a gap
+// in the reader, and the text names it so the report says which.
+func unsupportedRestResult(what string) string {
+	return fmt.Sprintf("<<unsupported result handling: %s — please report this "+
+		"with the microflow name at https://github.com/mendixlabs/mxcli/issues>>", what)
+}
+
 // formatRestCallAction formats a REST call action as MDL.
 func formatRestCallAction(ctx *ExecContext, a *microflows.RestCallAction) string {
 	var sb strings.Builder
@@ -1251,6 +1276,8 @@ func formatRestCallAction(ctx *ExecContext, a *microflows.RestCallAction) string
 			outputVar = rh.VariableName
 		case *microflows.ResultHandlingMapping:
 			outputVar = rh.ResultVariable
+		case *microflows.ResultHandlingFileDocument:
+			outputVar = rh.VariableName
 		}
 	}
 	if outputVar != "" {
@@ -1336,6 +1363,14 @@ func formatRestCallAction(ctx *ExecContext, a *microflows.RestCallAction) string
 					sb.WriteString(")")
 				}
 			}
+		case *microflows.BinaryRequestHandling:
+			// The expression is stored as source text (`$Doc/Contents`), so it is
+			// emitted verbatim — quoting it would make the round trip send the
+			// path as a string literal.
+			if rh.Expression != "" {
+				sb.WriteString("\n    body binary ")
+				sb.WriteString(rh.Expression)
+			}
 		case *microflows.MappingRequestHandling:
 			if rh.MappingID != "" {
 				sb.WriteString("\n    body mapping ")
@@ -1379,13 +1414,25 @@ func formatRestCallAction(ctx *ExecContext, a *microflows.RestCallAction) string
 				}
 				sb.WriteString(string(rh.ResultEntityID))
 			}
+		case *microflows.ResultHandlingFileDocument:
+			// A file document result is always bound to a System.FileDocument
+			// specialization, so the entity is the whole clause. Rendering this
+			// as "String" was #922: the description round-tripped into a model
+			// whose activity returned a string instead of a file, and mxbuild
+			// reported nothing.
+			sb.WriteString(rh.EntityRef)
 		case *microflows.ResultHandlingNone:
 			sb.WriteString("Nothing")
 		default:
-			sb.WriteString("String")
+			// Refuse rather than guess. The previous "String" fallback here and
+			// below is what turned an unread result handling into a silent
+			// retyping of the activity (#922); an unknown one is a gap in the
+			// reader, and saying so is the only outcome that cannot corrupt a
+			// round trip.
+			sb.WriteString(unsupportedRestResult(fmt.Sprintf("%T", rh)))
 		}
 	} else {
-		sb.WriteString("String")
+		sb.WriteString(unsupportedRestResult("no result handling"))
 	}
 
 	// Note: Error handling suffix is added at the activity level, not here
@@ -1560,9 +1607,47 @@ func formatImportXmlAction(ctx *ExecContext, a *microflows.ImportXmlAction, enti
 	sb.WriteString(mappingName)
 	sb.WriteString("($")
 	sb.WriteString(a.XmlDocumentVariable)
-	sb.WriteString(");")
+	sb.WriteString(")")
+	sb.WriteString(formatImportMappingRange(a.ResultHandling))
+	sb.WriteString(";")
 
 	return sb.String()
+}
+
+// formatImportMappingRange renders the activity's Range — Studio Pro's
+// All / First / Custom setting.
+//
+// ALWAYS emits one of the three, never nothing. Omitting it would leave the
+// builder inferring cardinality from the mapping's root shape, and an
+// object-rooted mapping set to All is a real state that inference turns into
+// First — Studio Pro's own default, shipped in the blank app's
+// FeedbackModule.IMM_PostResponse. Before this, all three settings described
+// identically, so the describe→edit→exec cycle silently rewrote the activity.
+// (issue #881)
+func formatImportMappingRange(h *microflows.ResultHandlingMapping) string {
+	if h == nil {
+		return ""
+	}
+	if h.LimitExpression != "" || h.OffsetExpression != "" {
+		var sb strings.Builder
+		if h.LimitExpression != "" {
+			sb.WriteString(" limit ")
+			sb.WriteString(h.LimitExpression)
+		}
+		if h.OffsetExpression != "" {
+			sb.WriteString(" offset ")
+			sb.WriteString(h.OffsetExpression)
+		}
+		return sb.String()
+	}
+	// The RANGE's own flag, not the result variable's cardinality: the two
+	// disagree in Mendix's own models (ConstantRange{SingleObject:false} against
+	// an ObjectType variable), and printing the variable's would describe
+	// Studio Pro's "All" as `first`.
+	if microflows.RangeSingleObjectOf(h) {
+		return " first"
+	}
+	return " all"
 }
 
 // formatExportXmlAction formats an export mapping action as MDL.
@@ -1934,4 +2019,14 @@ func enrichXPathGroup(group string, enumAttrs map[string]string) string {
 		return group
 	}
 	return "[" + xpathExprToMDLString(enrichXPathExprWithEnums(expr, enumAttrs)) + "]"
+}
+
+// queueClauseMDL renders the `IN QUEUE Module.Name` clause of a queued call, or
+// "" for an unqueued one. A DESCRIBE that omitted it would emit a script whose
+// re-execution silently unqueues the call.
+func queueClauseMDL(qs *microflows.QueueSettings) string {
+	if qs == nil || qs.Queue == "" {
+		return ""
+	}
+	return " in queue " + qs.Queue
 }

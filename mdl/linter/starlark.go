@@ -326,6 +326,7 @@ func (r *StarlarkRule) buildPredeclared() starlark.StringDict {
 		"refs_from":             starlark.NewBuiltin("refs_from", r.builtinRefsFrom),
 		"attributes_for":        starlark.NewBuiltin("attributes_for", r.builtinAttributesFor),
 		"scheduled_events":      starlark.NewBuiltin("scheduled_events", r.builtinScheduledEvents),
+		"queues":                starlark.NewBuiltin("queues", r.builtinQueues),
 
 		// Graph-analysis facts (populated by `refresh catalog communities`).
 		"community_of":         starlark.NewBuiltin("community_of", r.builtinCommunityOf),
@@ -1016,12 +1017,40 @@ func databaseConnectionToStarlark(dc DatabaseConnection) starlark.Value {
 
 func scheduledEventToStarlark(se ScheduledEvent) starlark.Value {
 	return starlarkstruct.FromStringDict(starlark.String("scheduled_event"), starlark.StringDict{
-		"name":             starlark.String(se.Name),
-		"qualified_name":   starlark.String(se.QualifiedName),
-		"module_name":      starlark.String(se.ModuleName),
-		"microflow_name":   starlark.String(se.MicroflowName),
+		"name":           starlark.String(se.Name),
+		"qualified_name": starlark.String(se.QualifiedName),
+		"module_name":    starlark.String(se.ModuleName),
+		"microflow_name": starlark.String(se.MicroflowName),
+		// Derived from the Schedule child, not the legacy Interval/IntervalType
+		// pair — see ScheduledEvent.IntervalSeconds.
 		"interval_seconds": starlark.MakeInt(se.IntervalSeconds),
+		"repeat":           starlark.String(se.Repeat),
+		"on_overlap":       starlark.String(se.OnOverlap),
+		"time_zone":        starlark.String(se.TimeZone),
 		"enabled":          starlark.Bool(se.Enabled),
+	})
+}
+
+// builtinQueues returns all task queues.
+func (r *StarlarkRule) builtinQueues(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if r.ctx == nil {
+		return starlark.NewList(nil), nil
+	}
+	var result []starlark.Value
+	for q := range r.ctx.Queues() {
+		result = append(result, queueToStarlark(q))
+	}
+	return starlark.NewList(result), nil
+}
+
+func queueToStarlark(q Queue) starlark.Value {
+	return starlarkstruct.FromStringDict(starlark.String("queue"), starlark.StringDict{
+		"name":           starlark.String(q.Name),
+		"qualified_name": starlark.String(q.QualifiedName),
+		"module_name":    starlark.String(q.ModuleName),
+		// An EXPRESSION string, not a number.
+		"parallelism":  starlark.String(q.Parallelism),
+		"cluster_wide": starlark.Bool(q.ClusterWide),
 	})
 }
 
@@ -1165,18 +1194,38 @@ func builtinMatches(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple
 	return starlark.False, nil
 }
 
-// LoadStarlarkRulesFromDir loads all Starlark rules from a directory.
-func LoadStarlarkRulesFromDir(dir string) ([]*StarlarkRule, error) {
+// RuleLoadFailure is a .star file that was found but produced no rule.
+type RuleLoadFailure struct {
+	Path   string
+	Reason string
+}
+
+// LoadStarlarkRulesFromDir loads all Starlark rules from a directory, returning
+// the rules that loaded and every file that did not.
+//
+// Failures are returned rather than printed. The previous version wrote them to
+// **stdout** with fmt.Printf, which put diagnostics into the same stream as
+// `--format json`/`sarif` payloads and gave the caller nothing to act on. The
+// caller now decides where a warning goes and whether it is fatal (#904).
+//
+// A missing directory is not an error: most projects have no custom rules.
+func LoadStarlarkRulesFromDir(dir string) ([]*StarlarkRule, []RuleLoadFailure, error) {
 	var rules []*StarlarkRule
+	var failures []RuleLoadFailure
+
+	if dir == "" {
+		return nil, nil, nil
+	}
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return rules, nil
+			return rules, nil, nil
 		}
-		return nil, err
+		return nil, nil, err
 	}
 
+	// os.ReadDir sorts by filename, so failures come out in a stable order.
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -1189,13 +1238,12 @@ func LoadStarlarkRulesFromDir(dir string) ([]*StarlarkRule, error) {
 		path := filepath.Join(dir, entry.Name())
 		rule, err := LoadStarlarkRule(path)
 		if err != nil {
-			// Log warning but continue loading other rules
-			fmt.Printf("Warning: failed to load rule %s: %v\n", path, err)
+			failures = append(failures, RuleLoadFailure{Path: path, Reason: err.Error()})
 			continue
 		}
 
 		rules = append(rules, rule)
 	}
 
-	return rules, nil
+	return rules, failures, nil
 }

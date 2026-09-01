@@ -102,6 +102,9 @@ Examples:
   # Output JUnit XML for CI
   mxcli test tests/ -p app.mpr --junit results.xml
 
+  # Fail the run on any test that asserts nothing
+  mxcli test tests/ -p app.mpr --local --require-assertions
+
   # List tests without executing
   mxcli test tests/ -p app.mpr --list
 
@@ -128,12 +131,15 @@ Examples:
 		projectPath, _ := cmd.Flags().GetString("project")
 		list, _ := cmd.Flags().GetBool("list")
 		junitOutput, _ := cmd.Flags().GetString("junit")
+		requireAssertions, _ := cmd.Flags().GetBool("require-assertions")
 		skipBuild, _ := cmd.Flags().GetBool("skip-build")
 		local, _ := cmd.Flags().GetBool("local")
 		legacyRunner, _ := cmd.Flags().GetBool("legacy-runner")
 		watch, _ := cmd.Flags().GetBool("watch")
 		attach, _ := cmd.Flags().GetBool("attach")
 		skipAppStartup, _ := cmd.Flags().GetBool("skip-app-startup")
+		configuration, _ := cmd.Flags().GetString("configuration")
+		constantArgs, _ := cmd.Flags().GetStringArray("constant")
 		verbose, _ := cmd.Flags().GetBool("verbose")
 		color, _ := cmd.Flags().GetBool("color")
 		timeoutStr, _ := cmd.Flags().GetString("timeout")
@@ -162,20 +168,47 @@ Examples:
 		}
 
 		opts := testrunner.RunOptions{
-			ProjectPath:    projectPath,
-			TestFiles:      resolveTestPaths(args, projectPath),
-			SkipBuild:      skipBuild,
-			Local:          local,
-			LegacyRunner:   legacyRunner,
-			Watch:          watch,
-			Attach:         attach,
-			SkipAppStartup: skipAppStartup,
-			Timeout:        timeout,
-			JUnitOutput:    junitOutput,
-			Verbose:        verbose,
-			Color:          color,
-			Stdout:         os.Stdout,
-			Stderr:         os.Stderr,
+			ProjectPath:       projectPath,
+			TestFiles:         resolveTestPaths(args, projectPath),
+			SkipBuild:         skipBuild,
+			Local:             local,
+			LegacyRunner:      legacyRunner,
+			Watch:             watch,
+			Attach:            attach,
+			SkipAppStartup:    skipAppStartup,
+			Timeout:           timeout,
+			JUnitOutput:       junitOutput,
+			RequireAssertions: requireAssertions,
+			Verbose:           verbose,
+			Color:             color,
+			Stdout:            os.Stdout,
+			Stderr:            os.Stderr,
+		}
+
+		// Only a --local run boots an app of its own, so only it decides which
+		// constants that app runs with. --attach inherits the constants of the app
+		// it attaches to, and the Docker path configures the container — reporting
+		// a resolution neither of them uses would be a lie in the output.
+		if local && !attach {
+			constantFlags, err := parseConstantFlags(constantArgs)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			overrides, err := constantChainFor(projectPath, configuration, constantFlags)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			reportConstantChain(os.Stdout, overrides)
+			opts.ConstantOverrides = overrides.Values
+		} else if len(constantArgs) > 0 {
+			// --attach runs against an app someone else booted, and the Docker path
+			// configures the container. Accepting --constant there and doing nothing
+			// with it is the failure this feature exists to stop.
+			fmt.Fprintln(os.Stderr, "Error: --constant applies only to a --local test run; "+
+				"--attach uses the constants of the app it attaches to")
+			os.Exit(1)
 		}
 
 		result, err := testrunner.Run(opts)

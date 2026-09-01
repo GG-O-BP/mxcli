@@ -406,6 +406,25 @@ func buildMicroflowQualifiedNames(ctx *ExecContext) map[string]bool {
 	return result
 }
 
+// buildQueueQualifiedNames returns the set of task queue qualified names in the
+// project, lower-cased — Mendix name resolution is case-insensitive and the
+// caller compares an author-written name against it.
+func buildQueueQualifiedNames(ctx *ExecContext) map[string]bool {
+	result := make(map[string]bool)
+	h, err := getHierarchy(ctx)
+	if err != nil {
+		return result
+	}
+	queues, err := ctx.Backend.ListQueues()
+	if err != nil {
+		return result
+	}
+	for _, q := range queues {
+		result[strings.ToLower(h.GetQualifiedName(q.ContainerID, q.Name))] = true
+	}
+	return result
+}
+
 // buildNanoflowQualifiedNames returns a set of all nanoflow qualified names in the project.
 func buildNanoflowQualifiedNames(ctx *ExecContext) map[string]bool {
 	result := make(map[string]bool)
@@ -642,4 +661,52 @@ func getAttributeTypeName(at domainmodel.AttributeType) string {
 
 func formatAttributeType(at domainmodel.AttributeType) string {
 	return getAttributeTypeName(at)
+}
+
+// buildWorkflowQualifiedNames returns a set of all workflow qualified names in
+// the project. Mirrors buildPageQualifiedNames; needed so a workflow's
+// `call workflow` target can be resolved (issue #943).
+func buildWorkflowQualifiedNames(ctx *ExecContext) map[string]bool {
+	result := make(map[string]bool)
+	h, err := getHierarchy(ctx)
+	if err != nil {
+		return result
+	}
+	wfs, err := ctx.Backend.ListWorkflows()
+	if err != nil {
+		return result
+	}
+	for _, w := range wfs {
+		result[h.GetQualifiedName(w.ContainerID, w.Name)] = true
+	}
+	return result
+}
+
+// buildConstantQualifiedNames indexes the project's constants by qualified name,
+// for the reference checks that name one (a settings override, for instance).
+//
+// The second return says whether the index is TRUSTWORTHY. A backend that cannot
+// list constants yields an empty map, which is indistinguishable from a project
+// that has none — and the difference matters: "no constants exist" makes every
+// override dangling, while "cannot tell" must not reject anything. Callers that
+// resolve a name check it.
+func buildConstantQualifiedNames(ctx *ExecContext) (map[string]bool, bool) {
+	result := make(map[string]bool)
+	h, err := getHierarchy(ctx)
+	if err != nil {
+		return result, false
+	}
+	consts, err := ctx.Backend.ListConstants()
+	if err != nil {
+		return result, false
+	}
+	for _, c := range consts {
+		if c == nil {
+			continue
+		}
+		result[h.GetQualifiedName(c.ContainerID, c.Name)] = true
+	}
+	// A backend that has no constant listing at all reports success with nothing
+	// in it; treat that as "cannot tell" rather than "the project has none".
+	return result, len(consts) > 0
 }

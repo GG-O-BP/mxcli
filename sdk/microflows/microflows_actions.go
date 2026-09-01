@@ -22,6 +22,7 @@ type CreateObjectAction struct {
 	EntityQualifiedName string            `json:"entityQualifiedName"` // BY_NAME_REFERENCE
 	OutputVariable      string            `json:"outputVariable,omitempty"`
 	Commit              CommitType        `json:"commit"`
+	RefreshInClient     bool              `json:"refreshInClient"`
 	InitialMembers      []*MemberChange   `json:"initialMembers,omitempty"`
 }
 
@@ -49,6 +50,12 @@ type DeleteObjectAction struct {
 func (DeleteObjectAction) isMicroflowAction() {}
 
 // CommitObjectsAction commits one or more objects.
+//
+// WithEvents mirrors the stored BSON property, so unlike ast.MfCommitStmt —
+// which models the MDL statement, where an absent modifier means the Mendix
+// default — its zero value is a real setting and not the default one. Studio Pro
+// writes true for a fresh Commit activity (#895), so anything constructing this
+// action has to say so; leaving the field out means events OFF.
 type CommitObjectsAction struct {
 	model.BaseElement
 	ErrorHandlingType ErrorHandlingType `json:"errorHandlingType,omitempty"`
@@ -552,6 +559,24 @@ type MicroflowCall struct {
 	model.BaseElement
 	Microflow         string                           `json:"microflow,omitempty"` // Qualified name string
 	ParameterMappings []*MicroflowCallParameterMapping `json:"parameterMappings,omitempty"`
+	QueueSettings     *QueueSettings                   `json:"queueSettings,omitempty"`
+}
+
+// QueueSettings binds a call activity to a task queue (Queues$QueueSettings).
+//
+// The load-bearing property is this element, NOT the call's sibling `Queue`
+// string: measured on Mendix 11.13, a call carrying only `Queue` with
+// QueueSettings null draws no complaint from mx check at all, while one carrying
+// QueueSettings does (CE1613 when the named queue is missing). `generated/metamodel`
+// — the arbiter — has no top-level `Queue` on either call type, only this.
+//
+// Retry is a Queues$QueueRetry (fixed or exponential) that MDL cannot author.
+// It is carried as raw storage so a rewrite preserves whatever Studio Pro wrote
+// rather than silently dropping it (guard-don't-drop, ADR-0005).
+type QueueSettings struct {
+	model.BaseElement
+	Queue string `json:"queue,omitempty"` // Qualified name of the Queues$Queue
+	Retry any    `json:"retry,omitempty"` // Opaque Queues$QueueRetry, preserved verbatim
 }
 
 // MicroflowCallParameterMapping maps a parameter to an argument.
@@ -567,6 +592,7 @@ type JavaActionCallAction struct {
 	ErrorHandlingType  ErrorHandlingType             `json:"errorHandlingType,omitempty"`
 	JavaAction         string                        `json:"javaAction,omitempty"` // Qualified name string
 	ParameterMappings  []*JavaActionParameterMapping `json:"parameterMappings,omitempty"`
+	QueueSettings      *QueueSettings                `json:"queueSettings,omitempty"`
 	ResultVariableName string                        `json:"resultVariableName,omitempty"`
 	UseReturnVariable  bool                          `json:"useReturnVariable"`
 }
@@ -856,6 +882,20 @@ type ResultHandlingHttpResponse struct {
 
 func (ResultHandlingHttpResponse) isResultHandling() {}
 
+// ResultHandlingFileDocument stores the response in a file document.
+//
+// EntityRef is always a SPECIALIZATION of System.FileDocument, never the base:
+// Mendix rejects `System.FileDocument` itself as a return type with CE0362,
+// while CE1540 permits FileDocument to be specialized (unlike HttpResponse,
+// which cannot be — so there is no matching field on ResultHandlingHttpResponse).
+type ResultHandlingFileDocument struct {
+	model.BaseElement
+	VariableName string `json:"variableName,omitempty"`
+	EntityRef    string `json:"entityRef,omitempty"` // qualified name, e.g. MyModule.MyFile
+}
+
+func (ResultHandlingFileDocument) isResultHandling() {}
+
 // ResultHandlingMapping uses an import mapping.
 type ResultHandlingMapping struct {
 	model.BaseElement
@@ -864,6 +904,24 @@ type ResultHandlingMapping struct {
 	ResultVariable        string   `json:"resultVariable,omitempty"`
 	SingleObject          bool     `json:"singleObject,omitempty"` // true when mapping returns a single object (not a list)
 	ForceSingleOccurrence *bool    `json:"forceSingleOccurrence,omitempty"`
+
+	// RangeSingleObject is the RANGE's own First flag, independent of
+	// SingleObject (which decides the result VARIABLE's type). The two are
+	// separate axes in Mendix: the blank app's FeedbackModule ships an activity
+	// with Range=ConstantRange{SingleObject:false} — "All" — bound to an
+	// ObjectType variable, because the mapping itself returns one object.
+	// Conflating them makes an explicit All on such a mapping write a ListType
+	// variable, which mxbuild rejects with CE0243. nil = follow SingleObject,
+	// which is what every caller did before #881.
+	RangeSingleObject *bool `json:"rangeSingleObject,omitempty"`
+
+	// Custom range. When either is set the activity stores a
+	// Microflows$CustomRange instead of a ConstantRange — the "Custom" setting in
+	// Studio Pro's Range dropdown, which mxcli could not represent at all before
+	// #881 (it always wrote a ConstantRange, so a limit was unauthorable rather
+	// than merely undescribed).
+	LimitExpression  string `json:"limitExpression,omitempty"`
+	OffsetExpression string `json:"offsetExpression,omitempty"`
 }
 
 func (ResultHandlingMapping) isResultHandling() {}
@@ -1215,3 +1273,16 @@ type UnsupportedAction struct {
 }
 
 func (UnsupportedAction) isMicroflowAction() {}
+
+// RangeSingleObjectOf returns the ConstantRange.SingleObject value to store:
+// the explicit range flag when set, otherwise the result-variable flag, which is
+// what every caller relied on before the two axes were separated. (issue #881)
+func RangeSingleObjectOf(h *ResultHandlingMapping) bool {
+	if h == nil {
+		return false
+	}
+	if h.RangeSingleObject != nil {
+		return *h.RangeSingleObject
+	}
+	return h.SingleObject
+}

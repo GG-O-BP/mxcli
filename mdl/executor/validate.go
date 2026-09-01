@@ -26,6 +26,15 @@ type scriptContext struct {
 	nanoflows    map[string]bool // Nanoflows created (Module.Nanoflow)
 	pages        map[string]bool // Pages created (Module.Page)
 	snippets     map[string]bool // Snippets created (Module.Snippet)
+	constants    map[string]bool // Constants created (Module.Constant)
+	workflows    map[string]bool // Workflows created (Module.Workflow)
+
+	// Java/JavaScript actions created in the script, mapped to their declared
+	// parameter names. A bool would be enough to stop the false "not found",
+	// but keeping the names means a call to a script-defined action still gets
+	// its parameters checked, exactly as a call to a stored one does.
+	javaActions       map[string][]string // Module.Action -> parameter names
+	javaScriptActions map[string][]string // Module.Action -> parameter names
 }
 
 // newScriptContext creates a new script context.
@@ -37,8 +46,23 @@ func newScriptContext() *scriptContext {
 		microflows:   make(map[string]bool),
 		nanoflows:    make(map[string]bool),
 		pages:        make(map[string]bool),
+		workflows:    make(map[string]bool),
 		snippets:     make(map[string]bool),
+		constants:    make(map[string]bool),
+
+		javaActions:       make(map[string][]string),
+		javaScriptActions: make(map[string][]string),
 	}
+}
+
+// codeActionParamNames returns the declared parameter names of a CREATE JAVA
+// ACTION / CREATE JAVASCRIPT ACTION statement, in declaration order.
+func codeActionParamNames(params []ast.JavaActionParam) []string {
+	names := make([]string, 0, len(params))
+	for _, p := range params {
+		names = append(names, p.Name)
+	}
+	return names
 }
 
 // collectDefinitions scans a program and collects all objects that will be created.
@@ -63,6 +87,10 @@ func (sc *scriptContext) collectDefinitions(prog *ast.Program) {
 			if s.Name.Module != "" {
 				sc.enumerations[s.Name.String()] = true
 			}
+		case *ast.CreateConstantStmt:
+			if s.Name.Module != "" {
+				sc.constants[s.Name.String()] = true
+			}
 		case *ast.CreateMicroflowStmt:
 			if s.Name.Module != "" {
 				sc.microflows[s.Name.String()] = true
@@ -78,6 +106,18 @@ func (sc *scriptContext) collectDefinitions(prog *ast.Program) {
 		case *ast.CreateSnippetStmtV3:
 			if s.Name.Module != "" {
 				sc.snippets[s.Name.String()] = true
+			}
+		case *ast.CreateWorkflowStmt:
+			if s.Name.Module != "" {
+				sc.workflows[s.Name.String()] = true
+			}
+		case *ast.CreateJavaActionStmt:
+			if s.Name.Module != "" {
+				sc.javaActions[s.Name.String()] = codeActionParamNames(s.Parameters)
+			}
+		case *ast.CreateJavaScriptActionStmt:
+			if s.Name.Module != "" {
+				sc.javaScriptActions[s.Name.String()] = codeActionParamNames(s.Parameters)
 			}
 		}
 	}
@@ -120,6 +160,18 @@ func (sc *scriptContext) collectSingle(stmt ast.Statement) {
 		if s.Name.Module != "" {
 			sc.snippets[s.Name.String()] = true
 		}
+	case *ast.CreateWorkflowStmt:
+		if s.Name.Module != "" {
+			sc.workflows[s.Name.String()] = true
+		}
+	case *ast.CreateJavaActionStmt:
+		if s.Name.Module != "" {
+			sc.javaActions[s.Name.String()] = codeActionParamNames(s.Parameters)
+		}
+	case *ast.CreateJavaScriptActionStmt:
+		if s.Name.Module != "" {
+			sc.javaScriptActions[s.Name.String()] = codeActionParamNames(s.Parameters)
+		}
 	}
 }
 
@@ -142,6 +194,15 @@ func (sc *scriptContext) allNames() []string {
 		names = append(names, n)
 	}
 	for n := range sc.snippets {
+		names = append(names, n)
+	}
+	for n := range sc.workflows {
+		names = append(names, n)
+	}
+	for n := range sc.javaActions {
+		names = append(names, n)
+	}
+	for n := range sc.javaScriptActions {
 		names = append(names, n)
 	}
 	return names
@@ -172,6 +233,12 @@ func annotateForwardRef(err error, stmt ast.Statement, created, allDefined *scri
 
 // has returns true if the name exists in any category.
 func (sc *scriptContext) has(name string) bool {
+	if _, ok := sc.javaActions[name]; ok {
+		return true
+	}
+	if _, ok := sc.javaScriptActions[name]; ok {
+		return true
+	}
 	return sc.modules[name] || sc.entities[name] || sc.enumerations[name] ||
 		sc.microflows[name] || sc.nanoflows[name] || sc.pages[name] || sc.snippets[name]
 }
@@ -398,6 +465,27 @@ func validateWithContext(ctx *ExecContext, stmt ast.Statement, sc *scriptContext
 			return mdlerrors.NewValidationf("microflow '%s' has reference errors:\n  - %s",
 				s.Name.String(), strings.Join(refErrors, "\n  - "))
 		}
+	case *ast.CreateRuleStmt:
+		if s.Name.Module != "" && !sc.modules[s.Name.Module] {
+			if _, err := findModule(ctx, s.Name.Module); err != nil {
+				return mdlerrors.NewNotFound("module", s.Name.Module)
+			}
+		}
+		// The same validateRule the executor calls, so `check` and `exec` cannot
+		// disagree about what a rule may contain.
+		if errMsg := validateRule(s.Name.String(), s.Body, s.ReturnType); errMsg != "" {
+			return mdlerrors.NewValidationf("%s", strings.TrimRight(errMsg, "\n"))
+		}
+		if validationErrors := ValidateRuleBody(s); len(validationErrors) > 0 {
+			return mdlerrors.NewValidationf("rule '%s' has validation errors:\n  - %s",
+				s.Name.String(), strings.Join(validationErrors, "\n  - "))
+		}
+		if !s.Excluded {
+			if refErrors := validateFlowBodyReferences(ctx, s.Body, sc); len(refErrors) > 0 {
+				return mdlerrors.NewValidationf("rule '%s' has reference errors:\n  - %s",
+					s.Name.String(), strings.Join(refErrors, "\n  - "))
+			}
+		}
 	case *ast.CreateNanoflowStmt:
 		if s.Name.Module != "" && !sc.modules[s.Name.Module] {
 			if _, err := findModule(ctx, s.Name.Module); err != nil {
@@ -449,10 +537,21 @@ func validateWithContext(ctx *ExecContext, stmt ast.Statement, sc *scriptContext
 				s.Name.String(), strings.Join(ctxErrors, "\n  - "))
 		}
 	case *ast.CreateWorkflowStmt:
-		// Reference check: every workflow call-microflow must map all of its
-		// target microflow's parameters (FINDINGS #40). Syntax-only workflow checks
-		// (MDL-WF01/02/03) run separately in the no-project phase.
-		if refErrors := validateWorkflowParameterMappings(ctx, s, sc); len(refErrors) > 0 {
+		// Two reference passes. Missing targets first: a name that resolves to
+		// nothing is the more basic error, and reporting "parameter not mapped"
+		// for a microflow that does not exist would be actively misleading.
+		// Syntax-only workflow checks (MDL-WF01/02/03) run separately in the
+		// no-project phase.
+		refErrors := validateWorkflowStatementRefs(ctx, s, sc)
+		// Then, for targets that do resolve, that every parameter is mapped
+		// (FINDINGS #40).
+		refErrors = append(refErrors, validateWorkflowParameterMappings(ctx, s, sc)...)
+		if len(refErrors) > 0 {
+			return mdlerrors.NewValidationf("workflow '%s' has reference errors:\n  - %s",
+				s.Name.String(), strings.Join(refErrors, "\n  - "))
+		}
+	case *ast.AlterWorkflowStmt:
+		if refErrors := validateAlterWorkflowRefs(ctx, s, sc); len(refErrors) > 0 {
 			return mdlerrors.NewValidationf("workflow '%s' has reference errors:\n  - %s",
 				s.Name.String(), strings.Join(refErrors, "\n  - "))
 		}
@@ -503,6 +602,30 @@ func validateWithContext(ctx *ExecContext, stmt ast.Statement, sc *scriptContext
 				return mdlerrors.NewNotFound("module", s.Name)
 			}
 		}
+
+	// ALTER SETTINGS writes qualified names into the model — a startup microflow,
+	// the workflow user entity, the constant an override names — and resolved none
+	// of them, so a typo reached the build as CE1613 (#274).
+	case *ast.AlterSettingsStmt:
+		var errs []error
+		if strings.EqualFold(s.Section, "constant") {
+			if known, trusted := buildConstantQualifiedNames(ctx); trusted {
+				errs = validateSettingsConstantRef(s, known, sc)
+			}
+		} else {
+			var mfs, ents map[string]bool
+			if strings.EqualFold(s.Section, "model") {
+				mfs = buildMicroflowQualifiedNames(ctx)
+			}
+			if strings.EqualFold(s.Section, "workflows") {
+				ents = buildEntityQualifiedNames(ctx)
+			}
+			errs = validateSettingsReferences(s, mfs, ents, sc)
+		}
+		if len(errs) > 0 {
+			return errs[0]
+		}
+		return nil
 
 	// Query statements - no validation needed for basic ones
 	case *ast.ShowStmt, *ast.DescribeStmt, *ast.SelectStmt:
@@ -578,6 +701,15 @@ func validateFlowBodyReferences(ctx *ExecContext, body []ast.MicroflowStatement,
 		}
 	}
 
+	if len(refs.queues) > 0 {
+		known := buildQueueQualifiedNames(ctx)
+		for _, ref := range refs.queues {
+			if !known[strings.ToLower(ref)] {
+				errors = append(errors, fmt.Sprintf("task queue not found: %s (referenced by in queue)", ref))
+			}
+		}
+	}
+
 	if len(refs.microflows) > 0 {
 		known := buildMicroflowQualifiedNames(ctx)
 		for _, ref := range refs.microflows {
@@ -607,6 +739,15 @@ func validateFlowBodyReferences(ctx *ExecContext, body []ast.MicroflowStatement,
 			if isBuiltinModuleEntity(qualifiedNameModule(ref.name)) {
 				continue
 			}
+			// An action created earlier in the same script is not in the
+			// project yet. Entities, microflows, pages and nanoflows were
+			// already exempt; java actions were not, so a script that created
+			// one and called it failed reference checking against its own
+			// output. mxcli-chat FINDINGS §37.
+			if declared, inScript := sc.javaActions[ref.name]; inScript {
+				errors = append(errors, validateCodeActionParams("java action", ref, declared)...)
+				continue
+			}
 			if !known[ref.name] {
 				errors = append(errors, fmt.Sprintf("java action not found: %s (referenced by call java action)", ref.name))
 				continue
@@ -625,6 +766,10 @@ func validateFlowBodyReferences(ctx *ExecContext, body []ast.MicroflowStatement,
 		known := buildJavaScriptActionQualifiedNames(ctx)
 		for _, ref := range refs.javaScriptActions {
 			if isBuiltinModuleEntity(qualifiedNameModule(ref.name)) {
+				continue
+			}
+			if declared, inScript := sc.javaScriptActions[ref.name]; inScript {
+				errors = append(errors, validateCodeActionParams("javascript action", ref, declared)...)
 				continue
 			}
 			if !known[ref.name] {
@@ -764,6 +909,7 @@ type flowRefCollector struct {
 	javaScriptActions []codeActionCallRef
 	entities          []entityRef
 	retrieves         []retrieveConstraintRef
+	queues            []string
 }
 
 // codeActionCallRef is a Java / JavaScript action call: the action's qualified
@@ -839,10 +985,20 @@ type retrieveConstraintRef struct {
 	constraint string // bracketed XPath constraint, e.g. "[System.owner = '[%CurrentUser%]']"
 }
 
+// addQueue records an `IN QUEUE Module.Name` target. A queue that does not exist
+// builds a dangling reference that only fails at build time, as CE1613 on the
+// call activity rather than on the script — so it is worth catching in
+// `check --references`.
+func (c *flowRefCollector) addQueue(q *ast.QualifiedName) {
+	if q != nil && q.Module != "" {
+		c.queues = append(c.queues, q.Module+"."+q.Name)
+	}
+}
+
 func (c *flowRefCollector) empty() bool {
 	return len(c.pages) == 0 && len(c.microflows) == 0 && len(c.nanoflows) == 0 &&
 		len(c.javaActions) == 0 && len(c.javaScriptActions) == 0 && len(c.entities) == 0 &&
-		len(c.retrieves) == 0
+		len(c.retrieves) == 0 && len(c.queues) == 0
 }
 
 func (c *flowRefCollector) collectFromStatements(stmts []ast.MicroflowStatement) {
@@ -856,6 +1012,7 @@ func (c *flowRefCollector) collectFromStatements(stmts []ast.MicroflowStatement)
 			if s.MicroflowName.Module != "" {
 				c.microflows = append(c.microflows, s.MicroflowName.String())
 			}
+			c.addQueue(s.Queue)
 		case *ast.CallNanoflowStmt:
 			if s.NanoflowName.Module != "" {
 				c.nanoflows = append(c.nanoflows, s.NanoflowName.String())
@@ -866,6 +1023,7 @@ func (c *flowRefCollector) collectFromStatements(stmts []ast.MicroflowStatement)
 					name: s.ActionName.String(), argNames: callArgNames(s.Arguments),
 				})
 			}
+			c.addQueue(s.Queue)
 		case *ast.CallJavaScriptActionStmt:
 			if s.ActionName.Module != "" {
 				c.javaScriptActions = append(c.javaScriptActions, codeActionCallRef{
@@ -1000,6 +1158,10 @@ var execEnforcedMicroflowRules = map[string]bool{
 	// built-ins (isNew/isSynced/isSyncing) were found missing and added — each
 	// built at 0 errors — before this line was added.
 	"MDL044": true,
+	// #884: an unknown annotation is silently dropped, so exec must refuse it too —
+	// otherwise `check` catches the typo and the write that follows does not.
+	"MDL059": true,
+	"MDL060": true,
 }
 
 // validateMicroflowRules runs the MDL0xx microflow rule set (ValidateMicroflow)

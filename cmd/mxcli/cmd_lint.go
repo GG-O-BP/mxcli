@@ -32,6 +32,7 @@ Built-in rules check for:
   - Entity access rules (SEC001) - persistent entities need access rules
   - Password policy (SEC002) - password minimum length should be 8+
   - Demo users (SEC003) - demo users should be off at Production security
+  - Un-describable branch structure (MDL-FLOW01) - decision branches that do not nest, so DESCRIBE cannot render them faithfully
 
 Bundled Starlark rules (in .claude/lint-rules/):
   Security:
@@ -101,8 +102,11 @@ Examples:
 			os.Exit(1)
 		}
 
-		// Create executor and connect
-		exec, logger := newLoggedExecutor("subcommand")
+		// Create executor and connect. With a machine-readable format, stdout
+		// carries only the payload and every progress line goes to stderr —
+		// otherwise "Connected to:" and the catalog lines precede the JSON and
+		// nothing can parse stdout.
+		exec, logger := newLoggedExecutorTo("subcommand", progressSink(format))
 		defer logger.Close()
 		defer exec.Close()
 
@@ -134,16 +138,30 @@ Examples:
 			rules.NewWeakPasswordPolicyRule(),
 			rules.NewDemoUsersActiveRule(),
 			rules.NewOverlappingActivitiesRule(), // MPR008 - requires BSON inspection
+			rules.NewLoopChildContainmentRule(),  // MPR011 - requires BSON inspection
 			rules.NewNoCommitInLoopRule(),        // CONV011-CONV014 - require BSON inspection
 			rules.NewExclusiveSplitCaptionRule(),
 			rules.NewErrorHandlingOnCallsRule(),
 			rules.NewNoContinueErrorHandlingRule(),
+			rules.NewIrreducibleFlowGraphRule(), // MDL-FLOW01 - graph structure vs MDL nesting
 		}
-		lintRulesDir := filepath.Join(projectDir, ".claude", "lint-rules")
-		if starlarkRules, err := linter.LoadStarlarkRulesFromDir(lintRulesDir); err == nil {
-			for _, rule := range starlarkRules {
-				lintRules = append(lintRules, rule)
-			}
+		// Search upward from the project for .claude/lint-rules/, so one
+		// directory at the repo root serves an app in a subfolder (#904).
+		lintRulesDir := linter.FindLintRulesDir(projectDir)
+		starlarkRules, loadFailures, err := linter.LoadStarlarkRulesFromDir(lintRulesDir)
+		if err != nil {
+			// Previously discarded, which made an unreadable directory look
+			// exactly like a project with no custom rules.
+			fmt.Fprintf(os.Stderr, "Warning: could not read %s: %v\n", lintRulesDir, err)
+		}
+		for _, f := range loadFailures {
+			fmt.Fprintf(os.Stderr, "Warning: rule file skipped: %s: %s\n", f.Path, f.Reason)
+		}
+		if len(loadFailures) > 0 {
+			fmt.Fprintf(os.Stderr, "Warning: %d rule file(s) skipped — those rules did not run.\n", len(loadFailures))
+		}
+		for _, rule := range starlarkRules {
+			lintRules = append(lintRules, rule)
 		}
 
 		// Build catalog at the depth the rules need (fast / full / communities).
@@ -211,13 +229,33 @@ Examples:
 		}
 
 		// If --rules is specified, disable every rule not in the allowlist.
+		//
+		// Validate the ids first. The allowlist works by disabling everything it
+		// does not name, so an id matching no rule disabled every rule and the
+		// run reported "No issues found." — indistinguishable from a clean
+		// project, and the exact failure #904 described. That is also how a rule
+		// which failed to load reads: silently absent, then silently clean.
 		if len(onlyRules) > 0 {
-			allowed := make(map[string]bool, len(onlyRules))
-			for _, id := range onlyRules {
-				allowed[id] = true
+			if unknown := linter.UnknownRuleIDs(onlyRules, lint.Rules()); len(unknown) > 0 {
+				fmt.Fprintf(os.Stderr, "Error: unknown rule id(s): %s\n", strings.Join(unknown, ", "))
+				if lintRulesDir == "" {
+					fmt.Fprintln(os.Stderr, "  No .claude/lint-rules/ directory was found, so no Starlark rules are loaded.")
+					fmt.Fprintln(os.Stderr, "  Run 'mxcli init' to create one, or check that it is inside the repository.")
+				} else {
+					fmt.Fprintf(os.Stderr, "  Starlark rules were loaded from %s.\n", lintRulesDir)
+				}
+				fmt.Fprintln(os.Stderr, "  Run 'mxcli lint -p <project> --list-rules' to see the rules that are available.")
+				os.Exit(1)
 			}
 			for _, rule := range lint.Rules() {
-				if !allowed[rule.ID()] {
+				allowed := false
+				for _, id := range onlyRules {
+					if linter.MatchesRuleID(id, rule.ID()) {
+						allowed = true
+						break
+					}
+				}
+				if !allowed {
 					lint.ConfigureRule(rule.ID(), linter.RuleConfig{Enabled: false})
 				}
 			}

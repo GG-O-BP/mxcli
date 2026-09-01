@@ -64,18 +64,7 @@ func execCreateAssociation(ctx *ExecContext, s *ast.CreateAssociationStmt) error
 		owner = domainmodel.AssociationOwnerBoth
 	}
 
-	// Convert delete behavior
-	var deleteBehavior domainmodel.DeleteBehaviorType
-	switch s.DeleteBehavior {
-	case ast.DeleteKeepReferences:
-		deleteBehavior = domainmodel.DeleteBehaviorTypeDeleteMeButKeepReferences
-	case ast.DeleteCascade:
-		deleteBehavior = domainmodel.DeleteBehaviorTypeDeleteMeAndReferences
-	case ast.DeleteIfNoReferences:
-		deleteBehavior = domainmodel.DeleteBehaviorTypeDeleteMeIfNoReferences
-	default:
-		deleteBehavior = domainmodel.DeleteBehaviorTypeDeleteMeButKeepReferences
-	}
+	deleteBehavior := storageDeleteBehavior(s.DeleteBehavior)
 
 	// Convert storage type (default: Column = foreign key in parent table)
 	storageFormat := domainmodel.StorageFormatColumn
@@ -101,8 +90,8 @@ func execCreateAssociation(ctx *ExecContext, s *ast.CreateAssociationStmt) error
 					assoc.Owner = owner
 					assoc.StorageFormat = storageFormat
 					assoc.ChildDeleteBehavior = &domainmodel.DeleteBehavior{Type: deleteBehavior}
-					if s.Comment != "" {
-						assoc.Documentation = s.Comment
+					if doc := associationDocumentation(s); doc != "" {
+						assoc.Documentation = doc
 					}
 					// Anchors are applied only when the statement names them —
 					// silence preserves what is stored, so a `create or modify`
@@ -114,7 +103,7 @@ func execCreateAssociation(ctx *ExecContext, s *ast.CreateAssociationStmt) error
 					invalidateHierarchy(ctx)
 					invalidateDomainModelsCache(ctx)
 					ctx.trackModifiedDomainModel(module.ID, module.Name)
-					fmt.Fprintf(ctx.Output, "Modified association: %s\n", s.Name)
+					ctx.ReportMutation("Modified", "association: %s", s.Name)
 					return nil
 				}
 			}
@@ -127,8 +116,8 @@ func execCreateAssociation(ctx *ExecContext, s *ast.CreateAssociationStmt) error
 					ca.StorageFormat = storageFormat
 					ca.ChildDeleteBehavior = &domainmodel.DeleteBehavior{Type: deleteBehavior}
 					ca.ChildRef = childRef
-					if s.Comment != "" {
-						ca.Documentation = s.Comment
+					if doc := associationDocumentation(s); doc != "" {
+						ca.Documentation = doc
 					}
 					if err := ctx.Backend.UpdateDomainModel(dm); err != nil {
 						return mdlerrors.NewBackend("update cross-module association", err)
@@ -136,12 +125,21 @@ func execCreateAssociation(ctx *ExecContext, s *ast.CreateAssociationStmt) error
 					invalidateHierarchy(ctx)
 					invalidateDomainModelsCache(ctx)
 					ctx.trackModifiedDomainModel(module.ID, module.Name)
-					fmt.Fprintf(ctx.Output, "Modified association: %s\n", s.Name)
+					ctx.ReportMutation("Modified", "association: %s", s.Name)
 					return nil
 				}
 			}
 		}
 		// Association not found — fall through to create it.
+	}
+
+	// IF NOT EXISTS: an association of this name anywhere in the domain model
+	// means there is nothing to do. Checked once here rather than in each of the
+	// four lookups below, which exist to phrase the same-module and cross-module
+	// errors. (sudoku findings #10)
+	if s.IfNotExists && associationExists(dm, s.Name.Name) {
+		fmt.Fprintf(ctx.Output, "Association %s already exists — skipped\n", s.Name)
+		return nil
 	}
 
 	if isCrossModule {
@@ -162,6 +160,7 @@ func execCreateAssociation(ctx *ExecContext, s *ast.CreateAssociationStmt) error
 		childRef := childModule + "." + s.Child.Name
 		ca := &domainmodel.CrossModuleAssociation{
 			Name:          s.Name.Name,
+			Documentation: associationDocumentation(s),
 			Type:          assocType,
 			Owner:         owner,
 			StorageFormat: storageFormat,
@@ -192,6 +191,7 @@ func execCreateAssociation(ctx *ExecContext, s *ast.CreateAssociationStmt) error
 		}
 		assoc := &domainmodel.Association{
 			Name:          s.Name.Name,
+			Documentation: associationDocumentation(s),
 			Type:          assocType,
 			Owner:         owner,
 			StorageFormat: storageFormat,
@@ -246,7 +246,7 @@ func execAlterAssociation(ctx *ExecContext, s *ast.AlterAssociationStmt) error {
 			switch s.Operation {
 			case ast.AlterAssociationSetDeleteBehavior:
 				assoc.ChildDeleteBehavior = &domainmodel.DeleteBehavior{
-					Type: domainmodel.DeleteBehaviorType(s.DeleteBehavior.String()),
+					Type: storageDeleteBehavior(s.DeleteBehavior),
 				}
 			case ast.AlterAssociationSetOwner:
 				assoc.Owner = domainmodel.AssociationOwner(s.Owner.String())
@@ -271,7 +271,7 @@ func execAlterAssociation(ctx *ExecContext, s *ast.AlterAssociationStmt) error {
 			switch s.Operation {
 			case ast.AlterAssociationSetDeleteBehavior:
 				ca.ChildDeleteBehavior = &domainmodel.DeleteBehavior{
-					Type: domainmodel.DeleteBehaviorType(s.DeleteBehavior.String()),
+					Type: storageDeleteBehavior(s.DeleteBehavior),
 				}
 			case ast.AlterAssociationSetOwner:
 				ca.Owner = domainmodel.AssociationOwner(s.Owner.String())
@@ -315,11 +315,27 @@ func execDropAssociation(ctx *ExecContext, s *ast.DropAssociationStmt) error {
 		return mdlerrors.NewBackend("get domain model", err)
 	}
 
+	// Dropping an association leaves a MemberAccess entry behind on every access
+	// rule that named it, which Mendix rejects with CE1613 "The selected
+	// association … no longer exists". Creating one already reconciles; dropping
+	// one has to as well, or the drop produces a model that will not build.
+	afterDrop := func() {
+		invalidateHierarchy(ctx)
+		invalidateDomainModelsCache(ctx)
+		if freshDM, err := ctx.Backend.GetDomainModel(module.ID); err == nil {
+			if count, err := ctx.Backend.ReconcileMemberAccesses(freshDM.ID, module.Name); err == nil && count > 0 {
+				fmt.Fprintf(ctx.Output, "Reconciled %d access rule(s) after dropping the association\n", count)
+			}
+		}
+		ctx.trackModifiedDomainModel(module.ID, module.Name)
+	}
+
 	for _, assoc := range dm.Associations {
 		if assoc.Name == s.Name.Name {
 			if err := ctx.Backend.DeleteAssociation(dm.ID, assoc.ID); err != nil {
 				return mdlerrors.NewBackend("delete association", err)
 			}
+			afterDrop()
 			fmt.Fprintf(ctx.Output, "Dropped association: %s\n", s.Name)
 			return nil
 		}
@@ -329,6 +345,7 @@ func execDropAssociation(ctx *ExecContext, s *ast.DropAssociationStmt) error {
 			if err := ctx.Backend.DeleteCrossAssociation(dm.ID, ca.ID); err != nil {
 				return mdlerrors.NewBackend("delete cross-module association", err)
 			}
+			afterDrop()
 			fmt.Fprintf(ctx.Output, "Dropped cross-module association: %s\n", s.Name)
 			return nil
 		}
@@ -510,11 +527,17 @@ func describeAssociation(ctx *ExecContext, name ast.QualifiedName) error {
 			fmt.Fprintf(ctx.Output, "storage column\n")
 		}
 
+		// DELETE_AND_REFERENCES, not DELETE_CASCADE: DESCRIBE has to emit MDL the
+		// parser accepts, and DELETE_CASCADE is not a token — only CASCADE and the
+		// three canonical names are. The other two arms already spell the
+		// canonical name, so cascade was the odd one out and a describe → edit →
+		// exec loop died on it (upstream #901). The round-trip test in
+		// cmd_associations_delete_behavior_test.go feeds this back through the parser.
 		deleteBehavior := "DELETE_BUT_KEEP_REFERENCES"
 		if childDeleteBehavior != nil {
 			switch childDeleteBehavior.Type {
 			case domainmodel.DeleteBehaviorTypeDeleteMeAndReferences:
-				deleteBehavior = "DELETE_CASCADE"
+				deleteBehavior = "DELETE_AND_REFERENCES"
 			case domainmodel.DeleteBehaviorTypeDeleteMeIfNoReferences:
 				deleteBehavior = "DELETE_IF_NO_REFERENCES"
 			case domainmodel.DeleteBehaviorTypeDeleteMeButKeepReferences:
@@ -561,6 +584,30 @@ func describeAssociation(ctx *ExecContext, name ast.QualifiedName) error {
 	}
 
 	return mdlerrors.NewNotFound("association", name.String())
+}
+
+// storageDeleteBehavior maps an authored delete behaviour onto the value Mendix
+// stores. Mendix's DeletingBehavior admits exactly three (generated/metamodel
+// enums.go); ast.DeleteBehavior has six, three of which name nothing Mendix has.
+//
+// This is the single conversion for every path that writes one. The ALTER path
+// used to build it as DeleteBehaviorType(s.DeleteBehavior.String()) instead, and
+// String() spells the prevent case "DeleteIfNoReferences" where Mendix writes
+// "DeleteMeIfNoReferences" — so `ALTER ASSOCIATION ... SET DELETE_BEHAVIOR
+// PREVENT` put an out-of-domain enum on disk (upstream #901). Nothing downstream
+// rejects one: mxbuild is lenient about property values and Studio Pro is not,
+// so the failure surfaces only when someone opens the project.
+//
+// String() is a display helper. Do not reintroduce it as a storage encoding.
+func storageDeleteBehavior(b ast.DeleteBehavior) domainmodel.DeleteBehaviorType {
+	switch b {
+	case ast.DeleteCascade:
+		return domainmodel.DeleteBehaviorTypeDeleteMeAndReferences
+	case ast.DeleteIfNoReferences:
+		return domainmodel.DeleteBehaviorTypeDeleteMeIfNoReferences
+	default:
+		return domainmodel.DeleteBehaviorTypeDeleteMeButKeepReferences
+	}
 }
 
 // applyAnchors copies authored `@anchor(from: …, to: …)` / `SET ANCHOR` values
@@ -620,3 +667,39 @@ func describeConnectionPoints(ctx *ExecContext, assoc *domainmodel.Association) 
 }
 
 // --- Executor method wrappers for callers not yet migrated ---
+
+// associationExists reports whether the domain model already holds an
+// association of this name, same-module or cross-module.
+func associationExists(dm *domainmodel.DomainModel, name string) bool {
+	for _, assoc := range dm.Associations {
+		if assoc.Name == name {
+			return true
+		}
+	}
+	for _, ca := range dm.CrossAssociations {
+		if ca.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// associationDocumentation resolves the documentation a CREATE ASSOCIATION
+// carries, from either spelling.
+//
+// An association was the one domain-model element with no way to document it on
+// create: `comment 'text'` was accepted and dropped, and the `/** … */` doc
+// comment was dropped too — the plain-CREATE branches built the association
+// without Documentation at all, while the OR MODIFY branches beside them set it.
+// `mx check` passed, because an undocumented association is valid.
+//
+// The doc comment wins when both are present, matching the precedence the entity
+// path already uses. `comment` survives here — and only here among the CREATE
+// statements — because it is an association's only inline spelling; everywhere
+// else the doc comment already worked, so the dead option was removed instead.
+func associationDocumentation(s *ast.CreateAssociationStmt) string {
+	if s.Documentation != "" {
+		return s.Documentation
+	}
+	return s.Comment
+}

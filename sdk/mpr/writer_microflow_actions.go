@@ -97,7 +97,7 @@ func serializeMicroflowAction(action microflows.MicroflowAction) bson.D {
 		}
 		doc = append(doc, bson.E{Key: "Items", Value: items})
 		// RefreshInClient is required
-		doc = append(doc, bson.E{Key: "RefreshInClient", Value: false})
+		doc = append(doc, bson.E{Key: "RefreshInClient", Value: a.RefreshInClient})
 		// outputVariableName has storageName "VariableName"
 		doc = append(doc, bson.E{Key: "VariableName", Value: a.OutputVariable})
 		return doc
@@ -242,7 +242,7 @@ func serializeMicroflowAction(action microflows.MicroflowAction) bson.D {
 			} else {
 				mfCall = append(mfCall, bson.E{Key: "ParameterMappings", Value: bson.A{int32(2)}}) // Empty array with marker
 			}
-			mfCall = append(mfCall, bson.E{Key: "QueueSettings", Value: nil})
+			mfCall = append(mfCall, bson.E{Key: "QueueSettings", Value: serializeQueueSettings(a.MicroflowCall.QueueSettings)})
 			doc = append(doc, bson.E{Key: "MicroflowCall", Value: mfCall})
 		}
 		doc = append(doc,
@@ -292,7 +292,7 @@ func serializeMicroflowAction(action microflows.MicroflowAction) bson.D {
 			{Key: "$Type", Value: "Microflows$JavaActionCallAction"},
 			{Key: "ErrorHandlingType", Value: stringOrDefault(string(a.ErrorHandlingType), "Rollback")},
 			{Key: "JavaAction", Value: a.JavaAction},
-			{Key: "QueueSettings", Value: nil},
+			{Key: "QueueSettings", Value: serializeQueueSettings(a.QueueSettings)},
 			{Key: "ResultVariableName", Value: a.ResultVariableName},
 			{Key: "UseReturnVariable", Value: a.UseReturnVariable},
 		}
@@ -697,9 +697,13 @@ func serializeRestCallAction(a *microflows.RestCallAction) bson.D {
 		doc = append(doc, bson.E{Key: "RequestHandling", Value: serializeRestRequestHandling(a.RequestHandling)})
 	}
 
-	// RequestHandlingType and RequestProxyType are at action level
+	// RequestHandlingType and RequestProxyType are at action level. The type must
+	// agree with the sub-element: it was hardcoded to "Custom", which is wrong for
+	// a binary body. Only the Binary case is derived — the others are unchanged,
+	// having no measured Studio Pro reference.
+	requestHandlingType := restRequestHandlingTypeOf(a.RequestHandling)
 	doc = append(doc,
-		bson.E{Key: "RequestHandlingType", Value: "Custom"},
+		bson.E{Key: "RequestHandlingType", Value: requestHandlingType},
 		bson.E{Key: "RequestProxyType", Value: "DefaultProxy"},
 	)
 
@@ -714,6 +718,8 @@ func serializeRestCallAction(a *microflows.RestCallAction) bson.D {
 			resultHandlingType = "HttpResponse"
 		case *microflows.ResultHandlingMapping:
 			resultHandlingType = "Mapping"
+		case *microflows.ResultHandlingFileDocument:
+			resultHandlingType = "FileDocument"
 		case *microflows.ResultHandlingNone:
 			resultHandlingType = "None"
 		}
@@ -879,7 +885,11 @@ func serializeRestOperationCallAction(a *microflows.RestOperationCallAction) bso
 	for _, pm := range a.ParameterMappings {
 		paramMappings = append(paramMappings, bson.D{
 			{Key: "$ID", Value: idToBsonBinary(GenerateID())},
-			{Key: "$Type", Value: "Microflows$ParameterMapping"},
+			// STORAGE-NAME OVERRIDE — see the note in
+			// mdl/backend/modelsdk/microflow_rest_write.go. There is no
+			// Microflows$ParameterMapping; writing it makes the project
+			// impossible to OPEN, not merely invalid.
+			{Key: "$Type", Value: "Microflows$RestOperationParameterMapping"},
 			{Key: "Parameter", Value: pm.Parameter},
 			{Key: "Value", Value: pm.Value},
 		})
@@ -903,8 +913,36 @@ func serializeRestOperationCallAction(a *microflows.RestOperationCallAction) bso
 }
 
 // serializeRestRequestHandling serializes RequestHandling to BSON.
+// restRequestHandlingTypeOf is the action-level discriminator, which must agree
+// with the RequestHandling sub-element. Measured against Studio Pro microflows
+// (ako/TestApp, 11.13.0); Simple follows the same name rule but has no measured
+// reference. Mirrors requestHandlingTypeOf in the modelsdk engine.
+func restRequestHandlingTypeOf(rh microflows.RequestHandling) string {
+	switch rh.(type) {
+	case *microflows.MappingRequestHandling:
+		return "Mapping"
+	case *microflows.BinaryRequestHandling:
+		return "Binary"
+	case *microflows.FormDataRequestHandling:
+		return "FormData"
+	case *microflows.SimpleRequestHandling:
+		return "Simple"
+	default:
+		return "Custom"
+	}
+}
+
 func serializeRestRequestHandling(rh microflows.RequestHandling) bson.D {
 	switch h := rh.(type) {
+	case *microflows.BinaryRequestHandling:
+		// Binary request body. Studio Pro stores the expression yielding the
+		// bytes — a FileDocument's Contents member — and pairs it with an
+		// action-level RequestHandlingType of "Binary".
+		return bson.D{
+			{Key: "$ID", Value: idToBsonBinary(GenerateID())},
+			{Key: "$Type", Value: "Microflows$BinaryRequestHandling"},
+			{Key: "Expression", Value: h.Expression},
+		}
 	case *microflows.CustomRequestHandling:
 		doc := bson.D{
 			{Key: "$ID", Value: idToBsonBinary(string(h.ID))},
@@ -936,12 +974,21 @@ func serializeRestRequestHandling(rh microflows.RequestHandling) bson.D {
 		return doc
 
 	case *microflows.MappingRequestHandling:
+		// generated/metamodel gives this type exactly three properties:
+		// contentType (Json|Xml), mappingId, mappingVariableName.
+		// "ParameterVariable" is not one of them — an unknown property is the
+		// shape mxbuild tolerates and Studio Pro refuses to open — and an empty
+		// ContentType is not a member of the enum.
+		contentType := h.ContentType
+		if contentType == "" {
+			contentType = "Json"
+		}
 		return bson.D{
 			{Key: "$ID", Value: idToBsonBinary(string(h.ID))},
 			{Key: "$Type", Value: "Microflows$MappingRequestHandling"},
 			{Key: "MappingId", Value: idToBsonBinary(string(h.MappingID))},
-			{Key: "ContentType", Value: h.ContentType},
-			{Key: "ParameterVariable", Value: h.ParameterVariable},
+			{Key: "ContentType", Value: contentType},
+			{Key: "MappingVariableName", Value: h.ParameterVariable},
 		}
 
 	case *microflows.SimpleRequestHandling:
@@ -1017,11 +1064,7 @@ func serializeRestResultHandling(rh microflows.ResultHandling, outputVar string)
 			{Key: "ForceSingleOccurrence", Value: forceSingleOccurrence},
 			{Key: "ObjectHandlingBackup", Value: "Create"},
 			{Key: "ParameterVariableName", Value: ""},
-			{Key: "Range", Value: bson.D{
-				{Key: "$ID", Value: idToBsonBinary(GenerateID())},
-				{Key: "$Type", Value: "Microflows$ConstantRange"},
-				{Key: "SingleObject", Value: h.SingleObject},
-			}},
+			{Key: "Range", Value: importMappingRange(h)},
 			{Key: "ReturnValueMapping", Value: string(h.MappingID)},
 		}
 		doc = append(doc, bson.E{Key: "ImportMappingCall", Value: importCall})
@@ -1059,6 +1102,23 @@ func serializeRestResultHandling(rh microflows.ResultHandling, outputVar string)
 				{Key: "$ID", Value: idToBsonBinary(GenerateID())},
 				{Key: "$Type", Value: "DataTypes$ObjectType"},
 				{Key: "Entity", Value: "System.HttpResponse"},
+			}},
+		}
+
+	case *microflows.ResultHandlingFileDocument:
+		// Same shape as HttpResponse, but the entity is authored rather than
+		// fixed: it is always a System.FileDocument specialization (CE0362
+		// rejects the base). Issue #922.
+		return bson.D{
+			{Key: "$ID", Value: idToBsonBinary(string(h.ID))},
+			{Key: "$Type", Value: "Microflows$ResultHandling"},
+			{Key: "Bind", Value: outputVar != ""},
+			{Key: "ImportMappingCall", Value: nil},
+			{Key: "ResultVariableName", Value: outputVar},
+			{Key: "VariableType", Value: bson.D{
+				{Key: "$ID", Value: idToBsonBinary(GenerateID())},
+				{Key: "$Type", Value: "DataTypes$ObjectType"},
+				{Key: "Entity", Value: h.EntityRef},
 			}},
 		}
 
@@ -1100,8 +1160,18 @@ func serializeListOperationAction(a *microflows.ListOperationAction) bson.D {
 	}
 
 	// Serialize the operation - storage name is "NewOperation"
-	if a.Operation != nil {
-		doc = append(doc, bson.E{Key: "NewOperation", Value: serializeListOperation(a.Operation)})
+	//
+	// The nil guard is not defensive tidiness: serializeListOperation returns
+	// nil for an operation it has no case for, and appending that writes an
+	// EMPTY sub-document, which Mendix's loader refuses outright — "Expected
+	// '$ID' as the first property of a storage object, but got 'NewOperation'"
+	// — so the project cannot be opened at all. Omitting the key instead leaves
+	// an activity with no action, which mxbuild reports as CE0008 "No action
+	// defined." naming the activity. A missing action is recoverable; an
+	// unloadable file is not. (issue #966, where the Range operation was the
+	// case that fell through)
+	if op := serializeListOperation(a.Operation); op != nil {
+		doc = append(doc, bson.E{Key: "NewOperation", Value: op})
 	}
 	doc = append(doc, bson.E{Key: "ResultVariableName", Value: a.OutputVariable}) // storageName differs
 	return doc
@@ -1223,6 +1293,30 @@ func serializeListOperation(op microflows.ListOperation) bson.D {
 			{Key: "ListName", Value: o.ListVariable1},               // storageName: ListName
 			{Key: "SecondListOrObjectName", Value: o.ListVariable2}, // storageName differs
 		}
+	case *microflows.ListRangeOperation:
+		// `range($List, $offset, $amount)`. This case was absent, which made the
+		// Range the one list operation the legacy engine could PARSE (see
+		// parseListOperation) but not write — and the fall-through to nil is
+		// what produced an unloadable project, not merely a lost range. (#966)
+		//
+		// The bounds are nested in a Microflows$CustomRange child, the shape the
+		// parser beside this file already reads. Emitted only when there is a
+		// bound to carry: Mendix requires at least one (CE6520), so an empty
+		// child would be a well-formed way to store an invalid range.
+		doc := bson.D{
+			{Key: "$ID", Value: idToBsonBinary(string(o.ID))},
+			{Key: "$Type", Value: "Microflows$ListRange"},
+			{Key: "ListName", Value: o.ListVariable}, // storageName: ListName
+		}
+		if o.LimitExpression != "" || o.OffsetExpression != "" {
+			doc = append(doc, bson.E{Key: "CustomRange", Value: bson.D{
+				{Key: "$ID", Value: idToBsonBinary(generateUUID())},
+				{Key: "$Type", Value: "Microflows$CustomRange"},
+				{Key: "LimitExpression", Value: o.LimitExpression},
+				{Key: "OffsetExpression", Value: o.OffsetExpression},
+			}})
+		}
+		return doc
 	default:
 		return nil
 	}
@@ -1469,11 +1563,7 @@ func serializeImportXmlAction(a *microflows.ImportXmlAction) bson.D {
 		{Key: "ForceSingleOccurrence", Value: forceSingleOccurrence},
 		{Key: "ObjectHandlingBackup", Value: "Create"},
 		{Key: "ParameterVariableName", Value: ""},
-		{Key: "Range", Value: bson.D{
-			{Key: "$ID", Value: idToBsonBinary(GenerateID())},
-			{Key: "$Type", Value: "Microflows$ConstantRange"},
-			{Key: "SingleObject", Value: a.ResultHandling.SingleObject},
-		}},
+		{Key: "Range", Value: importMappingRange(a.ResultHandling)},
 		{Key: "ReturnValueMapping", Value: string(a.ResultHandling.MappingID)},
 	}
 
@@ -1586,5 +1676,47 @@ func serializeExternalActionReturnType(kind string) bson.D {
 	return bson.D{
 		{Key: "$ID", Value: typeID},
 		{Key: "$Type", Value: bsonType},
+	}
+}
+
+// importMappingRange builds the Range child of a Microflows$ImportMappingCall.
+//
+// Mendix has two variants and mxcli only ever wrote the first, so the "Custom"
+// setting — a bounded list — was not merely undescribed but unrepresentable:
+//
+//	Microflows$ConstantRange{SingleObject}                 All (false) / First (true)
+//	Microflows$CustomRange{LimitExpression, OffsetExpression}   Custom
+//
+// A limit or an offset selects CustomRange; SingleObject has no meaning there,
+// because a bounded range is always a list. (issue #881)
+func importMappingRange(h *microflows.ResultHandlingMapping) bson.D {
+	if h.LimitExpression != "" || h.OffsetExpression != "" {
+		return bson.D{
+			{Key: "$ID", Value: idToBsonBinary(GenerateID())},
+			{Key: "$Type", Value: "Microflows$CustomRange"},
+			{Key: "LimitExpression", Value: h.LimitExpression},
+			{Key: "OffsetExpression", Value: h.OffsetExpression},
+		}
+	}
+	return bson.D{
+		{Key: "$ID", Value: idToBsonBinary(GenerateID())},
+		{Key: "$Type", Value: "Microflows$ConstantRange"},
+		{Key: "SingleObject", Value: microflows.RangeSingleObjectOf(h)},
+	}
+}
+
+// serializeQueueSettings renders the Queues$QueueSettings child that binds a call
+// activity to a task queue, or nil for an unqueued call (which is what Studio Pro
+// stores). Retry has no MDL surface and is always null here; a stored retry is
+// never overwritten, because checkNoQueuedCalls refuses the rewrite instead.
+func serializeQueueSettings(qs *microflows.QueueSettings) any {
+	if qs == nil || qs.Queue == "" {
+		return nil
+	}
+	return bson.D{
+		{Key: "$ID", Value: idToBsonBinary(string(qs.ID))},
+		{Key: "$Type", Value: "Queues$QueueSettings"},
+		{Key: "Queue", Value: qs.Queue},
+		{Key: "Retry", Value: nil},
 	}
 }

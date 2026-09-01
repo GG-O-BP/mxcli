@@ -9,6 +9,7 @@ import (
 	_ "github.com/mendixlabs/mxcli/modelsdk/gen/texts" // register Texts$Text so page titles decode concretely
 	"github.com/mendixlabs/mxcli/modelsdk/mprread"
 
+	"github.com/mendixlabs/mxcli/mdl/backend"
 	"github.com/mendixlabs/mxcli/model"
 	"github.com/mendixlabs/mxcli/sdk/pages"
 )
@@ -17,6 +18,11 @@ import (
 // excluded, title, URL, parameter count — not the widget tree, so this stays
 // shallow. Widget-tree conversion (DESCRIBE PAGE / ALTER) is a later phase.
 
+// ListPages returns pages only. Page templates are a separate document type with
+// separate content (their widgets hang off LayoutCall, not FormCall) and are read
+// by ListPageTemplates — this used to include them, to match legacy's
+// prefix-matched `Forms$Page` query, which made `show modules` report 46 pages
+// for a module with none.
 func (b *Backend) ListPages() ([]*pages.Page, error) {
 	units, err := mprread.ListUnitsWithContainer[*genPg.Page](b.reader)
 	if err != nil {
@@ -26,26 +32,34 @@ func (b *Backend) ListPages() ([]*pages.Page, error) {
 	for _, u := range units {
 		out = append(out, pageFromGen(u.Element, u.ContainerID))
 	}
-	// Legacy ListPages calls listUnitsByType("Forms$Page"), which is
-	// prefix-matched and therefore also sweeps in Forms$PageTemplate units.
-	// Replicate that here so SHOW PAGES matches legacy. (The modelsdk reader
-	// is strict-typed, so we add templates explicitly.)
-	tmpls, err := mprread.ListUnitsWithContainer[*genPg.PageTemplate](b.reader)
+	return out, nil
+}
+
+// ListPageTemplates reads page template units. Like ListPages this is a header
+// read — name, module, documentation — matching what the legacy parser captures.
+// The template's content is deliberately not converted: it hangs off LayoutCall
+// rather than FormCall, nothing consumes it yet, and a half-converted tree would
+// compare equal to a different one.
+func (b *Backend) ListPageTemplates() ([]*pages.PageTemplate, error) {
+	units, err := mprread.ListUnitsWithContainer[*genPg.PageTemplate](b.reader)
 	if err != nil {
 		return nil, err
 	}
-	for _, u := range tmpls {
-		out = append(out, pageTemplateAsPage(u.Element, u.ContainerID))
+	out := make([]*pages.PageTemplate, 0, len(units))
+	for _, u := range units {
+		out = append(out, pageTemplateFromGen(u.Element, u.ContainerID))
 	}
 	return out, nil
 }
 
-// pageTemplateAsPage adapts a page template into the Page shape SHOW PAGES
-// expects. Templates carry only name + excluded; title/url/params stay zero,
-// matching legacy's prefix-match behaviour.
-func pageTemplateAsPage(pt *genPg.PageTemplate, containerID model.ID) *pages.Page {
-	out := &pages.Page{ContainerID: containerID, Name: pt.Name(), Excluded: pt.Excluded()}
+func pageTemplateFromGen(pt *genPg.PageTemplate, containerID model.ID) *pages.PageTemplate {
+	out := &pages.PageTemplate{
+		ContainerID:   containerID,
+		Name:          pt.Name(),
+		Documentation: pt.Documentation(),
+	}
 	out.ID = model.ID(pt.ID())
+	out.TypeName = "Forms$PageTemplate"
 	return out
 }
 
@@ -71,7 +85,7 @@ func (b *Backend) ListSnippets() ([]*pages.Snippet, error) {
 	}
 	out := make([]*pages.Snippet, 0, len(units))
 	for _, u := range units {
-		s := &pages.Snippet{ContainerID: u.ContainerID, Name: u.Element.Name()}
+		s := &pages.Snippet{ContainerID: u.ContainerID, Name: u.Element.Name(), Excluded: u.Element.Excluded()}
 		s.ID = model.ID(u.Element.ID())
 		// Populate declared parameters — the page builder reads these to validate
 		// and wire SNIPPETCALL argument mappings (without them every parameterised
@@ -200,11 +214,53 @@ func (b *Backend) ListLayouts() ([]*pages.Layout, error) {
 	}
 	out := make([]*pages.Layout, 0, len(units))
 	for _, u := range units {
-		l := &pages.Layout{ContainerID: u.ContainerID, Name: u.Element.Name(), Documentation: u.Element.Documentation()}
+		l := &pages.Layout{
+			ContainerID:   u.ContainerID,
+			Name:          u.Element.Name(),
+			Documentation: u.Element.Documentation(),
+			LayoutType:    layoutTypeOf(u.Element),
+			Class:         appearanceClassOf(u.Element),
+		}
 		l.ID = model.ID(u.Element.ID())
 		out = append(out, l)
 	}
 	return out, nil
+}
+
+// appearanceClassOf reads the layout's own CSS class.
+//
+// Not decoration: Atlas scopes its layout chrome to `.layout-atlas` and
+// variants, so a describe that dropped the class produced a script whose output
+// rendered unstyled — valid, buildable, and visibly wrong.
+func appearanceClassOf(l *genPg.Layout) string {
+	ap, ok := l.Appearance().(*genPg.Appearance)
+	if !ok || ap == nil {
+		return ""
+	}
+	return ap.Class()
+}
+
+// layoutTypeOf reads a layout's type off its content wrapper.
+//
+// It is NOT on Forms$Layout, despite gen exposing Layout.LayoutType() — that
+// property binds a key the document does not have, so it reads "" for every
+// layout ever written. Measured: a Forms$Layout's top-level keys are $ID,
+// $Type, Appearance, CanvasHeight, CanvasWidth, Content, Documentation,
+// Excluded, ExportLevel, Name. The type lives one level down, on
+// Forms$WebLayoutContent or Forms$NativeLayoutContent, which is exactly where
+// generated/metamodel says it is.
+//
+// The empty read was invisible because DESCRIBE LAYOUT defaulted "" to
+// "Responsive", so all 22 Atlas layouts reported Responsive — including the
+// five Phone, eight Tablet, one ModalPopup and five native ones.
+func layoutTypeOf(l *genPg.Layout) pages.LayoutType {
+	switch c := l.Content().(type) {
+	case *genPg.WebLayoutContent:
+		return pages.LayoutType(c.LayoutType())
+	case *genPg.NativeLayoutContent:
+		return pages.LayoutType(c.LayoutType())
+	}
+	return ""
 }
 
 // GetLayout returns a single layout by ID (shallow).
@@ -219,4 +275,29 @@ func (b *Backend) GetLayout(id model.ID) (*pages.Layout, error) {
 		}
 	}
 	return nil, nil
+}
+
+// LayoutPlaceholders returns the placeholder names a layout declares.
+//
+// Read off the raw document rather than through gen: the names are the layout's
+// public API (a page binds as Module.Layout.<Name>) and both engines need the
+// same answer, so the walk lives in backend.LayoutPlaceholderNames.
+func (b *Backend) LayoutPlaceholders(id model.ID) ([]string, error) {
+	raw, err := b.GetRawUnit(id)
+	if err != nil {
+		return nil, err
+	}
+	return backend.LayoutPlaceholderNames(raw), nil
+}
+
+// PageLayoutName returns the qualified name of the layout a page renders inside.
+//
+// Read off the stored document: a page's layout reference is FormCall.Form, a
+// qualified name Mendix resolves on load.
+func (b *Backend) PageLayoutName(id model.ID) (string, error) {
+	raw, err := b.GetRawUnit(id)
+	if err != nil {
+		return "", err
+	}
+	return backend.PageLayoutNameFromRaw(raw), nil
 }

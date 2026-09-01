@@ -49,10 +49,27 @@ func (fb *flowBuilder) buildFlowGraph(stmts []ast.MicroflowStatement, returns *a
 	}
 
 	// Create StartEvent - Position is the CENTER point (RelativeMiddlePoint in Mendix)
+	//
+	// Three sources, weakest first. The derived spot above is the fallback; a
+	// hand-placed position carried over from the flow being replaced beats it
+	// (#884); an explicit @start(x, y) beats both, because it is the one source
+	// that states the position rather than inferring it (#951).
+	startX, startY := fb.posX, fb.posY
+	if fb.startPosition != nil {
+		startX, startY = fb.startPosition.X, fb.startPosition.Y
+	}
+	for _, stmt := range stmts {
+		ann := getStatementAnnotations(stmt)
+		if ann == nil || ann.Start == nil {
+			continue
+		}
+		startX, startY = ann.Start.X, ann.Start.Y
+		break
+	}
 	startEvent := &microflows.StartEvent{
 		BaseMicroflowObject: microflows.BaseMicroflowObject{
 			BaseElement: model.BaseElement{ID: model.ID(types.GenerateID())},
-			Position:    model.Point{X: fb.posX, Y: fb.posY},
+			Position:    model.Point{X: startX, Y: startY},
 			Size:        model.Size{Width: EventSize, Height: EventSize},
 		},
 	}
@@ -180,6 +197,11 @@ func (fb *flowBuilder) buildFlowGraph(stmts []ast.MicroflowStatement, returns *a
 	} else {
 		fb.terminatePendingErrorHandlersAtEnd(returns)
 	}
+
+	// Stamp @curve onto each annotated activity's outgoing flows. Done once here,
+	// after every flow exists, rather than at the seven-odd sites that create
+	// one. (#884)
+	fb.applyFlowCurves()
 
 	return &microflows.MicroflowObjectCollection{
 		BaseElement:     model.BaseElement{ID: model.ID(types.GenerateID())},

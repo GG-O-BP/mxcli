@@ -19,8 +19,10 @@ showStatement
     | showOrList CONTRACT MESSAGES FROM qualifiedName   // SHOW CONTRACT MESSAGES FROM Module.Service (AsyncAPI)
     | showOrList ENTITIES (IN (qualifiedName | IDENTIFIER))?
     | showOrList ASSOCIATIONS (IN (qualifiedName | IDENTIFIER))?
+    | showOrList ANNOTATIONS (IN (qualifiedName | IDENTIFIER))?   // domain-model canvas notes
     | showOrList MICROFLOWS (IN (qualifiedName | IDENTIFIER))?
     | showOrList NANOFLOWS (IN (qualifiedName | IDENTIFIER))?
+    | showOrList RULES (IN (qualifiedName | IDENTIFIER))?
     | showOrList WORKFLOWS (IN (qualifiedName | IDENTIFIER))?
     | showOrList PAGES (IN (qualifiedName | IDENTIFIER))?
     | showOrList SNIPPETS (IN (qualifiedName | IDENTIFIER))?
@@ -34,7 +36,9 @@ showStatement
     | showOrList CONSTANTS (IN (qualifiedName | IDENTIFIER))?
     | showOrList CONSTANT VALUES (IN (qualifiedName | IDENTIFIER))?
     | showOrList LAYOUTS (IN (qualifiedName | IDENTIFIER))?
-    | showOrList NOTEBOOKS (IN (qualifiedName | IDENTIFIER))?
+    | showOrList QUEUES (IN (qualifiedName | IDENTIFIER))?
+    | showOrList SCHEDULED EVENTS (IN (qualifiedName | IDENTIFIER))?
+    | showOrList REGULAR EXPRESSIONS (IN (qualifiedName | IDENTIFIER))?
     | showOrList JAVA ACTIONS (IN (qualifiedName | IDENTIFIER))?
     | showOrList JAVASCRIPT ACTIONS (IN (qualifiedName | IDENTIFIER))?
     | showOrList IMAGE COLLECTION (IN (qualifiedName | IDENTIFIER))?
@@ -68,6 +72,12 @@ showStatement
     | showOrList USER ROLES
     | showOrList DEMO USERS
     | showOrList ACCESS ON qualifiedName
+    // ENTITY is spelled out as well as implied by the bare form above: every
+    // other document kind names itself here, and the generated project CLAUDE.md
+    // documents `SHOW ACCESS ON MICROFLOW|PAGE|ENTITY`. Without this alternative
+    // `ENTITY` is swallowed by qualifiedName (it is in the `keyword` rule), so
+    // the statement ends at `ENTITY` and the real name is extraneous input.
+    | showOrList ACCESS ON ENTITY qualifiedName
     | showOrList ACCESS ON MICROFLOW qualifiedName
     | showOrList ACCESS ON PAGE qualifiedName
     | showOrList ACCESS ON WORKFLOW qualifiedName
@@ -142,10 +152,12 @@ describeStatement
     | DESCRIBE ASSOCIATION qualifiedName
     | DESCRIBE MICROFLOW qualifiedName
     | DESCRIBE NANOFLOW qualifiedName
+    | DESCRIBE RULE qualifiedName
     | DESCRIBE WORKFLOW qualifiedName
     | DESCRIBE PAGE qualifiedName
     | DESCRIBE SNIPPET qualifiedName
     | DESCRIBE BUILDING BLOCK qualifiedName
+    | DESCRIBE MENU_KW qualifiedName
     | DESCRIBE LAYOUT qualifiedName
     | DESCRIBE ENUMERATION qualifiedName
     | DESCRIBE CONSTANT qualifiedName
@@ -162,6 +174,9 @@ describeStatement
     | DESCRIBE STYLING ON (PAGE | SNIPPET) qualifiedName (WIDGET IDENTIFIER)?  // DESCRIBE STYLING ON PAGE Module.Page [WIDGET name]
     | DESCRIBE CATALOG DOT (catalogTableName)  // DESCRIBE CATALOG.ENTITIES
     | DESCRIBE BUSINESS EVENT SERVICE qualifiedName  // DESCRIBE BUSINESS EVENT SERVICE Module.Name
+    | DESCRIBE QUEUE qualifiedName                     // DESCRIBE QUEUE Module.Name
+    | DESCRIBE SCHEDULED EVENT qualifiedName           // DESCRIBE SCHEDULED EVENT Module.Name
+    | DESCRIBE REGULAR EXPRESSION qualifiedName        // DESCRIBE REGULAR EXPRESSION Module.Name
     | DESCRIBE DATABASE CONNECTION qualifiedName       // DESCRIBE DATABASE CONNECTION Module.Name
     | DESCRIBE SETTINGS (CONFIGURATION STRING_LITERAL)?  // DESCRIBE SETTINGS [CONFIGURATION 'Default']
     | DESCRIBE FRAGMENT FROM PAGE qualifiedName WIDGET identifierOrKeyword     // DESCRIBE FRAGMENT FROM PAGE Module.Page WIDGET name
@@ -181,6 +196,7 @@ describeStatement
     | DESCRIBE DATA TRANSFORMER qualifiedName          // DESCRIBE DATA TRANSFORMER Module.Name
     | DESCRIBE FRAGMENT identifierOrKeyword            // DESCRIBE FRAGMENT Name
     | DESCRIBE JAR DEPENDENCY (qualifiedName | IDENTIFIER) STRING_LITERAL   // DESCRIBE JAR DEPENDENCY ModuleName 'group:artifact'
+    | DESCRIBE TRANSLATIONS (IN identifierOrKeyword)? FOR identifierOrKeyword   // DESCRIBE TRANSLATIONS [IN Module] FOR nl_NL
     | DESCRIBE qualifiedName    // DESCRIBE Module.Name — type auto-detected at execution time (must be LAST so all typed forms above win)
     ;
 
@@ -206,6 +222,7 @@ catalogTableName
     | ASSOCIATIONS  // keyword token — must be listed explicitly
     | MICROFLOWS
     | NANOFLOWS
+    | RULES
     | PAGES
     | SNIPPETS
     | LAYOUTS
@@ -216,6 +233,7 @@ catalogTableName
     | CONSTANTS     // keyword token — must be listed explicitly
     | OBJECTS       // keyword token — must be listed explicitly
     | COMMUNITIES   // keyword token (SHOW COMMUNITIES) — must be listed explicitly for CATALOG.COMMUNITIES
+    | QUEUES        // keyword token (SHOW QUEUES) — must be listed explicitly for CATALOG.QUEUES
     | SOURCE_KW     // For CATALOG.SOURCE FTS table
     | ODATA         // For CATALOG.ODATA_CLIENTS and CATALOG.ODATA_SERVICES (via IDENTIFIER)
     | IDENTIFIER    // For tables like activities, xpath_expressions, projects, snapshots, refs, strings, odata_clients, odata_services, java_actions

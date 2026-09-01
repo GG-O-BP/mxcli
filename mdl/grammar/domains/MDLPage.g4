@@ -1,6 +1,6 @@
 /**
  * MDL Page Grammar — pages, snippets, shared page/snippet rules, xpath expressions,
- * page V3 syntax, notebooks.
+ * page V3 syntax.
  */
 parser grammar MDLPage;
 
@@ -16,6 +16,20 @@ options { tokenVocab = MDLLexer; }
 createPageStatement
     : PAGE qualifiedName
       pageHeaderV3
+      LBRACE pageBodyV3 RBRACE
+    ;
+
+// =============================================================================
+// LAYOUT CREATION
+// =============================================================================
+
+// A layout is a page's frame: pages bind into its placeholders by name.
+// The property block carries the layout type — which is stored on the content
+// wrapper, not on the layout element — and which placeholder a page's content
+// goes into.
+createLayoutStatement
+    : LAYOUT qualifiedName
+      widgetPropertiesV3?
       LBRACE pageBodyV3 RBRACE
     ;
 
@@ -247,10 +261,18 @@ slotMarkerV3
     : SLOT identifierOrKeyword?
     ;
 
-// PLACEHOLDER <Name> { widgets } — assign widgets to a named layout placeholder.
+// PLACEHOLDER <Name> [{ widgets }] — one rule, two jobs, decided by context.
+//
+// In a page, the body assigns widgets to a named layout placeholder. In a
+// layout, the bodiless form DECLARES a placeholder: a slot pages bind to as
+// Module.Layout.<Name>. They are the same syntax because they name the same
+// thing from the two ends of the binding, and the executor knows which document
+// it is building — a bodiless placeholder in a page fills nothing and is
+// reported there rather than parsed differently.
+//
 // The name accepts keywords so placeholders like Right / Left / Content parse.
 placeholderBlockV3
-    : PLACEHOLDER identifierOrKeyword LBRACE (widgetV3 | useFragmentRef | useBuildingBlockRef)* RBRACE
+    : PLACEHOLDER identifierOrKeyword (LBRACE (widgetV3 | useFragmentRef | useBuildingBlockRef)* RBRACE)?
     ;
 
 // USE FRAGMENT Name [(args)] [AS prefix_] [ { payload widgets } ]
@@ -305,7 +327,17 @@ blockOverride
 // after a reserved keyword (e.g. "List", "Column") can be expressed. DESCRIBE
 // emits the quoted form for such names so its output re-parses. See issue #619.
 widgetV3
-    : widgetTypeV3 (IDENTIFIER | QUOTED_IDENTIFIER | keyword) widgetPropertiesV3? widgetBodyV3?
+    // A List View specialization template: one body per specialization of the
+    // list view's entity. It carries an entity, not a name — Studio Pro stores
+    // Forms$ListViewTemplate with exactly {Entity, Widgets}.
+    //
+    // FIRST alternative on purpose. FOR is in the `keyword` rule, so without the
+    // ordering `template for Pages.Bus { }` could be read as a TEMPLATE widget
+    // named "for". A Gallery content slot named `for` must now be quoted
+    // (`template "for" { }`), the same escape hatch reserved names already use
+    // (issue #619).
+    : TEMPLATE FOR qualifiedName widgetBodyV3
+    | widgetTypeV3 (IDENTIFIER | QUOTED_IDENTIFIER | keyword) widgetPropertiesV3? widgetBodyV3?
     | PLUGGABLEWIDGET STRING_LITERAL (IDENTIFIER | QUOTED_IDENTIFIER | keyword) widgetPropertiesV3? widgetBodyV3?  // PLUGGABLEWIDGET 'widget.id' name
     | CUSTOMWIDGET STRING_LITERAL (IDENTIFIER | QUOTED_IDENTIFIER | keyword) widgetPropertiesV3? widgetBodyV3?     // CUSTOMWIDGET 'widget.id' name (legacy)
     ;
@@ -354,6 +386,14 @@ widgetTypeV3
     | TABCONTAINER
     | TABPAGE
     | GROUPBOX
+    // Layout structure. A ScrollContainer's children are five named region
+    // slots — `region top { … }` — not a list; PLACEHOLDER here declares a
+    // slot pages bind to as Module.Layout.<Name>, which is a different thing
+    // from the page-side placeholderBlock that fills one.
+    | SCROLLCONTAINER
+    | SCROLLREGION
+    | NAVIGATIONTREE
+    | MENUBAR
     // Object-list container keywords for pluggable widgets (Phase 1 — #538).
     // Each is the singular form of a Type:"object"+IsList:true widget property
     // (e.g. Accordion groups → GROUP). Routed at executor time via the parent
@@ -366,6 +406,8 @@ widgetTypeV3
     | SERIES
     | LINE
     | SCALECOLOR
+    | CUSTOMBUTTON
+    | ALLOWEDFILEFORMAT
     // Dual-stack keyword (Phase 2 — #539). LEGACYDATAGRID always routes to
     // the dojo-based native Forms$DataGrid even on Mendix 11+; useful for
     // migrated projects that still have native datagrids on the page.
@@ -392,6 +434,13 @@ widgetPropertyV3
     | RENDERMODE COLON renderModeV3                   // RenderMode: H3
     | CONTENTPARAMS COLON paramListV3                 // ContentParams: [{1} = $var.Name]
     | CAPTIONPARAMS COLON paramListV3                 // CaptionParams: [{1} = 'hello']
+    // A text-template sub-property of an object-list ITEM carries its
+    // parameters under `<Name>Params`, and those names are the widget's own
+    // (a File Uploader custom button's `ButtonCaptionParams`), so they cannot
+    // each have a token. Placed before the generic propertyValueV3
+    // alternatives, which also admit a `[...]` array — `{N} = expr` inside is
+    // what separates them (#956).
+    | (IDENTIFIER | keyword) COLON paramListV3        // <Name>Params: [{1} = Attr]
     | BUTTONSTYLE COLON buttonStyleV3                  // ButtonStyle: Primary
     | CLASS COLON STRING_LITERAL                       // Class: 'my-class'
     | STYLE COLON STRING_LITERAL                       // Style: 'color: red'
@@ -417,6 +466,18 @@ widgetPropertyV3
     // NANOFLOW/ASSOCIATION/VARIABLE/SELECTION) disambiguates it from
     // propertyValueV3, which can never start with those. Issue: chart series (9a).
     | (IDENTIFIER | keyword) COLON dataSourceExprV3
+    // Generic action-typed property — a NAMED action slot addressed by the
+    // widget's own key: `createFileAction: show_page Module.P`. Placed AFTER the
+    // datasource branch on purpose: actionExprV3 and dataSourceExprV3 overlap on
+    // MICROFLOW / NANOFLOW / VARIABLE, and putting this first would read a chart
+    // series' `staticDataSource: microflow M.X` as an action. Those overlapping
+    // forms therefore still parse as a data source, and the executor converts
+    // them when the widget definition says the slot is action-typed — the same
+    // split fragmentArgValue already resolves ("the executor disambiguates using
+    // the parameter's declared kind"). This branch carries the forms that are
+    // unambiguous: show_page, save_changes, close_page, create_object, delete,
+    // open_link, sign_out, complete_task. Issue #956.
+    | (IDENTIFIER | keyword) COLON actionExprV3
     | IDENTIFIER COLON propertyValueV3                // Generic: any other property
     | keyword COLON propertyValueV3                  // Generic: keyword as property name (for pluggable widgets)
     ;
@@ -575,24 +636,3 @@ widgetBodyV3
     : LBRACE pageBodyV3 RBRACE
     ;
 
-// =============================================================================
-// NOTEBOOK CREATION
-// =============================================================================
-
-createNotebookStatement
-    : NOTEBOOK qualifiedName
-      notebookOptions?
-      BEGIN notebookPage* END
-    ;
-
-notebookOptions
-    : notebookOption+
-    ;
-
-notebookOption
-    : COMMENT STRING_LITERAL
-    ;
-
-notebookPage
-    : PAGE qualifiedName (CAPTION STRING_LITERAL)?
-    ;

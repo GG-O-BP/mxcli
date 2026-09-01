@@ -37,6 +37,8 @@ func ValidateMicroflow(stmt *ast.CreateMicroflowStmt) []linter.Violation {
 					p.Type.EntityRef.Name, p.Type.EntityRef.Name))
 		}
 	}
+	v.params = stmt.Parameters
+	v.excluded = stmt.Excluded
 	v.validate(stmt.Body)
 	return v.violations
 }
@@ -51,6 +53,12 @@ type microflowValidator struct {
 	// varKinds maps in-scope variable names (params + declared) to their kind,
 	// used to detect assigning a Decimal expression to an Integer/Long target.
 	varKinds map[string]exprcheck.TypeKind
+	// params is the microflow's parameter list. A parameter occupies the same
+	// flat variable namespace as every activity output (MDL063).
+	params []ast.MicroflowParam
+	// excluded marks an @excluded document. mxbuild does not check one, so the
+	// #893 rules stand down for it — see skipCEGapRules.
+	excluded bool
 }
 
 func (v *microflowValidator) addViolation(ruleID string, severity linter.Severity, message, suggestion string) {
@@ -72,8 +80,16 @@ func (v *microflowValidator) validate(body []ast.MicroflowStatement) {
 	v.emptyListVars = make(map[string]bool)
 	v.walkBody(body)
 
-	// Check 5: missing RETURN on non-void microflow paths
-	if v.returnType != nil && v.returnType.Type.Kind != ast.TypeVoid {
+	// Check 5: missing RETURN on non-void microflow paths.
+	//
+	// `RETURNS T AS $Var` is exempt: buildFlowGraph sets the final EndEvent's
+	// ReturnValue to "$"+Var whenever the AS clause is present, so the return is
+	// synthesized whether or not the body spells one out — the whole point of the
+	// clause. Demanding an explicit RETURN on top of it flagged the documented
+	// idiom as broken, and once `exec` began refusing scripts whose checks report
+	// an error, that false positive blocked seven shipped examples from running.
+	// Verified on mxbuild 11.13.0: such a microflow builds with 0 errors.
+	if v.returnType != nil && v.returnType.Type.Kind != ast.TypeVoid && v.returnType.Variable == "" {
 		if !bodyReturns(body) {
 			v.addViolation("MDL003", linter.SeverityError,
 				fmt.Sprintf("microflow returns %s but not all code paths have a return statement",
@@ -93,6 +109,15 @@ func (v *microflowValidator) validate(body []ast.MicroflowStatement) {
 	// variables are only VISIBLE inside its body, so using one after the loop
 	// is CE0108.
 	v.checkLoopScoping(body)
+
+	// #893: three constructs that passed check and exec and were then rejected
+	// by the build. See validate_microflow_ce_gaps.go for the measurements.
+	v.checkReturnInLoop(body)
+	v.checkDuplicateVariableNames(v.params, body)
+
+	// #895: the commit default changed to match Studio Pro. One informational
+	// note per microflow, not per statement — see validate_commit_events.go.
+	v.checkBareCommitEvents(body)
 }
 
 // checkDuplicateLoopVariables flags a loop iterator name used by more than one
@@ -142,6 +167,7 @@ func (v *microflowValidator) checkDuplicateLoopVariables(body []ast.MicroflowSta
 // walkBody recursively walks microflow body statements looking for per-statement issues.
 func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 	for _, s := range body {
+		v.checkUnknownAnnotations(s)
 		switch stmt := s.(type) {
 		case *ast.ValidationFeedbackStmt:
 			if isEmptyMessage(stmt.Message) {
@@ -153,6 +179,7 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 		case *ast.ReturnStmt:
 			v.checkReturn(stmt)
 			v.checkExprFunctions("return", stmt.Value)
+			v.checkQualifiedCallInExpression("return", stmt.Value)
 			v.checkDivisionSlash("return", stmt.Value)
 			v.checkDateTimeLiterals("return", stmt.Value)
 		case *ast.IfStmt:
@@ -185,6 +212,7 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 			}
 			v.walkBody(stmt.ElseBody)
 		case *ast.InheritanceSplitStmt:
+			v.checkInheritanceSplitSpelling(stmt)
 			for _, c := range stmt.Cases {
 				v.walkBody(c.Body)
 			}
@@ -244,7 +272,10 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 					v.checkNumericAssignment("$"+stmt.Variable, k, stmt.InitialValue)
 				}
 			}
+			// #893 item 1: a Create Variable activity requires a value (CE0038).
+			v.checkDeclareHasValue(stmt)
 			v.checkExprFunctions(fmt.Sprintf("declare '$%s'", stmt.Variable), stmt.InitialValue)
+			v.checkQualifiedCallInExpression(fmt.Sprintf("declare '$%s'", stmt.Variable), stmt.InitialValue)
 			v.checkDivisionSlash(fmt.Sprintf("declare '$%s'", stmt.Variable), stmt.InitialValue)
 			v.checkDateTimeLiterals(fmt.Sprintf("declare '$%s'", stmt.Variable), stmt.InitialValue)
 		case *ast.MfSetStmt:
@@ -256,6 +287,7 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 				}
 			}
 			v.checkExprFunctions(fmt.Sprintf("set '%s'", stmt.Target), stmt.Value)
+			v.checkQualifiedCallInExpression(fmt.Sprintf("set '%s'", stmt.Target), stmt.Value)
 			v.checkDivisionSlash(fmt.Sprintf("set '%s'", stmt.Target), stmt.Value)
 			v.checkDateTimeLiterals(fmt.Sprintf("set '%s'", stmt.Target), stmt.Value)
 		case *ast.RetrieveStmt:
@@ -269,10 +301,22 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 			}
 		case *ast.SynchronizeStmt:
 			v.checkSynchronizeIsNanoflowOnly()
+		case *ast.ListOperationStmt:
+			v.checkRangeHasABound(stmt)
+		case *ast.WhileStmt:
+			// A while condition is a plain boolean expression — Mendix has no rule
+			// split for a loop, so unlike an IF condition a qualified call here is
+			// never legal. The body was not walked at all before, so nothing inside
+			// a while was checked.
+			v.checkQualifiedCallInExpression("while condition", stmt.Condition)
+			v.walkBody(stmt.Body)
 		case *ast.CallMicroflowStmt:
 			v.checkAssociationObjectArgs("microflow "+stmt.MicroflowName.String(), stmt.Arguments)
 		case *ast.CallNanoflowStmt:
 			v.checkAssociationObjectArgs("nanoflow "+stmt.NanoflowName.String(), stmt.Arguments)
+		case *ast.RestCallStmt:
+			// #922: `returns Module.Entity` must name a FileDocument specialization.
+			v.checkRestFileDocumentResult(stmt)
 		case *ast.LoopStmt:
 			// Check: @caption on a loop is silently dropped — Mendix for-loops
 			// have no caption (Microflows$LoopedActivity has no Caption
@@ -316,10 +360,12 @@ func (v *microflowValidator) walkBody(body []ast.MicroflowStatement) {
 			// but check previously only inspected return/if/declare/set (FINDINGS #17).
 			for _, ch := range stmt.Changes {
 				v.checkExprFunctions(fmt.Sprintf("create %s attribute '%s'", stmt.EntityType.String(), ch.Attribute), ch.Value)
+				v.checkQualifiedCallInExpression(fmt.Sprintf("create %s attribute '%s'", stmt.EntityType.String(), ch.Attribute), ch.Value)
 			}
 		case *ast.ChangeObjectStmt:
 			for _, ch := range stmt.Changes {
 				v.checkExprFunctions(fmt.Sprintf("change '%s' attribute '%s'", stmt.Variable, ch.Attribute), ch.Value)
+				v.checkQualifiedCallInExpression(fmt.Sprintf("change '%s' attribute '%s'", stmt.Variable, ch.Attribute), ch.Value)
 			}
 		}
 		// Check error handling inside loops
@@ -616,6 +662,34 @@ func (v *microflowValidator) checkSynchronizeIsNanoflowOnly() {
 			"(CE0009 \"This action is not supported in microflows.\")",
 		"Move the statement into a nanoflow: `create nanoflow Module.NF_Sync () begin synchronize all; end;`. "+
 			"A microflow can call that nanoflow only from client-side logic, so the caller must be a nanoflow too.")
+}
+
+// checkRangeHasABound rejects `range($List)` — a Range list operation with
+// neither an offset nor an amount.
+//
+// Mendix requires at least one, and says so at build time:
+//
+//	[error] [CE6520] "Amount and offset are not specified. Either amount or
+//	offset or both must be specified." at List operation activity 'Range'
+//
+// (mxbuild 11.13.0; the same project with a bound is 0 errors.) The grammar
+// makes both arguments optional, so the unbuildable form parsed and checked
+// clean — and that is precisely the shape DESCRIBE emitted for every paged
+// range while the reader was dropping the bounds, which is how issue #966's
+// truncated output passed `mxcli check`. The reader is fixed, so describe no
+// longer produces it; this closes the hand-written path too, and keeps a check
+// that would have caught #966 from the other side.
+func (v *microflowValidator) checkRangeHasABound(stmt *ast.ListOperationStmt) {
+	if stmt.Operation != ast.ListOpRange || stmt.OffsetExpr != nil || stmt.LimitExpr != nil {
+		return
+	}
+	v.addViolation("MDL068", linter.SeverityError,
+		fmt.Sprintf("`range($%s)` has neither an offset nor an amount, and Mendix requires at least one "+
+			"(CE6520 \"Amount and offset are not specified. Either amount or offset or both must be specified.\")",
+			stmt.InputVariable),
+		fmt.Sprintf("Give it a bound: `range($%s, $Offset, $Amount)` for a page, `range($%s, 0, $Amount)` for the "+
+			"first N, or `range($%s, $Offset)` to skip. To use the whole list unchanged, drop the range activity "+
+			"and use `$%s` directly.", stmt.InputVariable, stmt.InputVariable, stmt.InputVariable, stmt.InputVariable))
 }
 
 // xpathIdConstraintRe matches a constraint comparing the object id against a VALUE
@@ -1301,4 +1375,87 @@ func (v *microflowValidator) checkEnumSplitEmptyBranch(stmt *ast.EnumSplitStmt) 
 			"should be configured in properties for an outgoing flow\"", stmt.Variable),
 		"Add a `when (empty) then …` branch. It is required even when the attribute is `not null`. "+
 			"A branch may list several values (`when Open, (empty) then …`) if they share a path.")
+}
+
+// checkInheritanceSplitSpelling warns on the pre-#913 spelling of a type split.
+//
+// `case X <body>` used `case` to introduce a BRANCH, while the enumeration
+// split (`case $x when V then`) and the caseExpression in MDLSettings.g4 use it
+// to introduce the SUBJECT. Two of the three agreed; the type split was the
+// outlier, so the word meant two things depending on the statement.
+//
+// `else` is the worse half. It is not a default branch: it is Mendix's
+// `(empty)` outgoing flow, taken when the object is NULL. Measured on mxbuild
+// 11.13.0, a split with one `case` and an `else` still fails CE0090 demanding a
+// flow for every other subtype AND for the base entity — so the `else`
+// contributes nothing to type coverage, which is exactly what its name promises.
+//
+// A warning, not an error: both spellings build the identical flow, and scripts
+// in the wild use the old one. Nothing downstream of this function may branch on
+// the spelling flags.
+func (v *microflowValidator) checkInheritanceSplitSpelling(stmt *ast.InheritanceSplitStmt) {
+	if stmt.LegacyCaseKeyword {
+		v.addViolation("MDL065", linter.SeverityWarning,
+			fmt.Sprintf("split type '$%s' uses the legacy `case <Entity>` branch spelling; "+
+				"`case` introduces the subject in every other MDL statement (`case $x when V then`), "+
+				"not a branch", stmt.Variable),
+			"Write `when Module.Entity then …` instead. Both build the identical flow.")
+	}
+	if stmt.LegacyElseKeyword {
+		v.addViolation("MDL065", linter.SeverityWarning,
+			fmt.Sprintf("split type '$%s' uses `else`, which reads as a default branch and is not one: "+
+				"it is Mendix's `(empty)` flow, taken when the object is null. Mendix still requires an "+
+				"outgoing flow for every subtype and for the base entity (CE0090)", stmt.Variable),
+			"Write `when (empty) then …` instead — same flow, accurate name. "+
+				"To handle unmatched types, add a `when <BaseEntity> then …` branch.")
+	}
+}
+
+// knownActivityAnnotations is the set the visitor implements. It is the visitor's
+// own switch arms, restated: the two are pinned together by
+// TestKnownAnnotationsMatchTheVisitor, because a name added to one and not the
+// other either rejects a valid annotation or silently drops an invalid one.
+var knownActivityAnnotations = map[string]bool{
+	"position":   true,
+	"caption":    true,
+	"color":      true,
+	"annotation": true,
+	"excluded":   true,
+	"anchor":     true,
+	"curve":      true,
+	"merge":      true,
+	"start":      true,
+}
+
+// checkUnknownAnnotations rejects an @annotation name the visitor does not
+// implement.
+//
+// The grammar accepts any @name, and the visitor's switch had no default, so an
+// unrecognised one was dropped in silence. That is benign for an annotation mxcli
+// does not implement — @size(600, 300), which the #884 reporter found parsing
+// without effect — and NOT benign for a typo of one it does: `@postion(10, 20)`
+// passed `check` and discarded the layout the author asked for, on a workflow
+// whose entire point is scripted canvas layout.
+//
+// An error rather than a warning: the statement's meaning silently differs from
+// what was written, and warnings on a generated script are not read. (#884)
+func (v *microflowValidator) checkUnknownAnnotations(s ast.MicroflowStatement) {
+	ann := ast.StatementAnnotations(s)
+	if ann == nil {
+		return
+	}
+	for _, bad := range ann.InvalidCurves {
+		v.addViolation("MDL060", linter.SeverityError,
+			fmt.Sprintf("`@curve` parameter `%s` is not a whole-number (x, y) pair", bad),
+			"A sequence flow's shape is two bezier control vectors, each a pixel offset from its end "+
+				"of the line: `@curve(from: (40, -90), to: (-40, 90))`. Only `from:` and `to:` are accepted.")
+	}
+	for _, name := range ann.UnknownNames {
+		v.addViolation("MDL059", linter.SeverityError,
+			fmt.Sprintf("unknown annotation `@%s` — it parses but does nothing, so whatever it was "+
+				"meant to express is silently lost", name),
+			fmt.Sprintf("mxcli implements @position(x, y), @start(x, y), @caption, @color, @annotation, "+
+				"@excluded, @anchor, @curve and @merge on a microflow statement. If `@%s` is a typo of "+
+				"one of those, correct it; container size is not authorable (upstream #884).", name))
+	}
 }

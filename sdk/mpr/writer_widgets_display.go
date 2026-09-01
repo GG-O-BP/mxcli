@@ -147,9 +147,13 @@ func serializeListView(lv *pages.ListView) bson.D {
 					templateWidgets = append(templateWidgets, serializeWidget(w))
 				}
 			}
+			// Key order and names match Studio Pro's own documents: $ID, $Type,
+			// Entity, Widgets. "Entity" is the storage name of the SDK's
+			// Specialization property — see pages.ListViewTemplate.
 			template := bson.D{
 				{Key: "$ID", Value: idToBsonBinary(string(t.ID))},
 				{Key: "$Type", Value: "Forms$ListViewTemplate"},
+				{Key: "Entity", Value: t.Specialization},
 				{Key: "Widgets", Value: templateWidgets},
 			}
 			templates = append(templates, template)
@@ -307,7 +311,7 @@ func serializeDynamicText(dt *pages.DynamicText) bson.D {
 	var fallbackText *model.Text
 	if dt.AttributePath != "" && dt.Content == nil {
 		fallbackText = &model.Text{
-			Translations: map[string]string{"en_US": dt.AttributePath},
+			Translations: map[string]string{model.AuthoringLanguage(): dt.AttributePath},
 		}
 	}
 
@@ -395,7 +399,7 @@ func serializeStaticText(t *pages.Text) bson.D {
 			{Key: "Items", Value: bson.A{int32(3), bson.D{
 				{Key: "$ID", Value: idToBsonBinary(generateUUID())},
 				{Key: "$Type", Value: "Texts$Translation"},
-				{Key: "LanguageCode", Value: "en_US"},
+				{Key: "LanguageCode", Value: model.AuthoringLanguage()},
 				{Key: "Text", Value: textValue},
 			}}},
 		}},
@@ -430,7 +434,7 @@ func serializeTitle(t *pages.Title) bson.D {
 			{Key: "Items", Value: bson.A{int32(3), bson.D{
 				{Key: "$ID", Value: idToBsonBinary(generateUUID())},
 				{Key: "$Type", Value: "Texts$Translation"},
-				{Key: "LanguageCode", Value: "en_US"},
+				{Key: "LanguageCode", Value: model.AuthoringLanguage()},
 				{Key: "Text", Value: textValue},
 			}}},
 		}},
@@ -818,7 +822,7 @@ func serializeNavigationListItem(item *pages.NavigationListItem) bson.D {
 						ID:       model.ID(generateUUID()),
 						TypeName: "Texts$Text",
 					},
-					Translations: map[string]string{"en_US": captionText},
+					Translations: map[string]string{model.AuthoringLanguage(): captionText},
 				},
 			},
 			RenderMode: pages.TextRenderModeText,

@@ -83,8 +83,16 @@ func (pb *pageBuilder) buildDataViewV3(w *ast.WidgetV3) (*pages.DataView, error)
 
 		// Save and restore entity context so nested DataViews work correctly
 		oldContext := pb.entityContext
+		oldContextVar := pb.contextVarName
+		oldContextKnown := pb.contextKnown
 		pb.entityContext = entityName
-		defer func() { pb.entityContext = oldContext }()
+		pb.contextVarName = contextVarFor(ds)
+		pb.contextKnown = true
+		defer func() {
+			pb.entityContext = oldContext
+			pb.contextVarName = oldContextVar
+			pb.contextKnown = oldContextKnown
+		}()
 
 		// Register the widget name with its entity so template params like $dvOrder.Attr
 		// can be resolved to Entity.Attr
@@ -248,7 +256,7 @@ func (pb *pageBuilder) buildDataGridColumnV3(w *ast.WidgetV3) (*pages.DataGridCo
 				ID:       model.ID(types.GenerateID()),
 				TypeName: "Texts$Text",
 			},
-			Translations: map[string]string{"en_US": caption},
+			Translations: map[string]string{pb.textLang(): caption},
 		}
 	}
 
@@ -274,17 +282,27 @@ func (pb *pageBuilder) buildListViewV3(w *ast.WidgetV3) (*pages.ListView, error)
 	}
 
 	// Handle DataSource
+	var listEntity string
 	if ds := w.GetDataSource(); ds != nil {
 		dataSource, entityName, err := pb.buildDataSourceV3(ds)
 		if err != nil {
 			return nil, mdlerrors.NewBackend("build datasource", err)
 		}
 		lv.DataSource = dataSource
+		listEntity = entityName
 
 		// Save and restore entity context so nested containers work correctly
 		oldContext := pb.entityContext
+		oldContextVar := pb.contextVarName
+		oldContextKnown := pb.contextKnown
 		pb.entityContext = entityName
-		defer func() { pb.entityContext = oldContext }()
+		pb.contextVarName = contextVarFor(ds)
+		pb.contextKnown = true
+		defer func() {
+			pb.entityContext = oldContext
+			pb.contextVarName = oldContextVar
+			pb.contextKnown = oldContextKnown
+		}()
 
 		// Register widget name with entity for SELECTION datasource lookup
 		if w.Name != "" && entityName != "" {
@@ -297,16 +315,106 @@ func (pb *pageBuilder) buildListViewV3(w *ast.WidgetV3) (*pages.ListView, error)
 		return nil, err
 	}
 
-	// Build template widgets
+	// Split the body: `template for Module.Entity { ... }` blocks become
+	// specialization templates, everything else is the list view's own body (the
+	// default rendering, which Mendix uses for an object no template matches).
+	// The BSON keeps the two in separate arrays and so do we.
+	seen := make(map[string]bool, len(w.Children))
 	for _, child := range w.Children {
+		if child.Specialization == "" {
+			widget, err := pb.buildWidgetV3(child)
+			if err != nil {
+				return nil, err
+			}
+			lv.Widgets = append(lv.Widgets, widget)
+			continue
+		}
+		tpl, err := pb.buildListViewTemplateV3(child, w.Name, listEntity, seen)
+		if err != nil {
+			return nil, err
+		}
+		lv.Templates = append(lv.Templates, tpl)
+	}
+
+	return lv, nil
+}
+
+// buildListViewTemplateV3 builds one `template for Module.Entity { ... }` block.
+//
+// Source order is preserved: Mendix stores templates in an ordered array and the
+// order is authored, not derived — the four templates on ako/TestApp's
+// Vehicle_Overview are Bus, Truck, Car, SUV, which is neither alphabetical nor
+// domain-model order.
+func (pb *pageBuilder) buildListViewTemplateV3(w *ast.WidgetV3, listViewName, listEntity string, seen map[string]bool) (*pages.ListViewTemplate, error) {
+	spec := w.Specialization
+
+	if seen[spec] {
+		return nil, mdlerrors.NewValidation(fmt.Sprintf(
+			"list view %s has more than one template for %s — a list view renders at most "+
+				"one template per specialization", listViewName, spec))
+	}
+	seen[spec] = true
+
+	// The specialization must actually be one: Mendix matches a template against
+	// the object's type, so a template for an unrelated entity can never render.
+	// listEntity is empty when the datasource could not be resolved to an entity,
+	// and an unresolvable datasource is already reported elsewhere — do not
+	// report it a second time as a bogus specialization error.
+	if listEntity != "" && !pb.entityIsOrDescendsFrom(spec, listEntity) {
+		return nil, mdlerrors.NewValidation(fmt.Sprintf(
+			"template for %s in list view %s: %s is not %s or a specialization of it, "+
+				"so the template can never match an object the list view shows",
+			spec, listViewName, spec, listEntity))
+	}
+
+	tpl := &pages.ListViewTemplate{
+		BaseElement: model.BaseElement{
+			ID:       model.ID(types.GenerateID()),
+			TypeName: "Forms$ListViewTemplate",
+		},
+		Specialization: spec,
+	}
+
+	// Inside the template the context object IS the specialization, so an
+	// attribute the specialization adds resolves here even though it does not
+	// exist on the list view's own entity.
+	oldContext := pb.entityContext
+	pb.entityContext = spec
+	defer func() { pb.entityContext = oldContext }()
+
+	for _, child := range w.Children {
+		if child.Specialization != "" {
+			return nil, mdlerrors.NewValidation(fmt.Sprintf(
+				"template for %s in list view %s contains a nested `template for %s` — "+
+					"list view templates cannot nest", spec, listViewName, child.Specialization))
+		}
 		widget, err := pb.buildWidgetV3(child)
 		if err != nil {
 			return nil, err
 		}
-		lv.Widgets = append(lv.Widgets, widget)
+		tpl.Widgets = append(tpl.Widgets, widget)
 	}
+	return tpl, nil
+}
 
-	return lv, nil
+// applyOnChangeV3 resolves a widget's `OnChange:` client action into dst.
+//
+// Every input widget carrying an OnChangeAction must call this. Before ledger
+// #14 only `buildTextBoxV3` read GetOnChange(), so an OnChange authored on a
+// checkbox / radiobuttons / dropdown / textarea / datepicker parsed, checked and
+// executed clean while the property was dropped between the AST and the model —
+// the control rendered correctly and produced no server round-trip at all.
+func (pb *pageBuilder) applyOnChangeV3(w *ast.WidgetV3, dst *pages.ClientAction) error {
+	action := w.GetOnChange()
+	if action == nil {
+		return nil
+	}
+	act, err := pb.buildClientActionV3(action)
+	if err != nil {
+		return err
+	}
+	*dst = act
+	return nil
 }
 
 func (pb *pageBuilder) buildTextBoxV3(w *ast.WidgetV3) (*pages.TextBox, error) {
@@ -337,17 +445,13 @@ func (pb *pageBuilder) buildTextBoxV3(w *ast.WidgetV3) (*pages.TextBox, error) {
 				ID:       model.ID(types.GenerateID()),
 				TypeName: "Texts$Text",
 			},
-			Translations: map[string]string{"en_US": ph},
+			Translations: map[string]string{pb.textLang(): ph},
 		}
 	}
 
 	// Handle OnChange (the "On change" client action)
-	if action := w.GetOnChange(); action != nil {
-		act, err := pb.buildClientActionV3(action)
-		if err != nil {
-			return nil, err
-		}
-		tb.OnChangeAction = act
+	if err := pb.applyOnChangeV3(w, &tb.OnChangeAction); err != nil {
+		return nil, err
 	}
 
 	if err := pb.registerWidgetName(w.Name, tb.ID); err != nil {
@@ -378,6 +482,11 @@ func (pb *pageBuilder) buildTextAreaV3(w *ast.WidgetV3) (*pages.TextArea, error)
 		ta.Label = label
 	}
 
+	// Handle OnChange (the "On change" client action)
+	if err := pb.applyOnChangeV3(w, &ta.OnChangeAction); err != nil {
+		return nil, err
+	}
+
 	if err := pb.registerWidgetName(w.Name, ta.ID); err != nil {
 		return nil, err
 	}
@@ -404,6 +513,11 @@ func (pb *pageBuilder) buildDatePickerV3(w *ast.WidgetV3) (*pages.DatePicker, er
 	// Handle Label
 	if label := w.GetLabel(); label != "" {
 		dp.Label = label
+	}
+
+	// Handle OnChange (the "On change" client action)
+	if err := pb.applyOnChangeV3(w, &dp.OnChangeAction); err != nil {
+		return nil, err
 	}
 
 	if err := pb.registerWidgetName(w.Name, dp.ID); err != nil {
@@ -434,6 +548,11 @@ func (pb *pageBuilder) buildDropdownV3(w *ast.WidgetV3) (*pages.DropDown, error)
 		dd.Label = label
 	}
 
+	// Handle OnChange (the "On change" client action)
+	if err := pb.applyOnChangeV3(w, &dd.OnChangeAction); err != nil {
+		return nil, err
+	}
+
 	if err := pb.registerWidgetName(w.Name, dd.ID); err != nil {
 		return nil, err
 	}
@@ -462,6 +581,11 @@ func (pb *pageBuilder) buildCheckBoxV3(w *ast.WidgetV3) (*pages.CheckBox, error)
 		cb.Label = label
 	}
 
+	// Handle OnChange (the "On change" client action)
+	if err := pb.applyOnChangeV3(w, &cb.OnChangeAction); err != nil {
+		return nil, err
+	}
+
 	if err := pb.registerWidgetName(w.Name, cb.ID); err != nil {
 		return nil, err
 	}
@@ -485,6 +609,11 @@ func (pb *pageBuilder) buildRadioButtonsV3(w *ast.WidgetV3) (*pages.RadioButtons
 	// Get attribute path from Attribute property
 	if attr := w.GetAttribute(); attr != "" {
 		rb.AttributePath = pb.resolveAttributePath(attr)
+	}
+
+	// Handle OnChange (the "On change" client action)
+	if err := pb.applyOnChangeV3(w, &rb.OnChangeAction); err != nil {
+		return nil, err
 	}
 
 	if err := pb.registerWidgetName(w.Name, rb.ID); err != nil {
@@ -513,7 +642,7 @@ func (pb *pageBuilder) buildTextWidgetV3(w *ast.WidgetV3) (*pages.Text, error) {
 				ID:       model.ID(types.GenerateID()),
 				TypeName: "Texts$Text",
 			},
-			Translations: map[string]string{"en_US": content},
+			Translations: map[string]string{pb.textLang(): content},
 		}
 	}
 
@@ -623,7 +752,7 @@ func (pb *pageBuilder) buildDynamicTextV3(w *ast.WidgetV3) (*pages.DynamicText, 
 				ID:       model.ID(types.GenerateID()),
 				TypeName: "Texts$Text",
 			},
-			Translations: map[string]string{"en_US": content},
+			Translations: map[string]string{pb.textLang(): content},
 		},
 	}
 
@@ -726,7 +855,7 @@ func (pb *pageBuilder) buildTitleV3(w *ast.WidgetV3) (*pages.Title, error) {
 				ID:       model.ID(types.GenerateID()),
 				TypeName: "Texts$Text",
 			},
-			Translations: map[string]string{"en_US": content},
+			Translations: map[string]string{pb.textLang(): content},
 		}
 	}
 
@@ -767,7 +896,7 @@ func (pb *pageBuilder) buildButtonV3(w *ast.WidgetV3) (*pages.ActionButton, erro
 					ID:       model.ID(types.GenerateID()),
 					TypeName: "Texts$Text",
 				},
-				Translations: map[string]string{"en_US": caption},
+				Translations: map[string]string{pb.textLang(): caption},
 			},
 		}
 
@@ -897,7 +1026,7 @@ func (pb *pageBuilder) buildNavigationListItemV3(w *ast.WidgetV3) (*pages.Naviga
 				ID:       model.ID(types.GenerateID()),
 				TypeName: "Texts$Text",
 			},
-			Translations: map[string]string{"en_US": caption},
+			Translations: map[string]string{pb.textLang(): caption},
 		}
 	}
 

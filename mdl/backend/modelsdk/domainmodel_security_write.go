@@ -37,36 +37,75 @@ func (b *Backend) AddEntityAccessRule(p backend.EntityAccessRuleParams) error {
 		return fmt.Errorf("AddEntityAccessRule: entity not found: %s", p.EntityName)
 	}
 
-	// Upsert: reuse an existing rule whose module-role set matches (keeps its ID
-	// stable so references stay valid), else add a fresh rule.
+	// Upsert: reuse the rule with the same module-role set AND the same XPath
+	// constraint (keeps its ID stable so references stay valid), else add a fresh
+	// rule.
+	//
+	// The constraint is part of the key because Mendix treats several rules
+	// naming one module role as legitimate and combines their rights ("Rules are
+	// additive", refguide/access-rules) — that is how row-level security is
+	// normally written. Matching on the role set alone collapsed two such rules
+	// into one and destroyed the first, silently (mendixlabs/mxcli#936). An empty
+	// constraint is a value in the key, not a wildcard: an unconstrained rule and
+	// a constrained one for the same role are distinct rules.
 	var rule *genDm.AccessRule
 	for _, el := range ent.AccessRulesItems() {
-		if r, ok := el.(*genDm.AccessRule); ok && sameStringSet(r.ModuleRolesQualifiedNames(), p.RoleNames) {
+		r, ok := el.(*genDm.AccessRule)
+		if ok && sameStringSet(r.ModuleRolesQualifiedNames(), p.RoleNames) &&
+			r.XPathConstraint() == p.XPathConstraint {
 			rule = r
 			break
 		}
 	}
-	if rule == nil {
-		rule = genDm.NewAccessRule()
-		assignID(rule)
-		ent.AddAccessRules(rule)
-	} else {
+
+	// Everything the matched rule already grants, so the write below widens it
+	// rather than replacing it. GRANT is additive by contract; narrowing is what
+	// REVOKE is for. Rebuilding from the statement alone was #936: the executor
+	// emits an entry for every member of the entity, unnamed ones at the rule's
+	// default, so each GRANT used to reset every member it did not mention.
+	prior := map[string]string{}
+	var priorCreate, priorDelete bool
+	priorDefault := ""
+	if rule != nil {
+		for _, mel := range rule.MemberAccessesItems() {
+			ma, ok := mel.(*genDm.MemberAccess)
+			if !ok {
+				continue
+			}
+			ref := ma.AttributeQualifiedName()
+			if ref == "" {
+				ref = ma.AssociationQualifiedName()
+			}
+			if ref != "" {
+				prior[ref] = ma.AccessRights()
+			}
+		}
+		priorCreate, priorDelete = rule.AllowCreate(), rule.AllowDelete()
+		priorDefault = rule.DefaultMemberAccessRights()
 		for i := len(rule.MemberAccessesItems()) - 1; i >= 0; i-- {
 			rule.RemoveMemberAccesses(i)
 		}
+	} else {
+		rule = genDm.NewAccessRule()
+		assignID(rule)
+		ent.AddAccessRules(rule)
 	}
 
 	rule.SetModuleRolesQualifiedNames(p.RoleNames)
-	rule.SetAllowCreate(p.AllowCreate)
-	rule.SetAllowDelete(p.AllowDelete)
-	if p.DefaultMemberAccess != "" {
-		rule.SetDefaultMemberAccessRights(p.DefaultMemberAccess)
+	rule.SetAllowCreate(p.AllowCreate || priorCreate)
+	rule.SetAllowDelete(p.AllowDelete || priorDelete)
+	if def := types.HigherAccessRights(p.DefaultMemberAccess, priorDefault); def != "" {
+		rule.SetDefaultMemberAccessRights(def)
 	}
 	rule.SetXPathConstraint(p.XPathConstraint)
 	for _, ma := range p.MemberAccesses {
 		m := genDm.NewMemberAccess()
 		assignID(m)
-		m.SetAccessRights(ma.AccessRights)
+		ref := ma.AttributeRef
+		if ref == "" {
+			ref = ma.AssociationRef
+		}
+		m.SetAccessRights(types.HigherAccessRights(ma.AccessRights, prior[ref]))
 		if ma.AttributeRef != "" {
 			m.SetAttributeQualifiedName(ma.AttributeRef)
 		}
@@ -313,6 +352,8 @@ func (b *Backend) ReconcileMemberAccesses(unitID model.ID, moduleName string) (i
 		return 0, err
 	}
 
+	byName := entitiesByName(dm)
+
 	modified := 0
 	for _, el := range dm.EntitiesItems() {
 		ent, ok := el.(*genDm.Entity)
@@ -323,6 +364,16 @@ func (b *Backend) ReconcileMemberAccesses(unitID model.ID, moduleName string) (i
 		entityName := ent.Name()
 		if entityName == "" {
 			continue
+		}
+
+		// A specialization has every member of its generalization, associations
+		// included, so its access rule needs an entry for each of them. Only the
+		// part of the chain that lives in THIS module can be walked; an ancestor
+		// in another module is handled by preserving its references below rather
+		// than by resolving them.
+		ownerIDs := map[string]bool{entityID: true}
+		for _, anc := range sameModuleAncestors(ent, byName, moduleName) {
+			ownerIDs[string(anc.ID())] = true
 		}
 
 		// Attributes (in order) with calculated flags.
@@ -372,13 +423,13 @@ func (b *Backend) ReconcileMemberAccesses(unitID model.ID, moduleName string) (i
 			// Mendix reports as CE0066 "Entity access is out of date"
 			// (issuetracker #20). Verified on mxbuild 11.12.1: the same model with
 			// `OWNER Default` checks clean, so the owner mode is the trigger.
-			if string(a.ParentRefID()) == entityID ||
-				(a.Owner() == "Both" && string(a.ChildRefID()) == entityID) {
+			if ownerIDs[string(a.ParentRefID())] ||
+				(a.Owner() == "Both" && ownerIDs[string(a.ChildRefID())]) {
 				addAssoc(a.Name())
 			}
 		}
 		for _, ce := range dm.CrossAssociationsItems() {
-			if ca, ok := ce.(*genDm.CrossAssociation); ok && string(ca.ParentRefID()) == entityID {
+			if ca, ok := ce.(*genDm.CrossAssociation); ok && ownerIDs[string(ca.ParentRefID())] {
 				addAssoc(ca.Name())
 			}
 		}
@@ -464,7 +515,18 @@ func (b *Backend) ReconcileMemberAccesses(unitID model.ID, moduleName string) (i
 						covSys[assocRef] = true
 					case assocSet[assocRef]:
 						covAssoc[assocRef] = true
+					case !assocRefBelongsTo(assocRef, moduleName):
+						// An association is qualified by the module that DECLARES it, so
+						// one inherited from a generalization in another module names
+						// that module. Its domain model is not loaded here, so the
+						// reference cannot be validated at all — preserve it, as the
+						// attribute branch above does, rather than delete what cannot be
+						// checked. Without this, every rule on a specialization of a
+						// marketplace entity lost its inherited associations.
+						covAssoc[assocRef] = true
 					default:
+						// Genuinely stale: an association of this module that no longer
+						// has this entity (or an ancestor of it) on its FROM side.
 						rule.RemoveMemberAccesses(i)
 						changed = true
 					}
@@ -522,6 +584,59 @@ func newMemberAccess(rights, qualifiedName string, isAttr bool) *genDm.MemberAcc
 	}
 	assignID(ma)
 	return ma
+}
+
+// entitiesByName indexes a domain model's entities by name, for resolving a
+// generalization's qualified name within the same module.
+func entitiesByName(dm *genDm.DomainModel) map[string]*genDm.Entity {
+	out := map[string]*genDm.Entity{}
+	for _, el := range dm.EntitiesItems() {
+		if e, ok := el.(*genDm.Entity); ok && e.Name() != "" {
+			out[e.Name()] = e
+		}
+	}
+	return out
+}
+
+// sameModuleAncestors walks an entity's generalization chain and returns the
+// ancestors that live in this module, nearest first.
+//
+// The walk stops at the first ancestor it cannot resolve — one in another module
+// (or in System). That is not a failure: an association declared by such an
+// ancestor is qualified with the ancestor's module, so it is recognised by
+// assocRefBelongsTo rather than by being found here.
+func sameModuleAncestors(ent *genDm.Entity, byName map[string]*genDm.Entity, moduleName string) []*genDm.Entity {
+	var out []*genDm.Entity
+	seen := map[string]bool{string(ent.ID()): true}
+	for cur := ent; ; {
+		gen, ok := cur.Generalization().(*genDm.Generalization)
+		if !ok {
+			return out
+		}
+		qn := gen.GeneralizationQualifiedName()
+		idx := strings.LastIndex(qn, ".")
+		if idx < 0 || !strings.EqualFold(qn[:idx], moduleName) {
+			return out
+		}
+		anc, found := byName[qn[idx+1:]]
+		if !found || seen[string(anc.ID())] {
+			return out // unresolvable, or a cycle a corrupt model could contain
+		}
+		seen[string(anc.ID())] = true
+		out = append(out, anc)
+		cur = anc
+	}
+}
+
+// assocRefBelongsTo reports whether a MemberAccess association reference
+// ("Module.Association") is declared in the given module, and so can be checked
+// against the domain model at hand.
+func assocRefBelongsTo(assocRef, moduleName string) bool {
+	idx := strings.LastIndex(assocRef, ".")
+	if idx < 0 {
+		return false
+	}
+	return strings.EqualFold(assocRef[:idx], moduleName)
 }
 
 // attrRefBelongsTo reports whether a MemberAccess attribute reference

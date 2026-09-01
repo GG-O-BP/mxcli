@@ -32,6 +32,36 @@ Counter-examples from the same week, where this skill would have been waste:
 `#808` (MPRv2 → v1 conversion — visible on disk, integration test), `#779` (Commit
 flag — visible in BSON round-trip, unit test), mandatory semicolons (parser).
 
+## Getting a database in a container that has none
+
+`run --local` needs PostgreSQL and refuses to boot without one. Two traps in a
+dev container, both of which look like "the runtime cannot be verified here":
+
+- **`--ensure-db` fails when no server binary is installed** — the image may
+  carry only `postgresql-client`, so `initdb` is absent. The error names
+  `initdb`, not the missing package.
+- **A forwarded port answers a TCP connect and nothing else.** VS Code forwards
+  5432 by default, so `</dev/tcp/host/5432` *succeeds* while `psql` hangs
+  forever. Never take a bare port probe as proof a database is there; run an
+  actual query.
+
+Docker works if the daemon is up, but the credential helper is often configured
+for the HOST (`/opt/homebrew/bin/docker-credential-*`), so any pull dies with
+`error getting credentials - err: exit status 255`. Point `DOCKER_CONFIG` at an
+empty directory for the command instead of editing the user's config:
+
+```bash
+mkdir -p /tmp/dockercfg && echo '{}' > /tmp/dockercfg/config.json
+DOCKER_CONFIG=/tmp/dockercfg docker pull postgres:16-alpine
+docker run -d --name mxcli-pg -e POSTGRES_USER=mendix -e POSTGRES_PASSWORD=mendix \
+  -e POSTGRES_DB=<projectname-lowercased> -p 15432:5432 postgres:16-alpine
+```
+
+Then boot with `--db-host 127.0.0.1:15432`. Note `mxcli test` has **no**
+`--db-host`: to use a non-default database, boot the app yourself with
+`mxcli run --local --test-endpoint --db-host …` and run `mxcli test … --attach`
+against it.
+
 ## The Procedure
 
 ### 1. Cache MxBuild for the version you want
@@ -49,10 +79,18 @@ whatever happens to be cached.
 mxcli new PopupDemo --version 11.12.2 --output-dir /root/pd
 ```
 
-> **Trap: `PathTooLongException`.** Mendix's package extractor fails on deep paths.
-> A scratchpad path like
-> `/tmp/claude-.../<uuid>/scratchpad/proj` is already too long and
-> `mx create-project` dies. Use a short root (`/root/pd`). The same applies to Go
+> **Trap: `PathTooLongException`.** MxToolset refuses any full path over **259
+> characters** — its own Windows-compatibility limit, not the filesystem's — and
+> aborts extraction part way through, leaving ~259 files and no `.mpr`. With the
+> blank 11.13 template's longest relative path at 181 characters, the output
+> directory gets **77**. A scratchpad path like
+> `/tmp/claude-.../<uuid>/scratchpad/proj` blows that on its own.
+>
+> `mxcli new` handles this since #825 — it creates the project in a short staging
+> directory and moves it into place, so any depth works and a failure never leaves
+> partial output. It warns when the final path exceeds 259 that Studio Pro on
+> Windows may not open the project. **Calling `mx create-project` directly still
+> dies**, so keep using a short root (`/root/pd`) for that. The same applies to Go
 > tests: set `TMPDIR=/root/t` so `t.TempDir()` stays short, or the scaffolding fails
 > and the test **skips** — which is indistinguishable from passing.
 

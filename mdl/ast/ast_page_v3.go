@@ -74,6 +74,22 @@ type CreateSnippetStmtV3 struct {
 
 func (s *CreateSnippetStmtV3) isStatement() {}
 
+// CreateLayoutStmt is `create layout Module.Name ( … ) { … }`.
+//
+// A layout is a page's frame. Properties carry LayoutType — which Mendix stores
+// on the content wrapper rather than on the layout element — and which
+// placeholder a page's content goes into.
+type CreateLayoutStmt struct {
+	Name          QualifiedName
+	Properties    map[string]any
+	Widgets       []*WidgetV3
+	Documentation string
+	IsReplace     bool
+	IsModify      bool
+}
+
+func (s *CreateLayoutStmt) isStatement() {}
+
 // WidgetV3 represents a V3 widget with explicit properties.
 // Pattern: WIDGET name (Props) { children }
 type WidgetV3 struct {
@@ -81,6 +97,13 @@ type WidgetV3 struct {
 	Name       string         // Required widget name
 	Properties map[string]any // All properties as key-value pairs
 	Children   []*WidgetV3    // Child widgets
+
+	// Specialization is the entity a List View template renders, set only for
+	// `template for Module.Entity { ... }`. It is a separate field rather than a
+	// Property because it identifies the template — a Forms$ListViewTemplate has
+	// no name, and carries nothing but this entity and its widgets. Empty for
+	// every other widget, including a Gallery's named `template <name>` slot.
+	Specialization string
 }
 
 // DataSourceV3 represents a V3 datasource expression.
@@ -194,17 +217,35 @@ func (w *WidgetV3) GetStringProp(key string) string {
 	return ""
 }
 
-// GetIntProp returns an int property or 0 if not found.
+// GetIntProp returns an int property or 0 if not found. Case-insensitive on the
+// same grounds as GetStringProp: the property is stored under whatever casing
+// the script used, so an exact-match-only lookup silently reads 0 for `size:`
+// when the caller asks for "Size".
 func (w *WidgetV3) GetIntProp(key string) int {
-	switch v := w.Properties[key].(type) {
-	case int:
-		return v
-	case int64:
-		return int(v)
-	case float64:
-		return int(v)
+	if n, ok := toInt(w.Properties[key]); ok {
+		return n
+	}
+	lower := strings.ToLower(key)
+	for k, v := range w.Properties {
+		if strings.ToLower(k) == lower {
+			if n, ok := toInt(v); ok {
+				return n
+			}
+		}
 	}
 	return 0
+}
+
+func toInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	case float64:
+		return int(n), true
+	}
+	return 0, false
 }
 
 // GetBoolProp returns a bool property or false if not found.

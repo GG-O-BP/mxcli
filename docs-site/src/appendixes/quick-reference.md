@@ -44,7 +44,7 @@ Modifies an existing entity without full replacement.
 | Add attribute | `ALTER ENTITY Module.Name ADD ATTRIBUTE Attr: Type [constraints];` | One action per statement |
 | Drop attribute | `ALTER ENTITY Module.Name DROP ATTRIBUTE AttrName;` | |
 | Modify attribute | `ALTER ENTITY Module.Name MODIFY ATTRIBUTE Attr: NewType [constraints];` | Change type/constraints |
-| Rename attribute | `ALTER ENTITY Module.Name RENAME ATTRIBUTE OldName TO NewName;` | |
+| Rename attribute | `ALTER ENTITY Module.Name RENAME ATTRIBUTE OldName TO NewName;` | Also rewrites stored references and XPath constraints; microflow expressions are not rewritten |
 | Add index | `ALTER ENTITY Module.Name ADD INDEX [IdxName] (Col1 [ASC\|DESC], ...);` | Name optional |
 | Drop index | `ALTER ENTITY Module.Name DROP INDEX IdxName;` | By index name |
 | Set documentation | `ALTER ENTITY Module.Name SET DOCUMENTATION 'text';` | |
@@ -147,10 +147,10 @@ AUTHENTICATION Basic, Session
 | Entity declaration | `DECLARE $Entity Module.Entity;` | No AS keyword, no = empty |
 | List declaration | `DECLARE $List List of Module.Entity = empty;` | |
 | Assignment | `SET $Var = expression;` | Variable must be declared first |
-| Create object | `$Var = CREATE Module.Entity (Attr = value);` | |
-| Change object | `CHANGE $Entity (Attr = value);` | |
-| Commit | `COMMIT $Entity [WITH EVENTS] [REFRESH];` | |
-| Delete | `DELETE $Entity;` | |
+| Create object | `$Var = CREATE Module.Entity (Attr = value) [COMMIT [WITHOUT EVENTS]] [REFRESH];` | |
+| Change object | `CHANGE $Entity (Attr = value) [COMMIT [WITHOUT EVENTS]] [REFRESH];` | |
+| Commit | `COMMIT $Entity [WITHOUT EVENTS] [REFRESH];` | Omitted = with events, matching Studio Pro |
+| Delete | `DELETE $Entity [REFRESH];` | |
 | Rollback | `ROLLBACK $Entity [REFRESH];` | Reverts uncommitted changes |
 | Retrieve (DB) | `RETRIEVE $Var FROM Module.Entity [WHERE condition];` | Database XPath retrieve |
 | Retrieve (Assoc) | `RETRIEVE $List FROM $Parent/Module.AssocName;` | Retrieve by association |
@@ -161,6 +161,7 @@ AUTHENTICATION Basic, Session
 | Validation | `VALIDATION FEEDBACK $Entity/Attribute MESSAGE 'message';` | Requires attribute path + MESSAGE |
 | Log | `LOG INFO\|WARNING\|ERROR [NODE 'name'] 'message';` | |
 | Position | `@position(x, y)` | Canvas position (before activity) |
+| Start event | `@start(x, y)` | Canvas position of the start, on the **first** statement. Omit it and the start is placed one spacing unit left of the first activity and MOVES with it on a rewrite; a start that is not at that derived spot is treated as hand-placed, survives a rewrite, and is emitted by DESCRIBE (#951) |
 | Caption | `@caption 'text'` | Custom caption (before activity) |
 | Color | `@color Green` | Background color (before activity) |
 | Annotation | `@annotation 'text'` | Visual note attached to next activity |
@@ -175,7 +176,7 @@ AUTHENTICATION Basic, Session
 
 | Unsupported | Use Instead | Notes |
 |-------------|-------------|-------|
-| `CASE ... WHEN ... END CASE` | Nested `IF ... ELSE ... END IF` | Switch not implemented |
+| `CASE ... WHEN 'String' ... ELSE ...` | Bare enum values, one branch per value | `CASE` itself IS supported for **enum splits**; what fails is quoted/qualified values, an `ELSE` branch (MDL008), and an `AS` alias |
 | `TRY ... CATCH ... END TRY` | `ON ERROR { ... }` blocks | Use error handlers on specific activities |
 
 **Notes:**
@@ -188,7 +189,10 @@ AUTHENTICATION Basic, Session
 |-----------|--------|-------|
 | Microflow folder | `FOLDER 'path'` (before BEGIN) | `CREATE MICROFLOW ... FOLDER 'ACT' BEGIN ... END;` |
 | Page folder | `Folder: 'path'` (in properties) | `CREATE PAGE ... (Folder: 'Pages/Detail') { ... }` |
-| Move to folder | `MOVE PAGE\|MICROFLOW\|SNIPPET\|NANOFLOW\|ENUMERATION Module.Name TO FOLDER 'path';` | Folders created automatically |
+| Move to folder | `MOVE <doctype> Module.Name TO FOLDER 'path';` | Folders created automatically. Any top-level doctype, spelled as `DESCRIBE` spells it |
+| Move a mapping / structure | `MOVE IMPORT MAPPING\|EXPORT MAPPING\|JSON STRUCTURE Module.Name TO FOLDER 'path';` | |
+| Place while creating | `CREATE <doctype> Module.Name FOLDER 'path' ...` | Every doctype. Pages/snippets use `Folder: 'path'` as a property; microflows/nanoflows a keyword before `BEGIN` |
+| Place an existing document | `CREATE OR MODIFY ... FOLDER 'path' ...` | Moves it; omitting the clause leaves placement alone |
 | Move to module root | `MOVE PAGE Module.Name TO Module;` | Removes from folder |
 | Move across modules | `MOVE PAGE Old.Name TO NewModule;` | **Breaks by-name references** -- use `LIST IMPACT OF` first |
 | Move to folder in other module | `MOVE PAGE Old.Name TO FOLDER 'path' IN NewModule;` | |
@@ -204,7 +208,7 @@ Nested folders use `/` separator: `'Parent/Child/Grandchild'`. Missing folders a
 | List module roles | `LIST MODULE ROLES [IN Module];` | All roles or filtered by module |
 | List user roles | `LIST USER ROLES;` | Project-level user roles |
 | List demo users | `LIST DEMO USERS;` | Configured demo users |
-| List access on element | `LIST ACCESS ON MICROFLOW\|PAGE\|Entity Mod.Name;` | Which roles can access |
+| List access on element | `LIST ACCESS ON [ENTITY\|MICROFLOW\|PAGE\|NANOFLOW] Mod.Name;` | Which roles can access; a bare name means the entity |
 | List security matrix | `LIST SECURITY MATRIX [IN Module];` | Full access overview |
 | Create module role | `CREATE MODULE ROLE Mod.Role [DESCRIPTION 'text'];` | |
 | Drop module role | `DROP MODULE ROLE Mod.Role;` | |
@@ -219,6 +223,7 @@ Nested folders use `/` separator: `'Parent/Child/Grandchild'`. Missing folders a
 | Revoke entity access | `REVOKE Mod.Role ON Mod.Entity;` | |
 | Set security level | `ALTER PROJECT SECURITY LEVEL OFF\|PROTOTYPE\|PRODUCTION;` | |
 | Toggle demo users | `ALTER PROJECT SECURITY DEMO USERS ON\|OFF;` | |
+| Toggle guest access | `ALTER PROJECT SECURITY GUEST ACCESS ON ROLE UserRole\|OFF;` | Anonymous users; role required (CE0133) |
 | Create demo user | `CREATE DEMO USER 'name' PASSWORD 'pass' [ENTITY Module.Entity] (UserRole, ...);` | |
 | Drop demo user | `DROP DEMO USER 'name';` | |
 

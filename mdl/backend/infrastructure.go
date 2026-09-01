@@ -27,6 +27,15 @@ type RawUnitBackend interface {
 	// UpdateRawUnit replaces the contents of a unit by ID.
 	// Takes string (not model.ID) to match the SDK writer layer convention.
 	UpdateRawUnit(unitID string, contents []byte) error
+	// UpdateRawUnitOwningTranslations is UpdateRawUnit for a write that started
+	// from the stored bytes and is authoritative about the translations in them.
+	//
+	// The ordinary path carries the stored translations onto a write, because a
+	// rebuild from MDL can express only one string per text and would otherwise
+	// delete the rest. A targeted patch is the opposite case: a translation
+	// missing from its output is missing on purpose, and carrying it back would
+	// undo a deliberate deletion.
+	UpdateRawUnitOwningTranslations(unitID string, contents []byte) error
 }
 
 // MetadataBackend provides project-level metadata and introspection.
@@ -84,8 +93,27 @@ type ImageBackend interface {
 	ListIconCollections() ([]*types.IconCollection, error)
 }
 
+// QueueBackend provides task queue (Queues$Queue) operations.
+type QueueBackend interface {
+	ListQueues() ([]*types.Queue, error)
+	CreateQueue(q *types.Queue) error
+	UpdateQueue(q *types.Queue) error
+	DeleteQueue(id string) error
+}
+
+// RegularExpressionBackend provides regular expression document operations.
+type RegularExpressionBackend interface {
+	ListRegularExpressions() ([]*model.RegularExpression, error)
+	CreateRegularExpression(re *model.RegularExpression) error
+	UpdateRegularExpression(re *model.RegularExpression) error
+	DeleteRegularExpression(id string) error
+}
+
 // ScheduledEventBackend provides scheduled event operations.
 type ScheduledEventBackend interface {
 	ListScheduledEvents() ([]*model.ScheduledEvent, error)
 	GetScheduledEvent(id model.ID) (*model.ScheduledEvent, error)
+	CreateScheduledEvent(ev *model.ScheduledEvent) error
+	UpdateScheduledEvent(ev *model.ScheduledEvent) error
+	DeleteScheduledEvent(id string) error
 }

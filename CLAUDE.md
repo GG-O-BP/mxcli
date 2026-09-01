@@ -184,6 +184,58 @@ For pluggable widgets (DataGrid2, ComboBox, Gallery, etc.), templates must inclu
 
 **CE0463 "widget definition changed" error**: This error occurs when the Object's property structure doesn't match the Type's PropertyTypes. Always extract templates from Studio Pro-created widgets, not programmatically generated ones. See `sdk/widgets/templates/README.md` for details. For debugging CE0463 and other BSON issues, follow the workflow in `.claude/skills/debug-bson.md`.
 
+### `modelsdk/gen` Binds Some Properties Under the Wrong BSON Key
+
+The storage-name table above is about `$Type`. The **same split exists per
+property**, and `modelsdk/gen` gets it wrong in **102 properties across 65
+types** — the ledger is `modelsdk/gen/keyaudit_test.go`. Mendix's reflection
+data carries two names per property — an SDK `Name` and a BSON `StorageName` —
+and the in-repo generator (`cmd/codegen` → `generated/metamodel`) keeps them
+apart, tag from storage name:
+
+```go
+// generated/metamodel/types.go — correct
+RegularExpression model.QualifiedName `json:"regExIdentifier,omitempty"`
+//   ^ SDK name                                ^ storage name
+```
+
+The generator behind `modelsdk/gen` reads a **different input** — the TypeScript
+SDK's compiled JS, which does not contain storage names at all (measured:
+`regExIdentifier` occurs 0 times in `mendixmodelsdk` 4.114.0) — and patches them
+back via a hand-maintained `PropertyKeyOverrides` table.
+
+**`generated/metamodel` is therefore the arbiter when the two disagree**, with
+one caveat: it is a **snapshot of 11.6.0** (see its header), so it is sound for
+the properties it contains but says nothing about ones introduced later — for
+those, get a real document. It has been right in every case checked that way
+(`RegularExpression.Expression`, `RegExRuleInfo.RegExIdentifier`, `Attribute.GUID`).
+`TestGenPropertyKeysAgainstMetamodel` fails when a NEW mismatch appears (a
+re-vendored gen that dropped an override) or when a listed one is fixed without
+being struck off. Why the generator is not simply brought in-tree, and what it
+would take: [PROPOSAL_codegen_ownership.md](docs/11-proposals/PROPOSAL_codegen_ownership.md).
+
+`cmd/modelsdk-codegen` and `internal/codegen/supplements.json` — named in every
+gen file's `DO NOT EDIT` header — have **never existed in this repo**
+(`git log --all` is empty for both), and `/reference/` is gitignored, so the
+generator's input is absent too. gen is vendored output that cannot be
+regenerated here; see `docs/plans/2026-06-05-adopt-modelsdk-engine.md` §4, where
+"vendor engalar codegen" is still an open Phase-0 item.
+
+So the fix for a wrong key is a **hand-applied override in the `init<Type>`
+function**, commented in the house style (grep `STORAGE-NAME OVERRIDE` for the
+four precedents). Two rules:
+
+1. **Patch both sides.** The encode key (`init<Type>`) and the decode key
+   (`InitFromRaw`) are separate literals. Patching one gives a document that
+   writes one key and reads another — which the entity-rewrite guard then
+   refuses, so the symptom is a puzzling refusal rather than a wrong file.
+2. **`gofmt` the file**, or `TestGeneratedCodeIsFormatted` fails.
+
+Not every wrong key is worth patching — leave the ones nothing writes, and note
+why. `mx check` is a weak signal here either way: it caught the RegEx one
+(CE0135) but tolerates unknown properties in general, and Studio Pro is stricter
+than mxbuild.
+
 ### TypeEnumeration vs TypeEntity Ambiguity
 
 The MDL visitor (`buildDataType` in `visitor_helpers.go`) cannot distinguish between entity types and enumeration types for bare qualified names like `Module.EntityName`. Both parse as `ast.TypeEnumeration` with `EnumRef` set. Code that consumes data types must handle `TypeEnumeration` alongside `TypeEntity` and use `EnumRef` as a fallback for the entity name.
@@ -244,6 +296,33 @@ without guessing, run the new mxbuild's own migration over an old project
 (`mx convert -p -s <project>`) and diff the BSON: Mendix ships a one-time
 conversion per renamed property, so the converted document is authoritative.
 
+### A `GUID` Is the Database's Identity — Never Mint One for an Existing Element
+
+An element's `GUID` is not decorative and is not interchangeable with its `$ID`.
+The **runtime keys the database on it**: `mendixsystem$entity.id` and
+`mendixsystem$attribute.id` hold the model's `GUID` verbatim (byte-identical once
+the .NET field order is undone). Measured on Mendix 11.12.1 against a live
+PostgreSQL: changing **only** an entity's `GUID` — same name, same table name,
+same attributes — makes the runtime treat it as a different entity and **destroys
+its rows**. An unchanged reboot is the control, and preserves them. See
+[PROPOSAL_marketplace_module_upgrade.md §8](docs/11-proposals/PROPOSAL_marketplace_module_upgrade.md).
+
+Consequences for any write path:
+
+1. **Preserve the stored `GUID` when rewriting an existing element.** A codec that
+   mints a fresh one on rebuild silently drops a table's worth of production data
+   on the next deploy — a failure that no `mx check` and no build will catch,
+   because the model is perfectly valid. This is the same class as the identity
+   properties in `canon.identityFields` and belongs in that decision.
+2. **`$ID` renumbering is irrelevant to data safety** — the inverse of the natural
+   assumption. Studio Pro renumbers every `$ID` in a module on update (94 of 94)
+   and preserves every `GUID` (9 of 9), which is exactly why its update does not
+   lose data. `$ID` matters for *intra-unit pointer consistency* (see below);
+   `GUID` matters for the database.
+3. **A new element must get a fresh `GUID`**, and an element copied from another
+   model must not keep the source's — two elements sharing a `GUID` are one entity
+   as far as the runtime is concerned.
+
 ### Writes Are Conditional, and an `$ID` Is Never Renumbered In Place
 
 Storage does not write a unit whose new content is **semantically equal** to what
@@ -255,6 +334,16 @@ so comparing bytes would skip nothing. The policy lives in `modelsdk/canon`
 `modelsdk/mpr/writer_core.go` (`updateUnit` *and* `WriteTransaction.WriteUnit` —
 `codec.Store` reaches storage through the latter) and `sdk/mpr/writer_units.go`.
 
+When something *has* changed, `Reconcile` still does not let the rebuild's fresh
+`$ID`s reach disk: `canon.TransplantIDs` matches the incoming document against the
+stored one element by element (by `$Type` and shape, by `Name` where there is one,
+LCS-anchored within each list) and puts the **stored** `$ID` back on every element
+that still corresponds. Without it a one-argument edit re-minted 36 of a nanoflow's
+37 element identities and Studio Pro painted the whole document as changed (#910).
+Its correctness bar is lower than it looks and worth knowing: a *wrong* match only
+makes a diff bigger, because every reference is rewritten with the element — the
+one real failure is two elements sharing an `$ID`, which `dropCollisions` guards.
+
 Three rules follow, and each has already been violated once:
 
 1. **Never rewrite an element `$ID` without rewriting every reference to it in the
@@ -262,7 +351,10 @@ Three rules follow, and each has already been violated once:
    `ChildProperty`, so a containment walk traverses the whole document and never
    sees one. PR #125 renumbered IDs this way and made projects unopenable
    (`KeyNotFoundException` at `ResolvePostponedProperties`). A unit is rewritten
-   wholesale or not at all.
+   wholesale or not at all. The transplant obeys this by substituting over *every*
+   16-byte binary in the document rather than a maintained list of pointer
+   properties — any occurrence of one of the document's element IDs is a reference
+   by definition, the same insight the canonical form rests on.
 2. **Adding a write path means wiring it to `canon.Reconcile`.** A new choke point
    that writes directly will silently churn while everything else is quiet — the
    worst kind of inconsistency, because the diff blames the wrong change.
@@ -281,8 +373,52 @@ qualified name breaks that assumption and invalidates the argument in ADR-0008.
 
 `MXCLI_ALWAYS_WRITE=1` forces every write to land, for bisecting. It does not
 disable identity preservation. **Any test asserting "nothing changed" must include
-the control run with it set** — otherwise the test passes against a build that
-never had the fix, which is exactly how PR #125 shipped green.
+a control** — otherwise the test passes against a build that never had the fix,
+which is exactly how PR #125 shipped green. Note what the control can now be:
+since identities are carried, a forced write of an in-sync unit produces the
+**same bytes**, so "flip `MXCLI_ALWAYS_WRITE` and watch the content change" no
+longer distinguishes anything (measured: same sha, mtime moves). Control on the
+**rebuild** instead — encode the document twice and show the raw codec output
+differs (`TestRebuildChurnsSubElementIDs`) — or, from the shell, on **mtimes**
+rather than hashes.
+
+The executor reports which of the two happened: a statement whose unit writes were
+all elided prints `Unchanged nanoflow: …` instead of `Replaced nanoflow: …`
+(`ExecContext.ReportMutation`, fed by each writer's `WriteStats`). The verb is only
+downgraded on positive evidence — writes offered, none landed — so a mutation that
+never touches unit storage is reported exactly as before.
+
+### The Tunnel Is Linux-Only, On Purpose — Do Not "Restore" It
+
+`mxcli run --hub` and `mxcli tunnel-hub` embed [chisel](https://github.com/jpillora/chisel),
+a dual-use tunnelling tool that appears in threat intelligence as a pivoting
+component. Shipping it in the Windows and macOS binaries — where the tunnel can
+never run — got them flagged by Defender (`Trojan:Script/Sabsik.EN.A!ml`) and
+denied by enterprise EDR, which blocks mxcli for corporate Mendix developers on
+managed endpoints. It is now built **for Linux only**. See
+[ADR-0009](docs/13-decisions/0009-tunnel-is-linux-only.md).
+
+This looks like a portability gap and is not one. Making the tunnel cross-platform
+again re-introduces the detection for the large majority of downloads.
+
+- **All chisel imports live behind two seams**, one interface each:
+  `tunnelConn` / `startTunnel` (`cmd/mxcli/docker/tunnel_linux.go` + `tunnel_other.go`)
+  and `controlServer` / `newControlServer` (`cmd/mxcli/tunnelhub/control_linux.go`
+  + `control_other.go`). Adding a chisel import anywhere else is the mistake the
+  guard exists to catch.
+- **`scripts/check-tunnel-deps.sh` (CI, and `make check-tunnel-deps`) fails the
+  build** if chisel or its tunnelling-specific dependencies — the SSH/websocket/
+  socks stack included, which is how it would come back without the word "chisel"
+  appearing — reach a windows/darwin dependency graph. It asserts a positive
+  control first (chisel *is* in the linux graph), so it cannot pass vacuously.
+- **The hub seam is at `Start`, not construction**, so the portable front
+  (registry, API, auth, routing) stays testable on every platform.
+- **Never obfuscate, pack, or rename to evade detection.** That is attacker
+  tradecraft and makes things strictly worse. The only legitimate fix is not
+  shipping the capability where it is unused. Code signing does **not** substitute:
+  a signed binary containing chisel is still flagged behaviourally.
+- Do not conflate this with #185 (`Wacatac.C!ml`), which was a genuine generic
+  Go-binary false positive with a different remedy.
 
 ### Theme Files: Where SCSS Actually Compiles
 
@@ -306,11 +442,40 @@ out of `theme-cache/web/theme.compiled.css`):
   not SCSS `!default`. The derived ramp is CSS `color-mix()` against
   `var(--brand-primary)`, so retuning the primary re-derives it live.
 
+A fifth, learned by putting three themes in one stylesheet: **a theme is almost
+entirely token values.** The Atlas map, the recipe layer and the widget layer are
+byte-identical across all three built-ins (measured: one hash; 174 lines of
+recipes), and every colour in them resolves through `var(--mxt-*)` — only the
+palette, the fonts and 3–8 lines of skin differ per theme. That is what makes
+`theme apply <a> <b> <c>` a class swap rather than a rebuild, and it is a rule
+for anything added to those layers: **a literal colour outside the palette
+survives the swap and is wrong under every theme but one.** The default theme's
+scope is `:root` *minus* the other skins' classes, never a bare `:root` — bare
+keeps matching once another class is set, so the outcome would come down to
+specificity instead of being mutually exclusive by construction. A Sass variable
+holding a selector must be a **quoted string** (`$s: ":root, :root.mxt-x"`);
+a bare selector is not a Sass expression and `mx check` never sees it, because
+the failure is at SCSS compile time.
+
 `cmd/mxcli/theme` encodes all four. Its embed uses `//go:embed all:assets` — a
 plain `go:embed assets` skips `_`-prefixed files, which is exactly how SCSS spells
 a partial. Files the project already owns are written as digest-fenced blocks
 (guard-don't-drop, as in ADR-0005): a block with local edits is refused, not
 overwritten.
+
+The registry reads two sources: the embedded themes and the project's own, under
+**`theme/mxcli-themes/<name>/`** (`theme.LocalThemesDir`), a local one shadowing
+an embedded one of the same name. That path is fixed by two constraints — it must
+be **committed** (a design-derived theme is source the team shares, which rules
+out `.mxcli/`, gitignored by `mxcli init`) and **not compiled** (mxbuild's entry
+point is `theme/web/main.scss`; it does not glob `theme/`, verified against an
+11.13 build). `theme create` scaffolds one by copying an existing theme and
+renaming the identifiers built from the name (`@mixin mxcli-<name>-<alt>`, the
+`@import`) — a copy that skips that rename collides the moment both themes exist.
+`--from <file>` seeds the palette from `--mxt-*` declarations in any CSS-shaped
+text; **an unrecognised `--mxt-*` name is refused, not written**, because nothing
+reads it — the theme would apply cleanly and render unchanged, which is
+indistinguishable from the design not having been applied at all.
 
 Two more, learned by flipping the variant on a running app:
 
@@ -463,7 +628,7 @@ New MDL commands or language features must be wired through the full pipeline:
 - [ ] New packages have test files
 - [ ] New executor commands have MDL examples in `mdl-examples/doctype-tests/`
 - [ ] **MDL syntax changes** — any PR that adds or modifies MDL syntax must include working examples in `mdl-examples/doctype-tests/`
-- [ ] **Bug fixes** — every bug fix should include an MDL test script in `mdl-examples/bug-tests/` that reproduces the issue, so the fix can be verified in Studio Pro if applicable
+- [ ] **Bug fixes** — every bug fix should include an MDL test script in `mdl-examples/bug-tests/` that reproduces the issue, so the fix can be verified in Studio Pro if applicable. **Two numbering namespaces meet in that directory**: the historical files are named after `mendixlabs/mxcli` **PR** numbers (`261-mx9-microflow-roundtrip.mdl` is upstream PR #261), while issues filed on the fork are `ako/mxcli` numbers — and the two sequences already collide on 261–266. Name a file after a fork issue with a topic prefix (`mapping-261-object-handling-backup.mdl`) and write the reference qualified (`ako/mxcli#261`) wherever it appears, or the number silently resolves to the wrong thing
 - [ ] Integration paths (not just helpers) are tested
 - [ ] Tests don't rely on `time.Sleep` for synchronization — use channels or polling with timeout
 
@@ -545,10 +710,14 @@ go build -o bin/mxcli ./cmd/mxcli
 | **External SQL** | `sql connect`, `sql <alias> select ...`, `mxcli sql` | Direct SQL queries against PostgreSQL, Oracle, SQL Server (credential isolation) |
 | **Data import** | `import from <alias> query '...' into Module.Entity map (...)` | Import from external DB into Mendix app PostgreSQL (batch insert with ID generation) |
 | **Connector gen** | `sql <alias> generate connector into <module> [tables (...)] [views (...)] [exec]` | Auto-generate Database Connector MDL from discovered schema |
+| **Marketplace drift** | `mxcli marketplace diff <id> -p app.mpr [--to V] [--json]` | Which elements of an installed marketplace module have been edited locally, and what an upgrade would overwrite |
+| **Model repair** | `mxcli fix widgets`, `mxcli fix design-properties` | Runs `mx update-widgets` / `mx rename-design-properties` and **persists** the result without their MPR v2 → v1 collapse (harvest: let the tool convert, read the units back, restore v2, write the changed ones through mxcli's writer). Clears CE0463 / CE6087 after a headless install — measured 203 → 0 errors on a vanilla 11.12.1 app |
 | **Diagnostics** | `mxcli diag [--bundle]` | Session logs, version info, bug report bundles |
-| **New project** | `mxcli new <name> --version X.Y.Z [--output-dir dir] [--theme none]` | Downloads mxbuild, creates blank project, applies default styling, runs init, installs Linux mxcli for devcontainer |
-| **Default styling** | `mxcli theme list\|show\|apply\|remove` | Applies a built-in theme (signal/ledger/console) — files under `theme/` only, the model is never touched |
+| **New project** | `mxcli new <name> --version X.Y.Z [--output-dir dir] [--theme none] [--layout none]` | Downloads mxbuild, creates blank project, applies default styling, scaffolds a project-owned layout, runs init, installs Linux mxcli for devcontainer |
+| **Default styling** | `mxcli theme list\|show\|apply\|remove` | Applies a theme (signal/ledger/console) — files under `theme/` only, the model is never touched |
+| **Project themes** | `mxcli theme create <name> [--from <theme\|design-file>]` | Scaffolds a theme the project owns into `theme/mxcli-themes/`; `--from <file>` seeds the palette from `--mxt-*` declarations |
 | **Theme switching** | `mxcli theme apply <name> --variant auto\|light\|dark`, `mxcli theme switcher install` | `auto` ships both palettes (follows the OS + honours a `theme-light`/`theme-dark` class); `switcher install` adds the JS actions + nanoflow for a user toggle (**this one does write to the model**) |
+| **Switchable sets** | `mxcli theme apply signal ledger console` | Several themes in one stylesheet, each palette scoped to `:root.mxt-<name>`; the app picks one with a class on `<html>` — no rebuild, no reload |
 | **Setup mxcli** | `mxcli setup mxcli [--os linux] [--arch amd64] [--output ./mxcli]` | Download platform-specific mxcli binary from GitHub releases |
 
 ### mxcli new
@@ -560,7 +729,9 @@ mxcli new MyApp --version 11.8.0
 mxcli new MyApp --version 10.24.0 --output-dir ./projects/my-app
 ```
 
-Steps performed: downloads MxBuild → `mx create-project` → `mxcli theme apply` → `mxcli init` → one `mxbuild --target=deploy` run (`--skip-build` to skip) → downloads correct Linux mxcli binary for devcontainer. That build settles the JS/Java action stubs MxBuild rewrites on first build (48 tracked files in a blank 11.12 app), so a fresh clone does not go dirty the first time anyone builds it. The result is a ready-to-open project with `.devcontainer/`, AI tooling, mxcli's default styling, and a working `./mxcli` binary. Pass `--theme none` for plain Atlas.
+Steps performed: downloads MxBuild → `mx create-project` → `mxcli theme apply` → scaffolds `<YourModule>.App_Default` and moves the project's pages onto it (`--layout none` to keep Atlas's) → `mxcli init` → one `mxbuild --target=deploy` run (`--skip-build` to skip) → downloads correct Linux mxcli binary for devcontainer. That build settles the JS/Java action stubs MxBuild rewrites on first build (48 tracked files in a blank 11.12 app), so a fresh clone does not go dirty the first time anyone builds it. The result is a ready-to-open project with `.devcontainer/`, AI tooling, mxcli's default styling, a layout the project owns, and a working `./mxcli` binary. Pass `--theme none` for plain Atlas.
+
+The layout is **not** a copy of Atlas's: every Atlas layout a real app uses carries widgets MDL cannot spell (`Atlas_TopBar` has a `Forms$MenuBar`, a `Forms$SidebarToggleButton` and a pluggable image), so a describe → exec copy renders with no navigation and no logo. It reproduces the *result* instead — same layout class, same region classes, topbar navigation, `Main` for page content.
 
 ### Slash Command Namespaces
 
@@ -576,7 +747,7 @@ Both namespaces are discoverable by typing `/mxcli` in Claude Code. Add new cont
 ### mxcli init
 
 `mxcli init` creates a `.claude/` folder with skills, commands, CLAUDE.md, and VS Code MDL extension in a target Mendix project. Source of truth for synced assets:
-- Skills: `.claude/skills/mendix/` — `make sync-skills` copies these to the `cmd/mxcli/skills/` embed dir (`//go:embed skills/*.md`), which `mxcli init` writes into the project. **Edit the `mendix/` source, not the embed dir** (it is regenerated). The top-level `.claude/skills/*.md` are contributor/dev skills and are **not** synced.
+- Skills: `.claude/skills/mendix/<name>/SKILL.md` — directory-shaped, per the [Agent Skills](https://agentskills.io) standard, with `name` and `description` frontmatter. `make sync-skills` mirrors the tree into the `cmd/mxcli/skills/` embed dir (`//go:embed all:skills`), and `mxcli init` writes it into the project **twice**: `.ai-context/skills/` for every tool, and `.claude/skills/` — the only path Claude Code scans — when the project is set up for Claude. **Edit the `mendix/` source, not the embed dir** (it is regenerated, and the sync is `rsync --delete`). The `description` is the routing mechanism; the table in the generated CLAUDE.md is a shortcut, not the index. Upgrading a project retires the flat `<name>.md` files older mxcli versions wrote, but never a skill the user added. The top-level `.claude/skills/*.md` are contributor/dev skills and are **not** synced.
 - Commands: `.claude/commands/mendix/` (the `mxcli-dev/` folder is **not** synced)
 - VS Code extension: `vscode-mdl/vscode-mdl-*.vsix`
 
@@ -597,12 +768,15 @@ Regenerate after modifying `MDLLexer.g4`, `MDLParser.g4`, or any `domains/*.g4` 
 - `.claude/skills/design-mdl-syntax.md` - **READ before designing new MDL syntax** - Design principles, decision framework, anti-patterns, checklist
 - `.claude/skills/write-microflows.md` - Microflow syntax, common mistakes, validation checklist
 - `.claude/skills/write-nanoflows.md` - Nanoflow syntax, restrictions, disallowed activities, validation checklist
+- `.claude/skills/mendix/write-rules.md` - **Rules** (CREATE/LIST/DESCRIBE/DROP/MOVE RULE): a rule returns Boolean or an enumeration and is callable only from a decision; what its body may not contain and the CE numbers behind each refusal; why there is no `grant execute on rule`
 - `.claude/skills/write-workflows.md` - **Workflow authoring** (CREATE/DROP/ALTER WORKFLOW): activities (user task, decision, parallel split, jump, wait, boundary events), header options, gotchas. Workflows are authorable, not read-only.
 - `.claude/skills/create-page.md` - Page/widget syntax reference
+- `.claude/skills/mendix/write-layouts/SKILL.md` - **Layouts** (CREATE/DESCRIBE LAYOUT): the frame a page renders inside — scroll-container regions, the navigation tree, the placeholders pages bind to; why Atlas_Core is refused and why `mainplaceholder:` does not exist
 - `.claude/skills/alter-page.md` - ALTER PAGE/SNIPPET in-place modifications (SET, INSERT, DROP, REPLACE, SET Layout)
 - `.claude/skills/overview-pages.md` - CRUD page patterns
 - `.claude/skills/master-detail-pages.md` - Master-detail page patterns
 - `.claude/skills/generate-domain-model.md` - Entity/Association syntax
+- `.claude/skills/mendix/scheduled-events-and-queues.md` - **Scheduled events (Mendix's cron) and task queues**: the eight Repeat variants and which fields each one takes, why a queue does NOT throttle a scheduled event, and why rewriting a microflow with a queued call is refused
 - `.claude/skills/check-syntax.md` - Pre-flight validation checklist
 - `.claude/skills/organize-project.md` - Folders, MOVE command, project structure conventions
 - `.claude/skills/manage-security.md` - Security roles, access control, GRANT/REVOKE patterns
@@ -634,14 +808,15 @@ Full syntax tables for all MDL statements (microflows, pages, security, navigati
 ## Current Implementation Status
 
 **Implemented:**
-- Default styling + runtime theme switching (`mxcli theme list/show/apply/remove/switcher`, `mxcli new --theme`): three embedded themes (**signal** light-first, **ledger** light-first, **console** dark-first), each a palette in `theme/web/custom-variables.scss` + a shared Atlas wiring partial + a theme partial imported from `theme/web/main.scss` (which compiles last), plus vendored fonts. **No model changes**, so it hot-applies under `run --local --watch` and cannot affect a build. Generated regions are digest-fenced: a block carrying local edits is refused rather than overwritten. Applying a theme removes the previous one. `--variant auto` (default) ships both palettes — the app follows `prefers-color-scheme` before first paint and honours a `theme-light`/`theme-dark` class on `<html>`; `light`/`dark` bakes one. `theme switcher install` is the only part that writes to the model (JS actions + a nanoflow for a toggle button). Package: `cmd/mxcli/theme/`. See `docs/11-proposals/PROPOSAL_default_styling.md`
+- Default styling + runtime theme switching (`mxcli theme list/show/create/apply/remove/switcher`, `mxcli new --theme`): three embedded themes (**signal** light-first, **ledger** light-first, **console** dark-first), each a palette in `theme/web/custom-variables.scss` + a shared Atlas wiring partial + a theme partial imported from `theme/web/main.scss` (which compiles last), plus vendored fonts. **No model changes**, so it hot-applies under `run --local --watch` and cannot affect a build. Generated regions are digest-fenced: a block carrying local edits is refused rather than overwritten. Applying a theme removes the previous one. `--variant auto` (default) ships both palettes — the app follows `prefers-color-scheme` before first paint and honours a `theme-light`/`theme-dark` class on `<html>`; `light`/`dark` bakes one. `theme switcher install` is the only part that writes to the model (JS actions + a nanoflow for a toggle button). A project can add its own themes under `theme/mxcli-themes/<name>/` (committed, not compiled); `theme create <name> [--from <theme|design-file>]` scaffolds one from an existing theme, renaming the identifiers built from the name and optionally seeding the palette from `--mxt-*` declarations in a design artifact. A local theme shadows a built-in of the same name. Package: `cmd/mxcli/theme/`. See `docs/11-proposals/PROPOSAL_default_styling.md`
 - MPR v1/v2 reading and writing
-- Idempotent writes (ADR-0008): a unit whose new content is semantically equal to what is stored is **not written**, so re-running an MDL script against an in-sync project leaves the `.mpr` and `mprcontents/` byte-identical and Studio Pro shows no version-control changes. Comparison is on a canonical form (element `$ID`s normalised away — a rebuild mints them randomly, so byte comparison would skip nothing); `Microflows$Microflow.StableId` is carried from the stored document rather than re-minted, because the build derives every client-callable microflow's operation id from it. One policy in `modelsdk/canon`, called from both engines' write choke points. `MXCLI_ALWAYS_WRITE=1` disables elision (not preservation) for bisecting. See `docs-site/src/internals/idempotent-writes.md`
+- Idempotent writes (ADR-0008): a unit whose new content is semantically equal to what is stored is **not written**, so re-running an MDL script against an in-sync project leaves the `.mpr` and `mprcontents/` byte-identical and Studio Pro shows no version-control changes. Comparison is on a canonical form (element `$ID`s normalised away — a rebuild mints them randomly, so byte comparison would skip nothing); `Microflows$Microflow.StableId` is carried from the stored document rather than re-minted, because the build derives every client-callable microflow's operation id from it. When a write **does** land, `canon.TransplantIDs` matches the rebuild against the stored document and reuses its element `$ID`s (rewriting every pointer in the same pass), so a changed document's diff is the change rather than a wholesale replacement — measured on #910's nanoflow: 1 of 37 identities survived an argument edit before, 37 of 37 after, and a change plus its revert returns to the original bytes. Inserting or deleting an activity mints IDs only for the genuinely new elements. One policy in `modelsdk/canon`, called from both engines' write choke points. `MXCLI_ALWAYS_WRITE=1` disables elision (not preservation) for bisecting — which means it no longer changes the resulting bytes, only the mtimes. The executor's output distinguishes the two: `Unchanged nanoflow: …` where the write was skipped. See `docs-site/src/internals/idempotent-writes.md`
 - Domain model (entities, attributes, associations)
 - ALTER ENTITY (add/rename/modify/drop attributes, indexes, documentation)
 - Microflows/Nanoflows with 60+ activity types, JavaScript action calls, nanoflow validation parity
 - Pages with 50+ widget types
 - ALTER PAGE/SNIPPET (SET, INSERT, DROP, REPLACE operations on widget trees)
+- Layouts (SHOW/DESCRIBE/CREATE [OR REPLACE] LAYOUT): the frame a page renders inside — the last document a page depends on that MDL could not write, which is why the topbar was out of reach. Four element types beyond a page's vocabulary: `scrollcontainer`, `region top|right|bottom|left|center` (five named slots, not a list), `placeholder`, `navigationtree`. `DESCRIBE LAYOUT` emits **re-executable MDL**, which makes describe → rename → exec the copy operation and is why there is no `COPY DOCUMENT` verb. Writing into a Marketplace module is **refused** — Mendix's own guidance is not to edit the supplied layouts, since an update replaces the module — which also required wiring `FromAppStore` enrichment into `GetModuleByName`/`GetModule` (it was populated only by `ListModules`, so the guard would have been inert). The document is pinned to the ten keys Studio Pro writes, identical across all 22 Atlas layouts on 11.13.0: `modelsdk/gen` offers seven placeholder properties on `Layout` (`MainPlaceholderName` and friends) that `generated/metamodel` does not declare and no real layout carries, and writing one gives a layout **mxbuild accepts at 0 errors and Studio Pro cannot open**. Which placeholder is "main" is a naming convention (22 of 22 name one `Main`; a page binds by qualified name anyway), so `layouttype` is the only header property and anything else is an error rather than an ignored key. The platform is inferred from the layout type — web (Responsive/Phone/Tablet/ModalPopup) and native (Default/Popup) are disjoint — so there is no `native:` flag. Authoring is modelsdk-only; legacy refuses. Verified in a browser, not just against `mx check`. `ALTER LAYOUT Module.Name { … }` takes the whole ALTER PAGE vocabulary (a layout's tree *is* a page's plus four element types) and edits the stored document, which is what makes it a capability rather than a convenience: **describe → rename → exec is only as complete as what MDL can spell** — measured, the copy of `Atlas_Core.Atlas_SideBar` loses both `Forms$SidebarToggleButton` widgets, and an `image` widget loses its image reference. A region has no `Name`, so it is addressed as `layoutContainer.top` (the dotted widgetRef that also serves DataGrid2 columns; `$Type` decides which), and only `INSERT INTO` takes one. Pages move onto a layout with `ALTER PAGE … SET Layout = X [MAP (Old AS New)]` or the bulk `ALTER PAGES [IN <mod>] SET LAYOUT = X [WHERE LAYOUT = Y]`, both of which **refuse a repoint that would leave a page bound to a placeholder the target does not declare** (checked *after* MAP, since MAP is the remedy) — mxbuild only catches that as CE1613 at the far end of a build. See `.claude/skills/mendix/write-layouts/SKILL.md` and `docs/11-proposals/PROPOSAL_authorable_layouts.md`
 - Image widgets (IMAGE, STATICIMAGE, DYNAMICIMAGE) with Width/Height properties
 - Code generator for metamodel types
 - MDL CLI (`mxcli`) with ANTLR4 parser
@@ -668,6 +843,12 @@ Full syntax tables for all MDL statements (microflows, pages, security, navigati
 - ALTER WORKFLOW (SET properties, INSERT/DROP/REPLACE activities, outcomes, paths, conditions, boundary events)
 - CALCULATED BY microflow syntax for calculated attributes
 - Image collections (SHOW/DESCRIBE/CREATE/DROP)
+- Rules (LIST/DESCRIBE/CREATE [OR MODIFY]/DROP/MOVE RULE): Mendix's "special kind of microflow" — returns Boolean or an enumeration, callable only from a decision. Handled as a third flow flavour beside microflows and nanoflows: its own semantic type, its own listing (`show microflows` stays microflow-only), the shared `microflowBody`, flow builder and describer. The document is the ten properties a Studio Pro rule stores, pinned against two reference rules (ako/TestApp, 11.13.0) — **no `AllowedModuleRoles`** (a rule is not independently callable, so there is no `grant execute on rule`) and **no `ReturnType`** despite gen declaring one beside `MicroflowReturnType`. Two keys only a reference document catches, both invisible to `mx check`: `ExportLevel` (Studio Pro writes "Hidden" on every rule) and `Flows` (written as the bare marker even when empty — a `MandatoryLists` entry). Rules are catalog objects and their bodies are walked for references, which together stop a microflow called only from a rule reading as dead. The body restrictions are refused at check time by the same function `exec` calls, each measured: create/change/delete/commit/rollback and client or web-service activities are **CE0009**, a non-Boolean/enum return is **CE0103 + CE0139**. Authoring is modelsdk-only; legacy refuses. See `.claude/skills/mendix/write-rules.md`
+- Menu documents (CREATE OR MODIFY/DESCRIBE/DROP MENU): standalone `Menus$MenuDocument`, the reusable menu a menu widget points at (Atlas_Core's `Phone_Menu`/`Tablet_Menu`) — **not** the menu inside a navigation profile, though both are built from the same items, so the item syntax is shared with `CREATE NAVIGATION`'s `MENU (...)` block. DESCRIBE is round-trippable. Written through gen+codec, which is load-bearing: Studio Pro's menu documents carry typed-array marker **3** on the item collection and each item's sub-items (the codec default), while the navigation writers hand-build items with marker **1** — unverified whether that is a latent navigation bug or a real difference, so navigation is left alone. Authoring is modelsdk-only; legacy refuses. Two traps: a menu item cannot open a page with required parameters (**CE1571**), and only `Forms$IconCollectionIcon` round-trips (glyph/image icons are flagged by DESCRIBE, not dropped silently)
+- Regular expressions (LIST/DESCRIBE/CREATE [OR MODIFY]/DROP REGULAR EXPRESSION): named patterns that attribute validation rules reference **by qualified name**, which is why they are documents. `modelsdk/gen` is **wrong** about the pattern's key — it binds `RegEx` where every Studio Pro document stores `Expression` (`generated/metamodel` agrees with the documents), so both engines share one raw-BSON codec in `mdl/regularexpressions`; a reader keyed on gen's name returns an empty pattern for every real document. Pinned against five Studio Pro-authored documents (Email Connector 6.4.2, Community Commons 11.5.1). Mendix validates with .NET's engine, so a pattern Go's RE2 cannot compile (lookaround — the Email Connector ships one) is stored unchanged and reported "not verifiable", never "invalid". A `validate` edge into `CATALOG.REFS` makes `show references to <regex>` list the entities using it
+- Validation rules (CREATE VALIDATION RULE): binds a **regex** or a **range** to one attribute — `create validation rule for Mod.Entity.Attr regex Mod.Pattern feedback '…'`. The rule is anonymous and entity-scoped, so the statement names the attribute; re-running it replaces the rule of the same type and leaves the attribute's others alone. Unlocked by a `STORAGE-NAME OVERRIDE` in `modelsdk/gen`: it bound `RegularExpression` where Studio Pro stores `RegExIdentifier`, and the control (same script, key reverted) fails **CE0135 "No regular expression specified"** while the fixed one is 0 errors on mxbuild 11.13 with `RegExIdentifier` on disk. Range bounds are inclusive and map to Mendix's only three kinds (`from X to Y`/`from X`/`to Y` → Between/GreaterThanOrEqualTo/SmallerThanOrEqualTo); there is no strict `<`/`>`, and the old grammar's forms for it — plus an EXPRESSION rule type Mendix does not have and an inline regex literal — were removed, having never had a visitor or handler. Required/Unique stay attribute constraints (`not null error '…'` / `unique error '…'`), not a second spelling here. Rewriting an entity carrying **MaxLength or EqualsTo** is **refused** on both engines rather than silently downgraded to Required; that round trip was lossy and `mx check` stayed green, because a Required rule is valid. Both engines carry each rule's payload on READ (`ruleInfoFromGen` / `parseValidationRuleInfo`), which is what makes the refusal narrow instead of covering all of RegEx and Range — and what lets a **range bounded by another attribute** survive a rewrite even though MDL cannot author one (`describe entity` marks it with a comment rather than rendering it wrong). A rule whose payload did not survive the read is refused as firmly as an unknown type: a bare RuleInfo of the right `$Type` constrains nothing, which is the same silent downgrade wearing the right name
+- Scheduled events — Mendix's cron (LIST/DESCRIBE/CREATE [OR MODIFY]/DROP). `Repeat:` names one of the eight `ScheduledEvents$*Schedule` variants and only that variant's fields are accepted; a field from another repeat is refused by `mxcli check` (MDL-SCHED01) and by exec, which call the same function. The document shape is pinned by re-serializing three whole Studio Pro-authored events (Workflow Commons 4.11.0, OIDC SSO 4.6.0, SAML 4.2.1) element by element — `modelsdk/gen` is **wrong** about two properties here: the integers are stored as int64 (gen says int32, the #585 mismatch) and `StartDateTime` is a BSON datetime (gen says string), so both engines share one raw-BSON codec in `mdl/scheduledevents`. `Interval`/`IntervalType` are legacy siblings of `Schedule` that Studio Pro writes and does not keep in sync — derived on CREATE, carried through untouched on MODIFY. Only the Day and Hour variants have a Studio Pro reference; the other six are metamodel-derived and verified to load. Both are in the catalog (`CATALOG.SCHEDULED_EVENTS`, `CATALOG.QUEUES`) and a scheduled event emits a `schedule` edge into `CATALOG.REFS` — without it a microflow run only by a scheduled event was reported as dead by `show callers`, `GRAPH_DEAD_ASSETS` and lint rule QUAL004. See `.claude/skills/mendix/scheduled-events-and-queues.md`
+- Task queues (LIST/DESCRIBE/CREATE [OR MODIFY]/DROP QUEUE). `Config.ParallelismExpression` is a **string** and the sibling int32 `Parallelism` is not written — matching all four Studio Pro queues in Business Events 3.12.1. Binding a *call* to a queue is not yet authorable, so `CREATE OR REPLACE|MODIFY MICROFLOW` is **refused** when the stored microflow has a queued call (guard-don't-drop, ADR-0005): the rebuild used to write `QueueSettings` back as null, which made `mx check` go from CE1613 to 0 errors by deleting the user's configuration
 - AI agent documents: Model, Knowledge Base, Consumed MCP Service, Agent (LIST/DESCRIBE/CREATE/DROP, with variables, tools, KB tools, dollar-quoted multi-line prompts; requires AgentEditorCommons module, Mendix 11.9+)
 - OData contract browsing (SHOW/DESCRIBE CONTRACT ENTITIES/ACTIONS FROM cached $metadata)
 - AsyncAPI contract browsing (SHOW/DESCRIBE CONTRACT CHANNELS/MESSAGES FROM cached AsyncAPI)
@@ -678,6 +859,7 @@ Full syntax tables for all MDL statements (microflows, pages, security, navigati
 - Platform authentication (`mxcli auth login/logout/status/list`) with PAT scheme for marketplace-api.mendix.com, marketplace.mendix.com, and catalog.mendix.com; credentials stored at ~/.mxcli/auth.json (mode 0600), MENDIX_PAT env override
 - Marketplace browsing (`mxcli marketplace search/info/versions`) with --min-mendix compatibility filtering
 - Marketplace download/install (`mxcli marketplace download/install`) — the content API now exposes a per-version downloadUrl (303→public CDN); install is type-aware (widget→widgets/, new module→`mx module-import`); existing-module updates are reported, not applied (entity-ID/local-edit safety — see PROPOSAL_marketplace_modules.md)
+- Marketplace drift detection (`mxcli marketplace diff <content-id> -p app.mpr [--to VERSION] [--json]`): reports **which elements of an installed marketplace module have been edited locally** — the question Studio Pro's Marketplace update never asks before replacing the module. The version's `.mpk` is downloaded and imported into a throwaway reference project built **at the consuming project's Mendix version** (a mismatch is refused, not warned about: Mendix's own conversions would read as user edits), then every element is described on both sides and the **DESCRIBE output** compared — not BSON, in which an *untouched* module differs from its own package in ~15,000 paths. `--to` adds what an upgrade would touch and which of those collide with local edits. Honesty rule: an element that cannot be described is reported **unknown, never unchanged**, and `verified:false` in the JSON means "no modifications found" is not a conclusion. Module + version are identified from the module's `AppStoreGuid`, which is the marketplace **version UUID** — matching on the version *number* is ambiguous (a blank project has Atlas_Web_Content 4.1.0 and Administration's content also published a 4.1.0). Measured on real content: Administration 4.3.2 in a blank 11.12.1 app → 21/21 unchanged; one added attribute → exactly `ENTITY Account`; `--to 4.3.2` (the installed version) touches nothing, which is the control for `--to 4.5.0`'s five. Package: `cmd/mxcli/marketplace/`. See `docs/11-proposals/PROPOSAL_marketplace_module_upgrade.md`
 
 **Not Yet Implemented:**
 - 47 of 52 metamodel domains (REST, etc.)

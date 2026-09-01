@@ -24,6 +24,7 @@ import (
 
 var _ backend.FullBackend = (*MprBackend)(nil)
 var _ linter.LintReader = (*MprBackend)(nil)
+var _ backend.WriteStatsReporter = (*MprBackend)(nil)
 
 // MprBackend implements backend.FullBackend by delegating to mpr.Reader
 // and mpr.Writer.
@@ -53,6 +54,18 @@ func Wrap(writer *mpr.Writer, path string) *MprBackend {
 		writer: writer,
 		path:   path,
 	}
+}
+
+// WriteStats reports how many unit writes reached storage versus how many were
+// elided as no-ops (ADR-0008). Zero before Connect, and after Disconnect the
+// writer is gone with its counters — a caller sampling across a statement holds
+// the connection open for both reads.
+func (b *MprBackend) WriteStats() backend.WriteStats {
+	if b.writer == nil {
+		return backend.WriteStats{}
+	}
+	offered, written := b.writer.WriteStats()
+	return backend.WriteStats{Offered: offered, Written: written}
 }
 
 // ---------------------------------------------------------------------------
@@ -142,6 +155,22 @@ func (b *MprBackend) MoveFolder(id model.ID, newContainerID model.ID) error {
 }
 
 // ---------------------------------------------------------------------------
+// DocumentPlacementBackend
+// ---------------------------------------------------------------------------
+
+func (b *MprBackend) MoveDocument(unitID, containerID model.ID) error {
+	return b.writer.MoveDocument(unitID, containerID)
+}
+
+func (b *MprBackend) FindDocumentUnit(moduleName, name string) (*types.DocumentUnit, error) {
+	return b.writer.FindDocumentUnit(moduleName, name)
+}
+
+func (b *MprBackend) ListDocumentUnits() ([]*types.DocumentUnit, error) {
+	return b.writer.ListDocumentUnits()
+}
+
+// ---------------------------------------------------------------------------
 // DomainModelBackend
 // ---------------------------------------------------------------------------
 
@@ -154,6 +183,15 @@ func (b *MprBackend) GetDomainModel(moduleID model.ID) (*domainmodel.DomainModel
 func (b *MprBackend) GetDomainModelByID(id model.ID) (*domainmodel.DomainModel, error) {
 	return b.reader.GetDomainModelByID(id)
 }
+func (b *MprBackend) SetDomainModelAnnotations(domainModelID model.ID, annotations []*domainmodel.Annotation) error {
+	dm, err := b.GetDomainModelByID(domainModelID)
+	if err != nil {
+		return err
+	}
+	dm.Annotations = annotations
+	return b.writer.UpdateDomainModel(dm)
+}
+
 func (b *MprBackend) UpdateDomainModel(dm *domainmodel.DomainModel) error {
 	return b.writer.UpdateDomainModel(dm)
 }
@@ -246,6 +284,12 @@ func (b *MprBackend) IsRule(qualifiedName string) (bool, error) {
 func (b *MprBackend) ListNanoflows() ([]*microflows.Nanoflow, error) {
 	return b.reader.ListNanoflows()
 }
+func (b *MprBackend) ListRules() ([]*microflows.Rule, error) {
+	return b.reader.ListRules()
+}
+func (b *MprBackend) GetRule(id model.ID) (*microflows.Rule, error) {
+	return b.reader.GetRule(id)
+}
 func (b *MprBackend) ParseMicroflowFromRaw(raw map[string]any, unitID, containerID model.ID) *microflows.Microflow {
 	return mpr.ParseMicroflowFromRaw(raw, unitID, containerID)
 }
@@ -264,6 +308,22 @@ func (b *MprBackend) UpdateNanoflow(nf *microflows.Nanoflow) error {
 func (b *MprBackend) DeleteNanoflow(id model.ID) error { return b.writer.DeleteNanoflow(id) }
 func (b *MprBackend) MoveNanoflow(nf *microflows.Nanoflow) error {
 	return b.writer.MoveNanoflow(nf)
+}
+
+// Rule authoring is modelsdk-only, like menus: the legacy serializer has no
+// serializeRule, and a rule document is close enough to a microflow that a
+// half-written one would look valid. Reads are implemented above.
+func (b *MprBackend) CreateRule(*microflows.Rule) error {
+	return errors.New("creating a rule requires the modelsdk engine — rerun without MXCLI_ENGINE=legacy")
+}
+func (b *MprBackend) UpdateRule(*microflows.Rule) error {
+	return errors.New("modifying a rule requires the modelsdk engine — rerun without MXCLI_ENGINE=legacy")
+}
+func (b *MprBackend) DeleteRule(model.ID) error {
+	return errors.New("dropping a rule requires the modelsdk engine — rerun without MXCLI_ENGINE=legacy")
+}
+func (b *MprBackend) MoveRule(*microflows.Rule) error {
+	return errors.New("moving a rule requires the modelsdk engine — rerun without MXCLI_ENGINE=legacy")
 }
 
 // ---------------------------------------------------------------------------
@@ -352,6 +412,11 @@ func (b *MprBackend) SetProjectSecurityLevel(unitID model.ID, level string) erro
 }
 func (b *MprBackend) SetProjectDemoUsersEnabled(unitID model.ID, enabled bool) error {
 	return b.writer.SetProjectDemoUsersEnabled(unitID, enabled)
+}
+
+// SetProjectGuestAccess toggles anonymous (guest) access.
+func (b *MprBackend) SetProjectGuestAccess(unitID model.ID, enabled bool, guestUserRole string) error {
+	return b.writer.SetProjectGuestAccess(unitID, enabled, guestUserRole)
 }
 func (b *MprBackend) AddUserRole(unitID model.ID, name string, moduleRoles []string, manageAllRoles bool) error {
 	return b.writer.AddUserRole(unitID, name, moduleRoles, manageAllRoles)
@@ -543,9 +608,15 @@ func (b *MprBackend) GetImportMappingByQualifiedName(moduleName, name string) (*
 	return b.reader.GetImportMappingByQualifiedName(moduleName, name)
 }
 func (b *MprBackend) CreateImportMapping(im *model.ImportMapping) error {
+	if err := refuseCustomHandler(importElementsCarryCustomHandler(im.Elements)); err != nil {
+		return err
+	}
 	return b.writer.CreateImportMapping(im)
 }
 func (b *MprBackend) UpdateImportMapping(im *model.ImportMapping) error {
+	if err := refuseCustomHandler(importElementsCarryCustomHandler(im.Elements)); err != nil {
+		return err
+	}
 	return b.writer.UpdateImportMapping(im)
 }
 func (b *MprBackend) DeleteImportMapping(id model.ID) error {
@@ -562,9 +633,15 @@ func (b *MprBackend) GetExportMappingByQualifiedName(moduleName, name string) (*
 	return b.reader.GetExportMappingByQualifiedName(moduleName, name)
 }
 func (b *MprBackend) CreateExportMapping(em *model.ExportMapping) error {
+	if err := refuseCustomHandler(exportElementsCarryCustomHandler(em.Elements)); err != nil {
+		return err
+	}
 	return b.writer.CreateExportMapping(em)
 }
 func (b *MprBackend) UpdateExportMapping(em *model.ExportMapping) error {
+	if err := refuseCustomHandler(exportElementsCarryCustomHandler(em.Elements)); err != nil {
+		return err
+	}
 	return b.writer.UpdateExportMapping(em)
 }
 func (b *MprBackend) DeleteExportMapping(id model.ID) error {
@@ -678,8 +755,46 @@ func (b *MprBackend) DeleteWorkflow(id model.ID) error { return b.writer.DeleteW
 func (b *MprBackend) GetProjectSettings() (*model.ProjectSettings, error) {
 	return b.reader.GetProjectSettings()
 }
+
+// UpdateProjectSettings writes the settings, EXCEPT a changed enabled-language
+// list: the legacy serializer writes DefaultLanguageCode and carries Languages
+// through from the stored document, so a language added or removed here would be
+// dropped in silence — the run reporting "Enabled language: ar_SD" and nothing
+// landing. Refuse instead (guard-don't-drop, ADR-0005), the same way rule and
+// menu authoring is refused rather than half-written.
+//
+// The comparison is against what is stored, so every other settings write still
+// works on this engine.
 func (b *MprBackend) UpdateProjectSettings(ps *model.ProjectSettings) error {
+	if b.languagesWouldChange(ps) {
+		return errors.New("changing the enabled languages requires the modelsdk engine — " +
+			"rerun without MXCLI_ENGINE=legacy (the legacy serializer carries the language list " +
+			"through unchanged, so the write would be silently dropped)")
+	}
 	return b.writer.UpdateProjectSettings(ps)
+}
+
+// languagesWouldChange reports whether ps carries a different enabled-language
+// list than the stored document. A read failure answers false: refusing on a
+// question that could not be asked would block settings writes that have nothing
+// to do with languages.
+func (b *MprBackend) languagesWouldChange(ps *model.ProjectSettings) bool {
+	if ps == nil || ps.Language == nil {
+		return false
+	}
+	stored, err := b.reader.GetProjectSettings()
+	if err != nil || stored == nil || stored.Language == nil {
+		return false
+	}
+	if len(stored.Language.Languages) != len(ps.Language.Languages) {
+		return true
+	}
+	for i, l := range ps.Language.Languages {
+		if stored.Language.Languages[i] != l {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------
@@ -703,6 +818,23 @@ func (b *MprBackend) ListIconCollections() ([]*types.IconCollection, error) {
 }
 
 // ---------------------------------------------------------------------------
+// QueueBackend
+// ---------------------------------------------------------------------------
+
+func (b *MprBackend) ListQueues() ([]*types.Queue, error) {
+	return b.reader.ListQueues()
+}
+func (b *MprBackend) CreateQueue(q *types.Queue) error {
+	return b.writer.CreateQueue(q)
+}
+func (b *MprBackend) UpdateQueue(q *types.Queue) error {
+	return b.writer.UpdateQueue(q)
+}
+func (b *MprBackend) DeleteQueue(id string) error {
+	return b.writer.DeleteQueue(id)
+}
+
+// ---------------------------------------------------------------------------
 // ScheduledEventBackend
 // ---------------------------------------------------------------------------
 
@@ -711,6 +843,32 @@ func (b *MprBackend) ListScheduledEvents() ([]*model.ScheduledEvent, error) {
 }
 func (b *MprBackend) GetScheduledEvent(id model.ID) (*model.ScheduledEvent, error) {
 	return b.reader.GetScheduledEvent(id)
+}
+func (b *MprBackend) CreateScheduledEvent(ev *model.ScheduledEvent) error {
+	return b.writer.CreateScheduledEvent(ev)
+}
+func (b *MprBackend) UpdateScheduledEvent(ev *model.ScheduledEvent) error {
+	return b.writer.UpdateScheduledEvent(ev)
+}
+func (b *MprBackend) DeleteScheduledEvent(id string) error {
+	return b.writer.DeleteScheduledEvent(id)
+}
+
+// ---------------------------------------------------------------------------
+// RegularExpressionBackend
+// ---------------------------------------------------------------------------
+
+func (b *MprBackend) ListRegularExpressions() ([]*model.RegularExpression, error) {
+	return b.reader.ListRegularExpressions()
+}
+func (b *MprBackend) CreateRegularExpression(re *model.RegularExpression) error {
+	return b.writer.CreateRegularExpression(re)
+}
+func (b *MprBackend) UpdateRegularExpression(re *model.RegularExpression) error {
+	return b.writer.UpdateRegularExpression(re)
+}
+func (b *MprBackend) DeleteRegularExpression(id string) error {
+	return b.writer.DeleteRegularExpression(id)
 }
 
 // ---------------------------------------------------------------------------
@@ -750,6 +908,14 @@ func (b *MprBackend) GetRawMicroflowByName(qualifiedName string) ([]byte, error)
 	return b.reader.GetRawMicroflowByName(qualifiedName)
 }
 func (b *MprBackend) UpdateRawUnit(unitID string, contents []byte) error {
+	return b.writer.UpdateRawUnit(unitID, contents)
+}
+
+// UpdateRawUnitOwningTranslations writes a unit whose contents already account
+// for every translation in it. The legacy writer has no separate reconcile
+// option, so this is UpdateRawUnit — which is correct here because the legacy
+// path does not carry translations onto a raw write in the first place.
+func (b *MprBackend) UpdateRawUnitOwningTranslations(unitID string, contents []byte) error {
 	return b.writer.UpdateRawUnit(unitID, contents)
 }
 
@@ -870,4 +1036,94 @@ func (b *MprBackend) useCallMicroflowActivityName() bool {
 
 func (b *MprBackend) SerializeWorkflowActivity(a workflows.WorkflowActivity) (any, error) {
 	return mpr.SerializeWorkflowActivity(a, b.useCallMicroflowActivityName()), nil
+}
+
+func (b *MprBackend) ListMenuDocuments() ([]*types.MenuDocument, error) {
+	return b.reader.ListMenuDocuments()
+}
+func (b *MprBackend) GetMenuDocumentByQualifiedName(moduleName, name string) (*types.MenuDocument, error) {
+	return b.reader.GetMenuDocumentByQualifiedName(moduleName, name)
+}
+
+// Menu-document writes are implemented on the modelsdk engine only. The legacy
+// writer builds menu items by hand with typed-array marker 1, which does not
+// match what Studio Pro stores in a menu document (3) — rather than ship a
+// second, differently-shaped writer, this refuses so the caller is told plainly.
+func (b *MprBackend) CreateMenuDocument(md *types.MenuDocument) error {
+	return errors.New("creating a menu requires the modelsdk engine — rerun without MXCLI_ENGINE=legacy")
+}
+func (b *MprBackend) UpdateMenuDocument(md *types.MenuDocument) error {
+	return errors.New("modifying a menu requires the modelsdk engine — rerun without MXCLI_ENGINE=legacy")
+}
+func (b *MprBackend) DeleteMenuDocument(id model.ID) error {
+	return errors.New("dropping a menu requires the modelsdk engine — rerun without MXCLI_ENGINE=legacy")
+}
+
+// ListMessageDefinitionCollections is not implemented on the legacy engine.
+//
+// The document has no legacy parser, and authoring a mapping over a message
+// definition (#263) is modelsdk-only for that reason — the codec models the
+// whole exposed tree already. Refuse rather than return an empty list: an empty
+// one reads as "this project has no message definitions", which would make the
+// executor report a real reference as unresolvable.
+func (b *MprBackend) ListMessageDefinitionCollections() ([]*model.MessageDefinitionCollection, error) {
+	return nil, errors.New("message definitions are not readable on the legacy engine — " +
+		"run without --engine legacy (the modelsdk engine is the default)")
+}
+
+// The legacy serializers write CustomHandlerCall as a hard-coded nil, so a
+// mapping whose object handling is Custom (#264) would be written WITHOUT its
+// microflow — a silent drop of the thing the statement was about. Refuse
+// instead (ADR-0005 guard-don't-drop); the modelsdk engine, which is the
+// default, writes it.
+func refuseCustomHandler(carries bool) error {
+	if !carries {
+		return nil
+	}
+	return errors.New("custom object handling (`by <microflow>`) requires the modelsdk engine — " +
+		"rerun without MXCLI_ENGINE=legacy")
+}
+
+func importElementsCarryCustomHandler(elems []*model.ImportMappingElement) bool {
+	for _, e := range elems {
+		if e == nil {
+			continue
+		}
+		if e.CustomHandler != nil || importElementsCarryCustomHandler(e.Children) {
+			return true
+		}
+	}
+	return false
+}
+
+func exportElementsCarryCustomHandler(elems []*model.ExportMappingElement) bool {
+	for _, e := range elems {
+		if e == nil {
+			continue
+		}
+		if e.CustomHandler != nil || exportElementsCarryCustomHandler(e.Children) {
+			return true
+		}
+	}
+	return false
+}
+
+// LayoutPlaceholders returns the placeholder names a layout declares. Shared
+// with the modelsdk engine: the walk is over the stored document, not over
+// either engine's element types.
+func (b *MprBackend) LayoutPlaceholders(id model.ID) ([]string, error) {
+	raw, err := b.reader.GetRawUnit(id)
+	if err != nil {
+		return nil, err
+	}
+	return backend.LayoutPlaceholderNames(raw), nil
+}
+
+// PageLayoutName returns the qualified name of the layout a page renders inside.
+func (b *MprBackend) PageLayoutName(id model.ID) (string, error) {
+	raw, err := b.reader.GetRawUnit(id)
+	if err != nil {
+		return "", err
+	}
+	return backend.PageLayoutNameFromRaw(raw), nil
 }

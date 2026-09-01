@@ -241,6 +241,28 @@ func buildProjectTree(projectPath string) ([]*TreeNode, error) {
 		md.documents = append(md.documents, treeElement{Name: se.Name, ContainerID: se.ContainerID, Type: "scheduledevent"})
 	}
 
+	// Collect task queues
+	queues, _ := reader.ListQueues()
+	for _, q := range queues {
+		modID := h.FindModuleID(q.ContainerID)
+		md, ok := modData[modID]
+		if !ok {
+			continue
+		}
+		md.documents = append(md.documents, treeElement{Name: q.Name, ContainerID: q.ContainerID, Type: "queue"})
+	}
+
+	// Collect regular expressions
+	regexes, _ := reader.ListRegularExpressions()
+	for _, re := range regexes {
+		modID := h.FindModuleID(re.ContainerID)
+		md, ok := modData[modID]
+		if !ok {
+			continue
+		}
+		md.documents = append(md.documents, treeElement{Name: re.Name, ContainerID: re.ContainerID, Type: "regularexpression"})
+	}
+
 	// Collect JavaScript actions
 	jsas, _ := reader.ListJavaScriptActions()
 	for _, jsa := range jsas {

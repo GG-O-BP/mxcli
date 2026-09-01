@@ -30,7 +30,7 @@ func TestTraverseFlow_LinearSequence(t *testing.T) {
 		},
 		mkID("commit"): &microflows.ActionActivity{
 			BaseActivity: microflows.BaseActivity{BaseMicroflowObject: mkObj("commit")},
-			Action:       &microflows.CommitObjectsAction{CommitVariable: "Obj"},
+			Action:       &microflows.CommitObjectsAction{CommitVariable: "Obj", WithEvents: true},
 		},
 		mkID("end"): &microflows.EndEvent{BaseMicroflowObject: mkObj("end")},
 	}
@@ -1492,7 +1492,7 @@ func TestTraverseFlow_Issue528_NestedGuardDoesNotSwallowSharedActivities(t *test
 		mkID("outer_merge"):  &microflows.ExclusiveMerge{BaseMicroflowObject: mkObjAt("outer_merge", 300, 60)},
 		mkID("shared_act"): &microflows.ActionActivity{
 			BaseActivity: microflows.BaseActivity{BaseMicroflowObject: mkObjAt("shared_act", 400, 60)},
-			Action:       &microflows.CommitObjectsAction{CommitVariable: "Deal"},
+			Action:       &microflows.CommitObjectsAction{CommitVariable: "Deal", WithEvents: true},
 		},
 		mkID("end"): &microflows.EndEvent{BaseMicroflowObject: mkObjAt("end", 500, 60)},
 	}
@@ -1579,10 +1579,10 @@ func TestTraverseFlow_InheritanceSplitOmitsEmptyElse(t *testing.T) {
 		return strings.Join(lines, "\n")
 	}
 
-	if out := run(true); strings.Contains(out, "else") {
-		t.Errorf("DESCRIBE invented an `else` for the (empty) flow with no body:\n%s", out)
+	if out := run(true); strings.Contains(out, "(empty)") {
+		t.Errorf("DESCRIBE invented an empty branch for the (empty) flow with no body:\n%s", out)
 	}
-	if out := run(false); !strings.Contains(out, "else") {
-		t.Errorf("an else WITH a body must still render:\n%s", out)
+	if out := run(false); !strings.Contains(out, "when (empty) then") {
+		t.Errorf("an (empty) branch WITH a body must still render:\n%s", out)
 	}
 }

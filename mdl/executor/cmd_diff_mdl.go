@@ -184,7 +184,7 @@ func associationStmtToMDL(ctx *ExecContext, s *ast.CreateAssociationStmt) string
 	deleteBehavior := "DELETE_BUT_KEEP_REFERENCES"
 	switch s.DeleteBehavior {
 	case ast.DeleteCascade:
-		deleteBehavior = "DELETE_CASCADE"
+		deleteBehavior = "DELETE_AND_REFERENCES"
 	case ast.DeleteIfNoReferences:
 		deleteBehavior = "DELETE_IF_NO_REFERENCES"
 	}
@@ -235,11 +235,6 @@ func microflowStmtToMDL(ctx *ExecContext, s *ast.CreateMicroflowStmt) string {
 	// Folder
 	if s.Folder != "" {
 		lines = append(lines, fmt.Sprintf("folder '%s'", s.Folder))
-	}
-
-	// Comment
-	if s.Comment != "" {
-		lines = append(lines, fmt.Sprintf("comment '%s'", s.Comment))
 	}
 
 	// Return type
@@ -312,11 +307,6 @@ func nanoflowStmtToMDL(ctx *ExecContext, s *ast.CreateNanoflowStmt) string {
 		lines = append(lines, fmt.Sprintf("folder '%s'", s.Folder))
 	}
 
-	// Comment
-	if s.Comment != "" {
-		lines = append(lines, fmt.Sprintf("comment '%s'", s.Comment))
-	}
-
 	// Return type
 	if s.ReturnType != nil {
 		returnType := dataTypeToString(ctx, s.ReturnType.Type)
@@ -369,39 +359,43 @@ func microflowStatementToMDL(ctx *ExecContext, stmt ast.MicroflowStatement, inde
 		}
 
 	case *ast.CreateObjectStmt:
+		mods := commitModifier(commitTypeOf(s.Commit)) + refreshModifier(s.RefreshInClient)
 		if len(s.Changes) > 0 {
 			var members []string
 			for _, c := range s.Changes {
 				members = append(members, fmt.Sprintf("%s = %s", c.Attribute, diffExpressionToString(ctx, c.Value)))
 			}
-			lines = append(lines, fmt.Sprintf("%s$%s = create %s (%s);", indentStr, s.Variable, s.EntityType, strings.Join(members, ", ")))
+			lines = append(lines, fmt.Sprintf("%s$%s = create %s (%s)%s;", indentStr, s.Variable, s.EntityType, strings.Join(members, ", "), mods))
 		} else {
-			lines = append(lines, fmt.Sprintf("%s$%s = create %s;", indentStr, s.Variable, s.EntityType))
+			lines = append(lines, fmt.Sprintf("%s$%s = create %s%s;", indentStr, s.Variable, s.EntityType, mods))
 		}
 
 	case *ast.ChangeObjectStmt:
+		mods := commitModifier(commitTypeOf(s.Commit)) + refreshModifier(s.RefreshInClient)
 		if len(s.Changes) > 0 {
 			var members []string
 			for _, c := range s.Changes {
 				members = append(members, fmt.Sprintf("%s = %s", c.Attribute, diffExpressionToString(ctx, c.Value)))
 			}
-			lines = append(lines, fmt.Sprintf("%schange $%s (%s);", indentStr, s.Variable, strings.Join(members, ", ")))
+			lines = append(lines, fmt.Sprintf("%schange $%s (%s)%s;", indentStr, s.Variable, strings.Join(members, ", "), mods))
 		} else {
-			lines = append(lines, fmt.Sprintf("%schange $%s;", indentStr, s.Variable))
+			lines = append(lines, fmt.Sprintf("%schange $%s%s;", indentStr, s.Variable, mods))
 		}
 
 	case *ast.MfCommitStmt:
+		// Same rendering rule as the describer: events ON is the default and
+		// stays unwritten, events OFF is spelled out. Dropping the modifiers
+		// here would make `mxcli diff` blind to a change in exactly the flags
+		// #895 was about.
 		suffix := ""
-		if s.WithEvents {
-			suffix += " with events"
+		if s.WithoutEvents {
+			suffix += " without events"
 		}
-		if s.RefreshInClient {
-			suffix += " refresh"
-		}
+		suffix += refreshModifier(s.RefreshInClient)
 		lines = append(lines, fmt.Sprintf("%scommit $%s%s;", indentStr, s.Variable, suffix))
 
 	case *ast.DeleteObjectStmt:
-		lines = append(lines, fmt.Sprintf("%sdelete $%s;", indentStr, s.Variable))
+		lines = append(lines, fmt.Sprintf("%sdelete $%s%s;", indentStr, s.Variable, refreshModifier(s.RefreshInClient)))
 
 	case *ast.RetrieveStmt:
 		var stmt string
@@ -431,18 +425,21 @@ func microflowStatementToMDL(ctx *ExecContext, stmt ast.MicroflowStatement, inde
 		}
 		lines = append(lines, indentStr+"end if;")
 
+	// Branch bodies render at indent+2, one level in from their `when` at
+	// indent+1. Both splits rendered them at indent+1 — the same column as the
+	// branch keyword — which is unreadable once anything nests (#913).
 	case *ast.EnumSplitStmt:
 		lines = append(lines, fmt.Sprintf("%scase $%s", indentStr, s.Variable))
 		for _, c := range s.Cases {
 			lines = append(lines, fmt.Sprintf("%s  when %s then", indentStr, formatEnumSplitCaseValues(enumSplitCaseValues(c))))
 			for _, caseStmt := range c.Body {
-				lines = append(lines, microflowStatementToMDL(ctx, caseStmt, indent+1)...)
+				lines = append(lines, microflowStatementToMDL(ctx, caseStmt, indent+2)...)
 			}
 		}
 		if len(s.ElseBody) > 0 {
 			lines = append(lines, indentStr+"  else")
 			for _, elseStmt := range s.ElseBody {
-				lines = append(lines, microflowStatementToMDL(ctx, elseStmt, indent+1)...)
+				lines = append(lines, microflowStatementToMDL(ctx, elseStmt, indent+2)...)
 			}
 		}
 		lines = append(lines, indentStr+"end case;")
@@ -450,15 +447,16 @@ func microflowStatementToMDL(ctx *ExecContext, stmt ast.MicroflowStatement, inde
 	case *ast.InheritanceSplitStmt:
 		lines = append(lines, fmt.Sprintf("%ssplit type $%s", indentStr, s.Variable))
 		for _, c := range s.Cases {
-			lines = append(lines, fmt.Sprintf("%scase %s", indentStr, c.Entity.String()))
+			lines = append(lines, fmt.Sprintf("%s  when %s then", indentStr, c.Entity.String()))
 			for _, caseStmt := range c.Body {
-				lines = append(lines, microflowStatementToMDL(ctx, caseStmt, indent+1)...)
+				lines = append(lines, microflowStatementToMDL(ctx, caseStmt, indent+2)...)
 			}
 		}
 		if len(s.ElseBody) > 0 {
-			lines = append(lines, indentStr+"else")
+			// Mendix's `(empty)` flow (null object), not a default branch.
+			lines = append(lines, indentStr+"  when (empty) then")
 			for _, elseStmt := range s.ElseBody {
-				lines = append(lines, microflowStatementToMDL(ctx, elseStmt, indent+1)...)
+				lines = append(lines, microflowStatementToMDL(ctx, elseStmt, indent+2)...)
 			}
 		}
 		lines = append(lines, indentStr+"end split;")
@@ -749,7 +747,7 @@ func associationToMDL(ctx *ExecContext, moduleName string, assoc *domainmodel.As
 	if assoc.ChildDeleteBehavior != nil {
 		switch assoc.ChildDeleteBehavior.Type {
 		case domainmodel.DeleteBehaviorTypeDeleteMeAndReferences:
-			deleteBehavior = "DELETE_CASCADE"
+			deleteBehavior = "DELETE_AND_REFERENCES"
 		case domainmodel.DeleteBehaviorTypeDeleteMeIfNoReferences:
 			deleteBehavior = "DELETE_IF_NO_REFERENCES"
 		}

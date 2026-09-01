@@ -54,11 +54,17 @@ type MockBackend struct {
 	DeleteFolderFunc func(id model.ID) error
 	MoveFolderFunc   func(id model.ID, newContainerID model.ID) error
 
+	// DocumentPlacementBackend
+	MoveDocumentFunc      func(unitID, containerID model.ID) error
+	FindDocumentUnitFunc  func(moduleName, name string) (*types.DocumentUnit, error)
+	ListDocumentUnitsFunc func() ([]*types.DocumentUnit, error)
+
 	// DomainModelBackend
 	ListDomainModelsFunc                       func() ([]*domainmodel.DomainModel, error)
 	GetDomainModelFunc                         func(moduleID model.ID) (*domainmodel.DomainModel, error)
 	GetDomainModelByIDFunc                     func(id model.ID) (*domainmodel.DomainModel, error)
 	UpdateDomainModelFunc                      func(dm *domainmodel.DomainModel) error
+	SetDomainModelAnnotationsFunc              func(domainModelID model.ID, annotations []*domainmodel.Annotation) error
 	CreateEntityFunc                           func(domainModelID model.ID, entity *domainmodel.Entity) error
 	UpdateEntityFunc                           func(domainModelID model.ID, entity *domainmodel.Entity) error
 	DeleteEntityFunc                           func(domainModelID model.ID, entityID model.ID) error
@@ -88,6 +94,12 @@ type MockBackend struct {
 	MoveMicroflowFunc         func(mf *microflows.Microflow) error
 	ParseMicroflowFromRawFunc func(raw map[string]any, unitID, containerID model.ID) *microflows.Microflow
 	ParseMicroflowBSONFunc    func(contents []byte, unitID, containerID model.ID) (*microflows.Microflow, error)
+	ListRulesFunc             func() ([]*microflows.Rule, error)
+	GetRuleFunc               func(id model.ID) (*microflows.Rule, error)
+	CreateRuleFunc            func(rule *microflows.Rule) error
+	UpdateRuleFunc            func(rule *microflows.Rule) error
+	DeleteRuleFunc            func(id model.ID) error
+	MoveRuleFunc              func(rule *microflows.Rule) error
 	ListNanoflowsFunc         func() ([]*microflows.Nanoflow, error)
 	GetNanoflowFunc           func(id model.ID) (*microflows.Nanoflow, error)
 	CreateNanoflowFunc        func(nf *microflows.Nanoflow) error
@@ -104,6 +116,8 @@ type MockBackend struct {
 	DeletePageFunc         func(id model.ID) error
 	MovePageFunc           func(page *pages.Page) error
 	ListLayoutsFunc        func() ([]*pages.Layout, error)
+	LayoutPlaceholdersFunc func(id model.ID) ([]string, error)
+	PageLayoutNameFunc     func(id model.ID) (string, error)
 	GetLayoutFunc          func(id model.ID) (*pages.Layout, error)
 	CreateLayoutFunc       func(layout *pages.Layout) error
 	UpdateLayoutFunc       func(layout *pages.Layout) error
@@ -136,6 +150,7 @@ type MockBackend struct {
 	GetProjectSecurityFunc               func() (*security.ProjectSecurity, error)
 	SetProjectSecurityLevelFunc          func(unitID model.ID, level string) error
 	SetProjectDemoUsersEnabledFunc       func(unitID model.ID, enabled bool) error
+	SetProjectGuestAccessFunc            func(unitID model.ID, enabled bool, guestUserRole string) error
 	AddUserRoleFunc                      func(unitID model.ID, name string, moduleRoles []string, manageAllRoles bool) error
 	AlterUserRoleModuleRolesFunc         func(unitID model.ID, userRoleName string, add bool, moduleRoles []string) error
 	RemoveUserRoleFunc                   func(unitID model.ID, name string) error
@@ -194,23 +209,24 @@ type MockBackend struct {
 	DeleteDataTransformerFunc       func(id model.ID) error
 
 	// MappingBackend
-	ListImportMappingsFunc              func() ([]*model.ImportMapping, error)
-	GetImportMappingByQualifiedNameFunc func(moduleName, name string) (*model.ImportMapping, error)
-	CreateImportMappingFunc             func(im *model.ImportMapping) error
-	UpdateImportMappingFunc             func(im *model.ImportMapping) error
-	DeleteImportMappingFunc             func(id model.ID) error
-	MoveImportMappingFunc               func(im *model.ImportMapping) error
-	ListExportMappingsFunc              func() ([]*model.ExportMapping, error)
-	GetExportMappingByQualifiedNameFunc func(moduleName, name string) (*model.ExportMapping, error)
-	CreateExportMappingFunc             func(em *model.ExportMapping) error
-	UpdateExportMappingFunc             func(em *model.ExportMapping) error
-	DeleteExportMappingFunc             func(id model.ID) error
-	MoveExportMappingFunc               func(em *model.ExportMapping) error
-	ListJsonStructuresFunc              func() ([]*types.JsonStructure, error)
-	GetJsonStructureByQualifiedNameFunc func(moduleName, name string) (*types.JsonStructure, error)
-	CreateJsonStructureFunc             func(js *types.JsonStructure) error
-	UpdateJsonStructureFunc             func(js *types.JsonStructure) error
-	DeleteJsonStructureFunc             func(id string) error
+	ListImportMappingsFunc               func() ([]*model.ImportMapping, error)
+	GetImportMappingByQualifiedNameFunc  func(moduleName, name string) (*model.ImportMapping, error)
+	CreateImportMappingFunc              func(im *model.ImportMapping) error
+	UpdateImportMappingFunc              func(im *model.ImportMapping) error
+	DeleteImportMappingFunc              func(id model.ID) error
+	MoveImportMappingFunc                func(im *model.ImportMapping) error
+	ListExportMappingsFunc               func() ([]*model.ExportMapping, error)
+	GetExportMappingByQualifiedNameFunc  func(moduleName, name string) (*model.ExportMapping, error)
+	CreateExportMappingFunc              func(em *model.ExportMapping) error
+	UpdateExportMappingFunc              func(em *model.ExportMapping) error
+	DeleteExportMappingFunc              func(id model.ID) error
+	MoveExportMappingFunc                func(em *model.ExportMapping) error
+	ListJsonStructuresFunc               func() ([]*types.JsonStructure, error)
+	ListMessageDefinitionCollectionsFunc func() ([]*model.MessageDefinitionCollection, error)
+	GetJsonStructureByQualifiedNameFunc  func(moduleName, name string) (*types.JsonStructure, error)
+	CreateJsonStructureFunc              func(js *types.JsonStructure) error
+	UpdateJsonStructureFunc              func(js *types.JsonStructure) error
+	DeleteJsonStructureFunc              func(id string) error
 
 	// JavaBackend
 	ListJavaActionsFunc            func() ([]*types.JavaAction, error)
@@ -244,15 +260,36 @@ type MockBackend struct {
 	UpdateProjectSettingsFunc func(ps *model.ProjectSettings) error
 
 	// ImageBackend
-	ListImageCollectionsFunc  func() ([]*types.ImageCollection, error)
-	ListIconCollectionsFunc   func() ([]*types.IconCollection, error)
-	CreateImageCollectionFunc func(ic *types.ImageCollection) error
-	UpdateImageCollectionFunc func(ic *types.ImageCollection) error
-	DeleteImageCollectionFunc func(id string) error
+	ListImageCollectionsFunc func() ([]*types.ImageCollection, error)
+	ListIconCollectionsFunc  func() ([]*types.IconCollection, error)
+
+	ListMenuDocumentsFunc              func() ([]*types.MenuDocument, error)
+	GetMenuDocumentByQualifiedNameFunc func(moduleName, name string) (*types.MenuDocument, error)
+	CreateMenuDocumentFunc             func(md *types.MenuDocument) error
+	UpdateMenuDocumentFunc             func(md *types.MenuDocument) error
+	DeleteMenuDocumentFunc             func(id model.ID) error
+	CreateImageCollectionFunc          func(ic *types.ImageCollection) error
+	UpdateImageCollectionFunc          func(ic *types.ImageCollection) error
+	DeleteImageCollectionFunc          func(id string) error
+
+	// QueueBackend
+	ListQueuesFunc  func() ([]*types.Queue, error)
+	CreateQueueFunc func(q *types.Queue) error
+	UpdateQueueFunc func(q *types.Queue) error
+	DeleteQueueFunc func(id string) error
 
 	// ScheduledEventBackend
-	ListScheduledEventsFunc func() ([]*model.ScheduledEvent, error)
-	GetScheduledEventFunc   func(id model.ID) (*model.ScheduledEvent, error)
+	ListScheduledEventsFunc  func() ([]*model.ScheduledEvent, error)
+	GetScheduledEventFunc    func(id model.ID) (*model.ScheduledEvent, error)
+	CreateScheduledEventFunc func(ev *model.ScheduledEvent) error
+	UpdateScheduledEventFunc func(ev *model.ScheduledEvent) error
+	DeleteScheduledEventFunc func(id string) error
+
+	// RegularExpressionBackend
+	ListRegularExpressionsFunc  func() ([]*model.RegularExpression, error)
+	CreateRegularExpressionFunc func(re *model.RegularExpression) error
+	UpdateRegularExpressionFunc func(re *model.RegularExpression) error
+	DeleteRegularExpressionFunc func(id string) error
 
 	// RenameBackend
 	UpdateQualifiedNameInAllUnitsFunc func(oldName, newName string) (int, error)
@@ -267,6 +304,10 @@ type MockBackend struct {
 	GetRawUnitByNameFunc      func(objectType, qualifiedName string) (*types.RawUnitInfo, error)
 	GetRawMicroflowByNameFunc func(qualifiedName string) ([]byte, error)
 	UpdateRawUnitFunc         func(unitID string, contents []byte) error
+	// UpdateRawUnitOwningTranslationsFunc stubs the write path that is
+	// authoritative about a unit's translations. Falls back to UpdateRawUnitFunc
+	// when unset, because most tests do not care about the distinction.
+	UpdateRawUnitOwningTranslationsFunc func(unitID string, contents []byte) error
 
 	// MetadataBackend
 	ListAllUnitIDsFunc   func() ([]string, error)

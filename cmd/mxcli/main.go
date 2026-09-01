@@ -6,6 +6,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -251,8 +252,16 @@ func mcpTracer() *backend.Tracer {
 // newLoggedExecutor creates an executor with diagnostics logging attached.
 // The caller must call logger.Close() when done (safe on nil).
 func newLoggedExecutor(mode string) (*executor.Executor, *diaglog.Logger) {
+	return newLoggedExecutorTo(mode, os.Stdout)
+}
+
+// newLoggedExecutorTo is newLoggedExecutor with the progress stream chosen by
+// the caller. A command whose stdout carries a machine-readable payload passes
+// progressSink(format) so its commentary lands on stderr instead of corrupting
+// the payload.
+func newLoggedExecutorTo(mode string, out io.Writer) (*executor.Executor, *diaglog.Logger) {
 	logger := diaglog.Init(version, mode)
-	exec := executor.New(os.Stdout)
+	exec := executor.New(out)
 	exec.SetBackendFactory(newBackendFactory())
 	exec.SetTracer(mcpTracer())
 	exec.SetLogger(logger)
@@ -312,7 +321,7 @@ func init() {
 	rootCmd.Flags().StringP("command", "c", "", "Execute MDL command(s) and exit")
 
 	// Check command flags
-	checkCmd.Flags().BoolP("references", "r", false, "Validate references against the project")
+	checkCmd.Flags().BoolP("references", "r", false, "Validate references against the project (implied by -p; kept for compatibility)")
 	checkCmd.Flags().String("format", "text", "Output format: text, json, sarif")
 	checkCmd.Flags().Bool("post-migration", false, "Scan the project for legacy native widgets that survived a Mendix upgrade (requires -p)")
 
@@ -369,12 +378,16 @@ func init() {
 	// Test command flags
 	testRunCmd.Flags().BoolP("list", "l", false, "List tests without executing")
 	testRunCmd.Flags().StringP("junit", "j", "", "Write JUnit XML results to file")
+	testRunCmd.Flags().Bool("require-assertions", false,
+		"Report a test that asserts nothing as an ERROR instead of a pass")
 	testRunCmd.Flags().BoolP("skip-build", "s", false, "Skip build step (reuse existing deployment)")
 	testRunCmd.Flags().Bool("local", false, "Run on mxcli's local runtime instead of Docker (no daemon needed)")
 	testRunCmd.Flags().Bool("legacy-runner", false, "With --local, run tests from the after-startup microflow and parse the log, instead of over the test endpoint")
 	testRunCmd.Flags().BoolP("watch", "w", false, "With --local, keep the runtime warm and re-run the suite on every test or model change (Ctrl-C to stop)")
 	testRunCmd.Flags().Bool("skip-app-startup", false, "With --local, do not run the project's own after-startup microflow during the test run (it runs by default, so tests see the app as it really boots)")
 	testRunCmd.Flags().Bool("attach", false, "Run against an app already started with 'mxcli run --local --test-endpoint' instead of booting one (tests hit that app's database)")
+	testRunCmd.Flags().String("configuration", "", "With --local, which project configuration's constant values to run the tests with (default: the only one, or \"Default\") — the same resolution 'mxcli run --local' uses, so a suite sees the same constants either way")
+	testRunCmd.Flags().StringArray("constant", nil, "With --local, set a constant for THIS RUN only: Module.Name=value (repeatable). Never written to the project. The value is visible in shell history and in `ps` — for a value that must not be, see docs/11-proposals/PROPOSAL_constant_values.md")
 	testRunCmd.Flags().BoolP("verbose", "v", false, "Show all runtime log output")
 	testRunCmd.Flags().BoolP("color", "", false, "Use colored output")
 	testRunCmd.Flags().StringP("timeout", "t", "5m", "Timeout for runtime startup and test execution")
@@ -414,4 +427,5 @@ func init() {
 	rootCmd.AddCommand(evalCmd)
 	rootCmd.AddCommand(tuiCmd)
 	rootCmd.AddCommand(fmtCmd)
+	rootCmd.AddCommand(constantCmd)
 }

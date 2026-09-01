@@ -97,7 +97,7 @@ func ValidateWidgetPropertiesForStatement(stmt ast.Statement, registry *WidgetRe
 // validateWidgetTree recursively walks the AST widget tree and validates
 // pluggable widgets it encounters.
 func validateWidgetTree(widgets []*ast.WidgetV3, registry *WidgetRegistry, locationPrefix string) []linter.Violation {
-	return validateWidgetTreeIn(widgets, registry, locationPrefix, nil)
+	return validateWidgetTreeIn(widgets, registry, locationPrefix, nil, nil, "", false)
 }
 
 // validateWidgetTreeIn is validateWidgetTree with the *parent* widget's
@@ -108,7 +108,7 @@ func validateWidgetTree(widgets []*ast.WidgetV3, registry *WidgetRegistry, locat
 // must be exempt from the MDL-WIDGET07 "unrecognized property, silently dropped"
 // warning. When the parent mapping is known, the child's enumeration
 // sub-properties are validated against their member keys (MDL-WIDGET08). (9a)
-func validateWidgetTreeIn(widgets []*ast.WidgetV3, registry *WidgetRegistry, locationPrefix string, parentObjectLists map[string]*ObjectListMapping) []linter.Violation {
+func validateWidgetTreeIn(widgets []*ast.WidgetV3, registry *WidgetRegistry, locationPrefix string, parentObjectLists map[string]*ObjectListMapping, parent *ast.WidgetV3, contextVar string, contextKnown bool) []linter.Violation {
 	var out []linter.Violation
 	for _, w := range widgets {
 		if w == nil {
@@ -117,23 +117,43 @@ func validateWidgetTreeIn(widgets []*ast.WidgetV3, registry *WidgetRegistry, loc
 		mapping := parentObjectLists[strings.ToUpper(w.Type)]
 		isObjectListItem := mapping != nil || isUniversalObjectListKeyword(w.Type)
 		out = append(out, validatePluggableWidgetProperties(w, registry, locationPrefix)...)
+		// #928: contentparams with no `{N}` placeholder to consume them.
+		if lookupWidgetDef(w, registry) != nil {
+			out = append(out, validatePluggableContentParams(w, locationPrefix)...)
+		}
 		out = append(out, validateWidgetVisibility(w, registry, locationPrefix)...)
 		out = append(out, validateStaticWidget(w, locationPrefix)...)
 		out = append(out, validateDynamicTextFormatting(w, locationPrefix)...)
 		out = append(out, validateDatasourceXPathAssociationEmpty(w, locationPrefix)...)
 		out = append(out, validateComboBoxAssociation(w, locationPrefix)...)
+		// A show_page argument naming anything but the context object is dropped.
+		out = append(out, validateShowPageArguments(w, contextVar, contextKnown, locationPrefix)...)
 		// Unknown-property warning applies only to built-in widgets; pluggable
 		// widgets get the stricter def.json check (MDL-WIDGET01) above, and
 		// object-list items are validated by the object-list engine.
 		def := lookupWidgetDef(w, registry)
 		if def == nil && !isObjectListItem {
 			out = append(out, validateStaticWidgetUnknownProps(w, locationPrefix)...)
+			// #928: `editable:` on a widget Mendix gives no editability — same
+			// "silently dropped on write" family, but the flat property
+			// allow-list cannot see it because it is type-agnostic.
+			out = append(out, validateWidgetEditability(w, locationPrefix)...)
 		}
 		if mapping != nil {
 			out = append(out, validateObjectListItemEnums(w, mapping, locationPrefix)...)
+			// #931: a sub-property the widget's editorConfig hides must hold its
+			// default; a non-default value there is CE0463.
+			out = append(out, validateWidgetItemVisibility(parent, w, mapping, registry, locationPrefix)...)
 		}
+		// Reported once per grid, not once per column — see the rule's comment.
+		out = append(out, validateDataGrid2ColumnNames(w, locationPrefix)...)
 		if len(w.Children) > 0 {
-			out = append(out, validateWidgetTreeIn(w.Children, registry, locationPrefix, objectListMappingSet(def))...)
+			// A data-bound widget renames the context object for everything below it.
+			childContextVar, childContextKnown := contextVar, contextKnown
+			if ds := w.GetDataSource(); ds != nil {
+				childContextVar, childContextKnown = contextVarFor(ds), true
+			}
+			out = append(out, validateWidgetTreeIn(w.Children, registry, locationPrefix, objectListMappingSet(def), w, childContextVar, childContextKnown)...)
 		}
 	}
 	out = append(out, validateConsecutiveDynamicText(widgets, locationPrefix)...)
@@ -237,9 +257,11 @@ func validateConsecutiveDynamicText(siblings []*ast.WidgetV3, locationPrefix str
 	return nil
 }
 
-// validateWidgetVisibility warns (MDL-WIDGET10) when a property the user set on a
-// pluggable widget is hidden under that widget's current configuration — the
-// widget's editorConfig.js suppresses it, so Studio Pro ignores the written value.
+// validateWidgetVisibility flags (MDL-WIDGET10) a property the user set on a
+// pluggable widget that is hidden under that widget's current configuration — the
+// widget's editorConfig.js suppresses it. A value equal to the property's default
+// is merely ignored (warning); a non-default one is CE0463 and fails the build
+// (error) — see hiddenPropertySeverity.
 // Rules come from the widget's .def.json (propertyVisibility); for built-in
 // widgets whose def carries none they are lifted on the fly from the installed
 // .mpk's editorConfig.js (#574). Conservative by design: it only warns when the
@@ -250,18 +272,18 @@ func validateWidgetVisibility(w *ast.WidgetV3, registry *WidgetRegistry, locatio
 	if def == nil {
 		return nil
 	}
-	rules := def.PropertyVisibility
-	if len(rules) == 0 && registry != nil && registry.projectPath != "" {
-		rules = resolveWidgetVisibilityRules(registry.projectPath, def.WidgetID)
-	}
+	rules := visibilityRulesFor(def, registry)
 	if len(rules) == 0 {
 		return nil
 	}
 	values, explicit := widgetValueMap(w, def)
+	defaults := widgetPropertyDefaults(registryProjectPath(registry), def.WidgetID)
 
 	var out []linter.Violation
 	for _, rule := range rules {
-		if rule.HiddenWhen == nil {
+		// A nested rule is about a property of an object-list ITEM, not of the
+		// widget — validateWidgetItemVisibility evaluates those, against the item.
+		if rule.Nested() || rule.HiddenWhen == nil {
 			continue
 		}
 		if !explicit[strings.ToLower(rule.PropertyKey)] {
@@ -274,15 +296,10 @@ func validateWidgetVisibility(w *ast.WidgetV3, registry *WidgetRegistry, locatio
 		if !rule.HiddenWhen.Hidden(map[string]string{rule.HiddenWhen.PropertyKey: condVal}) {
 			continue
 		}
-		out = append(out, linter.Violation{
-			RuleID:   "MDL-WIDGET10",
-			Severity: linter.SeverityWarning,
-			Message: fmt.Sprintf(
-				"%s: widget `%s` (%s) property `%s` is hidden when `%s` %s — the value will be ignored",
-				locationPrefix, w.Name, def.MDLName, rule.PropertyKey,
-				rule.HiddenWhen.PropertyKey, visibilityCondWord(rule.HiddenWhen),
-			),
-		})
+		out = append(out, hiddenPropertyViolation(locationPrefix, w.Name, def.MDLName, "", rule,
+			values[strings.ToLower(rule.PropertyKey)],
+			declaredDefault(defaults, def.PropertyMappings, nil, "", rule.PropertyKey),
+			mappingOperationFor(def, rule.PropertyKey)))
 	}
 	return out
 }
@@ -301,12 +318,26 @@ func widgetValueMap(w *ast.WidgetV3, def *WidgetDefinition) (values map[string]s
 	for _, m := range def.Modes {
 		mappings = append(mappings, m.PropertyMappings...)
 	}
+	// An MDL source keyword shared by SEVERAL properties does not name any one of
+	// them. File Uploader 2.5.0 routes both `associatedFiles` and
+	// `associatedImages` from `DataSource:`, and `uploadMode` decides which one
+	// Studio Pro shows — so a script writing `DataSource:` once has named the
+	// keyword, not the hidden property, and must not be reported as having set
+	// it (#956). The value is still recorded, because conditions read from it.
+	sharedSource := map[string]int{}
+	for _, m := range mappings {
+		if m.Source != "" {
+			sharedSource[m.Source]++
+		}
+	}
 	for _, m := range mappings {
 		key := strings.ToLower(m.PropertyKey)
 		val, set := "", false
+		viaSharedSource := false
 		if m.Source != "" {
 			if v, ok := lookupWidgetProp(w, m.Source); ok {
 				val, set = v, true
+				viaSharedSource = sharedSource[m.Source] > 1
 			}
 		}
 		if !set {
@@ -323,9 +354,37 @@ func widgetValueMap(w *ast.WidgetV3, def *WidgetDefinition) (values map[string]s
 			}
 		}
 		if set {
-			explicit[key] = true
+			if !viaSharedSource {
+				explicit[key] = true
+			}
 		} else if m.Default != "" {
 			val = m.Default
+		} else if m.Operation == "primitive" && m.Value != "" {
+			// A primitive mapping carries the widget XML's defaultValue in Value
+			// (Default is only populated for selections), and the builder WRITES
+			// that value when the script names nothing — so reading it here is
+			// not a guess about the widget's configuration, it is the
+			// configuration. Without it every rule keyed on an unnamed
+			// enumeration is indeterminable and silently does not fire.
+			//
+			// Measured on File Uploader 2.5.0: `uploadMode` defaults to "files",
+			// which hides `associatedImages`. With the condition unknown, the
+			// `DataSource:` clause fanned out into BOTH datasource properties —
+			// and a value in a pruned slot is CE0463 on every page carrying the
+			// widget, with nothing having warned (#956). This is the same shape
+			// as the selection case below, which was fixed first because
+			// DataGrid2 was the widget then under test.
+			val = m.Value
+		} else if m.Operation == "selection" {
+			// An omitted `Selection:` is written as None. That is the builder's
+			// own behaviour rather than a guess — the stored itemSelection reads
+			// `Selection None` on a DataGrid2 whose script never named it — and
+			// the .mpk declares no defaultValue for a selection property, so
+			// without this the condition is indeterminable and every rule keyed
+			// on a selection silently does not fire. That includes
+			// `onSelectionChange`, whose action then reaches the model as CE0463
+			// with nothing having warned (#956).
+			val = "None"
 		}
 		if val != "" {
 			if m.Operation == "selection" {
@@ -874,11 +933,25 @@ func validateWidgetExpressionAssociations(w *ast.WidgetV3, locationPrefix string
 var templateParamExprRe = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*\s*\(|[+\-*<>=!]`)
 
 // validateTemplateParamExpressions flags a client expression supplied to a
-// contentparams/captionparams slot (MDL-WIDGET14). Those slots are DATA BINDINGS:
-// an unquoted value is stored as an attribute path, so an expression like
-// `formatDateTime($obj/Date, 'd MMM')` is written as a bogus attribute name and
-// Studio Pro rejects the page with CE1613. A quoted value is a legal string
-// literal and is left alone.
+// contentparams/captionparams slot (MDL-WIDGET14). mxcli stores an unquoted
+// value as an attribute path, so an expression like
+// `formatDateTime($obj/Date, 'd MMM')` would be written as a bogus attribute
+// name and Studio Pro rejects the page. A quoted value is a legal string literal
+// and is left alone.
+//
+// The refusal is right; the reason this rule used to give was not. It said a
+// template parameter "is a data binding … not an expression", which is a claim
+// about MENDIX and it is false: Studio Pro's Edit Template Parameter dialog
+// offers "Parameter type: Value | Expression", and the Expression form has its
+// own editor, variable list and wizard —
+// `formatDecimal($currentObject/Score)` is a perfectly valid parameter there.
+// The metamodel agrees: Pages$ClientTemplateParameter carries Expression beside
+// AttributeRef and SourceVariable.
+//
+// So the honest message is that MXCLI cannot author that form yet, not that the
+// platform forbids it. Telling a user to precompute a calculated attribute when
+// Studio Pro offers the thing they asked for sends them to do unnecessary
+// modelling. Authoring syntax for it is tracked separately.
 func validateTemplateParamExpressions(w *ast.WidgetV3, locationPrefix string) []linter.Violation {
 	var out []linter.Violation
 	check := func(slot string, params []ast.ParamAssignmentV3) {
@@ -898,7 +971,7 @@ func validateTemplateParamExpressions(w *ast.WidgetV3, locationPrefix string) []
 				RuleID:   "MDL-WIDGET14",
 				Severity: linter.SeverityError,
 				Message: fmt.Sprintf(
-					"%s: widget `%s` %s value `%s` is an expression, but a template parameter is a data binding — it accepts an attribute path (`$obj/Attr`) or a quoted string literal, not an expression (CE1613 in Studio Pro). Precompute it onto the bound entity (e.g. a calculated attribute) and bind that attribute instead.",
+					"%s: widget `%s` %s value `%s` looks like an expression, and MDL cannot author an expression-typed template parameter yet — an unquoted value is stored as an attribute path, so this would be written as a bogus attribute name. Mendix DOES support it: Studio Pro's Edit Template Parameter dialog has a `Value | Expression` choice. Set it there, or bind an attribute path (`$obj/Attr`) or a quoted string literal here.",
 					locationPrefix, w.Name, slot, val,
 				),
 			})
@@ -959,6 +1032,7 @@ func validatePluggableWidgetProperties(w *ast.WidgetV3, registry *WidgetRegistry
 	}
 	allowed, knownKeys := allowedWidgetProperties(def)
 	dsKeys := datasourceTypedKeys(def)
+	actionKeys := actionStorageKeys(def)
 	knownUnmapped := knownUnmappedProperties(def, allowed)
 
 	var out []linter.Violation
@@ -968,6 +1042,21 @@ func validatePluggableWidgetProperties(w *ast.WidgetV3, registry *WidgetRegistry
 		// dedicated path rather than via propertyMappings. Accept them
 		// universally so the validator doesn't false-positive on legitimate
 		// MDL idioms like `Label: 'X'` on widgets whose def.json omits it.
+		// A builtin name the engine has no route for on *this* widget is worse
+		// than an unknown one: it is accepted here, dropped on write, and shows
+		// up as a required-property error from MxBuild with nothing pointing at
+		// the cause.
+		if right, wrong := misusedBuiltinProperty(def.WidgetID, key); wrong {
+			out = append(out, linter.Violation{
+				RuleID:   "MDL-WIDGET17",
+				Severity: linter.SeverityError,
+				Message: fmt.Sprintf(
+					"%s: widget `%s` (%s) has no `%s` property — the value is dropped on write and "+
+						"MxBuild then reports the property as missing. Use `%s:` instead",
+					locationPrefix, w.Name, def.MDLName, key, right),
+			})
+			continue
+		}
 		if isBuiltinPropName(key) {
 			continue
 		}
@@ -985,6 +1074,20 @@ func validatePluggableWidgetProperties(w *ast.WidgetV3, registry *WidgetRegistry
 				Message: fmt.Sprintf(
 					"%s: widget `%s` (%s) property `%s` is datasource-typed — provide it via the widget `datasource:` clause (e.g. `datasource: database Module.Entity`); a value written as `%s: …` is not persisted",
 					locationPrefix, w.Name, def.MDLName, key, key,
+				),
+			})
+			continue
+		}
+
+		// An action slot's storage key is not the MDL spelling — name the one
+		// that is, rather than leaving the author to guess from a fuzzy match.
+		if src, ok := actionKeys[lower]; ok {
+			out = append(out, linter.Violation{
+				RuleID:   "MDL-WIDGET01",
+				Severity: linter.SeverityError,
+				Message: fmt.Sprintf(
+					"%s: widget `%s` (%s) property `%s` is the widget's internal storage name and is not written from MDL — use `%s:` instead",
+					locationPrefix, w.Name, def.MDLName, key, src,
 				),
 			})
 			continue
@@ -1028,6 +1131,69 @@ func validatePluggableWidgetProperties(w *ast.WidgetV3, registry *WidgetRegistry
 
 // datasourceTypedKeys returns the lowercased propertyKeys whose def.json mapping
 // has operation "datasource" (across the top-level mappings and every mode).
+// addMappingNames records the MDL names a PropertyMapping is authorable under.
+//
+// For most operations that is both the widget's own storage key and the engine's
+// source name. An `action` mapping is the exception: resolveMapping reads the
+// fixed AST slot (`w.GetAction()` / `w.GetOnChange()`), so ONLY the source name
+// (`Action`/`OnClick`/`OnChange`) reaches the writer. Allowing the storage key
+// would accept `onChangeEvent: …` on a Combobox and drop it on write — the
+// silent-drop class FINDINGS #14 was about. It is reported by
+// actionStorageKeys() instead, with the spelling that works.
+func addMappingNames(add func(string), m PropertyMapping) {
+	if !readsFixedASTSlot(m) {
+		add(m.PropertyKey)
+	}
+	add(m.Source)
+}
+
+// readsFixedASTSlot reports whether an operation's value is resolved from a
+// dedicated AST accessor rather than from a property looked up by name.
+//
+// resolveMapping switches on the mapping's Source, and for these operations it
+// reads a fixed slot — `w.GetOnChange()` for an action, the association binding
+// for an association — so a script naming the widget's own storage key is
+// accepted by check and written by nothing.
+//
+// Measured on a Combobox against Mendix 11.13, which is why this is a list of
+// two rather than "every operation with a Source": `attributeAssociation:` does
+// not persist while `Association:` does, and `onChangeEvent:` does not persist
+// while `OnChange:` does — but `optionsSourceAssociationCaptionAttribute:` DOES
+// persist, so excluding every storage key would reject working syntax. Add an
+// operation here only after checking the written document, not from the shape of
+// the mapping.
+// An action mapping with NO Source is a NAMED slot: resolveMapping reads it from
+// the AST property called by the mapping's own PropertyKey, so that key is the
+// authorable name rather than an internal one (#956).
+func readsFixedASTSlot(m PropertyMapping) bool {
+	switch m.Operation {
+	case "association":
+		return true
+	case "action":
+		return m.Source != ""
+	}
+	return false
+}
+
+// actionStorageKeys maps each action mapping's storage key to the MDL name that
+// actually writes it, so the validator can say "use OnChange" rather than only
+// "unknown property".
+func actionStorageKeys(def *WidgetDefinition) map[string]string {
+	out := make(map[string]string)
+	collect := func(ms []PropertyMapping) {
+		for _, m := range ms {
+			if readsFixedASTSlot(m) && m.PropertyKey != "" && m.Source != "" {
+				out[strings.ToLower(m.PropertyKey)] = m.Source
+			}
+		}
+	}
+	collect(def.PropertyMappings)
+	for _, mode := range def.Modes {
+		collect(mode.PropertyMappings)
+	}
+	return out
+}
+
 // These must be authored via the widget `datasource:` clause, not by name.
 func datasourceTypedKeys(def *WidgetDefinition) map[string]bool {
 	out := make(map[string]bool)
@@ -1107,8 +1273,7 @@ func allowedWidgetProperties(def *WidgetDefinition) (map[string]bool, []string) 
 	}
 
 	for _, m := range def.PropertyMappings {
-		add(m.PropertyKey)
-		add(m.Source)
+		addMappingNames(add, m)
 	}
 	for _, m := range def.ChildSlots {
 		add(m.PropertyKey)
@@ -1118,8 +1283,7 @@ func allowedWidgetProperties(def *WidgetDefinition) (map[string]bool, []string) 
 	}
 	for _, mode := range def.Modes {
 		for _, m := range mode.PropertyMappings {
-			add(m.PropertyKey)
-			add(m.Source)
+			addMappingNames(add, m)
 		}
 		for _, m := range mode.ChildSlots {
 			add(m.PropertyKey)
@@ -1199,4 +1363,157 @@ func min3(a, b, c int) int {
 		return b
 	}
 	return c
+}
+
+// validateDataGrid2ColumnNames warns (MDL-WIDGET16) that the names written on a
+// pluggable DataGrid 2's columns are discarded, and says what each column will
+// actually be addressable as.
+//
+// Mendix stores no name on a DataGrid 2 column. Its schema has no name or
+// identifier key at column level — the only human-facing label is `header`, the
+// caption — so the name in `column colLabel (attribute: Label, …)` reaches
+// DataGridColumnSpec, which has no field for it, and is dropped. Everything
+// downstream then addresses the column by a *derived* name: the bound attribute
+// for an attribute column, the sanitized caption otherwise, `colN` as a last
+// resort.
+//
+// The consequence is not obvious from the MDL. An author who wrote `colLabel`
+// reaches for `ALTER PAGE … ON dg1.colLabel` and gets "column not found" for a
+// column they just named, while `describe page` shows a name they never wrote.
+//
+// **One violation per grid, listing its columns.** The first version emitted one
+// per column, which a real project (mxcli-dbreplication, finding F6) reported as
+// 44 infos saying the same thing. It is one fact about the grid; repeating it
+// per column buries the rest of the report without adding information.
+//
+// It warns rather than rejects: the name is harmless, it reads as documentation
+// in the source, and rejecting it would break every existing script — mxcli's
+// own doctype tests name every column. What the author needs is to know which
+// name addresses it.
+func validateDataGrid2ColumnNames(grid *ast.WidgetV3, locationPrefix string) []linter.Violation {
+	if grid == nil || !strings.EqualFold(grid.Type, "DATAGRID") {
+		return nil
+	}
+	var renamed []string
+	for _, child := range grid.Children {
+		if child == nil || !strings.EqualFold(child.Type, "COLUMN") || child.Name == "" {
+			continue
+		}
+		addressable := derivedDataGrid2ColumnName(child)
+		if addressable == "" || strings.EqualFold(addressable, child.Name) {
+			continue
+		}
+		renamed = append(renamed, fmt.Sprintf("%s → %s", child.Name, addressable))
+	}
+	if len(renamed) == 0 {
+		return nil
+	}
+	return []linter.Violation{{
+		RuleID:   "MDL-WIDGET16",
+		Severity: linter.SeverityInfo,
+		Message: fmt.Sprintf(
+			"%s: DataGrid 2 stores no column names, so the names on %s are dropped on write. "+
+				"Address these columns by their derived name in ALTER PAGE (attribute columns "+
+				"key on the bound attribute, others on the caption), and expect DESCRIBE to "+
+				"show it: %s.",
+			locationPrefix, grid.Name, strings.Join(renamed, ", ")),
+	}}
+}
+
+// derivedDataGrid2ColumnName mirrors the name derivation the writer and the page
+// mutator apply, so the warning names the same string ALTER will accept.
+// Deliberately conservative: when it cannot tell (no attribute, no caption — the
+// colN case, which depends on position) it returns "" and nothing is reported,
+// because a wrong name in the message would be worse than none.
+func derivedDataGrid2ColumnName(w *ast.WidgetV3) string {
+	if attr := w.GetAttribute(); attr != "" {
+		parts := strings.Split(attr, ".")
+		return parts[len(parts)-1]
+	}
+	if caption := w.GetCaption(); caption != "" {
+		sanitized := strings.Map(func(r rune) rune {
+			if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' {
+				return r
+			}
+			return '_'
+		}, caption)
+		return strings.Trim(sanitized, "_")
+	}
+	return ""
+}
+
+// builtinPropertyMisuse names builtin MDL properties that are wrong on a
+// specific widget, and the one that is right.
+//
+// isBuiltinPropName accepts Label/Caption/Class/… on every widget, deliberately:
+// the engine routes them through dedicated paths rather than through a def's
+// propertyMappings, so validating them against the def would false-positive on
+// ordinary MDL. The cost is that a builtin the engine does *not* route for a
+// given widget is accepted and silently dropped.
+//
+// That bit a real project: `combobox cb (Association: …, Caption: Name)` passes
+// `check`, executes, loses the caption, and fails the build with
+//
+//	[error] [CE0642] "Property 'Caption' is required." at Combo box 'cb'
+//
+// The working spelling is `CaptionAttribute:`, which round-trips — so the author
+// was one property name away and concluded the feature was unusable
+// (mxcli-owid, finding #38).
+//
+// This is an explicit list rather than something inferred. Whether a builtin is
+// routed for a widget lives in the engine's own dispatch, not in the .def.json —
+// the combobox def declares optionsSourceAssociationCaption{Type,Expression} and
+// nothing called `Caption` — so inferring it would mean reimplementing that
+// dispatch here and getting it wrong in the other direction. Add a row when a
+// case is measured, and cite the build error in the commit.
+var builtinPropertyMisuse = map[string]map[string]string{
+	"com.mendix.widget.web.combobox.Combobox": {
+		"Caption": "CaptionAttribute",
+	},
+}
+
+// misusedBuiltinProperty reports the right property name when key is a builtin
+// that this widget does not route, matching case-insensitively the way the rest
+// of the property lookup does.
+func misusedBuiltinProperty(widgetID, key string) (string, bool) {
+	byName, ok := builtinPropertyMisuse[widgetID]
+	if !ok {
+		return "", false
+	}
+	for wrong, right := range byName {
+		if strings.EqualFold(wrong, key) {
+			return right, true
+		}
+	}
+	return "", false
+}
+
+// mappingOperationFor returns the def's operation for a property key, or "" when
+// the widget declares no mapping for it. Used to tell an action slot apart from a
+// valued property when judging how bad a hidden-property violation is.
+func mappingOperationFor(def *WidgetDefinition, propertyKey string) string {
+	scan := func(ms []PropertyMapping) string {
+		for _, m := range ms {
+			if strings.EqualFold(m.PropertyKey, propertyKey) {
+				return m.Operation
+			}
+		}
+		return ""
+	}
+	if op := scan(def.PropertyMappings); op != "" {
+		return op
+	}
+	for _, mode := range def.Modes {
+		if op := scan(mode.PropertyMappings); op != "" {
+			return op
+		}
+	}
+	for _, ol := range def.ObjectLists {
+		for _, ip := range ol.ItemProperties {
+			if strings.EqualFold(ip.PropertyKey, propertyKey) {
+				return ip.Operation
+			}
+		}
+	}
+	return ""
 }

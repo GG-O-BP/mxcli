@@ -38,10 +38,55 @@ func init() {
 			"combobox", "checkbox", "radiobuttons", "actionbutton",
 			"dynamictext", "snippetcall", "navigationlist",
 			"column", "row", "footer", "header", "controlbar",
+			"template", "specialization", "list view template",
 		},
-		Syntax:  "-- Containers\nLAYOUTGRID name { ROW r { COLUMN c (DesktopWidth: 6) { ... } } }\nCONTAINER name (Class: 'cls') { ... }\nCONTAINER name (OnClick: MICROFLOW Module.MF) { ... }   -- clickable container\n\n-- Data widgets\nDATAVIEW name (DataSource: $Param) { ... FOOTER f { ... } }\nDATAGRID name (DataSource: DATABASE Module.Entity) { COLUMN c (Attribute: A) }\nGALLERY name (DataSource: DATABASE Module.Entity, DesktopColumns: 3) { ... }\nLISTVIEW name (DataSource: DATABASE Module.Entity) { ... }\n\n-- Inputs\nTEXTBOX name (Label: 'L', Attribute: Attr)\nTEXTAREA | DATEPICKER | COMBOBOX | CHECKBOX | RADIOBUTTONS\n\n-- Actions\nACTIONBUTTON name (Caption: 'C', Action: SAVE_CHANGES, ButtonStyle: Primary)\n\n-- Display\nDYNAMICTEXT name (Content: 'Hello, {1}!', ContentParams: [{1} = Name])",
+		Syntax:  "-- Containers\nLAYOUTGRID name { ROW r { COLUMN c (DesktopWidth: 6) { ... } } }\nCONTAINER name (Class: 'cls') { ... }\nCONTAINER name (OnClick: MICROFLOW Module.MF) { ... }   -- clickable container\n\n-- Data widgets\nDATAVIEW name (DataSource: $Param) { ... FOOTER f { ... } }\nDATAGRID name (DataSource: DATABASE Module.Entity) { COLUMN c (Attribute: A) }\nGALLERY name (DataSource: DATABASE Module.Entity, DesktopColumns: 3) { ... }\nLISTVIEW name (DataSource: DATABASE Module.Entity) { ... }\nLISTVIEW name (...) { ... TEMPLATE FOR Module.Specialization { ... } }\n\n-- Inputs\nTEXTBOX name (Label: 'L', Attribute: Attr)\nTEXTAREA | DATEPICKER | COMBOBOX | CHECKBOX | RADIOBUTTONS\n\n-- Actions\nACTIONBUTTON name (Caption: 'C', Action: SAVE_CHANGES, ButtonStyle: Primary)\n\n-- Display\nDYNAMICTEXT name (Content: 'Hello, {1}!', ContentParams: [{1} = Name])",
 		Example: "DATAVIEW dvCustomer (DataSource: $Customer) {\n  TEXTBOX txtName (Label: 'Name', Attribute: Name)\n  COMBOBOX cbStatus (Label: 'Status', Attribute: Status)\n  FOOTER footer1 {\n    ACTIONBUTTON btnSave (Caption: 'Save', Action: SAVE_CHANGES, ButtonStyle: Primary)\n    ACTIONBUTTON btnCancel (Caption: 'Cancel', Action: CANCEL_CHANGES)\n  }\n}",
 		SeeAlso: []string{"page.create", "page.datasource"},
+	})
+
+	Register(SyntaxFeature{
+		Path:    "page.listview-template",
+		Summary: "List View specialization templates: one body per specialization",
+		Keywords: []string{
+			"template", "listview template", "list view template", "specialization",
+			"generalization", "inheritance", "template for", "per type",
+		},
+		Syntax: "LISTVIEW name (DataSource: DATABASE Module.Base) {\n" +
+			"  ...widgets...                          -- the default body, used when no template matches\n" +
+			"  TEMPLATE FOR Module.Specialization {   -- one body per specialization\n" +
+			"    ...widgets...\n" +
+			"  }\n" +
+			"}\n\n" +
+			"A template is identified by the entity it renders, not by a name — that is why it is\n" +
+			"TEMPLATE FOR Module.Entity and not TEMPLATE name. (A Gallery's TEMPLATE name is a\n" +
+			"different thing: a named content slot.)\n\n" +
+			"Rules:\n" +
+			"  - the entity must be the list view's entity or a specialization of it\n" +
+			"  - at most one template per entity\n" +
+			"  - templates keep their source order, which is the order Mendix stores and matches in\n" +
+			"  - inside a template the context object is the specialization, so its own attributes resolve\n\n" +
+			"ALTER PAGE — adding one reuses INSERT INTO with the same block, so a template has one\n" +
+			"spelling everywhere. Removing one needs its own form, because a template has no name:\n\n" +
+			"ALTER PAGE Module.Page {\n" +
+			"  INSERT INTO listViewName { TEMPLATE FOR Module.Specialization { ...widgets... } };\n" +
+			"  DROP TEMPLATE FOR Module.Specialization IN listViewName;\n" +
+			"};\n\n" +
+			"Naming the list view in DROP is required, not optional: one page can hold two list views\n" +
+			"with a template for the same entity. To change what a template renders, edit the widgets\n" +
+			"inside it by name (SET / INSERT AFTER) — they are ordinary widgets. To replace a whole\n" +
+			"template, DROP it and INSERT the new one in the same ALTER block; operations apply in\n" +
+			"order.",
+		Example: "LISTVIEW vehicleListView (DataSource: DATABASE Pages.Vehicle) {\n" +
+			"  DYNAMICTEXT defaultVehicle (Content: '{1} {2}', ContentParams: [{1} = Brand, {2} = Model])\n" +
+			"  TEMPLATE FOR Pages.Bus {\n" +
+			"    DYNAMICTEXT busLabel (Content: 'Bus, capacity {1}', ContentParams: [{1} = PassengerCapacity])\n" +
+			"  }\n" +
+			"  TEMPLATE FOR Pages.Truck {\n" +
+			"    DYNAMICTEXT truckLabel (Content: 'Truck, max load {1} kg', ContentParams: [{1} = MaxLoadKg])\n" +
+			"  }\n" +
+			"}",
+		SeeAlso: []string{"page.widgets", "page.datasource"},
 	})
 
 	Register(SyntaxFeature{
@@ -65,7 +110,7 @@ func init() {
 			"button style", "primary", "danger", "success",
 			"icon", "linkbutton", "link button",
 		},
-		Syntax:  "Action: SAVE_CHANGES\nAction: SAVE_CHANGES CLOSE_PAGE      -- save, then close the pop-up\nAction: CANCEL_CHANGES\nAction: CANCEL_CHANGES CLOSE_PAGE\nAction: CLOSE_PAGE\nAction: DELETE\nAction: DELETE CLOSE_PAGE\nAction: DELETE_OBJECT\nAction: NANOFLOW Module.NF\nAction: OPEN_LINK 'https://example.com'\nAction: SIGN_OUT\nAction: COMPLETE_TASK 'OutcomeName'\nAction: SHOW_PAGE Module.Page\nAction: SHOW_PAGE Module.Page(Param: $val)\nAction: MICROFLOW Module.MF\nAction: MICROFLOW Module.MF(Param: $val)\nAction: CREATE_OBJECT Module.Entity THEN SHOW_PAGE Module.Page\n\nButton styles: Default, Primary, Success, Info, Warning, Danger\nIcon: 'Module.IconCollection.IconName'   -- e.g. 'Atlas_Core.Atlas_Filled.pencil'\nUse `linkbutton` instead of `actionbutton` for link render mode (same properties).",
+		Syntax:  "Action: SAVE_CHANGES\nAction: SAVE_CHANGES CLOSE_PAGE      -- save, then close the pop-up\nAction: CANCEL_CHANGES\nAction: CANCEL_CHANGES CLOSE_PAGE\nAction: CLOSE_PAGE\nAction: DELETE\nAction: DELETE CLOSE_PAGE\nAction: DELETE_OBJECT\nAction: NANOFLOW Module.NF\nAction: OPEN_LINK 'https://example.com'\nAction: SIGN_OUT\nAction: COMPLETE_TASK 'OutcomeName'\nAction: SHOW_PAGE Module.Page\nAction: SHOW_PAGE Module.Page(Param: $currentObject)\nAction: MICROFLOW Module.MF\nAction: MICROFLOW Module.MF(Param: $val)\nAction: CREATE_OBJECT Module.Entity THEN SHOW_PAGE Module.Page\n\nA SHOW_PAGE argument must be the enclosing widget's context object --\neither $currentObject or the name of the variable the enclosing data\nwidget is bound to. Mendix infers it from that widget, so naming any\nother variable is refused (MDL-PAGEARG01); call a microflow instead.\n\nButton styles: Default, Primary, Success, Info, Warning, Danger\nIcon: 'Module.IconCollection.IconName'   -- e.g. 'Atlas_Core.Atlas_Filled.pencil'\nUse `linkbutton` instead of `actionbutton` for link render mode (same properties).",
 		Example: "ACTIONBUTTON btnSave (Caption: 'Save', Action: SAVE_CHANGES, ButtonStyle: Primary)\nACTIONBUTTON btnEdit (Caption: 'Edit',\n  Action: SHOW_PAGE Module.EditPage(Item: $currentObject))\nLINKBUTTON btnDelete (Caption: 'Delete', Action: DELETE,\n  Icon: 'Atlas_Core.Atlas_Filled.pencil')",
 		SeeAlso: []string{"page.widgets"},
 	})
@@ -88,8 +133,9 @@ func init() {
 			"alter page", "modify page", "update page",
 			"set property", "insert widget", "drop widget", "replace widget",
 			"popup width", "popup height", "popup resizable",
+			"drop template", "insert template", "list view template",
 		},
-		Syntax:  "ALTER PAGE Module.Name {\n  SET property = value ON widgetName;\n  SET Action = MICROFLOW Module.MF ON btnSave;   -- any CREATE PAGE action form\n  SET DataSource = $Param ON dvOrder;\n  SET (prop1 = val1, prop2 = val2) ON widgetName;\n  SET Title = 'New Title';  -- page-level (case-sensitive)\n  SET Class = 'css-class';  -- page-level CSS class / style\n  SET Style = 'css: rule';\n  SET PopupWidth = 800;     -- page-level pop-up dimensions\n  SET PopupHeight = 480;\n  SET PopupResizable = true;\n  INSERT AFTER widgetName { <widgets> };\n  INSERT BEFORE widgetName { <widgets> };\n  INSERT INTO containerName { <widgets> };\n  DROP WIDGET name1, name2;\n  REPLACE widgetName WITH { <widgets> };\n};",
+		Syntax:  "ALTER PAGE Module.Name {\n  SET property = value ON widgetName;\n  SET Action = MICROFLOW Module.MF ON btnSave;   -- any CREATE PAGE action form\n  SET DataSource = $Param ON dvOrder;\n  SET (prop1 = val1, prop2 = val2) ON widgetName;\n  SET Title = 'New Title';  -- page-level (case-sensitive)\n  SET Class = 'css-class';  -- page-level CSS class / style\n  SET Style = 'css: rule';\n  SET PopupWidth = 800;     -- page-level pop-up dimensions\n  SET PopupHeight = 480;\n  SET PopupResizable = true;\n  INSERT AFTER widgetName { <widgets> };\n  INSERT BEFORE widgetName { <widgets> };\n  INSERT INTO containerName { <widgets> };\n  DROP WIDGET name1, name2;\n  DROP TEMPLATE FOR Module.Specialization IN listViewName;\n  REPLACE widgetName WITH { <widgets> };\n};",
 		Example: "ALTER PAGE Module.EditPage {\n  SET (Caption = 'Save & Close', ButtonStyle = Success) ON btnSave;\n  INSERT AFTER txtName {\n    TEXTBOX txtMiddleName (Label: 'Middle Name', Attribute: MiddleName)\n  };\n  DROP WIDGET txtUnused;\n};",
 		SeeAlso: []string{"page.create", "page.show", "snippet.alter"},
 	})
@@ -168,6 +214,115 @@ func init() {
 		SeeAlso: []string{"snippet", "snippet.create"},
 	})
 
+	// ── Layout ────────────────────────────────────────────────────────────
+
+	Register(SyntaxFeature{
+		Path:    "layout",
+		Summary: "The frame a page is built on — regions, navigation, and the placeholders pages bind to",
+		Keywords: []string{
+			"layout", "layouts", "create layout", "scrollcontainer", "region",
+			"placeholder", "navigationtree", "topbar", "sidebar", "frame",
+		},
+		Syntax: "CREATE [OR REPLACE] LAYOUT Module.Name (\n" +
+			"  layouttype: 'Responsive' | 'Phone' | 'Tablet' | 'ModalPopup'   -- web\n" +
+			"           -- | 'Default' | 'Popup'                              -- native\n" +
+			"  [, class: 'layout-atlas layout-atlas-responsive-topbar']\n" +
+			"  [, style: '...']\n" +
+			") {\n" +
+			"  SCROLLCONTAINER name {\n" +
+			"    REGION top | right | bottom | left | center\n" +
+			"      [( Size: 60, SizeMode: 'Fixed' | 'Pixels' | 'Auto', Class: '…' )] {\n" +
+			"      -- widgets, plus:\n" +
+			"      NAVIGATIONTREE name (Profile: 'Responsive')   -- vertical, for a sidebar\n" +
+			"      MENUBAR name (Profile: 'Responsive')          -- horizontal, for a topbar\n" +
+			"      PLACEHOLDER Main\n" +
+			"    }\n" +
+			"  }\n" +
+			"}",
+		Example: "-- Mendix's own guidance is not to edit the supplied Atlas layouts:\n" +
+			"-- a Marketplace update replaces the module and the edit is gone.\n" +
+			"-- Create the layout in a module you own instead.\n" +
+			"--\n" +
+			"-- The class is load-bearing: Atlas scopes ~24 of its layout rules to\n" +
+			"-- .layout-atlas, so a layout without one builds clean and renders with\n" +
+			"-- no topbar bar and no sidebar rail.\n" +
+			"CREATE OR REPLACE LAYOUT MyModule.App_Default (\n" +
+			"  layouttype: 'Responsive',\n" +
+			"  class: 'layout-atlas layout-atlas-responsive-topbar'\n" +
+			") {\n" +
+			"  SCROLLCONTAINER layoutContainer {\n" +
+			"    REGION top (Size: 60, SizeMode: 'Fixed', Class: 'region-topbar') {\n" +
+			"      SNIPPETCALL topbar (Snippet: MyModule.SNIPPET_TopBar)\n" +
+			"    }\n" +
+			"    REGION left (Size: 232, SizeMode: 'Pixels', Class: 'region-sidebar') {\n" +
+			"      NAVIGATIONTREE navMenu (Profile: 'Responsive')\n" +
+			"    }\n" +
+			"    REGION center (Class: 'region-content') {\n" +
+			"      PLACEHOLDER Main\n" +
+			"    }\n" +
+			"  }\n" +
+			"}\n\n" +
+			"-- A page binds to a placeholder by name:\n" +
+			"CREATE PAGE MyModule.Home (Title: 'Home', Layout: MyModule.App_Default) {\n" +
+			"  TITLE t (Content: 'Welcome')\n" +
+			"}\n\n" +
+			"-- A placeholder's name is API: a page references it as Module.Layout.<Name>,\n" +
+			"-- so renaming one unbinds every page that used it. Name one Main — that\n" +
+			"-- convention is how Mendix picks the main placeholder (every Atlas layout\n" +
+			"-- does), because Forms$Layout has no property for it. A layout must declare\n" +
+			"-- at least one placeholder or no page can use it.",
+		SeeAlso: []string{"layout.show", "page.create", "snippet"},
+	})
+
+	Register(SyntaxFeature{
+		Path:    "layout.alter",
+		Summary: "ALTER LAYOUT — edit a layout in place; repoint pages onto a different one",
+		Keywords: []string{
+			"alter layout", "modify layout", "set layout", "repoint pages",
+			"alter pages", "change layout", "migrate layout", "region insert",
+		},
+		Syntax: "-- Edit a layout in place (same operations as ALTER PAGE):\n" +
+			"ALTER LAYOUT Module.Name {\n" +
+			"  INSERT INTO <scrollContainer>.<top|right|bottom|left|center> { <widgets> };\n" +
+			"  INSERT BEFORE|AFTER <widgetName> { <widgets> };\n" +
+			"  SET <property> = <value> ON <widgetName>;\n" +
+			"  DROP WIDGET <name1>, <name2>;\n" +
+			"  REPLACE <widgetName> WITH { <widgets> };\n" +
+			"};\n\n" +
+			"-- Point one page at a different layout:\n" +
+			"ALTER PAGE Module.Page { SET Layout = Module.Layout [MAP (Old AS New, …)]; };\n\n" +
+			"-- Point many at once (the migration form):\n" +
+			"ALTER PAGES [IN <module>] SET LAYOUT = Module.Layout\n" +
+			"  [MAP (Old AS New, …)] [WHERE LAYOUT = Module.OldLayout];",
+		Example: "-- Move every page off the Atlas layout onto your own:\n" +
+			"ALTER PAGES SET LAYOUT = MyModule.App_Default\n" +
+			"  WHERE LAYOUT = Atlas_Core.Atlas_Default;\n\n" +
+			"-- A page bound to a placeholder the new layout lacks is refused; rebind it:\n" +
+			"ALTER PAGE MyModule.Split { SET Layout = MyModule.Minimal MAP (HeaderLeft AS Main); };\n\n" +
+			"-- Add a topbar snippet to a layout without rewriting the document:\n" +
+			"ALTER LAYOUT MyModule.App_Default {\n" +
+			"  INSERT INTO layoutContainer.top { SNIPPETCALL bar (Snippet: MyModule.SNIPPET_ThemeBar) };\n" +
+			"};\n\n" +
+			"-- A region has no name of its own — its slot is its identity — so it is\n" +
+			"-- addressed as <scrollContainer>.<slot>. Only INSERT INTO takes a region;\n" +
+			"-- BEFORE/AFTER position a widget among siblings, so name the widget.\n" +
+			"-- Pages in Marketplace modules are skipped and named; ALTER LAYOUT refuses\n" +
+			"-- a Marketplace target outright. Prefer ALTER over CREATE OR REPLACE for a\n" +
+			"-- layout you did not author: a rewrite is only as complete as its describe.",
+		SeeAlso: []string{"layout", "layout.show", "page.alter"},
+	})
+
+	Register(SyntaxFeature{
+		Path:    "layout.show",
+		Summary: "List and describe layouts (DESCRIBE emits re-executable CREATE LAYOUT)",
+		Keywords: []string{
+			"show layouts", "list layouts", "describe layout",
+		},
+		Syntax:  "SHOW LAYOUTS;\nSHOW LAYOUTS IN <module>;\nDESCRIBE LAYOUT Module.Name;",
+		Example: "-- Copy an Atlas layout into your own module: describe it, rename it, run it.\nDESCRIBE LAYOUT Atlas_Core.Atlas_Default;",
+		SeeAlso: []string{"layout", "page.show"},
+	})
+
 	// ── Building Block ────────────────────────────────────────────────────
 
 	Register(SyntaxFeature{
@@ -180,6 +335,40 @@ func init() {
 		Syntax:  "SHOW BUILDING BLOCKS;\nSHOW BUILDING BLOCKS IN <module>;\nDESCRIBE BUILDING BLOCK Module.Name;",
 		Example: "SHOW BUILDING BLOCKS IN MyModule;\nDESCRIBE BUILDING BLOCK MyModule.LoginForm;",
 		SeeAlso: []string{"snippet.show", "page.show"},
+	})
+
+	Register(SyntaxFeature{
+		Path:    "navigation.menu-document",
+		Summary: "Create, describe and drop standalone menu documents (Menus$MenuDocument)",
+		Keywords: []string{
+			"create menu", "describe menu", "drop menu",
+			"menu", "menus", "menu document", "menu item",
+		},
+		Syntax: "CREATE [OR MODIFY] MENU Module.Name [FOLDER 'path'] (\n" +
+			"  MENU ITEM '<caption>' [PAGE Module.Page | MICROFLOW Module.Flow] [ICON Module.Collection.name];\n" +
+			"  MENU '<caption>' [ICON Module.Collection.name] ( <nested items> );\n" +
+			");\n" +
+			"DESCRIBE MENU Module.Name;\n" +
+			"DROP MENU Module.Name;",
+		Example: "CREATE OR MODIFY MENU MyModule.Main_Menu (\n" +
+			"  menu item 'Home' page MyModule.Home_Web icon Atlas_Core.Atlas.home;\n" +
+			"  menu item 'Run' microflow MyModule.DoThing;\n" +
+			"  menu 'Admin' (\n" +
+			"    menu item 'Accounts' page Administration.Account_Overview;\n" +
+			"  );\n" +
+			"  menu item 'Plain';\n" +
+			");\n\n" +
+			"-- Notes:\n" +
+			"--   * A menu document is the reusable menu a menu widget points at. It is\n" +
+			"--     NOT the menu inside a navigation profile — for that use\n" +
+			"--     SHOW NAVIGATION MENU and ALTER NAVIGATION. Both use these same items.\n" +
+			"--   * OR MODIFY replaces the item list wholesale; an omitted item is removed.\n" +
+			"--     The document's identity and export level are preserved.\n" +
+			"--   * ICON names an icon collection entry. A glyph or image icon cannot be\n" +
+			"--     expressed in MDL; DESCRIBE flags those rather than dropping them silently.\n" +
+			"--   * A page with required parameters cannot be opened from a menu item\n" +
+			"--     without an argument — Mendix reports CE1571.",
+		SeeAlso: []string{"navigation.create", "navigation.show", "page.show"},
 	})
 
 	// ── Fragment ──────────────────────────────────────────────────────────

@@ -76,7 +76,7 @@ func describeDataTransformer(ctx *ExecContext, name ast.QualifiedName) error {
 		w := ctx.Output
 
 		// Emit re-executable MDL
-		fmt.Fprintf(w, "create data transformer %s.%s\n", modName, dt.Name)
+		fmt.Fprintf(w, "create data transformer %s.%s%s\n", modName, dt.Name, describeFolderClause(ctx, dt.ContainerID))
 
 		// Source — collapse newlines into spaces for single-line string
 		sourceContent := strings.ReplaceAll(dt.SourceJSON, "\n", " ")
@@ -125,11 +125,24 @@ func execCreateDataTransformer(ctx *ExecContext, s *ast.CreateDataTransformerStm
 		return mdlerrors.NewNotFound("module", s.Name.Module)
 	}
 
+	var existingContainer model.ID
+	if existing != nil {
+		existingContainer = existing.ContainerID
+	}
+	containerID, err := containerForDocument(ctx, module.ID, s.Folder, existingContainer)
+	if err != nil {
+		return err
+	}
+
 	dt := &model.DataTransformer{
-		ContainerID: module.ID,
+		ContainerID: containerID,
 		Name:        s.Name.Name,
 		SourceType:  s.SourceType,
 		SourceJSON:  s.SourceJSON,
+	}
+	if existing != nil {
+		// Excluded is model state, not script state (#914).
+		dt.Excluded = existing.Excluded
 	}
 
 	for _, step := range s.Steps {
@@ -144,8 +157,11 @@ func execCreateDataTransformer(ctx *ExecContext, s *ast.CreateDataTransformerStm
 		if err := ctx.Backend.UpdateDataTransformer(dt); err != nil {
 			return mdlerrors.NewBackend("update data transformer", err)
 		}
+		if _, err := applyDocumentFolder(ctx, dt.ID, existingContainer, containerID); err != nil {
+			return err
+		}
 		if !ctx.Quiet {
-			fmt.Fprintf(ctx.Output, "Modified data transformer: %s.%s (%d steps)\n",
+			ctx.ReportMutation("Modified", "data transformer: %s.%s (%d steps)",
 				s.Name.Module, s.Name.Name, len(dt.Steps))
 		}
 		return nil
@@ -172,12 +188,15 @@ func findDataTransformer(ctx *ExecContext, moduleName, name string) (*model.Data
 	if err != nil {
 		return nil, ""
 	}
-	for _, dt := range transformers {
-		modID := h.FindModuleID(dt.ContainerID)
-		modName := h.GetModuleName(modID)
-		if strings.EqualFold(modName, moduleName) && strings.EqualFold(dt.Name, name) {
-			return dt, dt.ID
-		}
+	// Prefer the live transformer over an excluded twin of the same name (#914).
+	if dt, ok := pickLive(transformers,
+		func(dt *model.DataTransformer) bool {
+			return strings.EqualFold(h.GetModuleName(h.FindModuleID(dt.ContainerID)), moduleName) &&
+				strings.EqualFold(dt.Name, name)
+		},
+		func(dt *model.DataTransformer) bool { return dt.Excluded },
+	); ok {
+		return dt, dt.ID
 	}
 	return nil, ""
 }

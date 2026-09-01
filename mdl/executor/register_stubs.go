@@ -100,6 +100,12 @@ func registerMicroflowAndNanoflowHandlers(r *Registry) {
 	r.Register(&ast.DropNanoflowStmt{}, func(ctx *ExecContext, stmt ast.Statement) error {
 		return execDropNanoflow(ctx, stmt.(*ast.DropNanoflowStmt))
 	})
+	r.Register(&ast.CreateRuleStmt{}, func(ctx *ExecContext, stmt ast.Statement) error {
+		return execCreateRule(ctx, stmt.(*ast.CreateRuleStmt))
+	})
+	r.Register(&ast.DropRuleStmt{}, func(ctx *ExecContext, stmt ast.Statement) error {
+		return execDropRule(ctx, stmt.(*ast.DropRuleStmt))
+	})
 }
 
 func registerPageHandlers(r *Registry) {
@@ -111,6 +117,9 @@ func registerPageHandlers(r *Registry) {
 	})
 	r.Register(&ast.CreateSnippetStmtV3{}, func(ctx *ExecContext, stmt ast.Statement) error {
 		return execCreateSnippetV3(ctx, stmt.(*ast.CreateSnippetStmtV3))
+	})
+	r.Register(&ast.CreateLayoutStmt{}, func(ctx *ExecContext, stmt ast.Statement) error {
+		return execCreateLayout(ctx, stmt.(*ast.CreateLayoutStmt))
 	})
 	r.Register(&ast.DropSnippetStmt{}, func(ctx *ExecContext, stmt ast.Statement) error {
 		return execDropSnippet(ctx, stmt.(*ast.DropSnippetStmt))
@@ -205,9 +214,81 @@ func registerNavigationHandlers(r *Registry) {
 	r.Register(&ast.AlterNavigationStmt{}, func(ctx *ExecContext, stmt ast.Statement) error {
 		return execAlterNavigation(ctx, stmt.(*ast.AlterNavigationStmt))
 	})
+	r.Register(&ast.CreateMenuStmt{}, func(ctx *ExecContext, stmt ast.Statement) error {
+		return execCreateMenu(ctx, stmt.(*ast.CreateMenuStmt))
+	})
+	r.Register(&ast.DropMenuStmt{}, func(ctx *ExecContext, stmt ast.Statement) error {
+		return execDropMenu(ctx, stmt.(*ast.DropMenuStmt))
+	})
+}
+
+func registerTranslationHandlers(r *Registry) {
+	r.Register(&ast.CreateTranslationsStmt{}, func(ctx *ExecContext, stmt ast.Statement) error {
+		return execCreateTranslations(ctx, stmt.(*ast.CreateTranslationsStmt))
+	})
+	r.Register(&ast.DescribeTranslationsStmt{}, func(ctx *ExecContext, stmt ast.Statement) error {
+		return execDescribeTranslations(ctx, stmt.(*ast.DescribeTranslationsStmt))
+	})
+}
+
+func registerQueueHandlers(r *Registry) {
+	r.Register(&ast.CreateQueueStmt{}, func(ctx *ExecContext, stmt ast.Statement) error {
+		return execCreateQueue(ctx, stmt.(*ast.CreateQueueStmt))
+	})
+	r.Register(&ast.DropQueueStmt{}, func(ctx *ExecContext, stmt ast.Statement) error {
+		return execDropQueue(ctx, stmt.(*ast.DropQueueStmt))
+	})
+	r.Register(&ast.ShowQueuesStmt{}, func(ctx *ExecContext, stmt ast.Statement) error {
+		return execShowQueues(ctx, stmt.(*ast.ShowQueuesStmt))
+	})
+	r.Register(&ast.DescribeQueueStmt{}, func(ctx *ExecContext, stmt ast.Statement) error {
+		return execDescribeQueue(ctx, stmt.(*ast.DescribeQueueStmt))
+	})
+}
+
+func registerScheduledEventHandlers(r *Registry) {
+	r.Register(&ast.CreateScheduledEventStmt{}, func(ctx *ExecContext, stmt ast.Statement) error {
+		return execCreateScheduledEvent(ctx, stmt.(*ast.CreateScheduledEventStmt))
+	})
+	r.Register(&ast.DropScheduledEventStmt{}, func(ctx *ExecContext, stmt ast.Statement) error {
+		return execDropScheduledEvent(ctx, stmt.(*ast.DropScheduledEventStmt))
+	})
+	r.Register(&ast.ShowScheduledEventsStmt{}, func(ctx *ExecContext, stmt ast.Statement) error {
+		return execShowScheduledEvents(ctx, stmt.(*ast.ShowScheduledEventsStmt))
+	})
+	r.Register(&ast.DescribeScheduledEventStmt{}, func(ctx *ExecContext, stmt ast.Statement) error {
+		return execDescribeScheduledEvent(ctx, stmt.(*ast.DescribeScheduledEventStmt))
+	})
+}
+
+func registerValidationRuleHandlers(r *Registry) {
+	r.Register(&ast.CreateValidationRuleStmt{}, func(ctx *ExecContext, stmt ast.Statement) error {
+		return execCreateValidationRule(ctx, stmt.(*ast.CreateValidationRuleStmt))
+	})
+}
+
+func registerRegularExpressionHandlers(r *Registry) {
+	r.Register(&ast.CreateRegularExpressionStmt{}, func(ctx *ExecContext, stmt ast.Statement) error {
+		return execCreateRegularExpression(ctx, stmt.(*ast.CreateRegularExpressionStmt))
+	})
+	r.Register(&ast.DropRegularExpressionStmt{}, func(ctx *ExecContext, stmt ast.Statement) error {
+		return execDropRegularExpression(ctx, stmt.(*ast.DropRegularExpressionStmt))
+	})
+	r.Register(&ast.ShowRegularExpressionsStmt{}, func(ctx *ExecContext, stmt ast.Statement) error {
+		return execShowRegularExpressions(ctx, stmt.(*ast.ShowRegularExpressionsStmt))
+	})
+	r.Register(&ast.DescribeRegularExpressionStmt{}, func(ctx *ExecContext, stmt ast.Statement) error {
+		return execDescribeRegularExpression(ctx, stmt.(*ast.DescribeRegularExpressionStmt))
+	})
 }
 
 func registerImageHandlers(r *Registry) {
+	r.Register(&ast.CreateAnnotationStmt{}, func(ctx *ExecContext, stmt ast.Statement) error {
+		return execCreateAnnotation(ctx, stmt.(*ast.CreateAnnotationStmt))
+	})
+	r.Register(&ast.DropAnnotationStmt{}, func(ctx *ExecContext, stmt ast.Statement) error {
+		return execDropAnnotation(ctx, stmt.(*ast.DropAnnotationStmt))
+	})
 	r.Register(&ast.CreateImageCollectionStmt{}, func(ctx *ExecContext, stmt ast.Statement) error {
 		return execCreateImageCollection(ctx, stmt.(*ast.CreateImageCollectionStmt))
 	})
@@ -419,6 +500,9 @@ func registerLintHandlers(r *Registry) {
 func registerAlterPageHandlers(r *Registry) {
 	r.Register(&ast.AlterPageStmt{}, func(ctx *ExecContext, stmt ast.Statement) error {
 		return execAlterPage(ctx, stmt.(*ast.AlterPageStmt))
+	})
+	r.Register(&ast.AlterPagesLayoutStmt{}, func(ctx *ExecContext, stmt ast.Statement) error {
+		return execAlterPagesLayout(ctx, stmt.(*ast.AlterPagesLayoutStmt))
 	})
 }
 

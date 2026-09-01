@@ -193,6 +193,32 @@ func (ob *Builder) SetTextTemplateWithParams(propertyKey string, text string, en
 	})
 }
 
+// SetTextTemplateWithClientParams sets a text template from author-supplied
+// parameters (MDL `contentparams:`), for a `{1}`-style template.
+//
+// SetTextTemplateWithParams derives parameters by matching `{AttrName}` against
+// the entity context; that covers the named spelling but leaves the numeric one
+// with no route, so a pluggable widget's `imageUrl: '{1}', contentparams: [...]`
+// was stored with Parameters=[2] (empty) and mxbuild answered CE0720 "Place
+// holder index 1 is greater than 0, the number of parameter(s)". (#928)
+func (ob *Builder) SetTextTemplateWithClientParams(propertyKey string, text string, params []*pages.ClientTemplateParameter) {
+	if text == "" {
+		return
+	}
+	tmpl := BuildClientTemplateWithTextAndParams(text, params)
+	ob.object = updateWidgetPropertyValue(ob.object, ob.propertyTypeIDs, propertyKey, func(val bson.D) bson.D {
+		result := make(bson.D, 0, len(val))
+		for _, elem := range val {
+			if elem.Key == "TextTemplate" {
+				result = append(result, bson.E{Key: "TextTemplate", Value: tmpl})
+			} else {
+				result = append(result, elem)
+			}
+		}
+		return result
+	})
+}
+
 func (ob *Builder) SetAction(propertyKey string, action pages.ClientAction) {
 	if action == nil {
 		return
@@ -293,6 +319,8 @@ func buildObjectListItemBSON(widgetID, listPropertyKey string, parentEntry pages
 			prop = buildItemChildWidgetsProperty(nestedEntry, childWidgets)
 		case shouldEmitEmptyClientTemplate(widgetID, listPropertyKey, k, itemKind):
 			prop = buildEmptyClientTemplateProperty(nestedEntry)
+		case isUnsetRequiredTextTemplate(nestedEntry):
+			prop = buildDefaultTextClientTemplateProperty(nestedEntry)
 		default:
 			prop = createDefaultWidgetProperty(nestedEntry)
 		}
@@ -374,6 +402,80 @@ var emptyClientTemplateRules = map[string]map[string]map[objectListItemKind]map[
 			},
 		},
 	},
+}
+
+// isUnsetRequiredTextTemplate reports whether an object-list item sub-property
+// is a REQUIRED TextTemplate the author did not set (#891).
+//
+// This generalises emptyClientTemplateRules, which is a hardcoded table covering
+// only DataGrid columns; every other object-list widget fell through it to a
+// null. In a stock blank app an Accordion group (required `headerText`) and a
+// Pop-up menu basic item (required `caption`) both raised CE0463, and thirteen
+// shipped widgets declare object lists with texttemplate items.
+//
+// Required-ness comes from the widget's own PropertyTypes, so this needs no
+// per-widget table and cannot go stale against a package upgrade. Note the
+// widget XML schema defaults `required` to TRUE when the attribute is absent —
+// exactly the Accordion's headerText — so a parser reading a missing attribute
+// as false silently disables this (mpk.go encodes the default as
+// `Required: p.Required != "false"`).
+func isUnsetRequiredTextTemplate(e pages.PropertyTypeIDEntry) bool {
+	return e.Required && strings.EqualFold(e.ValueType, "TextTemplate")
+}
+
+// buildDefaultTextClientTemplateProperty emits a required TextTemplate carrying
+// the widget's shipped default text.
+//
+// Both weaker forms fail, which is why this is not simply the empty builder:
+// TextTemplate=null is CE0463 "the definition of this widget has changed", and
+// an EMPTY Forms$ClientTemplate is CE4899 "Property 'Groups/1/Text' is
+// required". Populating from the ValueType's Translations is what
+// `mx update-widgets` itself writes (the Accordion's headerText ships
+// 'Header'/'Koptekst'). With no shipped translations there is nothing better to
+// write than the empty template.
+func buildDefaultTextClientTemplateProperty(entry pages.PropertyTypeIDEntry) bson.D {
+	if len(entry.DefaultTranslations) == 0 {
+		return buildEmptyClientTemplateProperty(entry)
+	}
+	value := createDefaultWidgetValue(entry)
+	value = setBSONField(value, "TextTemplate", buildClientTemplateWithTranslations(entry.DefaultTranslations))
+	return bson.D{
+		{Key: "$ID", Value: types.UUIDToBlob(types.GenerateID())},
+		{Key: "$Type", Value: "CustomWidgets$WidgetProperty"},
+		{Key: "TypePointer", Value: types.UUIDToBlob(entry.PropertyTypeID)},
+		{Key: "Value", Value: value},
+	}
+}
+
+// buildClientTemplateWithTranslations mirrors BuildEmptyClientTemplate but fills
+// Template.Items with one Texts$Translation per shipped language. The Fallback
+// stays empty and Parameters keeps marker 2 — the shape `mx update-widgets`
+// produces.
+func buildClientTemplateWithTranslations(translations []pages.PropertyTranslation) bson.D {
+	items := bson.A{int32(3)}
+	for _, t := range translations {
+		items = append(items, bson.D{
+			{Key: "$ID", Value: bsonutil.NewIDBsonBinary()},
+			{Key: "$Type", Value: "Texts$Translation"},
+			{Key: "LanguageCode", Value: t.LanguageCode},
+			{Key: "Text", Value: t.Text},
+		})
+	}
+	return bson.D{
+		{Key: "$ID", Value: bsonutil.NewIDBsonBinary()},
+		{Key: "$Type", Value: "Forms$ClientTemplate"},
+		{Key: "Fallback", Value: bson.D{
+			{Key: "$ID", Value: bsonutil.NewIDBsonBinary()},
+			{Key: "$Type", Value: "Texts$Text"},
+			{Key: "Items", Value: bson.A{int32(3)}},
+		}},
+		{Key: "Parameters", Value: bson.A{int32(2)}},
+		{Key: "Template", Value: bson.D{
+			{Key: "$ID", Value: bsonutil.NewIDBsonBinary()},
+			{Key: "$Type", Value: "Texts$Text"},
+			{Key: "Items", Value: items},
+		}},
+	}
 }
 
 // shouldEmitEmptyClientTemplate returns true when an unset TextTemplate-typed
@@ -638,19 +740,66 @@ func ApplyVisibilityRules(object bson.D, propertyTypeIDs map[string]pages.Proper
 		return object
 	}
 	values := primitiveValuesOf(object, propertyTypeIDs)
+
+	// Both directions, because null and empty are each invalid in the other's
+	// state. #574 covered hidden→null; a VISIBLE TextTemplate left null is the
+	// other half, and it is what made an authored ProgressCircle `showLabel:
+	// true` fail CE0463: `labelText` is visible whenever `labelType` is "text"
+	// (its default), and mxcli stored null where Mendix stores an empty
+	// ClientTemplate. Confirmed by handing the failing project to Mendix's own
+	// `mx update-widgets`, whose reconciliation writes exactly that template and
+	// changes nothing else of substance (ledger #104 follow-on).
+	//
+	// Only properties the widget's schema declares CONDITIONAL are touched. A
+	// TextTemplate with no rule is left exactly as it was: Studio Pro's
+	// convention for an unset one is not uniform — a DataGrid custom-content
+	// column stores null for `tooltip` and an empty ClientTemplate for
+	// `exportValue` — so filling every unset template would trade this bug for
+	// its mirror image. Those per-column conventions live in
+	// emptyClientTemplateRules and are reached by a different path.
+	hidden := make(map[string]bool, len(rules))
+	conditional := make([]string, 0, len(rules))
 	for _, rule := range rules {
-		if !rule.HiddenWhen.Hidden(values) {
-			continue
-		}
 		entry, ok := propertyTypeIDs[rule.PropertyKey]
 		if !ok || entry.ValueType != "TextTemplate" {
 			continue
 		}
-		object = updateWidgetPropertyValue(object, propertyTypeIDs, rule.PropertyKey, func(val bson.D) bson.D {
-			return setBSONField(val, "TextTemplate", nil)
+		if _, seen := hidden[rule.PropertyKey]; !seen {
+			conditional = append(conditional, rule.PropertyKey)
+			hidden[rule.PropertyKey] = false
+		}
+		// Several rules may govern one property; any one of them hiding it wins.
+		if rule.HiddenWhen.Hidden(values) {
+			hidden[rule.PropertyKey] = true
+		}
+	}
+	// Sorted, because the object is serialized and map order is not stable.
+	sort.Strings(conditional)
+
+	for _, key := range conditional {
+		isHidden := hidden[key]
+		object = updateWidgetPropertyValue(object, propertyTypeIDs, key, func(val bson.D) bson.D {
+			if isHidden {
+				return setBSONField(val, "TextTemplate", nil)
+			}
+			// Never clobber real content — only fill in the absent template.
+			if bsonFieldIsNil(val, "TextTemplate") {
+				return setBSONField(val, "TextTemplate", BuildEmptyClientTemplate())
+			}
+			return val
 		})
 	}
 	return object
+}
+
+// bsonFieldIsNil reports whether a field is absent or explicitly nil.
+func bsonFieldIsNil(val bson.D, field string) bool {
+	for _, elem := range val {
+		if elem.Key == field {
+			return elem.Value == nil
+		}
+	}
+	return true
 }
 
 // primitiveValuesOf maps each known property key to its current comparable value
@@ -1012,7 +1161,22 @@ func setTextTemplateValue(val bson.D, text string) bson.D {
 			if tmpl, ok := elem.Value.(bson.D); ok && tmpl != nil {
 				result = append(result, bson.E{Key: "TextTemplate", Value: updateTemplateText(tmpl, text)})
 			} else {
-				result = append(result, elem)
+				// The slot is nil, which is the NORMAL state of a conditional
+				// template: #574 stores one as null while its condition hides it,
+				// so a script that turns the condition on and writes the text in
+				// the same statement finds nothing to edit. Keeping the nil here
+				// dropped the text in silence — and left a widget whose own
+				// enumeration says it has custom text with no text, which is a
+				// build error (issue #254, Slider `tooltipType: customText`).
+				//
+				// Build the envelope, then write into it. Not a special case for
+				// the visible/hidden question: ApplyVisibilityRules still runs
+				// afterwards and nulls this again if the property turns out to be
+				// hidden, so an authored text can never survive into a pruned slot.
+				result = append(result, bson.E{
+					Key:   "TextTemplate",
+					Value: updateTemplateText(BuildEmptyClientTemplate(), text),
+				})
 			}
 		} else {
 			result = append(result, elem)
@@ -1034,7 +1198,7 @@ func updateTemplateText(tmpl bson.D, text string) bson.D {
 							bson.D{
 								{Key: "$ID", Value: bsonutil.IDToBsonBinary(types.GenerateID())},
 								{Key: "$Type", Value: "Texts$Translation"},
-								{Key: "LanguageCode", Value: "en_US"},
+								{Key: "LanguageCode", Value: model.AuthoringLanguage()},
 								{Key: "Text", Value: text},
 							},
 						}})
@@ -1137,7 +1301,7 @@ func createClientTemplateBSONWithParams(text string, entityContext string) bson.
 			{Key: "Items", Value: bson.A{int32(3), bson.D{
 				{Key: "$ID", Value: types.UUIDToBlob(types.GenerateID())},
 				{Key: "$Type", Value: "Texts$Translation"},
-				{Key: "LanguageCode", Value: "en_US"},
+				{Key: "LanguageCode", Value: model.AuthoringLanguage()},
 				{Key: "Text", Value: t},
 			}}},
 		}
@@ -1167,7 +1331,7 @@ func createDefaultClientTemplateBSON(text string) bson.D {
 			{Key: "Items", Value: bson.A{int32(3), bson.D{
 				{Key: "$ID", Value: types.UUIDToBlob(types.GenerateID())},
 				{Key: "$Type", Value: "Texts$Translation"},
-				{Key: "LanguageCode", Value: "en_US"},
+				{Key: "LanguageCode", Value: model.AuthoringLanguage()},
 				{Key: "Text", Value: t},
 			}}},
 		}
@@ -1489,7 +1653,7 @@ func BuildClientTemplateWithTextAndParams(text string, params []*pages.ClientTem
 				bson.D{
 					{Key: "$ID", Value: bsonutil.NewIDBsonBinary()},
 					{Key: "$Type", Value: "Texts$Translation"},
-					{Key: "LanguageCode", Value: "en_US"},
+					{Key: "LanguageCode", Value: model.AuthoringLanguage()},
 					{Key: "Text", Value: text},
 				},
 			}},

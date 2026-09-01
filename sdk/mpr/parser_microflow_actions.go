@@ -61,6 +61,7 @@ func parseMicroflowCallAction(raw map[string]any) *microflows.MicroflowCallActio
 				}
 			}
 		}
+		call.QueueSettings = parseQueueSettings(mfCall)
 		action.MicroflowCall = call
 	}
 
@@ -102,6 +103,7 @@ func parseJavaActionCallAction(raw map[string]any) *microflows.JavaActionCallAct
 	action.ID = model.ID(extractBsonID(raw["$ID"]))
 	action.ErrorHandlingType = microflows.ErrorHandlingType(extractString(raw["ErrorHandlingType"]))
 	action.JavaAction = extractString(raw["JavaAction"])
+	action.QueueSettings = parseQueueSettings(raw)
 	action.ResultVariableName = extractString(raw["ResultVariableName"])
 	action.UseReturnVariable = extractBool(raw["UseReturnVariable"], false)
 
@@ -621,6 +623,20 @@ func parseResultHandling(raw map[string]any, handlingType string) microflows.Res
 		result.ID = model.ID(extractBsonID(raw["$ID"]))
 		result.VariableName = extractString(raw["ResultVariableName"])
 		return result
+	case "FileDocument":
+		// The entity lives in VariableType and is always a specialization of
+		// System.FileDocument — the base is rejected as a return type (CE0362).
+		// Without this case the whole handling read back as nil, which the
+		// describer rendered as `returns String` while also losing the output
+		// variable, so a describe → exec round trip silently retyped the
+		// activity and still built clean. Issue #922.
+		result := &microflows.ResultHandlingFileDocument{}
+		result.ID = model.ID(extractBsonID(raw["$ID"]))
+		result.VariableName = extractString(raw["ResultVariableName"])
+		if varType := toMap(raw["VariableType"]); varType != nil {
+			result.EntityRef = extractString(varType["Entity"])
+		}
+		return result
 	case "Mapping":
 		result := &microflows.ResultHandlingMapping{}
 		result.ID = model.ID(extractBsonID(raw["$ID"]))
@@ -634,13 +650,27 @@ func parseResultHandling(raw map[string]any, handlingType string) microflows.Res
 			result.MappingID = model.ID(mappingRef)
 			forceSingleOccurrence := extractBool(call["ForceSingleOccurrence"], false)
 			result.ForceSingleOccurrence = &forceSingleOccurrence
+			// The Range is polymorphic: a ConstantRange carries SingleObject
+			// (All/First) while a CustomRange carries the limit and offset
+			// expressions. Reading only SingleObject dropped the Custom setting
+			// entirely, so a describe→edit→exec cycle turned a bounded import
+			// into an unbounded one (issue #881).
 			if rangeMap := toMap(call["Range"]); rangeMap != nil {
-				result.SingleObject = extractBool(rangeMap["SingleObject"], false)
+				switch extractString(rangeMap["$Type"]) {
+				case "Microflows$CustomRange":
+					result.LimitExpression = extractString(rangeMap["LimitExpression"])
+					result.OffsetExpression = extractString(rangeMap["OffsetExpression"])
+				default:
+					result.SingleObject = extractBool(rangeMap["SingleObject"], false)
+				}
 			}
 		}
 		if varType := toMap(raw["VariableType"]); varType != nil {
 			result.ResultEntityID = model.ID(extractString(varType["Entity"]))
-			if extractString(varType["$Type"]) == "DataTypes$ObjectType" {
+			// A bounded range is a LIST, so an ObjectType variable cannot make it
+			// single — without this guard a CustomRange read back as First.
+			if extractString(varType["$Type"]) == "DataTypes$ObjectType" &&
+				result.LimitExpression == "" && result.OffsetExpression == "" {
 				result.SingleObject = true
 			}
 		}
@@ -746,16 +776,43 @@ func parseImportXmlAction(raw map[string]any) *microflows.ImportXmlAction {
 			}
 			forceSingleOccurrence := extractBool(call["ForceSingleOccurrence"], false)
 			handling.ForceSingleOccurrence = &forceSingleOccurrence
+			// The Range is polymorphic — a ConstantRange carries SingleObject
+			// (Studio Pro's All/First), a CustomRange the limit and offset
+			// expressions. Reading only SingleObject dropped Custom entirely, so
+			// describe→edit→exec turned a bounded import unbounded. (issue #881)
 			if rangeMap := toMap(call["Range"]); rangeMap != nil {
-				handling.SingleObject = extractBool(rangeMap["SingleObject"], false)
+				switch extractString(rangeMap["$Type"]) {
+				case "Microflows$CustomRange":
+					handling.LimitExpression = extractString(rangeMap["LimitExpression"])
+					handling.OffsetExpression = extractString(rangeMap["OffsetExpression"])
+				default:
+					single := extractBool(rangeMap["SingleObject"], false)
+					handling.RangeSingleObject = &single
+					handling.SingleObject = single
+				}
 			}
-			// Older XML import mappings may omit Range and encode single-object
-			// handling only through ForceSingleOccurrence. REST result handling
-			// stores Range consistently, so this compatibility fallback stays
-			// XML-specific.
-			if !handling.SingleObject {
-				handling.SingleObject = forceSingleOccurrence
+			// The result variable's cardinality is the stored VariableType where
+			// there is one; it does NOT track the range (Mendix's own
+			// SUB_Feedback_PostToAppInsights pairs ConstantRange{SingleObject:false}
+			// with an ObjectType). Only otherwise does ForceSingleOccurrence stand
+			// in — and never for a bounded range, which is always a list, or a
+			// Custom range reads back as First and loses the limit.
+			switch extractString(toMap(rh["VariableType"])["$Type"]) {
+			case "DataTypes$ObjectType":
+				handling.SingleObject = true
+			case "DataTypes$ListType":
+				handling.SingleObject = false
+			default:
+				if !handling.SingleObject && handling.LimitExpression == "" && handling.OffsetExpression == "" {
+					handling.SingleObject = forceSingleOccurrence
+				}
 			}
+		}
+		// The writer stores VariableType on the ResultHandling, not on the
+		// ImportMappingCall, so the lookup above finds nothing on anything mxcli or
+		// Studio Pro writes — leaving the result entity empty.
+		if varType := toMap(rh["VariableType"]); varType != nil && handling.ResultEntityID == "" {
+			handling.ResultEntityID = model.ID(extractString(varType["Entity"]))
 		}
 		action.ResultHandling = handling
 	}
@@ -794,4 +851,22 @@ func parseExportXmlAction(raw map[string]any) *microflows.ExportXmlAction {
 	}
 
 	return action
+}
+
+// parseQueueSettings reads a call's Queues$QueueSettings child — the binding to
+// a task queue. Without it the legacy engine's DESCRIBE rendered a queued call
+// as an ordinary one, so a describe → exec round trip dropped the binding and
+// nothing on this engine could see it (FINDINGS #25's "describe showing nothing
+// is not evidence of nothing").
+func parseQueueSettings(raw map[string]any) *microflows.QueueSettings {
+	qs, ok := raw["QueueSettings"].(map[string]any)
+	if !ok || qs == nil {
+		return nil
+	}
+	out := &microflows.QueueSettings{Queue: extractString(qs["Queue"])}
+	out.ID = model.ID(extractBsonID(qs["$ID"]))
+	if retry, ok := qs["Retry"]; ok && retry != nil {
+		out.Retry = retry
+	}
+	return out
 }
